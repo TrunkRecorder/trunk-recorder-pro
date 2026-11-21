@@ -1,0 +1,41 @@
+{
+  "v": 1,
+  "node": { "systemId": 9012, "apiKey": "00000000-0000-0000-0000-000000000000" },
+  "recorder": { "name": "sdrtrunk", "version": "1.0.0" },
+  "window": { "start": 1794590030.0, "end": 1794590331.0, "seq": 5, "gap": true },
+  "sites": [
+    {
+      "name": "Utility MPT",
+      "protocol": "mpt1327",
+      "id": { "sysId": 4372 },
+      "cc": { "hz": 165212500, "lockedS": 301.0, "good": 5400, "bad": 60, "airSym": 345600, "symbolRate": 1200 },
+      "calls": { "started": 22, "recorded": 22 }
+    }
+  ],
+  "channels": [
+    {
+      "hz": 155520000,
+      "mode": "fm",
+      "name": "County Fire Dispatch",
+      "access": "CTCSS 151.4",
+      "heardS": 301.0,
+      "opens": 14,
+      "openS": 96.0,
+      "calls": 12,
+      "openedByOther": 2,
+      "snrDb": 21.4
+    },
+    {
+      "hz": 460125000,
+      "mode": "fm",
+      "name": "Public Works",
+      "heardS": 301.0,
+      "opens": 0,
+      "openS": 0.0,
+      "calls": 0
+    }
+  ],
+  "radios": [
+    { "name": "RTL-SDR 1", "kind": "rtlsdr", "seconds": 301.0, "droppedS": 1.0, "ppmError": 0.4 }
+  ]
+}

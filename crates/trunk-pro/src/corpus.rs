@@ -282,6 +282,52 @@ impl Results {
     }
 }
 
+/// A site's control channel blocks decoded cleanly and lost, over some of a
+/// recording: what a replay summary says as "CC N good / M bad", and a
+/// capture's `trp:live` as messages_good / messages_bad.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SiteFrames {
+    pub system: String,
+    pub site: String,
+    pub good: u64,
+    pub bad: u64,
+}
+
+impl SiteFrames {
+    /// Each site's so far.
+    pub fn of(s: &trunk_core::trunk::Status) -> Vec<SiteFrames> {
+        s.sites.iter().map(|y| SiteFrames { system: y.short_name.clone(), site: y.site_name.clone(), good: y.good, bad: y.bad }).collect()
+    }
+
+    /// Each site's from `start` to `end` (both [`SiteFrames::of`] the same replay).
+    pub fn between(start: &[SiteFrames], end: &[SiteFrames]) -> Vec<SiteFrames> {
+        end.iter()
+            .map(|e| {
+                let s = start.iter().find(|s| s.system == e.system && s.site == e.site);
+                SiteFrames { good: e.good.saturating_sub(s.map_or(0, |s| s.good)), bad: e.bad.saturating_sub(s.map_or(0, |s| s.bad)), ..e.clone() }
+            })
+            .collect()
+    }
+}
+
+/// What `replay --summary FILE` writes: each site's control channel blocks,
+/// over all of it, and over the part a capture's live figures cover.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ReplaySummary {
+    pub air_s: f64,
+    pub sites: Vec<SiteFrames>,
+    #[serde(default)]
+    pub live_window: Option<WindowFrames>,
+}
+
+/// Each site's blocks from `from_s` to `to_s`, seconds into the replay.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct WindowFrames {
+    pub from_s: f64,
+    pub to_s: f64,
+    pub sites: Vec<SiteFrames>,
+}
+
 const FRAMES_PER_HASH: usize = 20;
 const ENVELOPE_MS: usize = 100;
 /// Analog calls whose loudness over time matches worse than this have changed for the worse.
@@ -1000,6 +1046,12 @@ mod tests {
         assert!(iq_capture::open(laid.to_str().unwrap()).is_ok() && !laid.join("notes.txt").exists());
         assert_eq!(fs::read(laid.join("source-0.sigmf-data")).unwrap(), [0u8; 16]);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_sites_frames_over_a_window_are_the_difference() {
+        let f = |site: &str, good, bad| SiteFrames { system: "s".into(), site: site.into(), good, bad };
+        assert_eq!(SiteFrames::between(&[f("a", 10, 1)], &[f("a", 445, 4), f("b", 3, 0)]), [f("a", 435, 3), f("b", 3, 0)], "a site not yet running counts from nothing");
     }
 
     #[test]

@@ -284,7 +284,7 @@ new format.
 | `call.not_saved` | `call.*` | `Event::NotSaved` |
 | `control.lost`, `control.regained` | `system`, `site`, `freq_hz` | `MonitorEvent` |
 | `note.warning` | `system`, `site`, `text` | `Event::Note` |
-| `source.clipping`, `source.drops` | `source`, `pct`, `per_s` | `MonitorEvent` |
+| `source.clipping`, `source.drops`, `source.quiet` | `source`, `pct`, `per_s`, `peak_db` | `MonitorEvent` |
 | `tick` | `stats.*`: per-site decode and failure rates, per-source levels | Every 10 s |
 | `schedule` | none | Random or timed sample |
 | `manual` | what the user chose | The capture button |

@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -48,7 +48,7 @@ test("sameOnTheAir: systems set up apart whose sites announce one system", () =>
   c.systems.push(newSystem(c, { shortName: "dcfd" }), newSystem(c, { shortName: "dcfd2" }), newSystem(c, { shortName: "other", expect: { wacn: 0xbee00, sysId: 0x9 } }), newSystem(c, { shortName: "cm", type: "dmr" }));
   const id = (x: Partial<SiteIdentity>): SiteIdentity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
   const site = (name: string, identity: Partial<SiteIdentity>): SiteStatus =>
-    ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });
+    ({ index: 0, name, nowS: 0, controlChannelHz: null, source: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });
   const sys = (shortName: string, sites: SiteStatus[]): SystemStatus => ({ index: 0, shortName, activeCalls: 0, recording: 0, conventionalOpen: 0, callsConcluded: 0, sites });
   assert.deepEqual(sameOnTheAir(c, []), []);
   const live = [sys("dcfd", [site("dcfd", { wacn: 0xbee00, sysId: 0x1a2, site: 1 })]), sys("dcfd2", [site("dcfd2", { wacn: 0xbee00, sysId: 0x1a2, site: 2 })])];
@@ -198,4 +198,11 @@ test("advice for the sources (the recorder's Config::advice): a typed-in centre 
   c.sources[0].centerHz = a.sources[0].centerHz!;
   c.sources[0].rateHz = a.sources[0].rateHz;
   assert.equal(sourceAdvice(c, [undefined]), null, "taken: nothing more to say");
+});
+
+test("each kind of system is as the recorder's table says: named, and locked by its fields", () => {
+  assert.deepEqual([kindLabel("edacs"), kindLabel("smartnet"), kindLabel(undefined)], ["EDACS", "SmartNet", "P25"]);
+  assert.deepEqual([systemType("edacs"), systemType("nope"), systemType(3)], ["edacs", "p25", "p25"]);
+  assert.deepEqual(siteLockFields({ type: "p25" }), ["nac", "wacn", "sysId", "rfss", "site"]);
+  assert.deepEqual([siteLockFields({ type: "nxdn" }), siteLockFields({ type: "nxdn", nxdnType: "typeD" }), siteLockFields({ type: "dmr" })], [["sysId", "site"], [], []]);
 });

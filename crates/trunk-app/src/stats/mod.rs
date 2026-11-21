@@ -2,9 +2,11 @@
 //!
 //! ```text
 //! engine / DSP parts ── Instrumented::report ──┐
-//! SampleMeter (headroom, clipping) ────────────┤
-//! Tally (calls, airtime, reasons, voice errors)┴─► Aggregator ─► `stats` (1 s)
-//!                                                       └──────► Rollup (1 min) ─► History / stats files
+//! SampleMeter (headroom, clipping, quiet) ─────┤
+//! engine: each site's and channel's copies ─────┤
+//! Tally (calls, airtime, audio)────────────────┴─► Aggregator ─► `stats` (1 s)
+//!                                                       ├──────► Rollup (1 min) ─► History / stats files
+//!                                                       └──────► totals since start ─► plugins' `totals`
 //! session events ─► Stats::observe ─► Registry (talkgroups, radios, frequencies)
 //!                                  └─► Monitor (notable events ─► watchers, the feed)
 //! ```
@@ -27,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use trunk_core::metrics::{key_part, system_key, Scoped, Sink};
 use trunk_core::dsp::inband::signal::{Heard, Signal};
-use trunk_core::trunk::{CallId, Engine, Event, MessageType};
+use trunk_core::trunk::{CallId, Engine, Event, MessageType, SystemId};
 
 use crate::config::Config;
 use crate::protocol::ToClient;
@@ -40,8 +42,9 @@ pub use radio::{Names, Registry, TgInfo};
 
 /// The `stats` message and the rollups come this often, ms of wall clock.
 const TICK_MS: f64 = 1000.0;
-/// A source clipping more than this share of samples, %, is an event.
-const CLIP_EVENT_PCT: f64 = 0.5;
+/// A source clipping more than this share of samples, %, is an event (and a
+/// gain the tuner tries that clips so is refused, [`crate::tune`]).
+pub const CLIP_PCT: f64 = 0.5;
 
 /// What outlives a session: the radio registry, the names it answers with,
 /// and the event monitor (shared with the platform, which answers queries
@@ -80,17 +83,14 @@ impl Shared {
     /// browser build's worker both answer this way.
     pub fn radio_query(&self, q: &Value, now: i64) -> ToClient {
         let book = self.names.lock().unwrap();
-        let tg = |sys: &str, t: u32| book.tg(sys, t);
-        let unit = |sys: &str, u: u32| book.unit(sys, u);
-        let signals = |sys: &str, h: &Heard, tg: u32| book.signals(sys, h, tg);
-        let mut out = self.radio.lock().unwrap().query(q, now, &Names { tg: &tg, unit: &unit, signals: &signals });
+        let mut out = book.lookups(|names| self.radio.lock().unwrap().query(q, now, names));
         out["id"] = q["id"].clone();
         ToClient::RadioResult(crate::protocol::body(out))
     }
 }
 
 /// The one place a talkgroup or a radio is named by its number, by system
-/// short name: the radio registry's answers ([`Shared::radio_query`]), and
+/// id (and a system by its short name, as the config has it now): the radio registry's answers ([`Shared::radio_query`]), and
 /// the session's events, status and plugins' events where there's no call to
 /// name it ([`Self::tg`], [`Self::unit`]). It holds each system's talkgroups
 /// (as loaded from the store), what its conventional rows name, its talker
@@ -98,13 +98,15 @@ impl Shared {
 /// them; the desktop app fills them when it starts and when they change.
 #[derive(Default)]
 pub struct NameBook {
-    talkgroups: HashMap<String, trunk_core::trunk::Talkgroups>,
+    talkgroups: HashMap<SystemId, trunk_core::trunk::Talkgroups>,
     /// Conventional rows' names for the numbers they file under ([`Config::row_talkgroups`]).
-    rows: HashMap<String, trunk_core::trunk::Talkgroups>,
-    units: HashMap<String, trunk_core::trunk::UnitAliases>,
+    rows: HashMap<SystemId, trunk_core::trunk::Talkgroups>,
+    units: HashMap<SystemId, trunk_core::trunk::UnitAliases>,
     /// Each system's unit tags (its own names for its radios, and whose name comes first).
-    unit_tags: HashMap<String, trunk_core::trunk::UnitTags>,
-    signals: HashMap<String, Vec<Signal>>,
+    unit_tags: HashMap<SystemId, trunk_core::trunk::UnitTags>,
+    signals: HashMap<SystemId, Vec<Signal>>,
+    /// Each system's short name, as the config has it now.
+    short_names: HashMap<SystemId, String>,
 }
 
 impl NameBook {
@@ -112,6 +114,27 @@ impl NameBook {
     pub fn set_config(&mut self, cfg: &Config, names: &crate::config::NameLists) {
         self.set_systems(&cfg.engine_config(0.0, names).systems);
         self.set_rows(cfg);
+        self.short_names = cfg.system_ids().map(|(id, n)| (id, n.to_string())).collect();
+    }
+
+    /// System `system`'s short name ("": not one of the config's).
+    pub fn name(&self, system: SystemId) -> String {
+        self.short_names.get(&system).cloned().unwrap_or_default()
+    }
+
+    /// `f` given this book's lookups, as the registry's answers take them.
+    pub fn lookups<T>(&self, f: impl FnOnce(&radio::Names) -> T) -> T {
+        let tg = |sys: SystemId, t: u32| self.tg(sys, t);
+        let unit = |sys: SystemId, u: u32| self.unit(sys, u);
+        let signals = |sys: SystemId, h: &Heard, tg: u32| self.signals(sys, h, tg);
+        let name = |sys: SystemId| self.name(sys);
+        let id = |n: &str| self.id(n);
+        f(&radio::Names { tg: &tg, unit: &unit, signals: &signals, name: &name, id: &id })
+    }
+
+    /// The system named `short_name` now.
+    pub fn id(&self, short_name: &str) -> Option<SystemId> {
+        self.short_names.iter().find(|(_, n)| *n == short_name).map(|(id, _)| *id)
     }
 
     /// The names `cfg`'s conventional rows give.
@@ -121,49 +144,55 @@ impl NameBook {
 
     /// Talkgroup `tg` of `system`: named as its calls are — by a row, else
     /// by the system's talkgroups (whose Ignore flag it keeps either way).
-    pub fn tg(&self, system: &str, tg: u32) -> Option<TgInfo> {
-        let file = tg_info(&self.talkgroups, system, tg);
-        match self.rows.get(system).and_then(|r| r.get(&tg)) {
-            Some(row) => Some(TgInfo { alpha_tag: row.alpha_tag.clone(), ignore: file.is_some_and(|f| f.ignore) }),
-            None => file,
+    pub fn tg(&self, system: SystemId, tg: u32) -> Option<TgInfo> {
+        match self.rows.get(&system).and_then(|r| r.get(&tg)) {
+            Some(row) => {
+                let t = trunk_core::trunk::Talkgroup::named_by_row(row, tg, self.talkgroups.get(&system).and_then(|f| f.get(&tg)));
+                Some(TgInfo { alpha_tag: t.alpha_tag, ignore: t.ignore })
+            }
+            None => tg_info(&self.talkgroups, system, tg),
         }
     }
 
     /// [`Self::tg`]'s name ("": none).
-    pub fn alpha_tag(&self, system: &str, tg: u32) -> String {
+    pub fn alpha_tag(&self, system: SystemId, tg: u32) -> String {
         self.tg(system, tg).map_or(String::new(), |t| t.alpha_tag)
     }
 
     /// Radio `unit` of `system`, named as its calls' talkers are
     /// ([`trunk_core::trunk::UnitTags::name`]: its unit tags and the aliases heard).
-    pub fn unit(&self, system: &str, unit: u32) -> Option<String> {
-        trunk_core::trunk::UnitTags::name(self.unit_tags.get(system), self.units.get(system), unit)
+    pub fn unit(&self, system: SystemId, unit: u32) -> Option<String> {
+        trunk_core::trunk::UnitTags::name(self.unit_tags.get(&system), self.units.get(&system), unit)
     }
 
     /// One talkgroup of `system`, as it is now (none: not one of its talkgroups).
-    pub fn set_talkgroup(&mut self, system: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) {
-        let table = self.talkgroups.entry(system.to_string()).or_default();
+    pub fn set_talkgroup(&mut self, system: SystemId, number: u32, row: Option<trunk_core::trunk::Talkgroup>) {
+        let table = self.talkgroups.entry(system).or_default();
         match row {
             Some(t) => table.insert(number, t),
             None => table.remove(&number),
         };
     }
 
-    /// Each system's talkgroups, unit tags and signals, from an engine's systems.
+    /// Each system's talkgroups, unit tags and signals, from an engine's
+    /// systems (and the short name of one the config hasn't named here).
     pub fn set_systems(&mut self, systems: &[trunk_core::trunk::SystemConfig]) {
-        self.talkgroups = systems.iter().map(|s| (s.short_name.clone(), s.talkgroups.clone())).collect();
-        self.unit_tags = systems.iter().map(|s| (s.short_name.clone(), s.unit_tags.clone())).collect();
-        self.signals = systems.iter().map(|s| (s.short_name.clone(), s.signals.clone())).collect();
+        self.talkgroups = systems.iter().map(|s| (s.id, s.talkgroups.clone())).collect();
+        self.unit_tags = systems.iter().map(|s| (s.id, s.unit_tags.clone())).collect();
+        self.signals = systems.iter().map(|s| (s.id, s.signals.clone())).collect();
+        for s in systems {
+            self.short_names.entry(s.id).or_insert_with(|| s.short_name.clone());
+        }
     }
 
     /// The signals of `system` a pattern heard on talkgroup `tg` is (their ids).
-    pub fn signals(&self, system: &str, h: &Heard, tg: u32) -> Vec<String> {
-        self.signals.get(system).map_or_else(Vec::new, |v| v.iter().filter(|s| s.matches_heard(h, tg)).map(|s| s.id.clone()).collect())
+    pub fn signals(&self, system: SystemId, h: &Heard, tg: u32) -> Vec<String> {
+        self.signals.get(&system).map_or_else(Vec::new, |v| v.iter().filter(|s| s.matches_heard(h, tg)).map(|s| s.id.clone()).collect())
     }
 
-    /// System `short_name`'s talker aliases, from their CSV (as saved).
-    pub fn set_units(&mut self, short_name: &str, csv: &str) {
-        self.units.insert(short_name.to_string(), trunk_core::trunk::UnitAliases::parse_csv(csv));
+    /// System `system`'s talker aliases, from their CSV (as saved).
+    pub fn set_units(&mut self, system: SystemId, csv: &str) {
+        self.units.insert(system, trunk_core::trunk::UnitAliases::parse_csv(csv));
     }
 }
 
@@ -186,28 +215,19 @@ impl Topics {
     }
 }
 
-/// Running totals of what calls did, per system, by name.
+/// Running totals of what calls did, per system, by name. (What became of
+/// each site's and channel's copies of calls, and their frames, the engine
+/// counts: [`trunk_core::trunk::tally`].)
 #[derive(Default)]
 struct Tally {
     counts: BTreeMap<String, u64>,
-    /// Keys new since the last report: they count from 0.
-    fresh: Vec<String>,
 }
 
 impl Tally {
     fn add(&mut self, key: String, n: u64) {
-        match self.counts.get_mut(&key) {
-            Some(v) => *v += n,
-            None => {
-                self.fresh.push(key.clone());
-                self.counts.insert(key, n);
-            }
-        }
+        *self.counts.entry(key).or_default() += n;
     }
     fn report(&mut self, agg: &mut Aggregator) {
-        for k in self.fresh.drain(..) {
-            agg.seed(&k);
-        }
         for (k, v) in &self.counts {
             agg.counter(k, *v);
         }
@@ -256,8 +276,8 @@ pub struct Stats {
     busy_mark: f64,
     /// Control channels decoding at the last tick, by system.
     locked: HashMap<String, bool>,
-    /// Per source: dropping, clipping at the last tick.
-    trouble: Vec<(bool, bool)>,
+    /// Per source: dropping, clipping, quiet at the last tick.
+    trouble: Vec<[bool; 3]>,
     /// Calls this minute, per system (CallVolume for watchers).
     minute_calls: BTreeMap<String, u32>,
     /// Air time counted so far of each call in progress, ms (counted as it
@@ -274,7 +294,7 @@ impl Stats {
         Stats {
             agg: Aggregator::default(),
             meters: names.iter().map(|_| Default::default()).collect(),
-            trouble: vec![(false, false); names.len()],
+            trouble: vec![[false; 3]; names.len()],
             names,
             tally: Tally::default(),
             day: Day::default(),
@@ -328,15 +348,13 @@ impl Stats {
         }
     }
 
-    /// One of the session's events. `name`: the short name of the event's system.
-    pub fn observe(&mut self, ev: &Event, name: &str, engine: &Engine, out: &mut Vec<Output>) {
+    /// One of the session's events. `id`, `name`: its system's id and short name.
+    pub fn observe(&mut self, ev: &Event, id: SystemId, name: &str, engine: &Engine, out: &mut Vec<Output>) {
         let t = self.now as i64;
         let sys = system_key(name);
         match ev {
             Event::CallStart(c) => {
-                let why = if c.recording { "recorded" } else { c.reason.map_or("monitored", |r| r.as_str()) };
-                self.tally.add(format!("{sys}/why/{why}"), 1);
-                let firsts = self.shared.radio.lock().unwrap().call_start(name, c, t);
+                let firsts = self.shared.radio.lock().unwrap().call_start(id, c, t);
                 if firsts.tg {
                     let alpha_tag = c.talkgroup_info.as_ref().map_or(String::new(), |g| g.alpha_tag.clone());
                     self.emit(MonitorEvent::TgFirstSeen { system: name.to_string(), talkgroup: c.talkgroup, alpha_tag }, out);
@@ -360,7 +378,7 @@ impl Stats {
                 self.roll_day();
                 self.day.calls += 1;
                 self.day.air_s += secs;
-                let firsts = self.shared.radio.lock().unwrap().call_end(name, c, t);
+                let firsts = self.shared.radio.lock().unwrap().call_end(id, c, t);
                 for u in firsts {
                     let alias = engine.unit_alias(c.system, u).unwrap_or_default();
                     self.emit(MonitorEvent::UnitFirstSeen { system: name.to_string(), unit: u, alias }, out);
@@ -378,7 +396,7 @@ impl Stats {
                 ) {
                     return;
                 }
-                let aff = self.shared.radio.lock().unwrap().message(name, msg, t);
+                let aff = self.shared.radio.lock().unwrap().message(id, msg, t);
                 if let Some((unit, talkgroup)) = aff {
                     if self.shared.monitor.lock().unwrap().wants_frequent() {
                         self.emit(MonitorEvent::UnitAffiliated { system: name.to_string(), unit, talkgroup }, out);
@@ -387,7 +405,7 @@ impl Stats {
             }
             Event::TonePattern(h) => {
                 let p = trunk_core::trunk::record::tone_pattern(&h.pattern, h.src, h.signals.clone());
-                self.shared.radio.lock().unwrap().tone_pattern(name, h.talkgroup, &p, t);
+                self.shared.radio.lock().unwrap().tone_pattern(id, h.talkgroup, &p, t);
                 // One of the system's signals always; any other pattern only when a watcher wants it.
                 if !h.signals.is_empty() || self.shared.monitor.lock().unwrap().wants_frequent() {
                     self.emit(MonitorEvent::TonePattern { system: name.to_string(), talkgroup: h.talkgroup, alpha_tag: h.alpha_tag.clone(), text: p.text, signals: h.signals.clone() }, out);
@@ -400,12 +418,7 @@ impl Stats {
                 self.tally.add("all/audioBytes".into(), bytes);
                 self.roll_day();
                 self.day.audio_bytes += bytes;
-                for i in &record.error_list {
-                    self.tally.add(format!("{sys}/voice/frames"), i.frames);
-                    self.tally.add(format!("{sys}/voice/errors"), i.error_count);
-                    self.tally.add(format!("{sys}/voice/bad"), i.bad_frames);
-                }
-                self.shared.radio.lock().unwrap().concluded(name, record, t);
+                self.shared.radio.lock().unwrap().concluded(id, record, t);
             }
             Event::NotSaved(_) => self.tally.add(format!("{sys}/notSaved"), 1),
             Event::Duplicate { .. } => self.tally.add(format!("{sys}/dup"), 1),
@@ -453,6 +466,11 @@ impl Stats {
         self.details(engine, site_names, decode_sites, out);
     }
 
+    /// Every series' running total since recording started ([`Aggregator::totals`]).
+    pub fn totals(&self) -> BTreeMap<String, trunk_recorder_plugin::Total> {
+        self.agg.totals()
+    }
+
     fn add_air(&mut self, sys: &str, ms: u64) {
         self.tally.add(format!("{sys}/airMs"), ms);
         self.tally.add("all/airMs".into(), ms);
@@ -468,7 +486,7 @@ impl Stats {
     }
 
     /// Events on a change of state: a control channel lost or regained, a
-    /// source starting to drop samples or clip.
+    /// source starting to drop samples, clip or go quiet (gain too low).
     fn edges(&mut self, engine: &Engine, out: &mut Vec<Output>) {
         let systems = engine.systems();
         let sites: Vec<_> = trunk_core::trunk::sites(&systems).collect();
@@ -488,15 +506,18 @@ impl Stats {
             let n = &self.names[i];
             let drops = self.agg.get(&format!("src/{n}/dropped")).unwrap_or(0.0) as f64;
             let clip = self.agg.get(&format!("src/{n}/clipPct")).unwrap_or(0.0) as f64;
-            let (was_d, was_c) = self.trouble[i];
-            let (d, c) = (drops > 0.0, clip > CLIP_EVENT_PCT);
-            self.trouble[i] = (d, c);
+            let quiet = self.meters[i].lock().unwrap().quiet();
+            let [was_d, was_c, was_q] = self.trouble[i];
+            let (d, c, q) = (drops > 0.0, clip > CLIP_PCT, quiet.is_some());
+            self.trouble[i] = [d, c, q];
             let source = n.clone();
             if d && !was_d {
                 self.emit(MonitorEvent::SourceDrops { source, per_s: drops }, out);
             } else if c && !was_c {
                 self.emit(MonitorEvent::SourceClipping { source, pct: (clip * 10.0).round() / 10.0 }, out);
-            } else if (was_d || was_c) && !d && !c {
+            } else if let Some(db) = quiet.filter(|_| !was_q) {
+                self.emit(MonitorEvent::SourceQuiet { source, peak_db: db.round() }, out);
+            } else if (was_d || was_c || was_q) && !d && !c && !q {
                 self.emit(MonitorEvent::SourceRecovered { source }, out);
             }
         }
@@ -544,8 +565,8 @@ impl Stats {
 pub type DecodeSites = fn(&Engine, &NameBook, &str) -> (Vec<Value>, Vec<Value>);
 
 /// A talkgroup's name and Ignore flag from parsed tables.
-pub fn tg_info(tables: &HashMap<String, trunk_core::trunk::Talkgroups>, system: &str, tg: u32) -> Option<TgInfo> {
-    tables.get(system)?.get(&tg).map(|t| TgInfo { alpha_tag: t.alpha_tag.clone(), ignore: t.ignore })
+pub fn tg_info(tables: &HashMap<SystemId, trunk_core::trunk::Talkgroups>, system: SystemId, tg: u32) -> Option<TgInfo> {
+    tables.get(&system)?.get(&tg).map(|t| TgInfo { alpha_tag: t.alpha_tag.clone(), ignore: t.ignore })
 }
 
 #[cfg(test)]
@@ -558,13 +579,14 @@ mod tests {
     fn the_book_names_a_radio_as_its_calls_do() {
         use trunk_core::trunk::{SystemConfig, UnitTags, UnitTagsMode};
         let mut book = NameBook::default();
+        let x = SystemId(1);
         let tags = |mode| UnitTags::new(&trunk_core::trunk::read_unit_names("1234,Engine 12\n").unit_names, mode);
-        book.set_units("x", "1234,Heard 1234\n5678,Heard 5678\n");
-        assert_eq!((book.unit("x", 1234), book.unit("x", 5678)), (Some("Heard 1234".into()), Some("Heard 5678".into())), "no tags: the aliases");
-        book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserFirst), ..SystemConfig::conventional("x") }]);
-        assert_eq!((book.unit("x", 1234), book.unit("x", 5678)), (Some("Engine 12".into()), Some("Heard 5678".into())), "the user's first");
-        book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserOnly), ..SystemConfig::conventional("x") }]);
-        assert_eq!((book.unit("x", 1234), book.unit("x", 5678)), (Some("Engine 12".into()), None), "the user's only");
+        book.set_units(x, "1234,Heard 1234\n5678,Heard 5678\n");
+        assert_eq!((book.unit(x, 1234), book.unit(x, 5678)), (Some("Heard 1234".into()), Some("Heard 5678".into())), "no tags: the aliases");
+        book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserFirst), id: x, ..SystemConfig::conventional("x") }]);
+        assert_eq!((book.unit(x, 1234), book.unit(x, 5678)), (Some("Engine 12".into()), Some("Heard 5678".into())), "the user's first");
+        book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserOnly), id: x, ..SystemConfig::conventional("x") }]);
+        assert_eq!((book.unit(x, 1234), book.unit(x, 5678)), (Some("Engine 12".into()), None), "the user's only");
     }
 
     #[test]

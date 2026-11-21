@@ -524,16 +524,20 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
               {c.systems.length > 0 && (
                 <select value={encode(target)} onChange={(e) => setTarget(decode(e.target.value))} aria-label="Add as, or replace">
                   <option value="new">as a new system</option>
-                  {c.systems.map((x, k) => (
-                    <Fragment key={k}>
-                      {x.type === (sug.type === "smartnet" ? "smartnet" : "p25") && <option value={`${k}:new`}>as a site of {x.shortName}</option>}
-                      {x.sites.map((y, j) => (
-                        <option key={j} value={`${k}:${j}`}>
-                          replacing {x.sites.length > 1 ? `${x.shortName}'s site ${siteNameOf(x, y)}` : x.shortName}
-                        </option>
-                      ))}
-                    </Fragment>
-                  ))}
+                  {/* (Only systems of the kind found: a site isn't replaced by another kind's.) */}
+                  {c.systems.map(
+                    (x, k) =>
+                      x.type === sug.type && (
+                        <Fragment key={k}>
+                          <option value={`${k}:new`}>as a site of {x.shortName}</option>
+                          {x.sites.map((y, j) => (
+                            <option key={j} value={`${k}:${j}`}>
+                              replacing {x.sites.length > 1 ? `${x.shortName}'s site ${siteNameOf(x, y)}` : x.shortName}
+                            </option>
+                          ))}
+                        </Fragment>
+                      ),
+                  )}
                 </select>
               )}
               <button className="btn primary" onClick={apply}>

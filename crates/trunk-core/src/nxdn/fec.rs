@@ -62,17 +62,7 @@ impl Coding {
 
 /// CRC of `bits` (MSB first), the register preset to all ones.
 pub fn crc(bits: &[u8], width: u32, poly: u32) -> u32 {
-    let mask = (1u32 << width) - 1;
-    let top = 1u32 << (width - 1);
-    let mut r = mask;
-    for &b in bits {
-        let fb = (b as u32 & 1) ^ (r & top != 0) as u32;
-        r = (r << 1) & mask;
-        if fb != 0 {
-            r ^= poly;
-        }
-    }
-    r
+    crate::bits::crc(bits, width, poly, u32::MAX)
 }
 
 /// The two code bits for input `b` from encoder state `st` (bit k: the input k+1 steps ago).

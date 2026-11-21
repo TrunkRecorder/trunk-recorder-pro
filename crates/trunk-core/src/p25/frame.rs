@@ -272,7 +272,7 @@ pub struct Frame {
     pub complete: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FramerOptions {
     pub flywheel: bool,
     pub flywheel_errs: u32,

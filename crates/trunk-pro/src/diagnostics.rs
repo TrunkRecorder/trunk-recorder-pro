@@ -16,11 +16,12 @@ use crate::iq_capture::{keep, Activity, Live, QUEUE, RADIO_KEYS, RECORDING_KEYS}
 
 /// Of the recent events, the ones and fields that say how the radios and the
 /// clock did. A source's name (it can hold a serial number) becomes its number.
-const EVENT_KINDS: &[&str] = &["controlLost", "controlRegained", "sourceDrops", "sourceClipping", "sourceRecovered", "clockOff", "clockOk", "clockStep", "diskLow", "linkDown", "linkUp", "spoolLow", "spoolFull", "spoolRecovered", "spoolRemoved"];
-const EVENT_KEYS: &[&str] = &["type", "t", "perS", "pct", "freePct", "critical", "calls", "bad", "byMs", "remade", "downS"];
+const EVENT_KINDS: &[&str] = &["controlLost", "controlRegained", "sourceDrops", "sourceClipping", "sourceQuiet", "sourceRecovered", "clockOff", "clockOk", "clockStep", "diskLow", "linkDown", "linkUp", "spoolLow", "spoolFull", "spoolRecovered", "spoolRemoved"];
+const EVENT_KEYS: &[&str] = &["kind", "t", "level", "perS", "pct", "peakDb", "freePct", "critical", "calls", "bad", "byMs", "remade", "downS"];
 
+/// `e`, a `monitorEvent` ([`trunk_app::stats::MonitorEvent::to_json`]); `labels`: the sources' series names.
 fn event(e: &Value, labels: &[String]) -> Option<Value> {
-    let kind = e["type"].as_str()?;
+    let kind = e["kind"].as_str()?;
     if !EVENT_KINDS.contains(&kind) {
         return None;
     }
@@ -44,7 +45,7 @@ fn config_shape(cfg: &Config, names: &NameLists) -> Value {
                 "sites": s.sites.len(),
                 "controlChannels": s.sites.iter().map(|x| x.control_channels_hz.len()).sum::<usize>(),
                 "modulation": s.sites.first().map(|x| serde_json::to_value(x.modulation).unwrap_or_default()),
-                "talkgroups": names.get(&s.short_name).map_or(0, |n| n.talkgroups.len()),
+                "talkgroups": names.get(&s.id).map_or(0, |n| n.talkgroups.len()),
                 "plugins": s.plugins.len(),
             })
         })
@@ -172,7 +173,7 @@ fn radios(cfg: &Config, live: &Live) -> Vec<Value> {
 
 /// `diagnostics.json`, from what's known now.
 pub fn build(cfg: &Config, names: &NameLists, live: &Live, recent: &[Value]) -> Value {
-    let labels: Vec<String> = cfg.sources.iter().map(|s| s.label()).collect();
+    let labels: Vec<String> = cfg.sources.iter().map(|s| trunk_core::metrics::key_part(&s.label())).collect();
     json!({
         "version": 1,
         "app": { "name": "Trunk Recorder Pro", "version": env!("CARGO_PKG_VERSION"), "target": format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH) },
@@ -205,14 +206,17 @@ mod tests {
         }))
         .unwrap();
         let mut names = NameLists::new();
-        names.insert("SECRET-SHORT".into(), SystemNames { talkgroups: vec![trunk_core::trunk::TalkgroupRow { tg: trunk_core::trunk::Talkgroup { number: 7, alpha_tag: "SECRET-TG".into(), ..Default::default() }, ..Default::default() }], ..Default::default() });
-        let label = cfg.sources[0].label();
+        names.insert(cfg.id_of("SECRET-SHORT").unwrap(), SystemNames { talkgroups: vec![trunk_core::trunk::TalkgroupRow { tg: trunk_core::trunk::Talkgroup { number: 7, alpha_tag: "SECRET-TG".into(), ..Default::default() }, ..Default::default() }], ..Default::default() });
+        use trunk_app::stats::MonitorEvent as E;
+        // (As the monitor has them: by the source's series name.)
+        let source = trunk_core::metrics::key_part(&cfg.sources[0].label());
         let recent = [
-            json!({ "type": "sourceDrops", "t": 1.0, "source": label, "perS": 12.5 }),
-            json!({ "type": "diskLow", "t": 2.0, "path": "/SECRET-DISK", "freePct": 3.0 }),
-            json!({ "type": "linkDown", "t": 3.0, "target": "SECRET.example.com" }),
-            json!({ "type": "clockOff", "t": 4.0, "why": "SECRET-WHY", "bad": true }),
-            json!({ "type": "tgFirstSeen", "t": 5.0, "alphaTag": "SECRET-FIRST" }),
+            E::SourceDrops { source: source.clone(), per_s: 12.5 }.to_json(1.0),
+            E::DiskLow { path: "/SECRET-DISK".into(), free_pct: 3.0 }.to_json(2.0),
+            E::LinkDown { target: "SECRET.example.com".into() }.to_json(3.0),
+            E::ClockOff { why: "SECRET-WHY".into(), bad: true }.to_json(4.0),
+            E::TgFirstSeen { system: "SECRET-SHORT".into(), talkgroup: 7, alpha_tag: "SECRET-FIRST".into() }.to_json(5.0),
+            E::SourceQuiet { source, peak_db: -32.0 }.to_json(6.0),
         ];
         let live = Live { status: Default::default(), bandplans: vec![], sources: vec![Default::default()] };
         let v = build(&cfg, &names, &live, &recent);
@@ -223,9 +227,9 @@ mod tests {
         assert_eq!(v["config"]["systems"][0]["talkgroups"], 1, "how many, not which");
         assert_eq!(v["config"]["storage"], "postgres", "which backend is no secret");
         let events = v["events"].as_array().unwrap();
-        assert_eq!(events.len(), 4, "the talkgroup event isn't one of the kinds kept");
-        assert_eq!(events[0]["source"], 0, "a radio by its number");
-        assert_eq!(events[0]["perS"], 12.5);
+        assert_eq!(events.len(), 5, "the talkgroup event isn't one of the kinds kept");
+        assert_eq!((&events[0]["kind"], &events[0]["source"], &events[0]["perS"]), (&json!("sourceDrops"), &json!(0), &json!(12.5)), "a radio by its number");
+        assert_eq!((&events[4]["kind"], &events[4]["source"], &events[4]["peakDb"]), (&json!("sourceQuiet"), &json!(0), &json!(-32.0)));
     }
 
     #[test]

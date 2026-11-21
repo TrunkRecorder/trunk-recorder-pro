@@ -5,6 +5,104 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A rule's capture says what set it off.** `trp:trigger` holds the event's facts as the rule's condition saw them (a
+  call's system, site, talkgroup, frequency, slot, times, radios, recorder, and for a call not saved why — `silent` or
+  `short` — with its audio and voice frames, good and bad), and when it fired, seconds into the capture and Unix ms.
+  `trp:state` holds what a replay can't tell: recorders in use then, and each DMR / NXDN site's channel table and
+  carriers as learned so far. Conditions can name the new call facts too (`call.not_saved`, `frames`, `unit_ids`, …).
+- **Live and replayed figures compare like for like.** A capture's `trp:live` now says which part of it it counts
+  (`from_s`, `to_s`) and, with a look-back, covers all of it, not just what came after the rule fired. `replay` prints
+  each site's control channel blocks over that part ("As live counted"), `replay --summary FILE` writes them as JSON, and
+  `tool submission` reports them beside live's for each site (`sites`, `live_good` / `replay_good`, …).
+
+## [0.3.9] — 2026-11-20
+
+- **A newer release, said in the sidebar** (#173, from jlutz33): once a day, and at start, the recorder asks GitHub for
+  its latest release; when it's newer than the one running, **v… available** beside the version links to it. Nothing is
+  downloaded. On by default; **Check for updates** on the Platform page's Network card (`monitor.checkUpdates`) turns
+  it off, and "What the recorder connects to" lists it.
+- **Node health reports** (`docs/api/node-health.md`, draft): a common way for a recorder to tell a call-collecting
+  service (Broadcastify Calls, OpenMHz, …) how well it hears each node it uploads, every 5 minutes at a random point of
+  its own, so a service fed by several recorders for one system or channel can prefer the one hearing it best, and can
+  tell a recorder that's up but quiet from one that's down. Trunked sites: control channel time decoding, blocks decoded
+  and lost, share of its air decoded, SNR, phase error, calls announced and why any weren't recorded, voice frames lost
+  by codec. Conventional channels: time heard, open and closed, levels, calls and transmissions no row took. Radios:
+  dropped samples, clipping, frequency error. Counts, not scores: a service weighs them its own way.
+- **Plugins: the `totals` topic** (SDK 0.12.0): every series the dashboard charts, as running totals since recording
+  started, every 10 s, with the sites, conventional channels and radios they're of. The SDK's `health` module makes a
+  node's report of them and keeps its schedule (random phase, jitter, a failed report's window carried by the next,
+  backing off when the service is busy, the interval the service asks for).
+- **Calls counted where they're heard.** Each site counts its own copies of calls (a call heard on two sites counts at
+  both) when they end, by what finally became of them (one refused as an unknown talkgroup and recorded once patched
+  counts as recorded), with the frames each decoded, saved or not; each conventional frequency counts its own. A system's
+  figures on the dashboard are the sum of its sites' and channels', and a site's card shows its own voice. Grants on a
+  channel never turned into a frequency are counted (`noFrequency`, shown as "No channel table"). The series:
+  `<site>/calls/…` and `<site>/voice/<codec>/…` replace `sys/<name>/why/…` and `sys/<name>/voice/…`, so those charts
+  start again from now.
+- **DMR and NXDN sites say what they are.** A DMR site's identity is its colour code, and on Tier III and Capacity Max
+  also its network and site (the System Identity Code in C_ALOHA and C_BCAST, read on control channels only: the
+  Capacity Max capture's is network 1, site 16), which `expect` can lock. An NXDN site's is its RAN, and on Type-C also
+  its system and site. The Decode page shows them on one line with the calls, a DMR site's also with its code, model
+  and which category of radio may use it (#185, from taclane: `decodeDetail`'s `sysCode`), and status, plugins and
+  node health reports carry them. In node health reports, two sites set up for one site on different radios (the same
+  identity) are its receivers (`receiver`: each one's radio). Plugins: `SiteIdentity` is the SDK's, shared by the
+  config's site lock, status (`SystemStatus::scope.identity`, an `identity` object in the JSON) and `totals`.
+- **Hytera XPT** (#164, from n71fs): receive-only, decoded like Capacity Plus: list the site's repeaters in
+  `dmrChannelsHz`; the free repeater is its rest channel, a call setup teaches a repeater's number, and calls take
+  Hytera's 16-bit radio and talkgroup IDs. Once a site is known to be XPT every listed repeater is its, whatever its
+  colour code (a set `colorCode` still filters). See the [Hytera XPT guide](docs/guides/xpt.md). Not yet confirmed on
+  real captures: the setup's slot and repeater fields and the status banks' slot states.
+- **DMR talker aliases** (#164): a radio's name sent over the air, once all of it has arrived, names the radio (as P25
+  and NXDN aliases do). On the one real capture so far only the first blocks ever arrive, so none has been saved yet.
+- **RTL-SDR Blog V4L** (#183, from penguinzephyr): its R828S tuner and two-input HF upconverter, with HF tuning and the
+  input switch. Tested by its contributor.
+- **Unit names: hex IDs after `0x`** (#186, the last of #167): `0x1C13,Medic 13` names radio 7187, the way MDC1200 IDs
+  are programmed; a bare number stays decimal, so existing files read as before. A download is always decimal, which
+  Trunk Recorder reads. An ID after `0x` that isn't hex names nothing and counts as **unreadable** on the Unit names
+  card.
+- **Node health reports: one format for every recorder.** After reviewing what SDRTrunk and SDRTrunk VCE can measure,
+  still version 1, all additive: a node's report covers whole sites (a site can be in several nodes' reports), several
+  receivers on one site (`receiver`), MPT1327, LTR, LTR-Net and Passport, each protocol's unit of control message,
+  `symbolRate` in baud, rest channels, `cc.syncLossSym`, `cc.merDb`, `voice.*.missing`, `calls.recorded` defined, the
+  reasons `data` and `noFrequency`, conventional `noiseDb` optional, and the answers a recorder acts on. Example reports
+  in `docs/api/node-health/` are the conformance cases; the SDK's report types read and write each unchanged.
+- Node health reports: a radio says the correction AutoTune applies on top of its ppm (`ppmApplied`), so a service can
+  tell a radio being corrected from a mistuned one, and the recorder says how its clock is kept (`clock.sync`: `ntp`,
+  `gps` or `ptp`, from chrony or systemd-timesyncd; `none` when the system says it isn't synchronized).
+- **Tuning a radio's gain by what it decodes, while recording** (`trunk-pro tune`, the interface's `tuneGain`). The
+  recorder tries gains on one radio, following a plan for its kind: an Airspy or HydraSDR along its linearity (or
+  sensitivity) table, or in manual its LNA, then mixer, then VGA kept low; an RTL-SDR along its tuner's gain table; a
+  HackRF's LNA, then VGA, its amp last and only with the LNA low; a bladeRF's, USRP's or SoapySDR radio's overall gain.
+  Each setting is scored by the control channels of the systems on that radio first, then their voice frames lost, the
+  weakest system counted twice; a setting that clips is refused. Since a control channel's decoding drifts from minute
+  to minute by more than a step of gain moves it, each candidate is compared with the best so far by turns over a few
+  rounds, and kept only when it is better by more than twice the rounds' spread. A setting that loses a control channel
+  is given up at once, and with `--systems` one that costs another system on the radio more than `--protect` points is
+  refused. The candidates go on the radio as trials, never saved: the radio goes back at the end, or `--apply` saves the
+  best. Site status says which source each control channel is on (`source`).
+- **P25 Phase 2 voice: receiver diversity**, as Phase 1 has. Phase 2 voice channels run a second receiver (CQPSK with the
+  CMA equaliser, without decision feedback) beside the first, and each AMBE codeword is taken from whichever copy decodes it
+  better. On Phase 2 simulcast systems of both Harris and Motorola infrastructure, about a fifth to a quarter fewer voice
+  frames are lost (Harris: 15.5 % → 11.6 %; Motorola: 4.5 % → 3.6 % and 8.7 % → 6.7 %), and no call decodes worse, for
+  about 0.2 % of a core more per open Phase 2 channel. It follows the bank's equaliser setting. See
+  [research/p25-phase2-diversity.md](research/p25-phase2-diversity.md).
+- **A call on the other slot of a TDMA voice channel already open keeps its start.** A new voice channel replays a second
+  of air (pre-roll), but a call put on the free slot of one already open (P25 Phase 2, DMR) lost what aired before the
+  control channel's grant reached the recorder: its first voice and talker. Every slot is now vocoded, and a slot's
+  outputs while no call is on it are kept, a pre-roll's worth; a call put on it takes the latest not named for another
+  talkgroup. In a Phase 2 capture, such a call went from 1.3 s to 1.9 s. Vocoding a slot nobody records costs about
+  0.2 % of a core while it carries voice.
+- **P25 Phase 2 voice heard before the scrambling is known waits for it** (up to 2 s), instead of being dropped: the
+  first calls after the recorder starts, before the control channel names the WACN and System ID, keep their start.
+- **A conventional channel can be `auto`: whatever is on it.** For a frequency that may carry analog or
+  digital, FRS and GMRS's say, the mode `auto` (`any` in a channel file; **Auto** in Setup) runs analog FM
+  and the P25, DMR and NXDN receivers on it together and settles on the one that hears its protocol: a
+  digital one once it has decoded a couple of frames of voice or two of anything else only a checked frame
+  carries, else analog FM two seconds after the channel opened. The call is recorded as what it settled
+  on (`voice_mode`, talkgroup, NAC / colour code / RAN as for a channel of that mode), with its analog
+  audio whole. Its **Bandwidth** is its analog receiver's (16 kHz for GMRS's 20 kHz channels). It is one
+  row to a frequency, without a code, and costs more CPU than a channel of one mode while it is undecided.
+
 ## [0.3.8] — 2026-11-14
 
 - **NXDN Type-C: more of a weak control channel decoded, and its loss counted honestly** (#170). A frame whose LICH was
@@ -25,6 +123,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   from, so the ones a no-audio capture rule makes, of the calls that failed, were the ones thrown away. It now checks
   that each recording is a radio's IQ (its spectrum isn't flat as random or compressed bytes are, its samples are
   centred and finite) and keeps it whatever it decodes to, for debugging and for decoders still to be written.
+
 ## [0.3.7] — 2026-11-13
 
 - **NXDN Type-C: control loss is the control channel's** (#170). A site's decode rate counted every watched carrier's

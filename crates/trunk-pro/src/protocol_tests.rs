@@ -445,7 +445,9 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         recent: Mutex::new(Default::default()),
         db,
         quit: tokio::sync::Notify::new(),
+        interfaces_due: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
+        tune: Default::default(),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
         interfaces: crate::interfaces::Interfaces::new(None, 8080),
@@ -538,6 +540,8 @@ fn the_servers_messages() {
     .unwrap();
     cfg.sources.extend(more.sources);
     cfg.systems = more.systems;
+    cfg.assign_system_ids();
+    let p25 = cfg.id_of("p25").unwrap();
     cfg.server.allowed_origins = vec!["http://localhost:3000".into()];
     cfg.server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, path: "ui/wall".into(), ..Default::default() });
     cfg.server.interfaces.insert("trunkamp".into(), trunk_app::config::Interface { port: 8082, access: trunk_app::config::ApiAccess::Control, ..Default::default() });
@@ -556,10 +560,10 @@ fn the_servers_messages() {
             sources: vec![trunk_core::trunk::CallSource { src: 7, ..Default::default() }, trunk_core::trunk::CallSource { src: 8, time_s: 2.0, ..Default::default() }],
             ..Default::default()
         };
-        r.call_start("p25", &c, now - 10);
-        r.call_end("p25", &c, now - 6);
-        r.message("p25", &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
-        r.concluded("p25", &serde_json::from_value(json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] })).unwrap(), now);
+        r.call_start(p25, &c, now - 10);
+        r.call_end(p25, &c, now - 6);
+        r.message(p25, &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
+        r.concluded(p25, &serde_json::from_value(json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] })).unwrap(), now);
     }
     ctx.series.lock().unwrap().insert(&trunk_app::stats::Rollup { t: now / 60 * 60, values: [("sys/p25/cc/good".to_string(), [30.0, 28.0, 33.0])].into() });
     ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), site: Some("south".into()), freq_hz: Some(851_012_500) });
@@ -570,7 +574,9 @@ fn the_servers_messages() {
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
     let unit_names = trunk_core::trunk::read_unit_names("7,Engine 7\n").unit_names;
-    *ctx.names.lock().unwrap() = [("p25".to_string(), trunk_app::config::SystemNames { talkgroups: trunk_core::trunk::parse_rows("101,Fire Dispatch\n"), unit_names })].into();
+    *ctx.names.lock().unwrap() = [(p25, trunk_app::config::SystemNames { talkgroups: trunk_core::trunk::parse_rows("101,Fire Dispatch\n"), unit_names })].into();
+    // (The name book knows the systems as the server sets it from the config.)
+    ctx.shared.names.lock().unwrap().set_config(&cfg, &Default::default());
     // The greeting: hello last, after how things are now; less of it for listen access.
     let heard = |control| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -617,7 +623,7 @@ fn the_servers_messages() {
     // The call store answers `callsQuery`: a call indexed, then asked for by talkgroup.
     let mut record = crate::db::row::tests::record(9179, now * 1000);
     record.short_name = "p25".into();
-    crate::runtime::index_call(&ctx, "p25/2026/10/26/9179-1", &record, true, true);
+    crate::runtime::index_call(&ctx, None, "p25/2026/10/26/9179-1", &record, true, true);
     ctx.db.flush().unwrap();
     let Ok(Command::CallsQuery { id, query }) = Command::parse(r#"{"type":"callsQuery","id":3,"talkgroup":9179}"#) else { panic!("callsQuery") };
     let calls = crate::runtime::calls_query(&ctx, id, &query).to_value();
@@ -626,9 +632,9 @@ fn the_servers_messages() {
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
-    let files = trunk_app::config::talkgroup_lists([("p25", trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))]);
+    let files = trunk_app::config::talkgroup_lists([(p25, trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))]);
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
-    ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
+    ctx.shared.names.lock().unwrap().set_units(p25, "7,Engine 7\n");
     let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
     assert!(named(json!({ "id": 10, "what": "talkgroups", "system": "p25", "hours": 24 })).contains("FD Dispatch"));
     assert!(named(json!({ "id": 11, "what": "units", "system": "p25" })).contains("Engine 7"));
@@ -781,4 +787,67 @@ fn live_voice_is_the_plugin_topics_chunk() {
     let tone = trunk_core::trunk::LiveAudio { frames: vec![VoiceFrame { tone: Some((5, 20)), ..frame(Codec::Ambe, FrameKind::Tone) }], ..audio.clone() };
     check("FromRecorder", &ToClient::Voice { chunk: trunk_app::session::voice_chunk("dcfd", "", &tone).unwrap() }.to_value()).unwrap();
     assert!(trunk_app::session::voice_chunk("dcfd", "", &trunk_core::trunk::LiveAudio { frames: vec![], ..audio }).is_none(), "analog: none");
+}
+
+/// Every series' running totals: a conventional channel's one transmission (0.5–2.5 s in,
+/// with its code) as its series count it, and as a plugin's node health report has it.
+#[test]
+fn totals_make_a_node_health_report() {
+    use trunk_recorder_plugin::health::{report, Recorder, Select};
+    let epoch = 1.75e12;
+    let mut s = Session::new(conventional_config(), &Default::default(), epoch, &|_| None, |_| 0).unwrap();
+    s.plugin_topics.totals = true;
+    let (mut out, mut health) = (Vec::new(), Vec::new());
+    let mut take = |out: &mut Vec<Output>| {
+        health.extend(out.drain(..).filter_map(|o| if let Output::Plugin(trunk_recorder_plugin::HostMessage::Totals(h)) = o { Some(h) } else { None }));
+    };
+    air(2_400_000.0, 4.5, |iq, t| {
+        s.push_iq(0, iq, 0, epoch + t * 1000.0);
+        s.poll(epoch + t * 1000.0, &mut out);
+        take(&mut out);
+    });
+    s.poll(epoch + 15_000.0, &mut out);
+    take(&mut out);
+    assert_eq!(health.len(), 2, "at once, then 10 s on");
+    let h = health.pop().unwrap();
+    assert_eq!(h.since * 1000.0, health[0].since * 1000.0);
+    assert!(h.sites.is_empty());
+    // The channel's own series: one transmission taken, and the time it was open.
+    let ch = &h.channels[0];
+    assert_eq!((ch.key.as_str(), ch.source), ("sys/conv/ch/155200000", 0));
+    let count = |k: &str| h.get(&format!("{}/{k}", ch.key)).map(|t| t.count());
+    assert_eq!((count("calls/started"), count("calls/recorded")), (Some(1), Some(1)));
+    let r = report(None, &h, &Select::system("conv"), json!({ "systemId": 1 }), Recorder::new("trunk-recorder-pro", "test"), 0).expect("its channel");
+    let c = &r.channels[0];
+    assert_eq!((c.hz, c.mode.as_str(), c.name.as_str()), (155_200_000, "fm", "Fire"));
+    assert_eq!((c.opens, c.calls, c.opened_by_other), (1, 1, Some(0)));
+    assert_eq!(c.access.as_deref(), Some("CTCSS 151.4"), "the code it records by");
+    assert!((1.0..=3.0).contains(&c.open_s), "open {} s", c.open_s);
+    assert!(c.heard_s >= 3.0, "heard {} s", c.heard_s);
+    let (signal, noise, snr) = (c.signal_db.unwrap(), c.noise_db.unwrap(), c.snr_db.unwrap());
+    assert!(signal > noise + 10.0 && snr > 10.0, "signal {signal} noise {noise} snr {snr}");
+    assert_eq!(r.radios.len(), 1);
+    assert_eq!((r.radios[0].kind.as_str(), r.radios[0].dropped_s), ("rtlsdr", 0.0));
+    assert!(c.voice.is_empty(), "analog: no frames");
+}
+
+/// The node health spec's example reports (docs/api/node-health/), each as a recorder of its kind
+/// sends it, read into the SDK's report types and written back: unchanged, so the types hold every
+/// field the spec has, and leave out what a recorder leaves out.
+#[test]
+fn node_health_examples_read_and_write_back_unchanged() {
+    let examples = [
+        ("p25-trunked.json", include_str!("../../../docs/api/node-health/p25-trunked.json")),
+        ("dmr-capacity-plus-two-receivers.json", include_str!("../../../docs/api/node-health/dmr-capacity-plus-two-receivers.json")),
+        ("conventional-relative-levels.json", include_str!("../../../docs/api/node-health/conventional-relative-levels.json")),
+    ];
+    let listed = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/node-health")).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "json")).count();
+    assert_eq!(listed, examples.len(), "every example is checked here");
+    let spec = include_str!("../../../docs/api/node-health.md");
+    for (name, text) in examples {
+        assert!(spec.contains(&format!("(node-health/{name})")), "{name} is listed in the spec");
+        let sent: Value = serde_json::from_str(text).unwrap();
+        let report: trunk_recorder_plugin::health::Report = serde_json::from_value(sent.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(serde_json::to_value(&report).unwrap(), sent, "{name} comes back as it was");
+    }
 }

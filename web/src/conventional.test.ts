@@ -1,11 +1,11 @@
-// A conventional row's code as people write it (tones.ts: parseAccess, the
+// A conventional row's code as people write it (rules.ts: parseAccess, the
 // recorder's Access::parse and Access::parts), and its CSV. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { defaultTalkgroups, nextTalkgroup } from "./config.ts";
 import type { Channel } from "./protocol.ts";
-import { channelsToCsv, parseChannelCsv } from "./rules.ts";
-import { parseAccess, sameAccess } from "./tones.ts";
+import { channelsToCsv, parseAccess, parseChannelCsv, sameAccess } from "./rules.ts";
+import { allModes, modeInfo } from "./modes.ts";
 
 test("parseAccess: code, slot and talkgroup, as the recorder reads them", () => {
   assert.deepEqual(parseAccess("fm", "151.4 PL"), { code: "151.4" });
@@ -17,8 +17,14 @@ test("parseAccess: code, slot and talkgroup, as the recorder reads them", () => 
   assert.deepEqual(parseAccess("dmr", "CC1 TS2 TG201"), { code: "1", slot: 2, matchTalkgroup: 201 });
   assert.deepEqual(parseAccess("nxdn48", "RAN 5 TG 201"), { code: "5", matchTalkgroup: 201 });
   assert.deepEqual(parseAccess("nxdn48", "RAN 0"), { code: "" });
-  assert.ok(sameAccess({ code: "D023N" }, { code: "D047I" }), "a DCS code and its alias");
-  assert.ok(!sameAccess({ code: "293", matchTalkgroup: 1 }, { code: "293" }));
+  // AM and auto have no code to split a frequency by.
+  assert.deepEqual(parseAccess("auto", "any"), { code: "" });
+  assert.deepEqual(parseAccess("auto", ""), { code: "" });
+  const auto = parseAccess("auto", "100.0");
+  assert.ok("error" in auto && auto.error.includes("auto channels carry no tone or code"), JSON.stringify(auto));
+  assert.ok(sameAccess("fm", { code: "D023N" }, { code: "D047I" }), "a DCS code and its alias");
+  assert.ok(!sameAccess("p25", { code: "293", matchTalkgroup: 1 }, { code: "293" }));
+  assert.ok(sameAccess("p25", { code: "293" }, { code: "$293" }) && sameAccess("fm", { code: "" }, { code: "" }));
 });
 
 test("default talkgroups: by place on the frequency; a digital row's own number is its own", () => {
@@ -35,4 +41,26 @@ test("the CSV: Code, Slot and Match TG, round trip", () => {
   const csv = channelsToCsv(channels);
   assert.ok(csv.startsWith("TG Number,Frequency,Code,Slot,Match TG,Mode,"), csv);
   assert.deepEqual(parseChannelCsv(csv).channels, channels);
+});
+
+test("modes: each says what it can take, as the recorder does, and parseAccess agrees", () => {
+  const modes = allModes().map((m) => m.mode);
+  assert.deepEqual(modes, ["fm", "am", "p25", "dmr", "nxdn48", "nxdn96", "auto"], "the order Setup's menus list them");
+  for (const m of modes) {
+    const info = modeInfo(m);
+    // A mode that takes no code says so when given one; one that does reads it or says what is wrong with it.
+    const given = parseAccess(m, "100.0");
+    assert.equal("error" in given && given.error.includes("carry no tone or code"), !info.takesCode, m);
+    // A row can be added on its frequency where there is a code to tell them apart by.
+    assert.equal(!!info.addButton, info.takesCode, m);
+  }
+  const which = (f: (m: ReturnType<typeof modeInfo>) => boolean) => allModes().filter(f).map((m) => m.mode);
+  assert.deepEqual(which((m) => m.matchesTalkgroup), ["p25", "dmr", "nxdn48", "nxdn96"]);
+  assert.deepEqual(which((m) => m.airNamesTalkgroup && !m.matchesTalkgroup), ["auto"]);
+  assert.deepEqual(which((m) => m.analogReceiver), ["fm", "am", "auto"]);
+  assert.deepEqual(which((m) => m.slotted), ["dmr"]);
+  assert.equal(modeInfo("fm").codeName, "tone");
+  assert.equal(modeInfo("auto").codeName, null);
+  assert.equal(modeInfo("fm").chip("100.0"), "100.0 Hz");
+  assert.equal(modeInfo("p25").chip("293"), "NAC 293");
 });

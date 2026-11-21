@@ -57,7 +57,7 @@ function hello(c: Config, access: ApiAccess, user?: string, phase: Phase = "idle
 
 const ROUTES: [View, ...string[]][] = [["overview"], ["listen"], ["rf"], ["decode"], ["decode", "dcfd"], ["radio"], ["radio", "dcfd"], ["radio", "dcfd", "tg", "101"], ["radio", "dcfd", "unit", "5"], ["plugin", "openmhz"], ["plugins"], ["interfaces"], ["platform"], ["platform", "storage"], ["setup"]];
 const row = { tg: 101, alphaTag: "Fire Dispatch", ignore: false } as TgRow;
-const sys = { name: "dcfd", kind: "p25" as const, status: null, sites: [] };
+const sys = { name: "dcfd", kind: "p25" as const, status: null, sites: [], scopes: [] };
 
 test("View: every page renders on the config it's given, without setup, plugins, interfaces, Start or editors", () => {
   hello(redacted(), "listen", "kiosk");

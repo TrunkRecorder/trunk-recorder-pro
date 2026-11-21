@@ -4,7 +4,8 @@
 //! wall clock (`now_ms`), the local date for folder names, and does the I/O.
 
 use serde_json::{json, Value};
-use trunk_core::trunk::{heard_code, Call, Engine, Event, IdField, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
+use trunk_core::metrics;
+use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus, SystemId};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -67,6 +68,8 @@ pub enum Output {
 const STATUS_EVERY_S: f64 = 200.0;
 /// The control channel decode rate is checked over this long, s.
 const RATE_EVERY_S: f64 = 10.0;
+/// Every series' running totals go to plugins this often, ms.
+const TOTALS_EVERY_MS: f64 = 10_000.0;
 /// A running source that sends nothing for this long is fed silence in its
 /// place ([`Engine::push_gap`]), so time goes on: calls on it end, and its
 /// clock stays in step with the others'. ms of wall clock.
@@ -91,6 +94,8 @@ pub struct PluginTopics {
     pub call_updates: bool,
     pub units: bool,
     pub status: bool,
+    /// Every series' running totals ([`trunk_recorder_plugin::Totals`]).
+    pub totals: bool,
     pub tone_patterns: bool,
     pub voice: bool,
 }
@@ -125,6 +130,9 @@ pub fn voice_chunk(short_name: &str, unit_name: &str, a: &LiveAudio) -> Option<t
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
 /// Recorder's folders are in local time, which only the platform knows.
 pub type LocalOffset = fn(i64) -> i32;
+
+/// What sees each of the engine's events as a session handles it ([`Session::watch`]).
+pub type EventWatch = Box<dyn FnMut(&Event, &Engine) + Send>;
 
 /// A source's counts this run ([`Session::source_counts`]).
 #[derive(Clone, Debug, Default)]
@@ -379,6 +387,9 @@ pub struct Session {
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
+    /// How the computer's clock is kept ([`trunk_recorder_plugin::ClockState::sync`]), as the
+    /// app last saw; none: the operating system doesn't say.
+    pub clock_sync: Option<String>,
     /// Wall clock (Unix ms) at the engine's time 0, as at Start: the clock
     /// sources are measured against. What times are given out by is the
     /// engine's ([`Session::correct_wall_clock`]).
@@ -387,6 +398,7 @@ pub struct Session {
     wall_correction_ms: f64,
     last_plugin_status_ms: f64,
     plugin_good: Vec<u64>,
+    last_plugin_totals_ms: f64,
     /// The codes conventional frequencies carried ([`crate::heard`]).
     heard: HeardCodes,
     /// AutoTune scores by source label, as loaded and as last given to save.
@@ -403,16 +415,20 @@ pub struct Session {
     share: crate::share::Ledger,
     /// This install's anonymous ID for the directory (the platform keeps it); empty: nothing is shared.
     recorder_id: String,
+    /// Given each of the engine's events before the session handles it (`replay` prints them).
+    pub watch: Option<EventWatch>,
 }
 
 impl Session {
     /// `bandplan`: the band plan saved for a site, by its key
     /// ([`Session::bandplans`], [`bandplan_key`]).
     /// `names`: each system's talkgroups and radio names ([`crate::config::NameLists`]).
-    pub fn new(cfg: Config, names: &crate::config::NameLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
+    pub fn new(mut cfg: Config, names: &crate::config::NameLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
+        // (A config read is numbered; one built in code may not be.)
+        cfg.assign_system_ids();
         let engine = Engine::new(cfg.engine_config(epoch_ms, names))?;
         let systems = engine.systems();
         let mut sites = Vec::new();
@@ -456,10 +472,12 @@ impl Session {
             sites,
             recordings,
             plugin_topics: PluginTopics::default(),
+            clock_sync: None,
             epoch_ms,
             wall_correction_ms: 0.0,
             last_plugin_status_ms: 0.0,
             plugin_good: Vec::new(),
+            last_plugin_totals_ms: 0.0,
             heard: HeardCodes::default(),
             tune: Default::default(),
             tune_saved: String::new(),
@@ -469,6 +487,7 @@ impl Session {
             call_signs: Default::default(),
             share: Default::default(),
             recorder_id: String::new(),
+            watch: None,
         };
         session.share = crate::share::Ledger::new(session.cfg.systems.iter());
         Ok(session)
@@ -498,35 +517,42 @@ impl Session {
     }
 
     /// A system's talkgroups are now `rows` (a list loaded): calls from now on go by them.
-    pub fn set_talkgroups(&mut self, short_name: &str, rows: &[trunk_core::trunk::TalkgroupRow]) -> bool {
-        let set = self.engine.set_talkgroups(short_name, crate::config::talkgroups_of(rows));
+    pub fn set_talkgroups(&mut self, system: SystemId, rows: &[trunk_core::trunk::TalkgroupRow]) -> bool {
+        let Some(i) = self.index_of(system) else { return false };
+        let set = self.engine.set_talkgroups(i, crate::config::talkgroups_of(rows));
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
         set
     }
 
-    /// One talkgroup of the system named `short_name`, as it is now (none: not one of its talkgroups).
-    pub fn set_talkgroup(&mut self, short_name: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) -> bool {
-        self.meas.shared().names.lock().unwrap().set_talkgroup(short_name, number, row.clone());
-        self.engine.set_talkgroup(short_name, number, row)
+    /// One talkgroup of system `system`, as it is now (none: not one of its talkgroups).
+    pub fn set_talkgroup(&mut self, system: SystemId, number: u32, row: Option<trunk_core::trunk::Talkgroup>) -> bool {
+        let Some(i) = self.index_of(system) else { return false };
+        self.meas.shared().names.lock().unwrap().set_talkgroup(system, number, row.clone());
+        self.engine.set_talkgroup(i, number, row)
     }
 
-    /// The system named `short_name`'s own names for its radios are now `rows`: calls from now on are named by them.
-    pub fn set_unit_names(&mut self, short_name: &str, rows: &[trunk_core::trunk::UnitNameRow]) -> bool {
-        let set = self.engine.set_unit_names(short_name, rows);
+    /// System `system`'s own names for its radios are now `rows`: calls from now on are named by them.
+    /// The sites running, each with the source its control channel is on.
+    pub fn sites(&self) -> Vec<trunk_core::trunk::SiteStatus> {
+        self.engine.status().sites
+    }
+
+    pub fn set_unit_names(&mut self, system: SystemId, rows: &[trunk_core::trunk::UnitNameRow]) -> bool {
+        let Some(i) = self.index_of(system) else { return false };
+        let set = self.engine.set_unit_names(i, rows);
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
         set
     }
 
-    /// The encryption keys of the system named `short_name` (trunked or
+    /// The encryption keys of system `system` (trunked or
     /// conventional): voice channels opened from now on decrypt with them.
-    pub fn set_keys(&mut self, short_name: &str, keys: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> bool {
-        self.engine.set_keys(short_name, keys)
+    pub fn set_keys(&mut self, system: SystemId, keys: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> bool {
+        self.index_of(system).is_some_and(|i| self.engine.set_keys(i, keys))
     }
 
-    /// A radio's talker alias on the system named `short_name`.
-    pub fn unit_alias(&self, short_name: &str, unit: u32) -> Option<String> {
-        let sys = self.cfg.call_systems().into_iter().find(|s| s.short_name == short_name)?.index;
-        self.engine.unit_alias(sys, unit)
+    /// A radio's talker alias on system `system`.
+    pub fn unit_alias(&self, system: SystemId, unit: u32) -> Option<String> {
+        self.engine.unit_alias(self.index_of(system)?, unit)
     }
 
 
@@ -705,6 +731,10 @@ impl Session {
                 self.last_plugin_status_ms = now_ms;
                 out.push(Output::Plugin(HostMessage::Status(self.plugin_status(dt))));
             }
+            if self.plugin_topics.totals && now_ms - self.last_plugin_totals_ms >= TOTALS_EVERY_MS {
+                self.last_plugin_totals_ms = now_ms;
+                out.push(Output::Plugin(HostMessage::Totals(self.plugin_totals(start / 1000.0))));
+            }
             self.poll_share(now_ms, out);
             let load = self.busy_ms() / (now_ms - start).max(1.0);
             out.push(Output::Message(self.status_message(load)));
@@ -722,37 +752,33 @@ impl Session {
     }
 
     /// Preload each system's talker aliases: `units` gives the CSV saved
-    /// for a short name ([`Saved::Units`]).
-    pub fn load_units(&mut self, units: &dyn Fn(&str) -> Option<String>) {
-        for n in self.engine.systems().iter().map(|s| s.short_name.clone()) {
-            // A system's (and what its sites learned as systems of their own: newest wins).
-            let mut names = vec![n.clone()];
-            names.extend(self.cfg.systems.iter().filter(|s| s.short_name == n).flat_map(crate::migrate::old_names));
-            let csv: Vec<String> = names.iter().filter_map(|x| units(x)).collect();
-            if !csv.is_empty() {
-                self.engine.load_units(&n, &csv.join("\n"));
-                self.meas.shared().names.lock().unwrap().set_units(&n, &csv.join("\n"));
+    /// for a system ([`Saved::Units`]).
+    pub fn load_units(&mut self, units: &dyn Fn(SystemId) -> Option<String>) {
+        for (i, id) in self.ids().into_iter().enumerate() {
+            if let Some(csv) = units(id) {
+                self.engine.load_units(i as u16, &csv);
+                self.meas.shared().names.lock().unwrap().set_units(id, &csv);
             }
         }
     }
 
     /// Forget the talker aliases of system `system` (none: every system's),
     /// as deleted from the store: none is saved again unless heard again.
-    pub fn forget_units(&mut self, system: Option<&str>) {
+    pub fn forget_units(&mut self, system: Option<SystemId>) {
         let mut book = self.meas.shared().names.lock().unwrap();
-        for n in self.engine.systems().iter().map(|s| s.short_name.clone()).filter(|n| system.is_none_or(|s| s == n)) {
-            self.engine.load_units(&n, "");
-            book.set_units(&n, "");
+        for (i, id) in self.ids().into_iter().enumerate().filter(|(_, id)| system.is_none_or(|s| s == *id)) {
+            self.engine.load_units(i as u16, "");
+            book.set_units(id, "");
         }
     }
 
-    /// (short name, talker alias CSV) of each system that learned an alias
+    /// (system, talker alias CSV) of each system that learned an alias
     /// since the last call, to save; the names the dashboard shows take them.
-    fn units_changed(&mut self) -> Vec<(String, String)> {
-        let changed = self.engine.units_changed();
+    fn units_changed(&mut self) -> Vec<(SystemId, String)> {
+        let changed: Vec<(SystemId, String)> = self.engine.units_changed().into_iter().map(|(i, csv)| (self.system_id(i), csv)).collect();
         let mut book = self.meas.shared().names.lock().unwrap();
-        for (name, csv) in &changed {
-            book.set_units(name, csv);
+        for (id, csv) in &changed {
+            book.set_units(*id, csv);
         }
         changed
     }
@@ -932,6 +958,26 @@ impl Session {
         self.cfg.short_name_of(system).unwrap_or("conv")
     }
 
+    /// The id of system `system` (a call's), as this run's config has it.
+    pub fn system_id(&self, system: u16) -> SystemId {
+        self.cfg.call_systems().get(system as usize).map_or_else(Default::default, |s| s.id)
+    }
+
+    /// System `id`'s short name, as this run's config has it ("": not one of the run's).
+    pub fn short_name(&self, id: SystemId) -> &str {
+        self.index_of(id).map_or("", |i| self.system_name(i))
+    }
+
+    /// The number calls of system `id` carry this run (none: not one of the run's).
+    pub fn index_of(&self, id: SystemId) -> Option<u16> {
+        self.cfg.call_systems().iter().find(|s| s.id == id).map(|s| s.index)
+    }
+
+    /// Each system's id, as calls number them.
+    fn ids(&self) -> Vec<SystemId> {
+        self.cfg.call_systems().iter().map(|s| s.id).collect()
+    }
+
     /// The system of site `site` (a call's `site`).
     fn system_of(&self, site: u16) -> u16 {
         self.sites.get(site as usize).map_or(0, |s| s.0)
@@ -949,13 +995,13 @@ impl Session {
 
     /// Talkgroups as the interface shows them: number and alpha tag ([`NameBook::tg`]; "": none).
     fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-        tg_names(&self.meas.shared().names.lock().unwrap(), self.system_name(system), tgs)
+        tg_names(&self.meas.shared().names.lock().unwrap(), self.system_id(system), tgs)
     }
 
     /// Talkgroup `tg`'s name in system `system` ([`NameBook::tg`]; "": none), as plugins' events give it (`alpha_tag`).
     /// (Where there's a call, its own name: a conventional row names its calls more closely than a number can.)
     fn alpha_tag(&self, system: u16, tg: u32) -> String {
-        self.meas.shared().names.lock().unwrap().alpha_tag(self.system_name(system), tg)
+        self.meas.shared().names.lock().unwrap().alpha_tag(self.system_id(system), tg)
     }
 
     /// Radio `unit`'s name ("": none), as a call's JSON gives it (`tag`): by
@@ -1117,23 +1163,47 @@ impl Session {
                 let i = y.site as usize;
                 let rate = if dt > 0.0 { y.good.saturating_sub(self.plugin_good[i]) as f64 / dt } else { 0.0 };
                 self.plugin_good[i] = y.good;
-                PluginSystemStatus {
-                    index: y.system,
-                    short_name: y.short_name.clone(),
-                    site_name: y.site_name.clone(),
-                    control_channel_hz: y.control_channel_hz,
-                    decode_rate: (rate * 10.0).round() / 10.0,
-                    active_calls: y.active_calls as u32,
-                    recording: y.recording as u32,
-                    nac: y.identity.get(IdField::Nac),
-                    wacn: y.identity.get(IdField::Wacn),
-                    sys_id: y.identity.get(IdField::SysId),
-                    rfss: y.identity.get(IdField::Rfss),
-                    site: y.identity.get(IdField::Site),
-                }
+                PluginSystemStatus { scope: Self::site_scope(y), decode_rate: (rate * 10.0).round() / 10.0, active_calls: y.active_calls as u32, recording: y.recording as u32 }
             })
             .collect();
         trunk_recorder_plugin::Status { time: self.wall(st.now_s), systems }
+    }
+
+    /// Which site `y` is, as plugins are told ([`trunk_recorder_plugin::SiteScope`]).
+    fn site_scope(y: &trunk_core::trunk::SiteStatus) -> trunk_recorder_plugin::SiteScope {
+        trunk_recorder_plugin::SiteScope {
+            index: y.system,
+            short_name: y.short_name.clone(),
+            site_name: y.site_name.clone(),
+            key: y.key.clone(),
+            protocol: y.kind.to_string(),
+            control_channel_hz: y.control_channel_hz,
+            source: y.source,
+            symbol_rate: y.symbol_rate,
+            identity: y.identity.to_site(),
+        }
+    }
+
+    /// Every series' running totals for plugins, and which sites, channels and radios they're
+    /// of (`since`: when recording started, Unix s).
+    fn plugin_totals(&self, since: f64) -> trunk_recorder_plugin::Totals {
+        use trunk_recorder_plugin::{ChannelScope, ClockState, SourceScope};
+        let sites = self.engine.status().sites.iter().map(Self::site_scope).collect();
+        let channels = self
+            .engine
+            .channels()
+            .into_iter()
+            .filter_map(|c| {
+                let ChannelKind::Conventional(mode) = c.kind else { return None };
+                let short_name = self.system_name(c.system).to_string();
+                Some(ChannelScope { key: metrics::channel_key(&short_name, c.freq_hz as f64), index: c.system, short_name, freq_hz: c.freq_hz, mode: mode.as_str().to_string(), names: c.names, access: c.access, source: c.source })
+            })
+            .collect();
+        let sources = self.cfg.sources.iter().enumerate().map(|(i, s)| SourceScope { key: format!("src/{}", metrics::key_part(&s.label())), index: i, name: s.label(), driver: s.kind_name().to_string(), auto_tune: s.auto_tune }).collect();
+        // The recorder's clock less the systems': the latest any site said.
+        let system_offset_ms = self.radio_clocks().into_iter().filter(|c| c.valid).max_by(|a, b| a.at_s.total_cmp(&b.at_s)).map(|c| -c.offset_ms);
+        let clock = (self.clock_sync.is_some() || system_offset_ms.is_some()).then(|| ClockState { sync: self.clock_sync.clone(), system_offset_ms });
+        trunk_recorder_plugin::Totals { time: self.meas.now(), since, series: self.meas.totals(), sites, channels, sources, clock }
     }
 
     fn flush_log(&mut self, out: &mut Vec<Output>) {
@@ -1148,9 +1218,12 @@ impl Session {
     }
 
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
+        if let Some(w) = self.watch.as_mut() {
+            w(&ev, &self.engine);
+        }
         if let Some(sys) = self.event_system(&ev) {
             let name = self.system_name(sys).to_string();
-            self.meas.observe(&ev, &name, &self.engine, out);
+            self.meas.observe(&ev, self.system_id(sys), &name, &self.engine, out);
         }
         match ev {
             Event::Message { site, msg: m } => {
@@ -1317,15 +1390,11 @@ impl Session {
                     out.push(Output::Plugin(HostMessage::CallStart(self.call_info(&c))));
                 }
             }
-            Event::NotSaved(c) => {
+            Event::NotSaved(u) => {
                 if self.want_facts {
-                    out.push(Output::Fact { on: "call.not_saved", facts: json!({ "call": {
-                        "system": self.system_name(c.system), "site": self.site_name(c.site), "talkgroup": c.talkgroup, "freq": c.freq_hz, "start_time": self.wall(c.start_s),
-                        "call_length": (c.last_update_s - c.start_s).max(0.0), "clean_voice_pct": 0.0, "snr": 0.0, "signal": 0.0, "noise": 0.0, "freq_error": 0,
-                        "encrypted": c.encrypted, "decrypted": c.decrypted, "emergency": false, "analog": c.voice.analog(), "tdma_slot": 0, "units": 0,
-                    } }) });
+                    out.push(Output::Fact { on: "call.not_saved", facts: self.unsaved_facts(&u).facts() });
                 }
-                let r = self.call_record(Level::Info, &c, Body::Dropped);
+                let r = self.call_record(Level::Info, &u.call, Body::Dropped);
                 self.records.push(r);
             }
             Event::CallEnd(c) => {
@@ -1341,11 +1410,48 @@ impl Session {
         }
     }
 
+    /// A call not saved, as capture rules see it.
+    fn unsaved_facts(&self, u: &trunk_core::trunk::Unsaved) -> crate::facts::CallFacts {
+        let c = &u.call;
+        let wall = |s: f64| self.wall_of(s, c.start_s);
+        let db = |v: Option<f64>| v.unwrap_or(0.0);
+        let units: Vec<u32> = c.sources.iter().map(|s| s.src).collect();
+        crate::facts::CallFacts {
+            system: self.system_name(c.system).to_string(),
+            site: self.site_name(c.site),
+            talkgroup: c.talkgroup,
+            freq: c.freq_hz,
+            start_time: wall(c.start_s),
+            stop_time: wall(c.last_update_s.max(c.start_s)),
+            call_length: (c.last_update_s - c.start_s).max(0.0),
+            clean_voice_pct: if u.frames > 0 { (u.frames - u.bad_frames) as f64 / u.frames as f64 * 100.0 } else { 0.0 },
+            snr: db(u.reception.snr_db()),
+            signal: db(u.reception.signal_db()),
+            noise: db(u.reception.noise_db()),
+            encrypted: c.encrypted,
+            decrypted: c.decrypted,
+            emergency: c.emergency,
+            analog: c.voice.analog(),
+            voice: c.voice.mode_name().to_string(),
+            tdma_slot: c.voice.slot().unwrap_or(0) as i64,
+            units: units.len(),
+            unit_ids: units,
+            not_saved: u.why.to_string(),
+            audio_s: u.audio_s,
+            frames: u.frames,
+            bad_frames: u.bad_frames,
+            recorder: u.on.recorder as i64,
+            source: u.on.source as i64,
+            ..Default::default()
+        }
+    }
+
     /// The system an event is counted for in the stats.
     fn event_system(&self, ev: &Event) -> Option<u16> {
         match ev {
             Event::Message { site, .. } => Some(self.system_of(*site)),
-            Event::CallStart(c) | Event::CallEnd(c) | Event::NotSaved(c) => Some(c.system),
+            Event::CallStart(c) | Event::CallEnd(c) => Some(c.system),
+            Event::NotSaved(u) => Some(u.call.system),
             Event::Concluded(k) => Some(k.call.system),
             Event::Duplicate { call, .. } => Some(call.system),
             Event::TonePattern(t) => Some(t.system),
@@ -1384,7 +1490,7 @@ impl Session {
         // Each running site, as its control channel describes it.
         let site_json = |y: &trunk_core::trunk::SiteStatus| {
             json!({
-                "index": y.site, "name": y.site_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz,
+                "index": y.site, "name": y.site_name, "nowS": y.now_s, "controlChannelHz": y.control_channel_hz, "source": y.source,
                 "identity": identity_json(&y.identity),
                 "good": y.good, "bad": y.bad, "modulation": if y.modulation.is_empty() { None } else { Some(y.modulation) },
                 "activeCalls": y.active_calls, "recording": y.recording, "callsConcluded": y.calls_concluded,
@@ -1458,9 +1564,9 @@ pub fn call_entry(rel: &str, record: &trunk_recorder_plugin::CallRecord) -> Valu
 }
 
 /// A site's identity as messages carry it: the config's [`crate::config::SiteIdentity`]
-/// (`{nac, wacn, sysId, rfss, site}`, a field not stated yet left out).
+/// (`{nac, wacn, sysId, rfss, site, colorCode, network, ran}`, a field not stated yet left out).
 pub(crate) fn identity_json(id: &Identity) -> Value {
-    json!(crate::config::SiteIdentity::from(id))
+    json!(id.to_site())
 }
 
 /// The name a site's band plan is kept under ([`trunk_core::trunk::SiteKey::file_stem`]).
@@ -1500,7 +1606,7 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
 
 
 /// Talkgroups of system `system` with their names ([`NameBook::tg`]).
-fn tg_names(names: &NameBook, system: &str, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
+fn tg_names(names: &NameBook, system: SystemId, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
     tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": names.alpha_tag(system, tg) })).collect()
 }
 
@@ -1509,46 +1615,57 @@ fn tg_names(names: &NameBook, system: &str, tgs: impl IntoIterator<Item = u32>) 
 /// (each site hears them: once each).
 fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>, Vec<Value>) {
     let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
+    let id = engine.systems().iter().find(|s| s.short_name == system).map_or_else(Default::default, |s| s.id);
     for y in engine.status().sites.iter().filter(|y| y.short_name == system) {
-        sites.push(json!({
-            "index": y.site, "name": y.site_name,
-            "dmr": match &y.protocol { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
-                json!({
-                    "variant": d.variant.map(|v| v.name()),
-                    "colorCode": d.color_code,
-                    "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
-                    "keyed": d.keyed,
-                    "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
-                    "carriers": d.carriers.iter().map(|c| json!({
-                        "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
-                        "slots": c.slots.iter().map(|s| s.map(|(tg, src)| json!({ "talkgroup": tg_names(names, system, [tg])[0], "source": src }))).collect::<Vec<_>>(),
-                    })).collect::<Vec<_>>(),
-                })
-            }),
-            "nxdn": match &y.protocol { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
-                json!({
-                    "kind": n.kind.name(),
-                    "rate": n.rate.map(|r| r.name()),
-                    "location": n.location.map(|(cat, sys, site)| json!({ "category": cat, "system": sys, "site": site })),
-                    "ran": n.ran,
-                    "dfa": n.dfa.map(|(base, step)| json!({ "baseHz": base, "stepHz": step })),
-                    "channels": n.channels.iter().map(|c| json!({ "channel": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
-                    "unknownChannels": n.unknown,
-                    "carriers": n.carriers.iter().map(|c| json!({
-                        "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
-                        "call": c.call.map(|(tg, src)| json!({ "talkgroup": tg_names(names, system, [tg])[0], "source": src })),
-                    })).collect::<Vec<_>>(),
-                })
-            }),
-        }));
+        let (dmr, nxdn) = protocol_detail(&y.protocol, &|tg| tg_names(names, id, [tg]).remove(0));
+        sites.push(json!({ "index": y.site, "name": y.site_name, "dmr": dmr, "nxdn": nxdn }));
         for (sg, members) in &y.patches {
-            let p = json!({ "supergroup": tg_names(names, system, [*sg])[0], "members": tg_names(names, system, members.iter().copied()) });
+            let p = json!({ "supergroup": tg_names(names, id, [*sg])[0], "members": tg_names(names, id, members.iter().copied()) });
             if !patches.iter().any(|h| h["supergroup"] == p["supergroup"]) {
                 patches.push(p);
             }
         }
     }
     (sites, patches)
+}
+
+/// A DMR or NXDN site's channel table and carriers (its kind, colour code or
+/// RAN, rest channel…), as (DMR, NXDN): the other is none. `tg`: a
+/// talkgroup on a carrier as it's shown.
+pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> (Option<Value>, Option<Value>) {
+    (
+        match p { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
+            json!({
+                "variant": d.variant.map(|v| v.name()),
+                "colorCode": d.color_code,
+                // Tier III / Capacity Max: its System Identity Code, beside the network and
+                // site it gives the identity.
+                "sysCode": d.sys_code.map(|c| json!({ "code": c.0, "model": c.model(), "category": c.category() })),
+                "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
+                "keyed": d.keyed,
+                "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                "carriers": d.carriers.iter().map(|c| json!({
+                    "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
+                    "slots": c.slots.iter().map(|s| s.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src }))).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            })
+        }),
+        match p { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
+            json!({
+                "kind": n.kind.name(),
+                "rate": n.rate.map(|r| r.name()),
+                "location": n.location.map(|(cat, sys, site)| json!({ "category": cat, "system": sys, "site": site })),
+                "ran": n.ran,
+                "dfa": n.dfa.map(|(base, step)| json!({ "baseHz": base, "stepHz": step })),
+                "channels": n.channels.iter().map(|c| json!({ "channel": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                "unknownChannels": n.unknown,
+                "carriers": n.carriers.iter().map(|c| json!({
+                    "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
+                    "call": c.call.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src })),
+                })).collect::<Vec<_>>(),
+            })
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -1708,6 +1825,38 @@ mod tone_tests {
         assert_eq!(plugin.as_deref(), Some("Fire Dispatch"));
         let feed = out.iter().find_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => b.get("alphaTag").cloned(), _ => None });
         assert_eq!(feed, Some(json!("Fire Dispatch")));
+    }
+
+    /// An RTL-SDR whose samples hardly move (the corpus capture at 25 dB:
+    /// ±3 counts) is a `sourceQuiet` event once, after a minute; turned up,
+    /// `sourceRecovered`. Clipping is still its own.
+    #[test]
+    fn a_source_too_quiet_for_a_minute_is_an_event() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let iq = |counts: u8| (0..4096).map(|i| if i % 2 == 0 { 128 + counts } else { 127 - counts }).collect::<Vec<u8>>();
+        let mut t = 1.75e12;
+        // (Its meter and ticks alone: a second of 2.4 MS/s through the engine each would be slow.)
+        let mut seconds = |s: &mut Session, b: &[u8], n: usize| {
+            let mut kinds = Vec::new();
+            for _ in 0..n {
+                t += 1000.0;
+                s.meas.meter(0).u8(b);
+                s.meas.set_now(t / 1000.0);
+                let mut out = Vec::new();
+                s.meas.tick(t, 0.0, &s.engine, &|_, _| (String::new(), String::new()), decode_sites, &mut out);
+                kinds.extend(out.iter().filter_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => Some((b["kind"].as_str().unwrap_or("").to_string(), b.get("peakDb").cloned())), _ => None }));
+            }
+            kinds
+        };
+        assert_eq!(seconds(&mut s, &iq(3), 70), [("sourceQuiet".to_string(), Some(json!(-31.0)))]);
+        assert_eq!(seconds(&mut s, &iq(20), 60), [("sourceRecovered".to_string(), None)]);
+        let rails: Vec<u8> = (0..4096).map(|i| if i % 2 == 0 { 255 } else { 0 }).collect();
+        assert_eq!(seconds(&mut s, &rails, 3).first().map(|k| k.0.as_str()), Some("sourceClipping"));
     }
 
     /// Live voice's frames are built only while plugins take topic `voice` or

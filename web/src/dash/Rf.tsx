@@ -6,13 +6,13 @@
 
 import { useState } from "react";
 import { autoTuneOn, configIndex, formatGain, formatMhz, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
-import { mayEdit, setView, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
+import { can, mayEdit, setView, tuneGain, tuneStop, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, Hint, Info, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
-import { compact, mhz, num, signed } from "../fmt.ts";
-import type { ChannelSnapshot, Source, SourceStatus } from "../protocol.ts";
+import { compact, dur, mhz, num, signed } from "../fmt.ts";
+import type { ChannelSnapshot, GainSetting, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall, type CcMark } from "../Waterfall.tsx";
 import { AdviceNote, useSourceAdvice } from "../sourceAdvice.tsx";
-import { K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
+import { gainOff, K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
 import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
@@ -48,7 +48,8 @@ function gainText(c: Source | undefined): string {
 /** One source: floor, headroom, frequency error, drops. `compact`: the overview's size. */
 export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: SourceStatus; i: number; compact?: boolean }) {
   const h = sourceHealth(s, src);
-  // Its place in Setup now, for its name and gain (both taken while recording).
+  const off = gainOff(s, src);
+  // Its place in Setup now, for its name and gain (both taken while recording), and what tuneGain names it by.
   const k = s.config ? configIndex(s.sources, s.config, src) : -1;
   const noise = val(s, K.src(src.label, "noise"));
   const peak = val(s, K.src(src.label, "peak"));
@@ -108,6 +109,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           <Info label="Why unused">{UNUSED_SOURCE_WHY}</Info>
         </div>
       )}
+      {k >= 0 && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
       {!small && (
         <div className="row src-facts">
           {/* (Gain: Setup's — the desktop recorder takes a new gain while recording.) */}
@@ -123,6 +125,62 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
         </div>
       )}
     </Card>
+  );
+}
+
+/** A gain setting as the recorder writes it (gain::Setting's Display): "LNA 10 · MIX 7 · VGA 7", "linearity 14", "AMP off", "28 dB". */
+export function gainSettingText(g: GainSetting | undefined): string {
+  if (!g?.length) return "—";
+  const stage: Record<string, string> = { lna: "LNA", mixer: "MIX", vga: "VGA", pga: "PGA" };
+  return g.map(([k, v]) => (k === "amp" ? `AMP ${v > 0 ? "on" : "off"}` : stage[k] ? `${stage[k]} ${v}` : k === "step" ? `step ${v}` : `${v} dB`)).join(" · ");
+}
+
+/**
+ * Setup's source `k`'s gain tuned by what its systems decode (tuneGain, the
+ * best kept): the button, then how it's going (`tune`) and how it ended. `off`:
+ * the gain looks low or high (gainOff), so the button stands out.
+ */
+function TuneGain({ s, k, off }: { s: AppState; k: number; off: "low" | "high" | null }) {
+  const t = s.tune;
+  const busy = t?.phase === "running";
+  const mine = t?.source === k ? t : null;
+  if (mine && busy)
+    return (
+      <div className="row src-tune">
+        <span className="chip warn">Tuning</span>
+        <Figs
+          inline
+          items={[
+            { k: "Elapsed", v: dur(mine.elapsedS), u: `of ~${dur(mine.estimateS)}` },
+            { k: "Tried", v: mine.tried.length },
+            { k: mine.now ? "Trying" : "From", v: gainSettingText(mine.now ?? mine.start) },
+          ]}
+        />
+        <button className="btn ghost small" onClick={tuneStop} title="The radio goes back as it was">
+          Stop
+        </button>
+      </div>
+    );
+  const kept = mine?.tried.filter((x) => x.kept).length ?? 0;
+  return (
+    <div className="row src-tune">
+      <button className={off ? "btn primary small" : "btn ghost small"} disabled={busy} title={busy ? `Tuning ${t?.radio}` : "Try gains on the air, scored by decoding; keeps the best"} onClick={() => tuneGain(k)}>
+        Tune gain
+      </button>
+      {mine && (
+        <Figs
+          inline
+          items={[
+            mine.phase === "done"
+              ? { k: mine.applied ? "Kept" : "Best", v: mine.best ? gainSettingText(mine.best) : "no change", level: mine.best && !mine.applied ? "warn" : undefined }
+              : { k: "Tuning", v: mine.phase, level: mine.phase === "failed" ? "bad" : "warn", title: mine.error },
+            { k: "Tried", v: mine.tried.length, title: `${kept} kept` },
+            { k: "Took", v: dur(mine.elapsedS) },
+          ]}
+        />
+      )}
+      {mine?.error && <span className="muted small">{mine.error}</span>}
+    </div>
   );
 }
 

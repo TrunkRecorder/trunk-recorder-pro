@@ -30,6 +30,7 @@ tools. Most people only ever run `trunk-pro` with no arguments and do the rest i
 | [`replay`](#replay) | Record calls from capture files instead of radios |
 | [`survey`](#survey) | Find a system: scan the bands, then listen to the best control channel |
 | [`rolloff`](#rolloff) | Measure how a radio's band edges sag, and the guard band to use |
+| [`tune`](#tune) | Find a radio's best gain on a recorder that is recording |
 | [`tool …`](#tool) | Diagnostics: one channel's decode, scans, weak-signal curves, re-vocoding |
 | [`plugin …`](#plugin) | Find, install, update, remove and test plugins |
 | [`interface …`](#interface) | Find, install, update and remove interfaces, or add a folder of your own |
@@ -263,12 +264,14 @@ called `conv`.
 | `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](#tool-channel) |
 | `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
 | `--messages` | off | Print every control channel message |
+| `--summary file` | | Also write each site's control channel blocks, good and bad, as JSON: over all of it and, for one of our captures, over the part its live figures (`trp:live`) cover |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
 
 At the end it prints how fast it ran, how many calls it wrote, and for each system the control
 channel's good and bad message counts, modulation and identity (NAC, WACN, SysID, RFSS, site).
-A system whose control channel belonged to another site says `NOT FOLLOWED` and why. Each source's
-measured frequency error is printed too.
+A system whose control channel belonged to another site says `NOT FOLLOWED` and why. For one of our
+captures, each site's blocks over the part live counted ("As live counted, 0.9–20.0 s"), to set beside
+its `trp:live`. Each source's measured frequency error is printed too.
 
 ```bash
 # A UHF SmartNet OBT system: the band plan numbers come from your system's listing
@@ -327,6 +330,113 @@ JSON. `--full` adds the spectrum, floor and waterfall rows. Without `--gain` it 
 
 ```bash
 trunk-pro rolloff --center 858500000
+```
+
+## tune
+
+```bash
+trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--slice 15] [--rounds 3]
+               [--settle 4] [--max-steps 12] [--margin 1] [--mode manual|linearity|sensitivity]
+               [--protect 5] [--try stage=value,…] [--yes] [--apply]
+```
+
+Asks a recorder that is **recording** to find the gain at which one of its radios decodes its
+systems best. The recorder at `--url` does the tuning (it can be another computer's; it is the
+[interface API](api/README.md)'s `tuneGain`, which needs control access); this command asks for it
+and shows how it goes. Each gain to try goes on the radio as a **trial**: the radio takes it at once,
+as a gain edited in Setup, but nothing is saved and the config isn't changed. The recorder scores
+what the radio's systems decode while it is set:
+
+- **The control channel first.** P25's coverage (the share of the control channel's air decoded),
+  else the share of messages decoded while it was locked. Without the control channel nothing is
+  recorded.
+- **Then voice frames lost**, when a system had at least 5 seconds of voice. A system's score is
+  70 % control channel and 30 % voice then, else its control channel alone.
+- **A gain that clips** (more than 0.5 % of samples at full scale, as the dashboard warns) is
+  refused, whatever it decoded.
+
+The setting's score (0 to 100) is the systems' average with the weakest counted twice, so a gain
+that helps the strong systems a little at a weak one's cost isn't chosen. The systems scored are
+those whose control channels the recorder receives on that radio, or only `--systems`. The radio's
+other systems are still watched then, and shown (the scored ones starred), and protected: a
+candidate that costs one of them more than `--protect` points (5 by default) on average over the
+rounds is refused, and one that costs one of them more than twice that in its first round is
+refused at once, so it isn't kept on the air for the rest. On one 800 MHz Airspy, the LNA that
+suited a weak simulcast system best took a neighbouring system's control channel from 74 % to 45 %:
+that is what this stops.
+
+**Settings are compared, not scored once.** How well a control channel decodes drifts from minute
+to minute (traffic, a simulcast site's fading) by more than a step of gain usually changes it: on
+one 800 MHz Airspy the same gain scored 92 and then 84 ten minutes apart. So each candidate is
+compared with the best so far by turns, `--slice` seconds each after `--settle` seconds to settle,
+for `--rounds` rounds (best first in one round, the candidate first in the next), and it is moved to
+only when it scored better on average by more than `--margin` **and** by more than twice the
+standard error of the rounds' differences. A candidate takes `rounds × 2 × (settle + slice)`
+seconds: 114 by default.
+
+**Each kind of radio has a plan**, from how it is built. The front of the chain (the LNA) sets the
+noise figure and is what strong signals overload, so it moves first; the stages after it only bring
+the level into the ADC's range, so they move last. Where the radio's maker drew a path through its
+stages (libairspy's tables, an R820T's gain table, the gain table behind an AD9361's one number),
+the search goes along that path: each step on it is a setting the maker measured. A move goes one
+way while each step is better; refused at its first step, it tries the other way. When any move
+was kept, the moves are walked once more (one stage moved can change what suits another), never
+trying a setting twice.
+
+| Radio | Plan |
+|---|---|
+| Airspy, HydraSDR | **Linearity** or **sensitivity** (the mode it is in, or `--mode`): the table's step (0–21), by 3, then 1. Linearity gives up the LNA and mixer before the VGA, what wins against strong signals. **Manual**: the LNA (0–14), then the mixer (0–15), by 3 then 1, and the VGA last, down first, kept to 12 (higher with the LNA up saturates the ADC); AGC off |
+| HackRF | The LNA first (0–40 dB, by 8), then the VGA (by 6 dB, then 2, to 40 dB), the RF amp last, and tried on only with the LNA at 24 dB or under: it adds little and puts strong signals at the mixer (more than −5 dBm at the input damages a HackRF) |
+| RTL-SDR | The tuner's gain table (0–49.6 dB; the LNA and mixer together, the VGA fixed), about 5 dB at a time, then one entry; AGC off |
+| bladeRF, USRP, SoapySDR | The overall gain, which the driver shares over the stages front first: by 6 dB, then 1. Its AGC must be off (that takes a Stop and Start), and a SoapySDR radio needs an overall gain set |
+
+At the end the best is compared with the starting setting once more, and recommended only if it is
+still clearly better.
+
+**Recording and uploading go on while it runs**, for every system, so a poor setting costs the
+radio's systems while it is tried: their calls in those seconds are recorded (and uploaded) as that
+setting hears them. Other radios aren't touched. A setting under which a control channel that was
+decoding stops for 10 seconds is given up at once, and one that clips heavily after 5. However it
+ends (done, an error, Ctrl-C), the radio goes back as it was, unless `--apply` keeps the best, which
+is then saved in the config as an edit in Setup would be. Since the trials are never saved, a
+tuning cut short (the recorder stopped, this command killed) leaves the config as it was; stopping
+recording, or editing that radio in Setup, stops the tuning.
+
+Before anything changes, it shows the plan, how long it will take ("This will take up to about 24
+minutes") and which systems may record worse meanwhile, and waits for Enter (in a terminal; `--yes`
+doesn't ask). At the end a **summary** says what it recommends and what that does, system by system,
+from the final comparison of the new gain against the current one:
+
+```text
+Summary (21 min, 9 settings compared)
+  Recommended: gain LNA 9 · MIX 10 · VGA 10 (now LNA 10 · MIX 10 · VGA 10).
+  With it, measured against the current one by turns (3 rounds): score +4.2 ± 1.3
+     Balch            control channel 74.3% → 79.0% (+4.7)
+     MetroC           control channel 75.6% → 80.7% (+5.1) · voice lost 13.3% → 6.5%
+```
+
+The frequency correction is Setup's (its **Set correction to**), not this command's.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--url` | `http://127.0.0.1:8080` | The recorder's built-in interface |
+| `--source N` | the only one | The radio, by its number in Setup's list (from 1). Needed when there are several |
+| `--systems a,b` | every system on the radio | Score only these (short names); the others are still watched and guarded |
+| `--protect points` | 5 | With `--systems`: the most one of the radio's other systems may lose (0–100 scale). `off` allows any loss |
+| `--try stage=value,…` | | Compare this one setting with the one the radio has, and nothing else: `lna=11,mixer=10,vga=9` (Airspy manual), `step=16` (Airspy linearity or sensitivity), `lna=32,vga=24,amp=on` (HackRF), `gain=33.8` (RTL-SDR, bladeRF, USRP, SoapySDR). With `--apply`, kept if it is clearly better |
+| `--slice s` | 15 | How long each side of a round is measured |
+| `--rounds n` | 3 | Rounds per comparison (2 to 20). More rounds tell smaller differences apart |
+| `--settle s` | 4 | How long a gain runs before it is measured |
+| `--max-steps n` | 12 | At most this many candidates compared |
+| `--margin` | 1 | A move is kept only when it scores this much better (0–100 scale) |
+| `--mode` | the radio's | Airspy, HydraSDR: search `manual`, `linearity` or `sensitivity` instead |
+| `--yes` | | Don't ask before starting |
+| `--apply` | | Keep the best gain, and save it |
+
+```bash
+trunk-pro tune --url http://192.168.1.20:8080 --source 2
+trunk-pro tune --source 1 --systems county,city --mode sensitivity --apply
+trunk-pro tune --source 2 --try lna=11,vga=9          # before applying what a --systems run found
 ```
 
 ## tool
@@ -513,7 +623,9 @@ Checks that a capture is what it says it is: its hash and size, and that each ra
 random or compressed bytes, whose spectrum is flat, nor text or other bytes that sit to one side of zero). It counts
 clipping, lost samples and what decodes, but a capture that decodes nothing still passes: that's what a new decoder, or
 a failure being debugged, needs. It writes `checks.json` and a `waterfall-N.bin` for each radio to `dir`, as counts and
-levels, and fails if the capture doesn't check out.
+levels, and fails if the capture doesn't check out. For a wideband capture, `sites` sets each site's control channel
+blocks as live decoded them beside the replay's over the same part of it (`live_window`; none for an older capture,
+when the replay's are over all of it): `live_good`, `live_bad`, `replay_good`, `replay_bad`, and their totals.
 
 ### tool channel
 

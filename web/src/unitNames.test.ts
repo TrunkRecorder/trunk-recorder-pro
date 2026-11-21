@@ -16,6 +16,14 @@ test("a unit names file: unit IDs and patterns, in order; the first of a unit tw
   assert.deepEqual(readUnitNamesFile(unitNamesFileText(r.unitNames)).unitNames, r.unitNames, "read back the same");
 });
 
+test("a unit names file: hex after 0x is the radio's decimal ID (as MDC1200 IDs are programmed); a bare number is decimal; written back in decimal", () => {
+  const r = readUnitNamesFile("0x1C13,Medic 13\n1013,Car 1013\n7187,Again\n0xZZ,Broken\n");
+  assert.deepEqual(r.unitNames.map((u) => [u.unit, u.name]), [["7187", "Medic 13"], ["1013", "Car 1013"], ["0xZZ", "Broken"]]);
+  assert.deepEqual(r.bad, ["0xZZ"]);
+  assert.equal(unitNamesFileText(r.unitNames.slice(0, 2)), "7187,Medic 13\n1013,Car 1013\n");
+  assert.equal(unitNameOf(r.unitNames, "user", 7187, undefined), "Medic 13");
+});
+
 test("a radio named by hand: its own row, ahead of the patterns, its origin; cleared, a pattern names it again", () => {
   const rows = unitNamesReplace([], readUnitNamesFile("/^7(\\d{3})$/,Medic $1\n").unitNames, { kind: "file", name: "units.csv", at: 100 });
   assert.equal(unitNameOf(rows, "user", 7042, undefined), "Medic 042");

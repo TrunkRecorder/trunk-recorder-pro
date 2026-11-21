@@ -9,7 +9,7 @@ import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
 import { coverage, dashSystems, pageHealth, rangesFor } from "./data.ts";
 import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
-import { DecodePage } from "./Decode.tsx";
+import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
@@ -20,7 +20,7 @@ import { StorageView, tablesOf } from "./Storage.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
 
 const site = (index: number, name: string, identity: Partial<SiteIdentity>, adjacent: AdjacentSite[] = []): SiteStatus => ({
-  index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000,
+  index, name, nowS: 10, controlChannelHz: 851_000_000 + index * 500_000, source: 0,
   identity: { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: null, ...identity },
   good: 100, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent,
 });
@@ -79,6 +79,29 @@ test("Decode: a card per site; a system's page picks the site", () => {
   assert.doesNotMatch(page, /No system called/);
 });
 
+test("Decode: each site's card shows its own copies' voice lost, not its system's", () => {
+  twoSites();
+  feedSeries(Date.now() / 1000, { "sys/dcfd/site/south/voice/imbe/frames": 100, "sys/dcfd/site/south/voice/imbe/bad": 10, "sys/dcfd/voice/ambe/frames": 50, "sys/dcfd/voice/ambe/bad": 0 });
+  setView("decode");
+  const cards = renderToString(<DecodePage />).split("<section").map(text);
+  const voice = (title: string) => cards.find((c) => c.includes(title))?.match(/Voice lost ([—0-9.]+)/)?.[1];
+  assert.equal(voice("dcfd / south"), "10.0", "south's own frames");
+  assert.equal(voice("dcfd / dcfd"), "0.0", "the first site's, not the system's");
+});
+
+test("Decode: a DMR site's page says its colour code, network and site; an NXDN site's its RAN, system and site", () => {
+  const c = defaultConfig();
+  c.systems.push(newSystem(c, { shortName: "cap", type: "dmr", controlChannelsHz: [452_175_000] }), newSystem(c, { shortName: "nx", type: "nxdn", controlChannelsHz: [451_000_000] }));
+  running(c, [
+    system(0, "cap", [site(0, "cap", { nac: null, wacn: null, sysId: null, rfss: null, colorCode: 0, network: 1, site: 16 })]),
+    system(1, "nx", [site(1, "nx", { nac: null, wacn: null, sysId: 0x123, rfss: null, ran: 5, site: 2 })]),
+  ]);
+  setView("decode", "cap");
+  assert.match(text(renderToString(<DecodePage />)), /CC 0 Network 1 Site 16/);
+  setView("decode", "nx");
+  assert.match(text(renderToString(<DecodePage />)), /RAN 5 System 123 Site 2/);
+});
+
 test("Decode: a site's neighbours by address (status); its patches once watched (decodeDetail)", () => {
   twoSites([], [
     { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 9, freqHz: 853_000_000 },
@@ -127,6 +150,19 @@ test("RF: the control channels of adjacent sites on a source, faint, by address;
   assert.doesNotMatch(page, /BEE00:1A2:1-1/, "a site running here is drawn as itself");
   assert.doesNotMatch(page, /1-8/, "in the source's guard band");
   assert.doesNotMatch(page, /1-7/, "off every source");
+});
+
+test("Decode: a DMR site's identity on the one identity line: CC, network, site, then its system code's model and category, calls", () => {
+  const st = site(0, "cap", { colorCode: 4, network: 12, site: 4 });
+  const dmr = { variant: "DMR Tier III", colorCode: 4, sysCode: { code: 0xb013, model: "Large" as const, category: "A+B" as const }, rest: null, keyed: false, channels: [], carriers: [] };
+  const html = renderToString(<SiteIdentityLine kind="dmr" st={st} dmr={dmr} calls={7} active={1} />).replace(/<!-- -->/g, "");
+  for (const want of ['CC <b class="mono">4', 'Network <b class="mono">12', 'Site <b class="mono">4', ">B013<", ">Large<", ">A+B<", "Calls <b>7", "Active <b>1"]) assert.ok(html.includes(want), `${want} in ${html}`);
+  // Each said once: the type, rest channel and keyed are the DMR panel's.
+  assert.equal(html.match(/CC </g)?.length, 1);
+  assert.ok(!html.includes("Tier III"));
+  // Before the site detail arrives: the identity and calls, no code.
+  const bare = renderToString(<SiteIdentityLine kind="dmr" st={st} dmr={null} calls={0} active={0} />);
+  assert.ok(!bare.includes("Sys code") && bare.includes("Network") && bare.includes("Calls"));
 });
 
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {
@@ -223,7 +259,7 @@ test("Radio: a system's page goes back as Decode's does, with the systems beside
 
 test("Radio: calls missed on one of several systems name it, in the navigation's light and on its card", () => {
   twoSites();
-  feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
+  feedSeries(Date.now() / 1000, { "sys/other/calls/why/noSource": 1 });
   const h = pageHealth(snapshot()).radio;
   assert.equal(h.level, "warn");
   assert.match(h.why, /^other: .*outside every source's band/);
@@ -262,7 +298,7 @@ test("Radio: a system's Tones card names its signals and goes to them in Setup; 
 
 test("Radio: a warning of calls out of band links to the frequencies, on the Overview and the system's page", () => {
   twoSites();
-  feedSeries(Date.now() / 1000, { "sys/other/why/no_source": 1 });
+  feedSeries(Date.now() / 1000, { "sys/other/calls/why/noSource": 1 });
   setView("overview");
   assert.match(renderToString(<Overview />), /<button class="linkish why-link">Missing calls: outside every source(?:'|&#x27;)s band(?:<!-- -->)? <span aria-hidden="true">→/);
   setView("radio", "other");
@@ -386,11 +422,18 @@ test("Platform: the Network card's Checks switch turns the hosts checked and the
   assert.match(page, /Offset, measured — not asked: checks off/);
 });
 
+test("Platform: the daily look for a newer release is on by default, switched on the Network card", () => {
+  setView("platform");
+  host({ os: synced });
+  assert.equal(snapshot().config!.monitor!.checkUpdates, true);
+  assert.match(text(renderToString(<PlatformPage />)), /Check for updates.*GitHub, once a day/);
+});
+
 test("Platform: the connections are the hosts checked and the plugins' services; none checked by default (#148)", () => {
   uploader("broadcastify");
   setView("platform");
   host({ os: synced });
-  assert.deepEqual(snapshot().config!.monitor!.checkHosts, [], "no traffic of the recorder's own by default");
+  assert.deepEqual(snapshot().config!.monitor!.checkHosts, [], "no hosts checked by default");
   let page = text(renderToString(<PlatformPage />));
   assert.match(page, /Connections\s*—\s*nothing to check/);
   assert.match(page, /No hosts to check\s*No history kept/);
@@ -524,6 +567,32 @@ test("RF: a HackRF's stages, and the sample clock's error once measured", () => 
   status(1.234);
   assert.match(text(renderToString(<RfPage />)), /Clock vs PC \+1\.23 ppm/);
   assert.match(text(renderToString(<RfPage />)), /LNA 24 · VGA 30 · amp/);
+});
+
+test("RF: a source whose gain is low says so and offers Tune gain; the tuning's progress, then what it kept", () => {
+  const c = defaultConfig();
+  c.sources = [{ type: "rtlsdr", serial: "1", gainDb: 25.4, agc: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 }];
+  running(c, []);
+  const src: SourceStatus = { index: 0, label: "RTL-SDR SN 1", centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: c.sources[0] };
+  transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [src], load: 0, calls: [] });
+  // The corpus capture: peaks about −32 dBFS, a minute of them (the recorder's `quiet`).
+  transport.onMessage({ type: "stats", t: Date.now() / 1000, values: { "src/RTL-SDR SN 1/peak": -32, "src/RTL-SDR SN 1/clipPct": 0, "src/RTL-SDR SN 1/quiet": 1 } });
+  setView("rf");
+  let page = text(renderToString(<RfPage />));
+  assert.match(page, /Peaks -32 dBFS · gain low — raise the gain/, "no tuner here: the fix by hand");
+  assert.doesNotMatch(page, /Tune gain/);
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers", "tuneGain"] });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Peaks -32 dBFS · gain low — Tune gain/);
+  assert.match(renderToString(<RfPage />), /<button class="btn primary small"[^>]*>Tune gain<\/button>/, "the button, standing out");
+  const report = { source: 0, radio: "Source 1", plan: [], scored: ["dcfd"], watched: [], start: [["gain", 25.4]] as [string, number][], estimateS: 1482, applied: false };
+  transport.onMessage({ type: "tune", ...report, phase: "running", tried: [], now: [["gain", 33.8]], elapsedS: 60 });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Tuning Elapsed 1 m of ~25 m Tried 0 Trying 33\.8 dB Stop/);
+  transport.onMessage({ type: "tune", ...report, phase: "done", tried: [], best: [["gain", 33.8]], applied: true, elapsedS: 600 });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Tune gain Kept 33\.8 dB Tried 0 Took 10 m/);
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain low · peaks -32 dBFS");
 });
 
 test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {

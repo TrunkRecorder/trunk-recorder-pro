@@ -56,7 +56,14 @@ test("a sites file: its sites, control channels, site lock and places; not one: 
   assert.equal(sitesFileBundle("Name,Talkgroup\nx,1", "talkgroups.csv"), null);
   // Its kind chosen: a site lock only for P25 (other kinds' site numbers aren't their air's).
   assert.deepEqual(asType(b, "dmr").system.sites[0].expect, {});
+  // Its other frequencies: where that kind is watched on them (config.rs watched_channels).
+  assert.deepEqual([asType(b, "dmr").system.sites[0].dmrChannelsHz, asType(b, "dmr").system.sites[0].voiceChannelsHz], [[451_775_000, 452_375_000], []]);
+  assert.deepEqual(asType(b, "nxdn").system.sites[0].nxdnChannelsHz, [451_775_000, 452_375_000]);
+  assert.deepEqual(asType(b, "p25").system.sites[0].voiceChannelsHz, [451_775_000, 452_375_000]);
   assert.deepEqual(asType(b, "p25").system.sites[0].expect, { rfss: 1, site: 1, nac: 0x212 });
+  // EDACS: a frequency's LCN is its place in the row, an unused LCN's placeholder holding its place; a site of unconfirmed LCNs gets none.
+  const e = sitesFileBundle(["Site Dec,Description,County Name,Lat,Lon,Range,Frequencies", "1,Main,Erie,42.88,-78.87,20,856.1125,0.0,857.1125c,N/A,858.1125", "2,Unconfirmed LCN,Erie,42.88,-78.87,20,856.2125c,857.2125"].join("\n"), "trs_sites_99.csv")!;
+  assert.deepEqual(asType(e, "edacs").system.sites.map((x) => [x.lcnTableHz, x.voiceChannelsHz]), [[{ 1: 856_112_500, 3: 857_112_500, 5: 858_112_500 }, []], [{}, []]]);
 });
 
 test("its import asks the kind of system, and offers to check the sites on the air first", () => {

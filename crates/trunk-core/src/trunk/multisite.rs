@@ -274,6 +274,11 @@ impl MultiSite {
         self.convs.values().map(|v| Call { last_update_s: live.iter().filter(|c| of(v, c)).fold(v.view().last_update_s, |t, c| t.max(c.last_update_s)), ..v.view() }).collect()
     }
 
+    /// The id copy `copy` is known by while it's going: its conversation's (its own when it's in none).
+    pub fn call_of(&self, copy: CallId) -> CallId {
+        self.of.get(&copy).copied().unwrap_or(copy)
+    }
+
     /// Whether `site` is where `key`'s live audio comes from at `now_s` (or nowhere is).
     pub fn leads(&self, key: LiveKey, site: u16, now_s: f64) -> bool {
         self.leads.get(&key).is_none_or(|l| l.lets(site, now_s))

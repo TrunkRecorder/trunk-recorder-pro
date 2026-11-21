@@ -31,7 +31,7 @@ anywhere a source covers, including alongside a trunked system. Analog channels 
 | `fcc` | | `{}` | object | Optional: who is licensed on each channel's frequency (they can be different licensees'). See [FCC licenses](systems.md#fcc-licenses) |
 | `enabled` | | `true` | bool | `false` keeps it without recording any of its channels |
 | `squelchDb` | | `8` | number | How far above the measured noise floor a signal must rise to open a channel, dB. The interface allows 3–40 |
-| `demod` | | `{}` | object | How its FM and AM channels are demodulated. See [Demodulation](#demodulation-demod) |
+| `demod` | | `{}` | object | How its FM, AM and auto channels are demodulated (an auto one's analog receiver). See [Demodulation](#demodulation-demod) |
 | `channels` | | `[]` | array | The channels. See [Channel keys](#channel-keys) |
 | `channelFile` | | `""` | string | A CSV to read the channels from instead (desktop app only). Absolute, or relative to the config file's folder. See [Channel file](#channel-file-channelfile) |
 | `recording` | | `{}` | object | Its own call rules; a rule left out follows the global `recording`. See [recording.md](recording.md#per-system-rules) |
@@ -45,7 +45,7 @@ A frequency belongs to only one conventional system.
 
 ### Demodulation (`demod`)
 
-Applies to every FM and AM channel in the system. Each key left out is the default; an empty
+Applies to every FM, AM and auto channel in the system (an auto channel's analog receiver). Each key left out is the default; an empty
 `demod` isn't written. See the [conventional guide](../guides/conventional.md#demodulation-settings)
 for when to change them.
 
@@ -88,7 +88,7 @@ Notes:
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `freqHz` | ✓ | | number | The frequency, Hz |
-| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"` (any case; anything else is refused when the config is read) |
+| `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"`, `"auto"` (whichever turns up: analog FM, P25, DMR or NXDN; see [Auto](../guides/conventional.md#auto)) (any case; anything else is refused when the config is read) |
 | `name` | | `""` | string | Alpha tag, written to the call JSON |
 | `description` | | `""` | string | Description in the call JSON |
 | `tag` | | `""` | string | Tag in the call JSON |
@@ -98,7 +98,7 @@ Notes:
 | `slot` | | any | integer | `dmr`: record only this slot, 1 or 2 |
 | `matchTalkgroup` | | any | integer | `p25`, `dmr`, `nxdn48`, `nxdn96`: record only transmissions naming this talkgroup (Setup: Match TG) |
 | `squelchDb` | | the system's | number | This channel's own squelch, dB above the noise floor |
-| `bandwidthKhz` | | the mode's | number | `fm` and `am`: the channel filter's width, kHz, 4–20. FM: 11 (12.5 kHz channels), 16 for wide FM (25 kHz). AM: 11 below 225 MHz, 16 from 225 MHz (UHF military air); 6 for 8.33 kHz channels. Rows sharing a frequency need the same |
+| `bandwidthKhz` | | the mode's | number | `fm`, `am` and `auto` (its analog receiver's): the channel filter's width, kHz, 4–20. FM: 11 (12.5 kHz channels), 16 for wide FM (25 kHz). AM: 11 below 225 MHz, 16 from 225 MHz (UHF military air); 6 for 8.33 kHz channels. Rows sharing a frequency need the same |
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
 | `receiveOn` | | `[]` | array | The sources it may be received on, by label (`"RTL-SDR SN 200"`, as the dashboard names a source: the radio, wherever it is in `sources`). Empty: any source that reaches it. Rows sharing a frequency need the same ones. Not set by a linked channel file. See [How channels are shared out](../guides/radios.md#how-channels-are-shared-out) |
 | `autoTune` | | `false` | bool | `p25`, `dmr`, `nxdn`: its calls' carrier offsets correct its source's AutoTune (a repeater output to trust; see [Frequency correction](../guides/conventional.md#frequency-correction)) |
@@ -204,7 +204,7 @@ A header row is required. Columns are matched in any case and any order; others 
 | Column | Also accepted | Meaning |
 |---|---|---|
 | `Frequency` ✓ | `Freq`, `FreqHz` | MHz when it has a decimal point (`154.4300`), otherwise Hz (`154430000`) |
-| `Mode` | | `fm`, `am`, `p25`, `dmr`, `nxdn48` (or `nxdn`), `nxdn96`; also `nfm`, `analog`, `A` (= fm), `digital`, `D` (= p25). Empty = `fm`, or `p25` / `dmr` / `nxdn48` when `Code` holds a NAC / colour code / RAN |
+| `Mode` | | `fm`, `am`, `p25`, `dmr`, `nxdn48` (or `nxdn`), `nxdn96`, `auto` (or `any`); also `nfm`, `analog`, `A` (= fm), `digital`, `D` (= p25). Empty = `fm`, or `p25` / `dmr` / `nxdn48` when `Code` holds a NAC / colour code / RAN |
 | `TG Number` | `Talkgroup`, `TG` | A positive whole number; empty = as [above](#talkgroup-numbers) |
 | `Code` | `Tone` | As `code` above. RadioReference's spellings (`151.4 PL`, `023 DPL`, `293 NAC`, `CC1 TS2 TG201`, `RAN 5`) work; a slot or talkgroup in it fills `Slot` / `Match TG` |
 | `Slot` | `TS` | As `slot` above |
@@ -213,7 +213,7 @@ A header row is required. Columns are matched in any case and any order; others 
 | `Description`, `Tag` | | Names in the call JSON |
 | `Category` | `Group` | Category in the call JSON |
 | `Squelch dB` | `SquelchDb` | 3–40, dB above the noise floor; empty = the system's |
-| `Bandwidth kHz` | `BandwidthKhz`, `Bandwidth` | `fm` and `am` rows: the filter's width, 4–20; empty = the mode's |
+| `Bandwidth kHz` | `BandwidthKhz`, `Bandwidth` | `fm`, `am` and `auto` rows: the filter's width, 4–20; empty = the mode's |
 | `Enable` | `Enabled` | `false`, `no`, `0` or `off` = off; anything else or empty = on |
 | `AutoTune` | `Auto Tune` | `true`, `yes`, `1` or `on` = its calls correct the source (digital rows); empty = off |
 

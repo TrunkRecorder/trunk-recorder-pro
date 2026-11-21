@@ -15,7 +15,7 @@ import type { CallEntry, CipherSeen, LengthHistogram, Origin, OutOfBandRow, Radi
 import { playable, playNow } from "../listen.ts";
 import { ActiveCalls, aliasOf, Log, unitIdOf } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
-import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
+import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, scoped, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
 type Hours = "24" | "168";
 const HOURS: { v: Hours; label: string }[] = [
@@ -24,15 +24,20 @@ const HOURS: { v: Hours; label: string }[] = [
 ];
 
 /** Why calls weren't recorded (and were), in the order shown; `at`: the part of the system's page listing them. */
+/** What became of a site's or channel's copies of calls: recorded, or why not (`calls/why/<k>`); "monitored" is what's left of `calls/started`. */
 const REASONS: { k: string; label: string; color: string; hint: string; at?: string }[] = [
   { k: "recorded", label: "Recorded", color: "var(--series-1)", hint: "" },
   { k: "monitored", label: "Followed only", color: "var(--series-3)", hint: "Followed, not recorded" },
   { k: "ignored", label: "Ignored", color: "var(--muted-mark)", hint: "Set to Ignore in the talkgroup file" },
   { k: "encrypted", label: "Encrypted", color: "var(--series-6)", hint: "Encrypted calls are off" },
-  { k: "unknown_tg", label: "Not in file", color: "var(--series-4)", hint: "Unknown talkgroups are off" },
-  { k: "no_recorder", label: "No recorder", color: "var(--critical)", hint: "All recorders busy" },
-  { k: "no_source", label: "Out of band", color: "var(--serious)", hint: "No source covers the frequency: which ones", at: OUT_OF_BAND },
+  { k: "unknownTg", label: "Not in file", color: "var(--series-4)", hint: "Unknown talkgroups are off" },
+  { k: "noRecorder", label: "No recorder", color: "var(--critical)", hint: "All recorders busy" },
+  { k: "noSource", label: "Out of band", color: "var(--serious)", hint: "No source covers the frequency: which ones", at: OUT_OF_BAND },
+  { k: "noFrequency", label: "No channel table", color: "var(--series-5)", hint: "Granted on a channel never turned into a frequency" },
 ];
+
+/** A reason's series under one scope. */
+const reasonKey = (k: string) => (k === "recorded" ? "calls/recorded" : `calls/why/${k}`);
 
 const hourLabel = (hours: number) => (i: number) => {
   const t = (Math.floor(Date.now() / 3600_000) - (hours - 1 - i)) * 3600;
@@ -117,9 +122,14 @@ function unitNameHint(mode: string, heard: string | undefined): string | undefin
 
 // ── the system ───────────────────────────────────────────────────────────────
 
-function Reasons({ name, range, health }: { name: string; range: "24h" | "7d"; health: Health }) {
-  const hist = useHistory(REASONS.map((r) => K.sys(name, `why/${r.k}`)), range, 48);
-  const counts = REASONS.map((r) => Math.round(total(hist?.[K.sys(name, `why/${r.k}`)]) ?? 0));
+function Reasons({ x, range, health }: { x: DashSystem; range: "24h" | "7d"; health: Health }) {
+  const name = x.name;
+  // Every site's and channel's copies, added up.
+  const counted = REASONS.filter((r) => r.k !== "monitored");
+  const hist = useHistory([...scoped(x.scopes, "calls/started"), ...counted.flatMap((r) => scoped(x.scopes, reasonKey(r.k)))], range, 48);
+  const of = (key: string) => scoped(x.scopes, key).reduce((a, k) => a + (total(hist?.[k]) ?? 0), 0);
+  const told = counted.reduce((a, r) => a + of(reasonKey(r.k)), 0);
+  const counts = REASONS.map((r) => Math.round(r.k === "monitored" ? Math.max(0, of("calls/started") - told) : of(reasonKey(r.k))));
   const sum = counts.reduce((a, b) => a + b, 0);
   return (
     <Card title="Call outcomes" level={health.level} why={health.why} onWhy={goTo(health)}>
@@ -427,7 +437,7 @@ function SystemView({ s, sys, focus }: { s: AppState; sys: DashSystem; focus?: s
       </div>
       <ActiveCalls s={s} system={sys.name} />
       <div className="columns">
-        <Reasons name={sys.name} range={hours === "24" ? "24h" : "7d"} health={systemRadioHealth(s, sys)} />
+        <Reasons x={sys} range={hours === "24" ? "24h" : "7d"} health={systemRadioHealth(s, sys)} />
         <Lengths h={lenR?.histogram} />
       </div>
       <OutOfBand s={s} sys={sys} rows={freqsR?.outOfBand ?? []} hours={h} focus={focus === OUT_OF_BAND} />

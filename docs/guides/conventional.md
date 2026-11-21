@@ -22,6 +22,7 @@ Each channel has a mode:
 | DMR | `dmr` | DMR Tier II; both slots, each recording its own calls (the channel is opened 6.25 kHz wide, as for trunked DMR) |
 | NXDN48 | `nxdn48` | NXDN at 4800 bps (6.25 kHz) |
 | NXDN96 | `nxdn96` | NXDN at 9600 bps (12.5 kHz) |
+| Auto | `auto` | Whatever turns up: analog FM, P25, DMR or NXDN (see [Auto](#auto)) |
 
 One list can mix modes. A config can have trunked systems, conventional channels, or both. With
 no trunked system at all, it records conventional channels only.
@@ -55,8 +56,8 @@ panel that appears:
    if you like, a **Name** such as "County Fire".
 2. Type frequencies in MHz into **Add frequencies, MHz** (for example `154.430, 155.100,
    460.125`), pick the mode beside it, and click **Add**. Or click **Add a channel** for one row.
-3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (analog
-   only; see [Bandwidth](#bandwidth)), **Records** (what it takes, as chips), **Name** (the alpha
+3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (FM, AM
+   and auto; see [Bandwidth](#bandwidth)), **Records** (what it takes, as chips), **Name** (the alpha
    tag), **TG Number** and **Squelch**. **Edit** opens the rest of the row: its **Code**, DMR's
    **Slot** and a digital row's **Match TG**, and the **Description**, **Tag** and **Category** its
    calls carry (offering the tags and categories the system uses already). A row's tag and category
@@ -138,12 +139,12 @@ TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,S
 ```
 
 - `Frequency` is MHz when it has a decimal point, otherwise Hz.
-- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Code` holds
+- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48`, `nxdn96` or `auto` (`any` reads as `auto`); empty means `fm`, unless `Code` holds
   a NAC (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`). An old `Tone` column still reads,
   as `Code`. A combined string such as `CC1 TS2 TG201` in `Code` is split into `Code`, `Slot` and
   `Match TG`.
 - `Squelch dB` is 3-40 dB above the noise floor; empty uses the system's.
-- `Bandwidth kHz` is an `fm` or `am` row's filter width, 4-20; empty uses the mode's default.
+- `Bandwidth kHz` is an `fm`, `am` or `auto` row's filter width, 4-20; empty uses the mode's default.
 - `Enable` set to `false`, `no`, `0` or `off` turns a row off.
 - `AutoTune` set to `true`, `yes`, `1` or `on` lets a digital row's calls correct its source's
   frequency error; empty is off. See [Frequency correction](#frequency-correction).
@@ -228,6 +229,43 @@ Things that follow from this:
 - A call longer than **Longest call, s** is saved and a new one started. With no limit set, a
   stuck carrier is saved in 600 s parts.
 
+## Auto
+
+A channel whose mode is `auto` records whatever is on it. Use it where the protocol isn't one thing: the
+FRS and GMRS channels, say, where almost everything is analog FM but a digital radio can turn up.
+
+When the channel opens, the analog FM receiver and each digital one (P25, DMR, NXDN48 and NXDN96) all
+listen to it, and what each one puts out is held back. The channel then settles on one of them:
+
+- A **digital** receiver is settled on once it has decoded about two P25 LDUs' worth of voice frames (or six
+  DMR bursts), or two of anything else only a checked frame carries (a radio ID, a cipher, a position), or
+  some of each. Noise and speech don't pass those checks, and one stray message isn't enough.
+- Otherwise **analog FM** is, two seconds after the channel opened. A digital signal sounds like noise
+  in an FM receiver, so the wait is how analog is told from it.
+
+The call is then recorded as what it settled on: its JSON says `p25`, `dmr`, `nxdn48`, `nxdn96` or `fm`
+as for a channel of that mode, with the talkgroup, NAC, colour code or RAN the air named. The analog
+audio is the call's from its start; the recording just isn't handed on until the channel has settled,
+so a live listener hears an analog call about two seconds late. A key-up shorter than that settles
+when the carrier goes, and is kept.
+
+What it can't do:
+
+- It is one row to a frequency, with no tone, code, slot or **Match TG** (a second row, or a code, is
+  refused). To split a frequency by tone or NAC, give it that mode.
+- It doesn't cover AM, or P25 Phase 2.
+- It runs five receivers while a channel is open and undecided, where a channel of one mode runs one; a
+  busy band of auto channels costs noticeably more CPU, about the first two seconds of each
+  transmission. Give a channel known to be analog the mode `fm`.
+- It settles once per transmission: a different protocol arriving on the same carrier within the receiver's
+  half-second hang isn't noticed until the channel closes.
+- Its **Bandwidth** is its analog receiver's, as an `fm` channel's is: 16 kHz for GMRS's 20 kHz main and
+  repeater channels. The digital receivers hear the channel as wide as that; in noise they decode as on a
+  channel of their own mode (NXDN48, the narrowest, at 20 kHz too), but a neighbour closer than that gets in.
+  The Demodulation settings (de-emphasis, squelch open delay and hang) apply to its analog receiver, and the
+  FM receiver's squelch decides the carrier, as for an `fm` channel, once it has settled on analog.
+- Its tapes and **Record the next call** work as for any channel, and replay as auto.
+
 ## Airband (AM)
 
 Aircraft and air traffic control talk in AM: VHF airband from 118 to 137 MHz on 25 kHz channels
@@ -264,13 +302,13 @@ long call, cut into parts at **Longest call, s** if you have set one.
 
 ## Bandwidth
 
-An analog channel's **Bandwidth** is the width of the filter its audio and carrier meter come
+An analog channel's **Bandwidth** (an `auto` one's too: its analog receiver's) is the width of the filter its audio and carrier meter come
 through. Leave it at **Default** unless one of these applies:
 
 | Mode | Width | Use for |
 |---|---|---|
 | `fm` | 11 kHz (default) | Narrowband FM: 12.5 kHz channels, ±2.5 kHz deviation. Almost all US public safety and business radio since 2013 |
-| `fm` | 16 kHz | Wide FM: 25 kHz channels, ±5 kHz deviation. Older systems, some federal, and many outside the US. Loud voice distorts through the narrow filter |
+| `fm` | 16 kHz | Wide FM: 25 kHz channels, ±5 kHz deviation. Older systems, some federal, GMRS's main and repeater channels, and many outside the US. Loud voice distorts through the narrow filter |
 | `am` | 6 kHz | 8.33 kHz airband channels (Europe) |
 | `am` | 11 kHz (default below 225 MHz) | 25 kHz airband channels |
 | `am` | 16 kHz (default from 225 MHz) | UHF military air, a transmitter that is well off frequency, or offset-carrier sites |
@@ -282,7 +320,8 @@ share one bandwidth: changing it on one row in Setup changes them all.
 ## Demodulation settings
 
 Each conventional system's **Demodulation** group (in its card on the Conventional tab, shown
-when it has analog channels) applies to all of its FM and AM channels. Everything left at
+when it has analog or auto channels) applies to all of its FM and AM channels and its auto
+channels' analog receivers. Everything left at
 **Default** behaves as before. To use other settings for some channels, put them in a
 conventional system of their own.
 
@@ -378,6 +417,7 @@ saved. There is no separate log line for each detection.
 | `Conventional channel ... MHz is in both A and B` | A frequency can belong to only one conventional system. |
 | `Conventional channel ... MHz is listed with different modes` | Rows sharing a frequency need the same mode. |
 | `Conventional channel ... MHz is listed twice without a tone` (or NAC, or code) | Give each row its own code; one may have none. |
+| `Conventional channel ... MHz is auto` | An auto channel is one row without a code: remove the other rows or the code, or give the channel a mode. |
 | `Conventional channel ... MHz has two rows for ...` | Two rows ask for the same code (or two DCS codes that are the same signal). |
 | `A conventional channel has no frequency yet.` | A row was added and left empty. |
 | `Channel file ...: ...` | The linked CSV couldn't be read. |

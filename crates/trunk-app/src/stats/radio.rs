@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use trunk_core::p25::crypt::algid_name;
+use trunk_core::trunk::SystemId;
 use trunk_core::dsp::inband::signal::Heard;
 use trunk_core::trunk::calls::Reason;
 use trunk_core::trunk::{Call, Message, MessageType};
@@ -164,8 +165,8 @@ impl Tg {
 
 /// What talkgroup `tg` of system `name` is called: by a conventional row or
 /// the system's talkgroups ([`Names::tg`]), else as its last named call was.
-fn tg_alpha(name: &str, s: &SystemRadio, tg: u32, names: &Names) -> String {
-    (names.tg)(name, tg)
+fn tg_alpha(system: SystemId, s: &SystemRadio, tg: u32, names: &Names) -> String {
+    (names.tg)(system, tg)
         .map(|i| i.alpha_tag)
         .filter(|a| !a.is_empty())
         .or_else(|| s.tgs.get(&tg).map(|g| g.name.clone()))
@@ -345,17 +346,21 @@ pub struct TgInfo {
 }
 
 /// Lookups the queries need from outside ([`super::NameBook`]'s): a
-/// talkgroup's name and Ignore flag, a radio's name.
+/// talkgroup's name and Ignore flag, a radio's name, and a system's short
+/// name (what a query asks by and an answer gives) and back.
 pub struct Names<'a> {
-    pub tg: &'a dyn Fn(&str, u32) -> Option<TgInfo>,
-    pub unit: &'a dyn Fn(&str, u32) -> Option<String>,
+    pub tg: &'a dyn Fn(SystemId, u32) -> Option<TgInfo>,
+    pub unit: &'a dyn Fn(SystemId, u32) -> Option<String>,
     /// The system's signals a pattern heard on a talkgroup is (their ids).
-    pub signals: &'a dyn Fn(&str, &Heard, u32) -> Vec<String>,
+    pub signals: &'a dyn Fn(SystemId, &Heard, u32) -> Vec<String>,
+    pub name: &'a dyn Fn(SystemId) -> String,
+    pub id: &'a dyn Fn(&str) -> Option<SystemId>,
 }
 
+/// Each system's radios and talkgroups heard, by its id (a rename keeps them).
 #[derive(Default)]
 pub struct Registry {
-    pub systems: BTreeMap<String, SystemRadio>,
+    pub systems: BTreeMap<SystemId, SystemRadio>,
     /// Every system's caps ([`Registry::set_caps`]).
     caps: Caps,
 }
@@ -547,17 +552,17 @@ pub struct Firsts {
 }
 
 impl Registry {
-    fn sys(&mut self, name: &str, t: i64) -> &mut SystemRadio {
+    fn sys(&mut self, system: SystemId, t: i64) -> &mut SystemRadio {
         let caps = self.caps;
-        self.systems.entry(name.to_string()).or_insert_with(|| SystemRadio { caps, ..SystemRadio::new(t) })
+        self.systems.entry(system).or_insert_with(|| SystemRadio { caps, ..SystemRadio::new(t) })
     }
 
-    /// Put system `name` as a store gave it.
-    pub fn put(&mut self, name: &str, mut s: SystemRadio) {
+    /// Put system `system` as a store gave it.
+    pub fn put(&mut self, system: SystemId, mut s: SystemRadio) {
         s.caps = self.caps;
         // (Kept by an older version: its talkgroups' hours given their encryption.)
         s.tgs.values_mut().for_each(Tg::enc_by_hour);
-        self.systems.insert(name.to_string(), s);
+        self.systems.insert(system, s);
     }
 
     /// Size every system's tables (now and as systems come); past a cap
@@ -575,8 +580,8 @@ impl Registry {
 
     /// System `system`'s radios whose IDs came in MDC1200, lowest first
     /// (shown in hex, as they're programmed).
-    pub fn mdc_units(&self, system: &str) -> Vec<u32> {
-        let Some(s) = self.systems.get(system) else { return Vec::new() };
+    pub fn mdc_units(&self, system: SystemId) -> Vec<u32> {
+        let Some(s) = self.systems.get(&system) else { return Vec::new() };
         let mut v: Vec<u32> = s.units.iter().filter(|(_, u)| u.signal == trunk_core::dsp::inband::units::Kind::Mdc1200.name()).map(|(k, _)| *k).collect();
         v.sort_unstable();
         v
@@ -584,15 +589,15 @@ impl Registry {
 
     /// How full it is: each system's talkgroups, radios and pairs against
     /// the caps (none: no cap), for the dashboard (Platform → Storage).
-    pub fn fill(&self) -> Value {
+    pub fn fill(&self, names: &Names) -> Value {
         let cap = |n: usize| (n != usize::MAX).then_some(n);
-        let systems: Vec<Value> = self.systems.iter().map(|(n, s)| json!({ "system": n, "talkgroups": s.tgs.len(), "radios": s.units.len(), "pairs": s.pairs.len() })).collect();
+        let systems: Vec<Value> = self.systems.iter().map(|(id, s)| json!({ "system": (names.name)(*id), "talkgroups": s.tgs.len(), "radios": s.units.len(), "pairs": s.pairs.len() })).collect();
         json!({ "caps": { "talkgroups": cap(self.caps.tgs), "radios": cap(self.caps.units), "pairs": cap(self.caps.pairs), "days": self.caps.days }, "systems": systems })
     }
 
     /// A call began (`t`: Unix s). Returns what was heard for the first time
     /// (once the system has a baseline).
-    pub fn call_start(&mut self, system: &str, c: &Call, t: i64) -> Firsts {
+    pub fn call_start(&mut self, system: SystemId, c: &Call, t: i64) -> Firsts {
         let s = self.sys(system, t);
         let base = s.has_baseline(t);
         let mut firsts = Firsts::default();
@@ -622,7 +627,7 @@ impl Registry {
 
     /// A call ended at `t` (Unix s): its airtime, its radios' transmissions
     /// and who they talked with. Returns radios heard for the first time.
-    pub fn call_end(&mut self, system: &str, c: &Call, t: i64) -> Vec<u32> {
+    pub fn call_end(&mut self, system: SystemId, c: &Call, t: i64) -> Vec<u32> {
         let s = self.sys(system, t);
         let base = s.has_baseline(t);
         let secs = (c.last_update_s - c.start_s).max(0.0) as f32;
@@ -701,7 +706,7 @@ impl Registry {
 
     /// A control channel message about a radio: affiliation, registration,
     /// location, grants. Returns the talkgroup on an affiliation.
-    pub fn message(&mut self, system: &str, m: &Message, t: i64) -> Option<(u32, u32)> {
+    pub fn message(&mut self, system: SystemId, m: &Message, t: i64) -> Option<(u32, u32)> {
         if m.source <= 0 {
             return None;
         }
@@ -738,7 +743,7 @@ impl Registry {
             }
             MessageType::Grant | MessageType::Update | MessageType::Acknowledge | MessageType::DataGrant | MessageType::CallAlert => {
                 // Only when it's already known: grants repeat many times a call.
-                if let Some(s) = self.systems.get_mut(system) {
+                if let Some(s) = self.systems.get_mut(&system) {
                     if let Some(u) = s.units.get_mut(&unit) {
                         u.last = u.last.max(t);
                         s.changed.unit(unit);
@@ -751,7 +756,7 @@ impl Registry {
     }
 
     /// A recorded call's file (Trunk Recorder's call JSON): how its frequency decoded.
-    pub fn concluded(&mut self, system: &str, record: &trunk_recorder_plugin::CallRecord, t: i64) {
+    pub fn concluded(&mut self, system: SystemId, record: &trunk_recorder_plugin::CallRecord, t: i64) {
         let freq = record.freq;
         let (mut frames, mut errors, mut bad) = (0u64, 0u64, 0u64);
         for i in &record.error_list {
@@ -785,7 +790,7 @@ impl Registry {
     }
 
     /// A tone pattern heard on talkgroup `tg` of `system` at `t` (Unix s), as it was told.
-    pub fn tone_pattern(&mut self, system: &str, tg: u32, pattern: &trunk_recorder_plugin::TonePattern, t: i64) {
+    pub fn tone_pattern(&mut self, system: SystemId, tg: u32, pattern: &trunk_recorder_plugin::TonePattern, t: i64) {
         let s = self.sys(system, t);
         append(&mut s.tones, &[PatternSeen { t, tg, pattern: pattern.clone() }], MAX_TONES);
         s.changed.tones += 1;
@@ -802,19 +807,19 @@ impl Registry {
     /// Each system's rows that changed since the last call ([`RegistryChanges`]):
     /// what's kept (a store appends them, and writes a system whole now and
     /// then; the browser writes the systems they name whole).
-    pub fn take_changes(&mut self) -> Vec<(String, RegistryChanges)> {
-        self.systems.iter_mut().filter_map(|(n, s)| s.take_changes().map(|c| (n.clone(), c))).collect()
+    pub fn take_changes(&mut self) -> Vec<(SystemId, RegistryChanges)> {
+        self.systems.iter_mut().filter_map(|(id, s)| s.take_changes().map(|c| (*id, c))).collect()
     }
 
     /// Forget system `system` (none: every system), what it changed since
     /// it was last taken too; the radios and talkgroups it had heard.
-    pub fn forget(&mut self, system: Option<&str>) -> (usize, usize) {
-        let gone: Vec<String> = self.systems.keys().filter(|n| system.is_none_or(|s| s == n.as_str())).cloned().collect();
+    pub fn forget(&mut self, system: Option<SystemId>) -> (usize, usize) {
+        let gone: Vec<SystemId> = self.systems.keys().filter(|id| system.is_none_or(|s| s == **id)).copied().collect();
         gone.iter().filter_map(|n| self.systems.remove(n)).fold((0, 0), |(u, t), s| (u + s.units.len(), t + s.tgs.len()))
     }
 
     /// Load a system kept whole ([`SystemRadio::whole`], as JSON; a bad one is ignored).
-    pub fn load(&mut self, system: &str, json: &str) {
+    pub fn load(&mut self, system: SystemId, json: &str) {
         if let Ok(c) = serde_json::from_str::<RegistryChanges>(json) {
             self.put(system, SystemRadio::from_changes(&c));
         }
@@ -825,29 +830,29 @@ impl Registry {
     pub fn query(&self, q: &Value, now: i64, names: &Names) -> Value {
         let what = q["what"].as_str().unwrap_or("summary");
         if what == "summary" {
-            let systems: serde_json::Map<String, Value> = self.systems.iter().map(|(n, s)| (n.clone(), summary(n, s, now, names))).collect();
+            let systems: serde_json::Map<String, Value> = self.systems.iter().map(|(id, s)| ((names.name)(*id), summary(*id, s, now, names))).collect();
             let cap = |n: usize| (n != usize::MAX).then_some(n);
             return json!({ "what": what, "systems": systems, "caps": { "talkgroups": cap(self.caps.tgs), "radios": cap(self.caps.units), "days": self.caps.days } });
         }
         let Some(name) = q["system"].as_str() else { return json!({ "what": what, "error": "which system?" }) };
-        let Some(s) = self.systems.get(name) else { return json!({ "what": what, "system": name, "rows": [] }) };
+        let Some((system, s)) = (names.id)(name).and_then(|id| Some((id, self.systems.get(&id)?))) else { return json!({ "what": what, "system": name, "rows": [] }) };
         let hours = q["hours"].as_i64().unwrap_or(24).clamp(1, HOURS);
         // Up to the registry's own cap: a client may ask for every radio heard.
         let limit = q["limit"].as_u64().unwrap_or(500).min(self.caps.units as u64) as usize;
         let key = q["key"].as_u64().map(|k| k as u32);
         let mut out = match what {
-            "talkgroups" => talkgroups(name, s, now, hours, limit, names),
-            "units" => units(name, s, now, hours, limit, names),
+            "talkgroups" => talkgroups(system, s, now, hours, limit, names),
+            "units" => units(system, s, now, hours, limit, names),
             "tg" => match key {
-                Some(k) => tg_detail(name, s, k, now, hours, names),
+                Some(k) => tg_detail(system, s, k, now, hours, names),
                 None => json!({ "error": "which talkgroup?" }),
             },
             "unit" => match key {
-                Some(k) => unit_detail(name, s, k, now, names),
+                Some(k) => unit_detail(system, s, k, now, names),
                 None => json!({ "error": "which radio?" }),
             },
             "freqs" => freqs(s, now, hours),
-            "tones" => tones(name, s, now, hours, limit, names),
+            "tones" => tones(system, s, now, hours, limit, names),
             "lengths" => json!({ "histogram": histogram(s.lengths.iter().filter(|l| l.0 > now - hours * 3600).map(|l| l.2)) }),
             _ => json!({ "error": format!("unknown query {what}") }),
         };
@@ -917,14 +922,14 @@ fn ciphers_in(g: &Tg, now: i64, hours: i64) -> Vec<(u8, u16, u32, i64)> {
     out
 }
 
-fn tg_row(name: &str, s: &SystemRadio, tg: u32, g: &Tg, now: i64, hours: i64, names: &Names) -> Value {
-    let info = (names.tg)(name, tg);
+fn tg_row(system: SystemId, s: &SystemRadio, tg: u32, g: &Tg, now: i64, hours: i64, names: &Names) -> Value {
+    let info = (names.tg)(system, tg);
     let (c, sec) = hourly(g, now, hours);
     let calls = c.iter().sum::<u32>();
     let enc: u32 = window(&g.hours, now, hours).map(|(_, x)| x.enc).sum();
     json!({
         "tg": tg,
-        "alphaTag": tg_alpha(name, s, tg, names),
+        "alphaTag": tg_alpha(system, s, tg, names),
         "known": info.is_some(),
         "ignore": info.as_ref().is_some_and(|i| i.ignore),
         "first": g.first, "last": g.last,
@@ -937,14 +942,14 @@ fn tg_row(name: &str, s: &SystemRadio, tg: u32, g: &Tg, now: i64, hours: i64, na
     })
 }
 
-fn talkgroups(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names: &Names) -> Value {
+fn talkgroups(system: SystemId, s: &SystemRadio, now: i64, hours: i64, limit: usize, names: &Names) -> Value {
     let since = now - hours * 3600;
     let mut rows: Vec<(u32, &Tg)> = s.tgs.iter().filter(|(_, g)| g.last >= since).map(|(k, g)| (*k, g)).collect();
     // Busiest first (airtime in the range), then most recent.
     let air = |g: &Tg| g.hours.iter().filter(|h| h.0 >= since.div_euclid(3600)).map(|h| h.1.secs).sum::<f32>();
     rows.sort_by(|a, b| air(b.1).total_cmp(&air(a.1)).then(b.1.last.cmp(&a.1.last)));
     let total = rows.len();
-    let rows: Vec<Value> = rows.into_iter().take(limit).map(|(k, g)| tg_row(name, s, k, g, now, hours, names)).collect();
+    let rows: Vec<Value> = rows.into_iter().take(limit).map(|(k, g)| tg_row(system, s, k, g, now, hours, names)).collect();
     json!({ "hours": hours, "total": total, "rows": rows })
 }
 
@@ -968,10 +973,10 @@ fn partners(s: &SystemRadio, unit: u32, n: usize) -> Vec<(u32, u32)> {
     p
 }
 
-fn unit_row(name: &str, s: &SystemRadio, id: u32, u: &Unit, now: i64, names: &Names, partners_n: usize) -> Value {
+fn unit_row(system: SystemId, s: &SystemRadio, id: u32, u: &Unit, now: i64, names: &Names, partners_n: usize) -> Value {
     json!({
         "unit": id,
-        "alias": (names.unit)(name, id).unwrap_or_default(),
+        "alias": (names.unit)(system, id).unwrap_or_default(),
         "first": u.first, "last": u.last, "lastTx": if u.last_tx > 0 { Some(u.last_tx) } else { None },
         "tx": u.tx, "txSecs": (u.tx_secs as f64 * 10.0).round() / 10.0,
         "aff": u.aff, "affT": if u.aff.is_some() { Some(u.aff_t) } else { None }, "reg": u.reg,
@@ -981,27 +986,27 @@ fn unit_row(name: &str, s: &SystemRadio, id: u32, u: &Unit, now: i64, names: &Na
     })
 }
 
-fn units(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names: &Names) -> Value {
+fn units(system: SystemId, s: &SystemRadio, now: i64, hours: i64, limit: usize, names: &Names) -> Value {
     let since = now - hours * 3600;
     let mut rows: Vec<(u32, &Unit)> = s.units.iter().filter(|(_, u)| u.last >= since).map(|(k, u)| (*k, u)).collect();
     rows.sort_by(|a, b| b.1.last_tx.cmp(&a.1.last_tx).then(b.1.last.cmp(&a.1.last)));
     let total = rows.len();
     // Partners only for the first rows (a scan of the pairs each).
-    let rows: Vec<Value> = rows.into_iter().take(limit).enumerate().map(|(i, (k, u))| unit_row(name, s, k, u, now, names, if i < 100 { 3 } else { 0 })).collect();
+    let rows: Vec<Value> = rows.into_iter().take(limit).enumerate().map(|(i, (k, u))| unit_row(system, s, k, u, now, names, if i < 100 { 3 } else { 0 })).collect();
     json!({ "hours": hours, "total": total, "rows": rows })
 }
 
-fn tg_detail(name: &str, s: &SystemRadio, tg: u32, now: i64, hours: i64, names: &Names) -> Value {
+fn tg_detail(system: SystemId, s: &SystemRadio, tg: u32, now: i64, hours: i64, names: &Names) -> Value {
     let Some(g) = s.tgs.get(&tg) else { return json!({ "tg": tg, "row": null }) };
     // Who talks on it, and who is affiliated with it now.
     let mut talkers: Vec<(u32, u32, i64)> = s.units.iter().filter_map(|(k, u)| u.tgs.iter().find(|x| x.0 == tg).map(|x| (*k, x.1, u.last_tx))).collect();
     talkers.sort_by_key(|x| std::cmp::Reverse(x.1));
     talkers.truncate(60);
     let affiliated: Vec<u32> = s.units.iter().filter(|(_, u)| u.aff == Some(tg)).map(|(k, _)| *k).take(200).collect();
-    let alias = |u: u32| (names.unit)(name, u).unwrap_or_default();
+    let alias = |u: u32| (names.unit)(system, u).unwrap_or_default();
     json!({
         "tg": tg,
-        "row": tg_row(name, s, tg, g, now, hours, names),
+        "row": tg_row(system, s, tg, g, now, hours, names),
         "week": hourly(g, now, HOURS).0,
         "talkers": talkers.iter().map(|&(u, n, t)| json!({ "unit": u, "alias": alias(u), "n": n, "lastTx": t })).collect::<Vec<_>>(),
         "affiliated": affiliated.iter().map(|&u| json!({ "unit": u, "alias": alias(u) })).collect::<Vec<_>>(),
@@ -1009,17 +1014,17 @@ fn tg_detail(name: &str, s: &SystemRadio, tg: u32, now: i64, hours: i64, names: 
     })
 }
 
-fn unit_detail(name: &str, s: &SystemRadio, id: u32, now: i64, names: &Names) -> Value {
+fn unit_detail(system: SystemId, s: &SystemRadio, id: u32, now: i64, names: &Names) -> Value {
     let Some(u) = s.units.get(&id) else { return json!({ "unit": id, "row": null }) };
-    let tg_name = |tg: u32| tg_alpha(name, s, tg, names);
+    let tg_name = |tg: u32| tg_alpha(system, s, tg, names);
     let partners = partners(s, id, 24);
     json!({
         "unit": id,
-        "row": unit_row(name, s, id, u, now, names, 0),
+        "row": unit_row(system, s, id, u, now, names, 0),
         "recent": u.recent.iter().rev().map(|&(t, tg, secs)| json!({ "t": t, "tg": tg, "alphaTag": tg_name(tg), "secs": (secs as f64 * 10.0).round() / 10.0 })).collect::<Vec<_>>(),
         "affiliations": s.affiliations.iter().rev().filter(|a| a.1 == id).take(50).map(|&(t, _, tg)| json!({ "t": t, "tg": tg, "alphaTag": tg_name(tg) })).collect::<Vec<_>>(),
         "tgs": u.tgs.iter().map(|&(tg, n)| json!({ "tg": tg, "alphaTag": tg_name(tg), "n": n })).collect::<Vec<_>>(),
-        "partners": partners.iter().map(|&(p, n)| json!({ "unit": p, "alias": (names.unit)(name, p).unwrap_or_default(), "n": n })).collect::<Vec<_>>(),
+        "partners": partners.iter().map(|&(p, n)| json!({ "unit": p, "alias": (names.unit)(system, p).unwrap_or_default(), "n": n })).collect::<Vec<_>>(),
     })
 }
 
@@ -1080,7 +1085,7 @@ fn freqs(s: &SystemRadio, now: i64, hours: i64) -> Value {
 /// together (same talkgroup, pattern and digits, tones as close as a signal
 /// matches them), most recently heard first, each named by the system's
 /// signals as they are now.
-fn tones(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names: &Names) -> Value {
+fn tones(system: SystemId, s: &SystemRadio, now: i64, hours: i64, limit: usize, names: &Names) -> Value {
     use trunk_core::dsp::inband::pattern::{format_plan, PatternKind};
     use trunk_core::dsp::inband::tables::{identify_one, identify_pair, tolerance};
     let span = |t: &[f32]| (t.iter().copied().fold(f32::MAX, f32::min), t.iter().copied().fold(0.0, f32::max));
@@ -1144,7 +1149,7 @@ fn tones(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names:
             };
             ids.truncate(4);
             let heard = PatternKind::from_name(&p.pattern).map(|kind| Heard { kind, hz: &tones, digits: &p.digits, knox: p.knox, frame });
-            let info = (names.tg)(name, h.tg);
+            let info = (names.tg)(system, h.tg);
             json!({
                 "tg": h.tg,
                 "alphaTag": info.as_ref().map_or("", |i| i.alpha_tag.as_str()),
@@ -1159,25 +1164,25 @@ fn tones(name: &str, s: &SystemRadio, now: i64, hours: i64, limit: usize, names:
                 "count": g.len(),
                 "first": g.last().map_or(0, |x| x.t),
                 "last": h.t,
-                "radios": radios.iter().take(3).map(|&(u, n)| json!({ "unit": u, "name": (names.unit)(name, u), "n": n })).collect::<Vec<Value>>(),
+                "radios": radios.iter().take(3).map(|&(u, n)| json!({ "unit": u, "name": (names.unit)(system, u), "n": n })).collect::<Vec<Value>>(),
                 "frame": frame,
                 "ids": ids,
-                "signals": heard.map_or_else(Vec::new, |h| (names.signals)(name, &h, g[0].tg)),
+                "signals": heard.map_or_else(Vec::new, |h| (names.signals)(system, &h, g[0].tg)),
             })
         })
         .collect();
     json!({ "hours": hours, "total": total, "rows": rows })
 }
 
-fn summary(name: &str, s: &SystemRadio, now: i64, names: &Names) -> Value {
+fn summary(system: SystemId, s: &SystemRadio, now: i64, names: &Names) -> Value {
     let day = now - NEW_S;
     let new_tgs: Vec<Value> = s
         .tgs
         .iter()
         .filter(|(_, g)| is_new(s, g.first, now))
-        .map(|(k, g)| json!({ "tg": k, "first": g.first, "alphaTag": tg_alpha(name, s, *k, names) }))
+        .map(|(k, g)| json!({ "tg": k, "first": g.first, "alphaTag": tg_alpha(system, s, *k, names) }))
         .collect();
-    let unknown = s.tgs.iter().filter(|(k, g)| g.last >= day && (names.tg)(name, **k).is_none()).count();
+    let unknown = s.tgs.iter().filter(|(k, g)| g.last >= day && (names.tg)(system, **k).is_none()).count();
     json!({
         "since": s.created,
         "talkgroups": s.tgs.len(),
@@ -1208,12 +1213,27 @@ mod tests {
     }
 
     #[allow(clippy::type_complexity)]
-    fn no_signals(_: &str, _: &Heard, _: u32) -> Vec<String> {
+    fn no_signals(_: SystemId, _: &Heard, _: u32) -> Vec<String> {
         Vec::new()
     }
 
-    fn names() -> (impl Fn(&str, u32) -> Option<TgInfo>, impl Fn(&str, u32) -> Option<String>) {
-        (|_: &str, tg: u32| (tg == 100).then(|| TgInfo { alpha_tag: "Fire Dispatch".into(), ignore: false }), |_: &str, u: u32| (u == 7).then(|| "E7".to_string()))
+    fn names() -> (impl Fn(SystemId, u32) -> Option<TgInfo>, impl Fn(SystemId, u32) -> Option<String>) {
+        (|_: SystemId, tg: u32| (tg == 100).then(|| TgInfo { alpha_tag: "Fire Dispatch".into(), ignore: false }), |_: SystemId, u: u32| (u == 7).then(|| "E7".to_string()))
+    }
+
+    /// The tests' systems: a short name and its id.
+    const SYSTEMS: [&str; 6] = ["x", "y", "z", "dcfd", "conv", "nowhere"];
+
+    fn sid(name: &str) -> SystemId {
+        SystemId(SYSTEMS.iter().position(|n| *n == name).unwrap_or_else(|| panic!("a test system: {name}")) as u32 + 1)
+    }
+
+    fn sidof(name: &str) -> Option<SystemId> {
+        SYSTEMS.contains(&name).then(|| sid(name))
+    }
+
+    fn sname(id: SystemId) -> String {
+        SYSTEMS[id.0 as usize - 1].to_string()
     }
 
     #[test]
@@ -1221,9 +1241,9 @@ mod tests {
         let mut r = Registry::default();
         let t0 = 1_700_000_000 / 3600 * 3600 + 1800;
         // 2½ hours held open, from half past: half an hour, an hour, an hour.
-        r.call_end("x", &call(100, &[], 0.0, 9000.0), t0 + 9000);
-        r.call_end("x", &call(100, &[], 0.0, 10.0), t0 + 9010);
-        let (calls, secs) = hourly(&r.systems["x"].tgs[&100], t0 + 9010, 4);
+        r.call_end(sid("x"), &call(100, &[], 0.0, 9000.0), t0 + 9000);
+        r.call_end(sid("x"), &call(100, &[], 0.0, 10.0), t0 + 9010);
+        let (calls, secs) = hourly(&r.systems[&sid("x")].tgs[&100], t0 + 9010, 4);
         assert_eq!(calls, [0, 0, 0, 2], "a call counts in the hour it ended");
         assert_eq!(secs, [1800.0, 3600.0, 3600.0, 10.0]);
     }
@@ -1233,9 +1253,9 @@ mod tests {
         let mut r = Registry::default();
         let t0 = 1_700_000_000;
         let c = call(100, &[(7, 0.0), (8, 4.0)], 0.0, 10.0);
-        assert_eq!(r.call_start("dcfd", &c, t0), Firsts::default(), "no baseline yet: nothing is 'first'");
-        r.call_end("dcfd", &c, t0 + 10);
-        let s = &r.systems["dcfd"];
+        assert_eq!(r.call_start(sid("dcfd"), &c, t0), Firsts::default(), "no baseline yet: nothing is 'first'");
+        r.call_end(sid("dcfd"), &c, t0 + 10);
+        let s = &r.systems[&sid("dcfd")];
         assert_eq!(s.tgs[&100].calls, 1);
         assert_eq!(s.tgs[&100].secs, 10.0);
         assert_eq!(s.units[&7].tx, 1);
@@ -1244,25 +1264,25 @@ mod tests {
         assert_eq!(s.pairs[&pair_key(8, 7)].n, 1);
         // Two hours on, a new talkgroup is "first heard".
         let c2 = call(200, &[(9, 0.0)], 0.0, 3.0);
-        let f = r.call_start("dcfd", &c2, t0 + 7200);
+        let f = r.call_start(sid("dcfd"), &c2, t0 + 7200);
         assert!(f.tg);
         assert_eq!(f.units, vec![9]);
-        r.call_end("dcfd", &c2, t0 + 7203);
+        r.call_end(sid("dcfd"), &c2, t0 + 7203);
         // Radios whose IDs came in MDC1200 (shown in hex), kept as it's saved.
         use trunk_core::dsp::inband::units::Kind;
         let mut c3 = call(300, &[(0x1c13, 0.0), (0x0703, 1.0), (1_011_270, 2.0)], 0.0, 3.0);
         c3.sources[0].signal = Some(Kind::Mdc1200);
         c3.sources[1].signal = Some(Kind::Mdc1200);
         c3.sources[2].signal = Some(Kind::FleetSync);
-        r.call_end("conv", &c3, t0 + 7210);
-        assert_eq!(r.mdc_units("conv"), [0x0703, 0x1c13]);
-        assert!(r.mdc_units("nowhere").is_empty());
-        let saved: Unit = serde_json::from_value(serde_json::to_value(&r.systems["conv"].units[&0x1c13]).unwrap()).unwrap();
+        r.call_end(sid("conv"), &c3, t0 + 7210);
+        assert_eq!(r.mdc_units(sid("conv")), [0x0703, 0x1c13]);
+        assert!(r.mdc_units(sid("nowhere")).is_empty());
+        let saved: Unit = serde_json::from_value(serde_json::to_value(&r.systems[&sid("conv")].units[&0x1c13]).unwrap()).unwrap();
         assert_eq!(saved.signal, "MDC1200");
-        assert!(serde_json::to_value(&r.systems["dcfd"].units[&7]).unwrap().get("signal").is_none(), "none: not saved");
+        assert!(serde_json::to_value(&r.systems[&sid("dcfd")].units[&7]).unwrap().get("signal").is_none(), "none: not saved");
 
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
         let q = r.query(&json!({ "what": "talkgroups", "system": "dcfd", "hours": 24 }), t0 + 7300, &n);
         assert_eq!(q["total"], 2);
         assert_eq!(q["rows"][0]["tg"], 100, "busiest first");
@@ -1284,13 +1304,13 @@ mod tests {
         let t0 = 1_700_000_000;
         let mut c = call(7, &[], 0.0, 2.0);
         c.talkgroup_info = Some(trunk_core::trunk::Talkgroup { number: 7, alpha_tag: "Townville (other)".into(), ..Default::default() });
-        r.call_start("conv", &c, t0);
-        r.call_end("conv", &c, t0 + 2);
+        r.call_start(sid("conv"), &c, t0);
+        r.call_end(sid("conv"), &c, t0 + 2);
         // A later call that carried no name keeps it.
         c.talkgroup_info = None;
-        r.call_end("conv", &c, t0 + 5);
+        r.call_end(sid("conv"), &c, t0 + 5);
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
         let q = r.query(&json!({ "what": "talkgroups", "system": "conv", "hours": 24 }), t0 + 10, &n);
         assert_eq!((q["rows"][0]["alphaTag"].as_str(), q["rows"][0]["known"].as_bool()), (Some("Townville (other)"), Some(false)));
     }
@@ -1299,8 +1319,8 @@ mod tests {
     fn affiliations_and_saving() {
         let mut r = Registry::default();
         let m = Message { kind: MessageType::Affiliation, source: 42, talkgroup: 100, ..Default::default() };
-        assert_eq!(r.message("x", &m, 10), Some((42, 100)));
-        assert_eq!(r.message("x", &m, 11), None, "the same again isn't news");
+        assert_eq!(r.message(sid("x"), &m, 10), Some((42, 100)));
+        assert_eq!(r.message(sid("x"), &m, 11), None, "the same again isn't news");
         let rec = trunk_recorder_plugin::CallRecord {
             freq: 851_000_000,
             snr: Some(20.0),
@@ -1309,15 +1329,15 @@ mod tests {
             error_list: vec![trunk_recorder_plugin::ErrorInterval { frames: 100, error_count: 5, bad_frames: 1, ..Default::default() }],
             ..Default::default()
         };
-        r.concluded("x", &rec, 20);
+        r.concluded(sid("x"), &rec, 20);
         assert_eq!(r.take_changes().len(), 1);
         assert!(r.take_changes().is_empty());
         let mut back = Registry::default();
-        back.load("x", &serde_json::to_string(&r.systems["x"].whole()).unwrap());
-        assert_eq!(back.systems["x"].units[&42].aff, Some(100));
-        assert_eq!(back.systems["x"].freqs[&851_000_000].errors, 5);
+        back.load(sid("x"), &serde_json::to_string(&r.systems[&sid("x")].whole()).unwrap());
+        assert_eq!(back.systems[&sid("x")].units[&42].aff, Some(100));
+        assert_eq!(back.systems[&sid("x")].freqs[&851_000_000].errors, 5);
         let (tg, unit) = names();
-        let q = back.query(&json!({ "what": "freqs", "system": "x" }), 30, &Names { tg: &tg, unit: &unit, signals: &no_signals });
+        let q = back.query(&json!({ "what": "freqs", "system": "x" }), 30, &Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof });
         assert_eq!(q["rows"][0]["errPerFrame"], 0.05);
     }
 
@@ -1326,14 +1346,14 @@ mod tests {
         use trunk_recorder_plugin::TonePattern;
         let page = |tones: [f64; 2], src| TonePattern { pattern: "two_tone".into(), tones: tones.to_vec(), lengths: vec![0.98, 2.98], format: "Quick Call II".into(), src, origin: "frame".into(), ..Default::default() };
         let mut r = Registry::default();
-        r.tone_pattern("x", 100, &page([781.25, 875.0], 7), 1000);
-        r.tone_pattern("x", 100, &page([781.25, 875.0], 7), 2000);
-        r.tone_pattern("x", 100, &page([1593.75, 1468.75], 8), 3000);
-        r.tone_pattern("x", 200, &page([781.25, 875.0], 9), 4000);
+        r.tone_pattern(sid("x"), 100, &page([781.25, 875.0], 7), 1000);
+        r.tone_pattern(sid("x"), 100, &page([781.25, 875.0], 7), 2000);
+        r.tone_pattern(sid("x"), 100, &page([1593.75, 1468.75], 8), 3000);
+        r.tone_pattern(sid("x"), 200, &page([781.25, 875.0], 9), 4000);
         let (tg, unit) = names();
         // Named by the system's signals as they are now.
-        let signals = |_: &str, h: &Heard, tg: u32| if tg == 100 && h.hz.first().is_some_and(|&a| (a - 781.25).abs() < 1.0) { vec!["NORWALK_EMS".to_string()] } else { Vec::new() };
-        let q = r.query(&json!({ "what": "tones", "system": "x", "hours": 24 }), 5000, &Names { tg: &tg, unit: &unit, signals: &signals });
+        let signals = |_: SystemId, h: &Heard, tg: u32| if tg == 100 && h.hz.first().is_some_and(|&a| (a - 781.25).abs() < 1.0) { vec!["NORWALK_EMS".to_string()] } else { Vec::new() };
+        let q = r.query(&json!({ "what": "tones", "system": "x", "hours": 24 }), 5000, &Names { tg: &tg, unit: &unit, signals: &signals, name: &sname, id: &sidof });
         assert_eq!(q["total"], 3, "one page on two talkgroups is two rows");
         let rows = q["rows"].as_array().unwrap();
         assert_eq!((rows[0]["tg"].as_u64(), rows[0]["count"].as_u64()), (Some(200), Some(1)), "most recent first");
@@ -1354,13 +1374,13 @@ mod tests {
         let t0 = 1_700_000_000;
         let oob = |hz| Call { freq_hz: hz, reason: Some(Reason::NoSource), ..call(100, &[], 0.0, 1.0) };
         for (hz, at) in [(860_000_000, t0), (860_000_000, t0 + 60), (861_000_000, t0 + 7200)] {
-            r.call_start("x", &oob(hz), at);
+            r.call_start(sid("x"), &oob(hz), at);
         }
         // Another reason isn't out of band.
-        r.call_start("x", &Call { freq_hz: 862_000_000, reason: Some(Reason::NoRecorder), ..call(100, &[], 0.0, 1.0) }, t0);
-        r.concluded("x", &trunk_recorder_plugin::CallRecord { freq: 851_000_000, ..Default::default() }, t0);
+        r.call_start(sid("x"), &Call { freq_hz: 862_000_000, reason: Some(Reason::NoRecorder), ..call(100, &[], 0.0, 1.0) }, t0);
+        r.concluded(sid("x"), &trunk_recorder_plugin::CallRecord { freq: 851_000_000, ..Default::default() }, t0);
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
         let q = r.query(&json!({ "what": "freqs", "system": "x", "hours": 24 }), t0 + 7300, &n);
         assert_eq!(q["rows"].as_array().unwrap().len(), 1, "decoding: only frequencies with a call recorded");
         assert_eq!(q["rows"][0]["freqHz"], 851_000_000u64);
@@ -1374,8 +1394,8 @@ mod tests {
         assert_eq!(q["outOfBand"], json!([{ "freqHz": 861_000_000u64, "calls": 1, "totalCalls": 1, "last": t0 + 7200, "hourly": [1] }]));
         // Kept across runs.
         let mut back = Registry::default();
-        back.load("x", &serde_json::to_string(&r.systems["x"].whole()).unwrap());
-        assert_eq!(back.systems["x"].freqs[&860_000_000].out_of_band, 2);
+        back.load(sid("x"), &serde_json::to_string(&r.systems[&sid("x")].whole()).unwrap());
+        assert_eq!(back.systems[&sid("x")].freqs[&860_000_000].out_of_band, 2);
     }
 
     /// The rows taken as they change, made over the registry as it was
@@ -1384,31 +1404,31 @@ mod tests {
     #[test]
     fn changes_taken_by_row_make_the_registry() {
         let mut r = Registry::default();
-        r.call_end("x", &call(100, &[(1, 0.0), (2, 1.0)], 0.0, 3.0), 3);
+        r.call_end(sid("x"), &call(100, &[(1, 0.0), (2, 1.0)], 0.0, 3.0), 3);
         assert_eq!(r.take_changes().len(), 1);
         assert!(r.take_changes().is_empty(), "nothing since");
-        let mut kept = r.systems["x"].clone();
+        let mut kept = r.systems[&sid("x")].clone();
         // Past the caps: radios and pairs go, the oldest first.
         let n = (Caps::default().pairs / 5 + Caps::default().pairs / 40) as u32;
         for i in 0..n {
             let talkers: Vec<(u32, f64)> = (0..6).map(|k| (10_000 + 6 * i + k, k as f64)).collect();
-            r.call_end("x", &call(200 + i % 50, &talkers, 0.0, 6.0), 10 + i as i64);
+            r.call_end(sid("x"), &call(200 + i % 50, &talkers, 0.0, 6.0), 10 + i as i64);
         }
         // Radio 1 went, and is heard again.
-        r.call_end("x", &call(100, &[(1, 0.0)], 0.0, 2.0), 100_000);
-        r.message("x", &Message { kind: MessageType::Affiliation, source: 1, talkgroup: 300, ..Default::default() }, 100_001);
-        r.tone_pattern("x", 100, &trunk_recorder_plugin::TonePattern { origin: "frame".into(), ..Default::default() }, 100_002);
-        r.concluded("x", &trunk_recorder_plugin::CallRecord { freq: 851_000_000, ..Default::default() }, 100_003);
+        r.call_end(sid("x"), &call(100, &[(1, 0.0)], 0.0, 2.0), 100_000);
+        r.message(sid("x"), &Message { kind: MessageType::Affiliation, source: 1, talkgroup: 300, ..Default::default() }, 100_001);
+        r.tone_pattern(sid("x"), 100, &trunk_recorder_plugin::TonePattern { origin: "frame".into(), ..Default::default() }, 100_002);
+        r.concluded(sid("x"), &trunk_recorder_plugin::CallRecord { freq: 851_000_000, ..Default::default() }, 100_003);
         let changes = r.take_changes();
         let (_, c) = &changes[0];
         assert!(!c.gone.units.is_empty() && !c.gone.pairs.is_empty() && c.gone.units.contains(&2), "{} radios, {} pairs went", c.gone.units.len(), c.gone.pairs.len());
         assert!(c.units.iter().any(|(u, _)| *u == 1), "radio 1 heard again");
-        assert!(c.units.len() < r.systems["x"].units.len() + c.gone.units.len(), "only what changed");
+        assert!(c.units.len() < r.systems[&sid("x")].units.len() + c.gone.units.len(), "only what changed");
         kept.apply(c);
-        assert_eq!(serde_json::to_value(&kept).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap());
+        assert_eq!(serde_json::to_value(&kept).unwrap(), serde_json::to_value(&r.systems[&sid("x")]).unwrap());
         // The whole system as rows, made again: what a store imports and loads.
-        let again = SystemRadio::from_changes(&r.systems["x"].whole());
-        assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems["x"]).unwrap());
+        let again = SystemRadio::from_changes(&r.systems[&sid("x")].whole());
+        assert_eq!(serde_json::to_value(&again).unwrap(), serde_json::to_value(&r.systems[&sid("x")]).unwrap());
         // As a log's line, and back.
         let line = serde_json::to_string(c).unwrap();
         assert_eq!(serde_json::from_str::<RegistryChanges>(&line).unwrap().units.len(), c.units.len());
@@ -1432,11 +1452,11 @@ mod tests {
         let mut r = Registry::default();
         r.set_caps(Caps::of(&crate::config::StorageSettings { registry_days: 30, ..Default::default() }));
         let t0 = 1_700_000_000;
-        r.call_end("x", &call(100, &[(1, 0.0), (2, 1.0)], 0.0, 3.0), t0);
-        r.call_end("x", &call(200, &[(3, 0.0)], 0.0, 3.0), t0 + 29 * 86_400);
+        r.call_end(sid("x"), &call(100, &[(1, 0.0), (2, 1.0)], 0.0, 3.0), t0);
+        r.call_end(sid("x"), &call(200, &[(3, 0.0)], 0.0, 3.0), t0 + 29 * 86_400);
         r.take_changes();
         r.expire(t0 + 31 * 86_400);
-        let x = &r.systems["x"];
+        let x = &r.systems[&sid("x")];
         assert!(!x.units.contains_key(&1) && !x.units.contains_key(&2) && x.units.contains_key(&3));
         assert!(!x.tgs.contains_key(&100) && x.tgs.contains_key(&200) && x.pairs.is_empty());
         let (_, c) = r.take_changes().remove(0);
@@ -1445,7 +1465,7 @@ mod tests {
         assert_eq!((gone, c.gone.tgs.clone(), c.gone.pairs.len()), (vec![1, 2], vec![100], 1), "the store is told");
         r.set_caps(Caps::of(&crate::config::StorageSettings { registry_days: 0, ..Default::default() }));
         r.expire(t0 + 10_000 * 86_400);
-        assert!(r.systems["x"].units.contains_key(&3), "0: kept however old");
+        assert!(r.systems[&sid("x")].units.contains_key(&3), "0: kept however old");
     }
 
     /// A page is 500 rows by default, and a `limit` up to the cap is every
@@ -1458,9 +1478,9 @@ mod tests {
             s.units.insert(1_000_000 + u, Unit { first: t, last: t, last_tx: t, tx: 1, tx_secs: 1.0, aff: None, aff_t: 0, reg: None, tgs: Default::default(), recent: Default::default(), signal: String::new() });
         }
         let mut r = Registry::default();
-        r.put("x", s);
+        r.put(sid("x"), s);
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
         let rows = |r: &Registry, limit: Option<u64>| {
             let mut q = json!({ "what": "units", "system": "x", "hours": 24 });
             if let Some(l) = limit {
@@ -1483,21 +1503,21 @@ mod tests {
         r.set_caps(Caps::of(&crate::config::StorageSettings { registry_radios: 1_000, ..Default::default() }));
         let t0 = 1_700_000_000;
         for u in 1..=1_200u32 {
-            r.call_end("x", &call(100, &[(u, 0.0)], 0.0, 1.0), t0 + u as i64);
+            r.call_end(sid("x"), &call(100, &[(u, 0.0)], 0.0, 1.0), t0 + u as i64);
         }
-        let n = r.systems["x"].units.len();
+        let n = r.systems[&sid("x")].units.len();
         assert!((1_000..=1_100).contains(&n), "past the cap by a tenth, the least recently heard go: {n}");
-        assert!(!r.systems["x"].units.contains_key(&1) && r.systems["x"].units.contains_key(&1_200));
+        assert!(!r.systems[&sid("x")].units.contains_key(&1) && r.systems[&sid("x")].units.contains_key(&1_200));
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
         let q = r.query(&json!({ "what": "units", "system": "x", "limit": 50_000 }), t0 + 1_300, &n);
         assert_eq!(q["rows"].as_array().unwrap().len(), 1_000, "a limit past the cap is the cap");
         let q = r.query(&json!({ "what": "summary" }), t0 + 1_300, &n);
         assert_eq!(q["caps"], json!({ "talkgroups": 5000, "radios": 1_000, "days": 365 }));
         // A system put from the store, and one made later, get the caps too.
-        r.put("y", SystemRadio::new(t0));
-        r.call_end("z", &call(100, &[(1, 0.0)], 0.0, 1.0), t0);
-        assert_eq!((r.systems["y"].caps, r.systems["z"].caps), (r.caps(), r.caps()));
+        r.put(sid("y"), SystemRadio::new(t0));
+        r.call_end(sid("z"), &call(100, &[(1, 0.0)], 0.0, 1.0), t0);
+        assert_eq!((r.systems[&sid("y")].caps, r.systems[&sid("z")].caps), (r.caps(), r.caps()));
     }
 
     #[test]
@@ -1515,11 +1535,11 @@ mod tests {
         let adp = CipherId { algid: 0xAA, keyid: 0x1B50 };
         for (i, cipher) in [Some(adp), None, Some(adp), Some(CipherId { algid: 0x84, keyid: 2 })].into_iter().enumerate() {
             let c = Call { encrypted: cipher.is_some(), cipher, ..call(100, &[], 0.0, 5.0) };
-            r.call_end("dcfd", &c, t0 + 10 * i as i64);
+            r.call_end(sid("dcfd"), &c, t0 + 10 * i as i64);
         }
-        assert_eq!(r.systems["dcfd"].tgs[&100].ciphers, vec![(0x84, 2, 1, t0 + 30), (0xAA, 0x1B50, 2, t0 + 20)]);
+        assert_eq!(r.systems[&sid("dcfd")].tgs[&100].ciphers, vec![(0x84, 2, 1, t0 + 30), (0xAA, 0x1B50, 2, t0 + 20)]);
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
         let q = r.query(&json!({ "what": "tg", "system": "dcfd", "key": 100, "hours": 24 }), t0 + 40, &n);
         assert_eq!(q["row"]["ciphers"][1], json!({ "algid": 0xAA, "keyId": 0x1B50, "name": "ADP", "calls": 2, "last": t0 + 20 }));
     }
@@ -1531,14 +1551,14 @@ mod tests {
         let adp = CipherId { algid: 0xAA, keyid: 0x1B50 };
         // Two days ago: four encrypted calls. Now: one encrypted in four.
         for i in 0..4 {
-            r.call_end("dcfd", &Call { encrypted: true, cipher: Some(adp), ..call(100, &[], 0.0, 5.0) }, t0 + i);
+            r.call_end(sid("dcfd"), &Call { encrypted: true, cipher: Some(adp), ..call(100, &[], 0.0, 5.0) }, t0 + i);
         }
         let now = t0 + 2 * 86_400;
         for i in 0..4 {
-            r.call_end("dcfd", &Call { encrypted: i == 0, ..call(100, &[], 0.0, 5.0) }, now - 100 + i);
+            r.call_end(sid("dcfd"), &Call { encrypted: i == 0, ..call(100, &[], 0.0, 5.0) }, now - 100 + i);
         }
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
         let row = |r: &Registry, hours: i64| r.query(&json!({ "what": "tg", "system": "dcfd", "key": 100, "hours": hours }), now, &n)["row"].clone();
         let day = row(&r, 24);
         assert_eq!((day["calls"].as_u64(), day["encPct"].as_f64(), day["totalCalls"].as_u64()), (Some(4), Some(25.0), Some(8)));
@@ -1548,7 +1568,7 @@ mod tests {
         assert_eq!(week["ciphers"][0]["calls"], 4);
 
         // Kept: a clear hour as it always was, `[calls, seconds]`; an encrypted one with its count and ciphers.
-        let kept = serde_json::to_value(&r.systems["dcfd"].tgs[&100].hours).unwrap();
+        let kept = serde_json::to_value(&r.systems[&sid("dcfd")].tgs[&100].hours).unwrap();
         let (h0, h1) = (t0.div_euclid(3600), now.div_euclid(3600));
         assert_eq!(kept, json!([[h0, [4, 20.0, 4, [[0xAA, 0x1B50, 4]]]], [h1, [4, 20.0, 1, []]]]));
         assert_eq!(serde_json::to_value(TgHour { calls: 2, secs: 9.5, ..Default::default() }).unwrap(), json!([2, 9.5]));
@@ -1570,19 +1590,19 @@ mod tests {
             [200, { "first": now - 9000, "last": now - 3600, "calls": 4, "enc": 0, "hours": [[h1, [4, 20.0]]] }]
         ] });
         let mut r = Registry::default();
-        r.load("dcfd", &kept.to_string());
+        r.load(sid("dcfd"), &kept.to_string());
         let (tg, unit) = names();
-        let n = Names { tg: &tg, unit: &unit, signals: &no_signals };
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
         let row = |r: &Registry, k: u32| r.query(&json!({ "what": "tg", "system": "dcfd", "key": k, "hours": 24 }), now, &n)["row"].clone();
         assert_eq!(row(&r, 100)["encPct"].as_f64(), Some(100.0), "as before the upgrade");
         assert_eq!(row(&r, 100)["ciphers"][0]["calls"], 10);
         assert_eq!(row(&r, 200)["encPct"].as_f64(), Some(0.0));
         // Saved again (marked) and loaded: not redone over hours since.
-        let again = serde_json::to_string(&r.systems["dcfd"].whole()).unwrap();
+        let again = serde_json::to_string(&r.systems[&sid("dcfd")].whole()).unwrap();
         let mut r2 = Registry::default();
-        r2.load("dcfd", &again);
-        assert_eq!(r2.systems["dcfd"].tgs[&100].hours, r.systems["dcfd"].tgs[&100].hours);
-        assert!(r2.systems["dcfd"].tgs[&100].enc_hourly);
+        r2.load(sid("dcfd"), &again);
+        assert_eq!(r2.systems[&sid("dcfd")].tgs[&100].hours, r.systems[&sid("dcfd")].tgs[&100].hours);
+        assert!(r2.systems[&sid("dcfd")].tgs[&100].enc_hourly);
     }
 
     /// How big a system's registry file gets, and how long turning it into
