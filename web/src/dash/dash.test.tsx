@@ -579,11 +579,16 @@ test("RF: a source whose gain is low says so and offers Tune gain; the tuning's 
   transport.onMessage({ type: "stats", t: Date.now() / 1000, values: { "src/RTL-SDR SN 1/peak": -32, "src/RTL-SDR SN 1/clipPct": 0, "src/RTL-SDR SN 1/quiet": 1 } });
   setView("rf");
   let page = text(renderToString(<RfPage />));
-  assert.match(page, /Peaks -32 dBFS · gain low — raise the gain/, "no tuner here: the fix by hand");
+  assert.match(page, /Gain too low · peaks -32 dBFS — raise it in Setup/, "no tuner here: the fix by hand");
   assert.doesNotMatch(page, /Tune gain/);
+  // A View user: what's wrong, not what they can't do about it.
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "listen", surveyBands: [], capabilities: ["service", "drivers", "tuneGain"] });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Gain too low · peaks -32 dBFS(?! —)/);
+  assert.doesNotMatch(page, /Tune gain|in Setup/);
   transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers", "tuneGain"] });
   page = text(renderToString(<RfPage />));
-  assert.match(page, /Peaks -32 dBFS · gain low — Tune gain/);
+  assert.match(page, /Gain too low · peaks -32 dBFS — Tune gain/);
   assert.match(renderToString(<RfPage />), /<button class="btn primary small"[^>]*>Tune gain<\/button>/, "the button, standing out");
   const report = { source: 0, radio: "Source 1", plan: [], scored: ["dcfd"], watched: [], start: [["gain", 25.4]] as [string, number][], estimateS: 1482, applied: false };
   transport.onMessage({ type: "tune", ...report, phase: "running", tried: [], now: [["gain", 33.8]], elapsedS: 60 });
@@ -592,7 +597,7 @@ test("RF: a source whose gain is low says so and offers Tune gain; the tuning's 
   transport.onMessage({ type: "tune", ...report, phase: "done", tried: [], best: [["gain", 33.8]], applied: true, elapsedS: 600 });
   page = text(renderToString(<RfPage />));
   assert.match(page, /Tune gain Kept 33\.8 dB Tried 0 Took 10 m/);
-  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain low · peaks -32 dBFS");
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain too low · peaks -32 dBFS");
 });
 
 test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {

@@ -134,7 +134,7 @@ coloured light. Click one to go to the page about it. These are the events you c
 | `<system>: control channel lost · … MHz` | red | The control channel stopped decoding and the recorder is hunting for another. Check the antenna, gain and frequency; see [Troubleshooting](../troubleshooting.md#the-control-channel-isnt-decoding). |
 | `<system>: control channel back` | green | Back to normal. |
 | `<source>: dropping samples` | amber | The computer or USB bus isn't keeping up; calls on that source lose audio. See [Troubleshooting](../troubleshooting.md#dropped-samples). |
-| `<source>: clipping …%` | amber | More than 0.5% of samples are at full scale: the gain is too high, or a strong signal is nearby. Lower the gain a few dB. |
+| `<source>: gain too high · …% clipping` | amber | More than 0.5% of samples are at full scale: the gain is too high, or a strong signal is nearby. Lower the gain a few dB. |
 | `<source>: clean again` | green | No more drops or clipping. |
 | `<plugin>: error — …` / `warning — …` / `ok — …` | red / amber / green | A plugin's own status changed. See the Plugins page. |
 | `<target>: not answering` | red | One of the hosts checked (`monitor.checkHosts`) stopped answering. |

@@ -316,11 +316,17 @@ export const UNUSED_SOURCE_WHY = "The other sources reach every channel the conf
 export function gainOff(s: AppState, src: SourceStatus): { dir: "low" | "high"; why: string } | null {
   const clip = recentAvg(K.src(src.label, "clipPct"), 10) ?? 0;
   const peak = val(s, K.src(src.label, "peak"));
-  const fix = (dir: "low" | "high") => (s.capabilities.includes("tuneGain") ? "Tune gain" : dir === "low" ? "raise the gain" : "lower the gain");
-  if (clip > 0.5) return { dir: "high", why: `${num(clip, 1)}% clipping · gain high — ${fix("high")}` };
-  if (peak !== null && peak > -1) return { dir: "high", why: `Peaks at full scale · gain high — ${fix("high")}` };
-  if (val(s, K.src(src.label, "quiet"))) return { dir: "low", why: `Peaks ${peak === null ? "—" : num(peak, 0)} dBFS · gain low — ${fix("low")}` };
+  const off = (dir: "low" | "high", measured: string) => ({ dir, why: `Gain too ${dir} · ${measured}${gainFix(s, dir, "")}` });
+  if (clip > 0.5) return off("high", `${num(clip, 1)}% clipping`);
+  if (peak !== null && peak > -1) return off("high", "peaks at full scale");
+  if (val(s, K.src(src.label, "quiet"))) return off("low", `peaks ${peak === null ? "—" : num(peak, 0)} dBFS`);
   return null;
+}
+
+/** What to do about a gain that's too `dir`, after " — ": nothing for who can't change it (a View user). `where`: where the tuner is, said from elsewhere. */
+export function gainFix(s: AppState, dir: "low" | "high", where: string): string {
+  if (s.access !== "control") return "";
+  return ` — ${s.capabilities.includes("tuneGain") ? `Tune gain${where}` : `${dir === "low" ? "raise" : "lower"} it in Setup`}`;
 }
 
 /** A source: drops, gain (gainOff), frequency error, sample rate; nothing wrong but nothing for it to do. */

@@ -3,11 +3,11 @@
 // plugins and the computer in a line each, and what happened lately.
 
 import { formatMhz } from "../config.ts";
-import { can, mayEdit, pluginOn, radioQuery, statsSince, setView, start, usePolled, useApp, type AppState } from "../controller.ts";
+import { can, mayEdit, pluginOn, radioQuery, statsSince, setView, snapshot, start, usePolled, useApp, type AppState } from "../controller.ts";
 import { Card, Fig, Figs, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { change, connections, connectionsSummary, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, scoped, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { change, connections, connectionsSummary, gainFix, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, scoped, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -232,9 +232,9 @@ export function eventText(e: MonitorEvent): string {
     case "sourceDrops":
       return `${e.source}: dropping samples`;
     case "sourceClipping":
-      return `${e.source}: clipping ${e.pct}%`;
+      return `${e.source}: gain too high · ${e.pct}% clipping`;
     case "sourceQuiet":
-      return `${e.source}: gain low · peaks ${e.peakDb} dBFS`;
+      return `${e.source}: gain too low · peaks ${e.peakDb} dBFS`;
     case "sourceRecovered":
       return `${e.source}: clean again`;
     case "pluginHealth":
@@ -272,9 +272,9 @@ function eventTip(e: MonitorEvent): string | undefined {
     case "clockStep":
       return (e.byMs ?? 0) > 0 ? "Its time service set it, or the computer slept" : undefined;
     case "sourceClipping":
-      return "Samples at full scale: lower the gain, or Tune gain on its RF card";
+      return `Samples at full scale${gainFix(snapshot(), "high", " on its RF card")}`;
     case "sourceQuiet":
-      return "Samples a few ADC steps tall for a minute: raise the gain, or Tune gain on its RF card";
+      return `Samples a few ADC steps tall for a minute${gainFix(snapshot(), "low", " on its RF card")}`;
     default:
       return undefined;
   }
