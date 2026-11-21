@@ -9,9 +9,10 @@
 //!
 //! - **listen**: everything the recorder shows and plays (status, calls on
 //!   the air, recorded calls, live audio, the dashboard's figures), and
-//!   nothing it could change. The config it's shown leaves out plugin
-//!   settings, key sources (API keys, passwords' files) and the users;
-//!   plugin and interface management messages aren't sent to it.
+//!   nothing it could change. The config it's sent is only what its pages
+//!   show ([`view::listen_config`]): no plugin settings, key sources, users,
+//!   addresses or folders; plugin and interface management messages aren't
+//!   sent to it.
 //! - **control**: what the built-in interface can do.
 //!
 //! Signing in (`server.auth`) is off unless enabled. On, a request also
@@ -35,7 +36,6 @@ use std::path::Path;
 
 use axum::http::{header, HeaderMap};
 use hmac::{Hmac, KeyInit, Mac};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use trunk_app::config::{Auth, AuthCloudflare, AuthToken, AuthUser};
 use trunk_app::protocol::Secret;
@@ -48,6 +48,7 @@ pub mod cli;
 pub mod cloudflare;
 pub mod passkey;
 pub mod state;
+pub mod view;
 
 /// Which port a request came in on.
 #[derive(Clone, Debug)]
@@ -501,31 +502,6 @@ pub fn add_user(auth: &mut Auth, name: &str, access: ApiAccess) -> Result<Secret
     Ok(Secret::new(secret))
 }
 
-/// The config as a listen-only page sees it: without plugin settings and
-/// key sources, the recorder's or any system's, the database's connection
-/// string (it can hold a password), or the users.
-pub fn redact_config(mut c: Value) -> Value {
-    if let Some(o) = c.as_object_mut() {
-        o.remove("plugins");
-        o.remove("keys");
-    }
-    if let Some(o) = c["storage"].as_object_mut() {
-        o.remove("url");
-    }
-    if let Some(o) = c["server"].as_object_mut() {
-        o.remove("auth");
-    }
-    for list in ["systems", "conventional"] {
-        for s in c[list].as_array_mut().into_iter().flatten() {
-            if let Some(o) = s.as_object_mut() {
-                o.remove("plugins");
-                o.remove("keys");
-            }
-        }
-    }
-    c
-}
-
 /// Why `caller` (with listen access) can't send a `ty` command: its interface's access, or its user's.
 pub fn refusal(ctx: &Ctx, caller: &Caller, ty: &str) -> String {
     let port_listens = match &caller.door {
@@ -543,19 +519,9 @@ pub fn refusal(ctx: &Ctx, caller: &Caller, ty: &str) -> String {
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
-    use serde_json::json;
 
     #[test]
-    fn listen_sees_no_secrets_and_changes_nothing() {
-        let c = json!({ "plugins": { "openmhz": { "settings": { "apiKey": "k" } } }, "keys": { "a": { "file": "k.json" } },
-                        "systems": [{ "shortName": "x", "plugins": { "openmhz": { "apiKey": "k" } }, "keys": "a" }],
-                        "conventional": [{ "shortName": "c", "plugins": {} }], "server": { "port": 8080, "auth": { "enabled": true, "users": { "luke": { "access": "control", "token": { "hash": "hhh", "created": 1 } } } } },
-                        "storage": { "backend": "postgres", "url": "postgres://trp:secret@db/trunk" } });
-        let r = redact_config(c);
-        assert!(!r.to_string().contains("apiKey") && !r.to_string().contains("k.json") && !r.to_string().contains("secret") && !r.to_string().contains("hhh") && r["server"].get("auth").is_none());
-        assert_eq!(r["storage"]["backend"], "postgres", "which backend is no secret");
-        assert_eq!(r["systems"][0]["shortName"], "x");
-        assert_eq!(r["server"]["port"], 8080);
+    fn listen_changes_nothing() {
         let parse = |t: &str| trunk_app::protocol::Command::parse(t).unwrap();
         assert!(parse(r#"{"type":"listen","on":true}"#).needs() == ApiAccess::Listen && parse(r#"{"type":"callsQuery","id":1}"#).needs() == ApiAccess::Listen);
         for c in [r#"{"type":"setConfig","config":{},"version":1}"#, r#"{"type":"start"}"#, r#"{"type":"quit"}"#, r#"{"type":"install","kind":"plugin","id":"x"}"#, r#"{"type":"store","kind":"interface"}"#, r#"{"type":"listDir"}"#, r#"{"type":"unlockKeys","source":"a","password":"b"}"#, r#"{"type":"createToken","id":1,"name":"a","access":"listen"}"#] {

@@ -1776,7 +1776,8 @@ full reference is `docs/api/README.md`.
 
 Every message to the browsers goes through `runtime::publish(hub, ToClient)`, which serializes it
 once as each kind of connection may hear it (`runtime::Out::of`: for everyone, control access
-only, or the config in two versions, the listen one without plugin settings and key sources).
+only, or the config in two versions, the listen one only what a View user's pages show: `access::view::listen_config`, where every
+config field is named as shown or withheld, so a new one doesn't compile until it's decided).
 Bodies still put together as JSON ride as a `Body`. A command that doesn't parse, or that the
 connection's access doesn't allow, is answered with an `error`. `hello.capabilities` says what a
 recorder can do beyond recording (`Capability`: `service`, `drivers`, `plugins`, `interfaces`,

@@ -613,7 +613,7 @@ too: `{"type": "createToken", "id": 1, "name": "wall", "access": "listen"}`
 makes user `wall` with an access token, answered to it alone with
 `tokenCreated` (`id`, `name`, and the token's `secret`, or `error`). It works
 with signing in off too. Removing a user is a `setConfig` without them in
-`server.auth.users`. A listen-only connection's config has no `server.auth`.
+`server.auth.users`. A listen-only connection's config has no `server.auth`, nor anything else its pages don't show: plugin settings and delays, key sources, `server.bind`, `allowedOrigins`, `interfaces` and `tls`, `storage.url`, folders and files (`recording.captureDir`, `ramSpool.dir`, `log.dir`, `diagnostics.captureDir`, `channelFile`), and keys the recorder doesn't know. Each comes as its default or is left out.
 
 ## How a connection goes
 

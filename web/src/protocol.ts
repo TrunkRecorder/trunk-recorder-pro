@@ -616,7 +616,7 @@ export interface MonitorSettings {
 
 /**
  * What a page may do with the recorder's API. "listen": see what the recorder does and play its
- * calls, change nothing (its config comes without plugin settings and key sources). "control":
+ * calls, change nothing (its config is only what its pages show: no plugin settings, key sources, users, addresses or folders). "control":
  * everything the built-in interface can.
  */
 export type ApiAccess = "listen" | "control";

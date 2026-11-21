@@ -50,7 +50,7 @@ The key is the interface's id: lowercase letters, digits and `-`.
 |---|:---:|---|---|---|
 | `port` | | the next free one | integer | Its port: not the built-in interface's, nor another interface's. Missing or `0`: the first free port above `server.port` is given it when the config is loaded |
 | `enabled` | | `true` | bool | Served. `false`: kept, but not served |
-| `access` | | `"listen"` | string | What its pages may do with the API. `"listen"`: see what the recorder does and play its calls, change nothing (the config they see has no plugin settings or key sources). `"control"`: everything the built-in interface can, including changing settings, installing plugins and quitting. Any case; anything else makes the file unreadable |
+| `access` | | `"listen"` | string | What its pages may do with the API. `"listen"`: see what the recorder does and play its calls, change nothing (the config they're sent is only what their pages show: [what View is sent](#what-view-is-sent)). `"control"`: everything the built-in interface can, including changing settings, installing plugins and quitting. Any case; anything else makes the file unreadable |
 | `path` | | `""` | string | A folder of your own holding its `index.html`: absolute, `~/…`, or relative to the config file's folder. Empty: the copy installed from the store, in `interfaces/<id>/` beside the config |
 
 Changes take effect at once: an interface is started, stopped or moved to its new port without a
@@ -123,7 +123,7 @@ their token:
 
 | Role (in Setup) | In the config | May |
 |---|---|---|
-| View | `listen` | See and play everything (status, calls on the air, recorded calls, live audio, the dashboard), change nothing. The config it sees has no plugin settings, key sources or users |
+| View | `listen` | See and play everything (status, calls on the air, recorded calls, live audio, the dashboard), change nothing. The config it's sent is only what its pages show: [what View is sent](#what-view-is-sent) |
 | Admin | `control` | Everything the built-in interface can, including adding and removing users |
 
 The token's secret (`trp_` and 64 hex digits) is shown once, when it's made. The config keeps only
@@ -131,6 +131,23 @@ its SHA-256, so a lost secret can't be recovered: remove the user and add them a
 user signs out everyone signed in as them (from Setup at once; with `trunk-pro access remove`, at
 the restart). Programs and scripts sign in with a token too; see
 [Signing in](../api/README.md#signing-in) in the API docs.
+
+#### What View is sent
+
+A View user's browser (and a `listen` interface's pages) gets the config with only what its pages
+show. Everything else comes as its default or is left out:
+
+| Sent | Withheld |
+|---|---|
+| Radios (`sources`) | Plugin settings and `pluginDelays`, the recorder's and each system's |
+| Systems, sites, channels, signals, names | Key sources (`keys`), and which a system uses |
+| Recording rules, vocoder, file name format | Users, proxy and Cloudflare settings (`server.auth`) |
+| `server.port`, `hostname`, `trpApi`, `autoStart` | `server.bind`, `allowedOrigins`, `interfaces`, `tls` |
+| `storage` but its `url` | `storage.url` (it can hold a password) |
+| `log` but its `dir`, `monitor`, capture rules | Folders and files: `recording.captureDir`, `ramSpool.dir`, `log.dir`, `diagnostics.captureDir`, a conventional system's `channelFile` |
+| | Keys the recorder doesn't know (a typo, another program's) |
+
+A setting added to the recorder later is withheld until it's decided otherwise.
 
 **Without a token.** **None** (the default): everything but the sign-in page needs a token.
 **View** (`anonymous: "listen"`): anyone who reaches the port can look and listen, and needs a

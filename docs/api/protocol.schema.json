@@ -46,7 +46,7 @@
         "listen",
         "control"
       ],
-      "description": "What a page may do with the recorder's API. \"listen\": see what the recorder does and play its calls, change nothing (its config comes without plugin settings and key sources). \"control\": everything the built-in interface can."
+      "description": "What a page may do with the recorder's API. \"listen\": see what the recorder does and play its calls, change nothing (its config is only what its pages show: no plugin settings, key sources, users, addresses or folders). \"control\": everything the built-in interface can."
     },
     "AuthCloudflare": {
       "type": "object",

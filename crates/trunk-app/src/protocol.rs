@@ -806,7 +806,8 @@ mod tests {
     /// Who hears each message, decided for every one: control access alone
     /// for plugin and interface management and key containers; everyone else
     /// (a View user too) the rest, each reviewed for what it carries (the
-    /// config goes out without its secrets: `trunk-pro`'s `redact_config`;
+    /// config goes out as only what a View user's pages show: `trunk-pro`'s
+    /// `listen_config`;
     /// answers to commands go to whoever sent them, and those that need
     /// control are refused to the rest). A message that's new fails this test
     /// until it's decided here.

@@ -57,10 +57,9 @@ impl Out {
     pub fn of(m: &ToClient) -> Out {
         match m {
             ToClient::Quit => Out::Quit,
-            ToClient::Config { .. } => {
-                let mut listen = m.to_value();
-                listen["config"] = crate::access::redact_config(listen["config"].take());
-                Out::Config { full: m.to_json(), listen: listen.to_string() }
+            ToClient::Config { config, version } => {
+                let listen = ToClient::Config { config: Box::new(crate::access::view::listen_config(config)), version: *version };
+                Out::Config { full: m.to_json(), listen: listen.to_json() }
             }
             _ if m.audience() == Audience::Control => Out::Control(m.to_json()),
             _ => Out::Text(m.to_json()),

@@ -605,7 +605,9 @@ fn the_servers_messages() {
     assert_eq!((&greeting.last().unwrap()["access"], &greeting.last().unwrap()["user"], &listening.last().unwrap()["access"]), (&json!("control"), &json!("luke"), &json!("listen")));
     assert!(listening.last().unwrap().get("user").is_none());
     let config = |g: &[Value]| g.iter().find(|m| m["type"] == "config").unwrap()["config"].clone();
-    assert_eq!(config(&listening), crate::access::redact_config(config(&greeting)));
+    let sent = |c: Value| serde_json::to_value(crate::access::view::listen_config(&serde_json::from_value(c).unwrap())).unwrap();
+    assert_eq!(config(&listening), sent(config(&greeting)));
+    assert_ne!(config(&listening), config(&greeting), "and not the whole of it");
     let q = serde_json::from_value(json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" })).unwrap();
     let mut queries = vec![crate::server::stats_query(&ctx, &q).to_value()];
     assert!(queries[0]["series"]["sys/p25/cc/good"]["v"].is_array(), "{}", queries[0]);
