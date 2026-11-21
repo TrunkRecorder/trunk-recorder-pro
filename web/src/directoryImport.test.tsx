@@ -44,7 +44,7 @@ function connected(c: Config, talkgroups: Record<string, Talkgroup[]> = {}): ToR
   };
   transport.onConnection(true);
   transport.onMessage({ type: "config", config: c, version: (version += 100) });
-  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service"] });
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service"] });
   for (const [system, rows] of Object.entries(talkgroups)) transport.onMessage({ type: "talkgroups", system, talkgroups: rows });
   return sent;
 }

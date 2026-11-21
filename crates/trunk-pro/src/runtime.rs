@@ -57,10 +57,9 @@ impl Out {
     pub fn of(m: &ToClient) -> Out {
         match m {
             ToClient::Quit => Out::Quit,
-            ToClient::Config { .. } => {
-                let mut listen = m.to_value();
-                listen["config"] = crate::access::redact_config(listen["config"].take());
-                Out::Config { full: m.to_json(), listen: listen.to_string() }
+            ToClient::Config { config, version } => {
+                let listen = ToClient::Config { config: Box::new(crate::access::view::listen_config(config)), version: *version };
+                Out::Config { full: m.to_json(), listen: listen.to_json() }
             }
             _ if m.audience() == Audience::Control => Out::Control(m.to_json()),
             _ => Out::Text(m.to_json()),
@@ -150,6 +149,14 @@ pub struct Ctx {
     pub unlocked: crate::unlock::Unlocked,
     /// Recordings of what the radios receive ([`crate::iq_capture`]).
     pub iq: crate::iq_capture::Captures,
+    /// What browsers' sign-in cookies are signed with ([`crate::access::Sessions`]).
+    pub sessions: crate::access::Sessions,
+    /// Passkey sign-ins and adds started and not yet finished ([`crate::access::passkey`]).
+    pub passkeys: crate::access::passkey::Ceremonies,
+    /// The keys Cloudflare Access's tokens are checked with, as last fetched ([`crate::access::cloudflare`]).
+    pub cloudflare: crate::access::cloudflare::Keys,
+    /// HTTPS, when it's served (`server.tls` as the app started): every port's.
+    pub tls: std::sync::OnceLock<crate::tls::Tls>,
     /// A radio's gain being tuned ([`crate::tune`]), and its last report (for browsers that connect).
     pub tune: crate::tune::Slot,
 }
@@ -191,6 +198,11 @@ pub enum EngineCmd {
 }
 
 impl Ctx {
+    /// "https" while HTTPS is served, else "http": the URLs of its ports.
+    pub fn scheme(&self) -> &'static str {
+        if self.tls.get().is_some() { "https" } else { "http" }
+    }
+
     /// What the connected browsers watch.
     pub fn topics(&self) -> trunk_app::stats::Topics {
         trunk_app::stats::Topics::new(self.topics.lock().unwrap().keys().cloned())

@@ -361,6 +361,27 @@ uses the API on its own port: a page on port 8081 is refused on 8080. For a page
 something else, add its origin to **Pages served elsewhere** on the Interfaces page. See
 [Remote access](guides/interface.md#remote-access).
 
+## Signed out, or locked out
+
+With [signing in](configuration/server-and-log.md#access) on, a browser without a token gets the
+sign-in page, and a program gets `401` (`Sign in first: an access token as Authorization: Bearer,
+?token=, or POST /api/login.`).
+
+- **"Not a token here"** on the sign-in page: the secret is wrong, or its user was removed. A
+  token's secret can't be shown again; ask an Admin to add you again (**New token**).
+- **Signed out everywhere at once**: someone removed your user or made your token again, signing
+  in was turned on, or `session-key` beside the config was deleted (what browsers' sign-ins are
+  signed with: deleting it and restarting signs every browser out). A sign-in lasts 30 days. Signed
+  out at every restart: the log says the recorder couldn't keep `session-key` (check the config
+  folder's permissions).
+- **No way to sign in, only View**: with **Without a token** set to **View**, the recorder shows
+  the dashboard without asking. **Sign in** in the top bar (or `/signin`) is the sign-in page.
+- **Locked out** (no Admin token left to you): on the recorder's computer, run
+  `trunk-pro access off` (with `--config` if it uses another config) and restart the recorder.
+  Then add a new Admin in Setup → **Recording** → **Access** and turn **Sign-in** back on.
+- **A page from another origin gets 401** although it's in `server.allowedOrigins`: with signing
+  in on, it must send a token too ([API docs](api/README.md#a-page-on-another-origin)).
+
 ## Where is the log?
 
 The log always goes to the terminal (stderr) unless you turn that off. Set it up in Setup →

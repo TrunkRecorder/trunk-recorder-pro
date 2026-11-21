@@ -7,7 +7,7 @@
 
 import { useState } from "react";
 import type { ClockInfo, MonitorSettings, PlatformInfo, SeriesData } from "../protocol.ts";
-import { updateConfig, useApp, useTopic, type StatsRange } from "../controller.ts";
+import { mayEdit, updateConfig, useApp, useTopic, type StatsRange } from "../controller.ts";
 import { Card, Choice, Fig, Figs, HeatStrip, Info, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, ms, num, pct } from "../fmt.ts";
 import { connections, connectionsSummary, platformHealth, total, useHistory, useRanges } from "./data.ts";
@@ -192,7 +192,8 @@ export function PlatformPage() {
       <Card
         title="Network"
         actions={
-          s.config && (
+          s.config &&
+          mayEdit() && (
             <Switch
               label="Checks"
               title="The hosts checked (monitor.checkHosts) and the clock's time server (monitor.timeServer). Off: neither is asked."
@@ -255,7 +256,7 @@ export function PlatformPage() {
           </div>
         )}
         {v["net/dns"] !== undefined && <Figs inline items={[{ k: "Name lookup", v: num(v["net/dns"], 0), u: "ms" }]} />}
-        {s.config?.monitor && <NetworkSettings m={s.config.monitor} />}
+        {s.config?.monitor && mayEdit() && <NetworkSettings m={s.config.monitor} />}
       </Card>
       <ClockCard c={p.clock} offsets={hist?.["clock/offsetMs"] ?? null} osMissing={missing("clockSynced")} checksOff={!checks} />
       <Card title="This computer">

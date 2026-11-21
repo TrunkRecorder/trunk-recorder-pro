@@ -60,8 +60,8 @@ trunk-pro                  # opens http://localhost:8080
 
 Run from Terminal, the log is printed in the window, and Ctrl-C stops it (calls in progress are
 saved first). `trunk-pro --no-open` starts it without opening a browser, `--start` begins recording
-at once, and `--bind 0.0.0.0` makes the interface reachable from other machines (there is no
-login, so only do that on a network you trust). [Command line](../command-line.md) lists every
+at once, and `--bind 0.0.0.0` makes the interface reachable from other machines (only on a network you
+trust, with [signing in](../configuration/server-and-log.md#access) on). [Command line](../command-line.md) lists every
 option.
 
 ## Where things are kept

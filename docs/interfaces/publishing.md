@@ -21,8 +21,10 @@ app.js, style.css…  whatever else it uses (any layout; subfolders are fine)
 
 It's served at the root of a port of its own, with the recorder's API beside it. Refer to your
 own files with relative paths (`./app.js`) and to the recorder with absolute ones
-(`/api/client.js`, `/api/ws`, `/calls/…`). Don't put files under `api/` or `calls/`: those paths
-are the recorder's. Hidden files (names starting with `.`) aren't served.
+(`/api/client.js`, `/api/ws`, `/calls/…`). Don't put files under `api/` or `calls/`, or use
+`/signin` (a file, a folder or a route of a page that routes itself): those paths are the
+recorder's, and it answers them before looking in your folder. Hidden files (names starting with
+`.`) aren't served.
 
 Don't hard-code a host or port: `new TrunkClient()` connects to the page's own. Keep it
 self-contained. Load nothing from a CDN at run time, because a recorder may have no internet.
@@ -66,6 +68,12 @@ someone" for `github.com/someone/trunkamp`).
 everything the recorder shows and play every call; what it can't do is in
 [the API guide](../api/README.md#access). An interface that asks for control is reviewed more
 closely, and users are warned before installing it.
+
+**Don't build a login.** When the recorder's owner turns signing in on, the recorder asks for an
+access token before your page loads, and the same cookie covers your page's API. Your code doesn't
+change; `hello.access` says what you got, which may be less than you asked for. To offer a way to
+sign in (the owner may let anyone listen without one), link to `/signin`, the recorder's sign-in
+page on your port, which comes back to your `/` after.
 
 ## A release
 

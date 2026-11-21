@@ -40,7 +40,7 @@ function connected(c: Config = defaultConfig(), survey?: FromRecorder): ToRecord
   transport.send = (m: ToRecorder) => void sent.push(m);
   transport.onConnection(true);
   transport.onMessage({ type: "config", config: c, version: 1 });
-  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: BANDS, capabilities: [] });
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: BANDS, capabilities: [] });
   if (survey) transport.onMessage(survey);
   return sent;
 }

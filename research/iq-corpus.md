@@ -232,9 +232,9 @@ Contents: OS and architecture, CPU and memory, TRP version and build, USB layout
 source statistics (drops, clipping, clock), per-stage timing if available, recent warnings and errors,
 and the shape of the config.
 
-It is built field by field from an **allow-list**. [`redact_config`](../crates/trunk-pro/src/access.rs) is
-a deny-list: correct for listen-only pages, wrong for something leaving the machine, because a secret
-in a field added later would go out by default. Log lines pass the same way: known message types only,
+It is built field by field from an **allow-list**. A deny-list is wrong for something leaving the machine, because a secret
+in a field added later would go out by default (listen-only pages' config is an allow-list too:
+[`listen_config`](../crates/trunk-pro/src/access/view.rs)). Log lines pass the same way: known message types only,
 no free-form text containing paths, hostnames or URLs. A test seeds a config with marker values in
 every secret-bearing field and asserts none reaches the output.
 

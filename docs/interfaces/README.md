@@ -67,7 +67,8 @@ By default the recorder listens on `127.0.0.1`: every interface, its own include
 from this computer only. To reach them from your network, set `server.bind` to `0.0.0.0` (or
 start with `--bind 0.0.0.0`), and let the interfaces' ports through the computer's firewall.
 
-That reaches the recorder's own interface too, and **it has no login**. To share the recorder
+That reaches the recorder's own interface too, which has **no login unless you turn
+[signing in](../configuration/server-and-log.md#access) on**. To share the recorder
 with listeners without handing them the controls, give them a listen-access interface's address
 (`http://recorder.local:8081/`) and keep the recorder's own port (8080) closed to them: on the
 firewall, or with an SSH tunnel for yourself ([Remote access](../guides/interface.md#remote-access)).
@@ -84,6 +85,10 @@ port to borrow its access: the recorder refuses a page from another port.
 | Change settings, start and stop recording, quit | | ✓ |
 | Install, set up or remove plugins and interfaces | | ✓ |
 | Unlock encryption keys, browse the recorder's folders, scan for systems | | ✓ |
+
+With [signing in](../configuration/server-and-log.md#access) on, an interface's page also needs
+the browser to be signed in, and gets no more than the user's role allows: a `listen` user on a
+`control` interface listens. One sign-in covers every interface's port on that host name.
 
 ## From the command line
 

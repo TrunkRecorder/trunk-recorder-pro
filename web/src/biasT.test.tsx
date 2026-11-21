@@ -23,7 +23,7 @@ function connected(phase: "idle" | "running", radios: Radios | null, serials: st
   transport.send = (m: ToRecorder) => void sent.push(m);
   transport.onConnection(true);
   transport.onMessage({ type: "config", config: defaultConfig(), version: 1 });
-  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: ["drivers"] });
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: ["drivers"] });
   transport.onMessage({ type: "devices", devices: serials.map((serial, index) => ({ index, serial, product: "RTL2838UHIDIR", busy: null })) });
   if (radios) transport.onMessage({ type: "radios", radios });
   transport.onMessage({ type: "state", phase, error: null, ended: false, restartNeeded: false });

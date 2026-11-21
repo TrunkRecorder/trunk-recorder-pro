@@ -12,7 +12,8 @@
     "wasm": "cargo build -p trunk-web --target wasm32-unknown-unknown --profile dist && wasm-bindgen --target web --out-dir src/web/pkg --out-name trunk_web ../target/wasm32-unknown-unknown/dist/trunk_web.wasm",
     "dev:web": "vite --mode web",
     "build:web": "tsc --noEmit && vite build --mode web",
-    "schema": "node scripts/schema.mjs"
+    "schema": "node scripts/schema.mjs",
+    "test:browser": "node scripts/auth-browser.mjs"
   },
   "dependencies": {
     "maplibre-gl": "^6.13.0",

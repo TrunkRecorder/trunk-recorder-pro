@@ -3,7 +3,7 @@
 
 import { adjacentIdentity, formatMhz, reaches, roaming, sameSite, siteAddress, systemColor, systemWithChannel } from "../config.ts";
 import { Fig, Figs, Info, Light } from "../charts.tsx";
-import { addSite, setNotice, type AppState } from "../controller.ts";
+import { addSite, mayEdit, setNotice, type AppState } from "../controller.ts";
 import { num } from "../fmt.ts";
 import type { AdjacentSite, Config, DmrSiteStatus, NxdnSiteStatus, Patch, SiteIdentity, TalkgroupName } from "../protocol.ts";
 import type { CcMark } from "../Waterfall.tsx";
@@ -121,9 +121,11 @@ export function Neighbours(props: { s: AppState; sites: RunningSite[] }) {
             </span>
             {kind(n) !== "intra-system" && <span className="badge" title="Another System ID of the WACN (inter-system), or another WACN (inter-WACN): its radios roam here">{kind(n)}</span>}
             <span className="muted">via {n.from.label}</span>
-            <button className="btn ghost small" onClick={() => add(n)}>
-              Add
-            </button>
+            {mayEdit() && (
+              <button className="btn ghost small" onClick={() => add(n)}>
+                Add
+              </button>
+            )}
           </span>
         ))}
       </div>

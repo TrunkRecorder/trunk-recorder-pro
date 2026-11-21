@@ -210,10 +210,20 @@ For the service, edit `~/.config/systemd/user/trunk-pro.service` so the line rea
 `systemctl --user daemon-reload && systemctl --user restart trunk-pro`. Then browse to
 `http://<machine's address>:8080`.
 
-> **The interface has no login.** Anyone who can reach the port can change your settings,
-> browse folders on the machine, install plugins and stop the recorder. Only listen on a network
-> you trust, and never forward the port from the internet. For access from outside, use the SSH
-> tunnel or a VPN.
+> **Turn on signing in first.** Until you do, anyone who can reach the port can change your
+> settings, browse folders on the machine, install plugins and stop the recorder. On the server:
+>
+> ```bash
+> trunk-pro access add me          # an Admin user; prints their token's secret once: keep it
+> trunk-pro access on
+> systemctl --user restart trunk-pro
+> ```
+>
+> then paste the secret on the sign-in page. See [Access](../configuration/server-and-log.md#access).
+> On plain HTTP the secret crosses the network in the clear: fine on a network you trust, but
+> never forward the port from the internet. Turn on [HTTPS](../configuration/server-and-log.md#https)
+> (a certificate from `tailscale cert`, Let's Encrypt or mkcert) for other networks; for access
+> from outside, use the SSH tunnel or a VPN.
 
 While it listens only on `localhost`, Trunk Recorder Pro also refuses requests that arrive with
 any other host name (to block web pages that try to reach it through DNS tricks). A reverse proxy

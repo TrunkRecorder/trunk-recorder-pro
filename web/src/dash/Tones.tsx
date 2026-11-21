@@ -6,7 +6,7 @@
 // card in Setup), by an id the call JSON and plugins use.
 
 import { useState } from "react";
-import { radioQuery, usePolled, useSelect, type AppState, type SystemRef } from "../controller.ts";
+import { mayEdit, radioQuery, usePolled, useSelect, type AppState, type SystemRef } from "../controller.ts";
 import { Card, Choice, Info } from "../charts.tsx";
 import { ago } from "../fmt.ts";
 import type { Conventional, SignalDef, System, ToneRow } from "../protocol.ts";
@@ -138,9 +138,11 @@ export function Tones({ s, sys, hours }: { s: AppState; sys: DashSystem; hours: 
             </span>
           )}
           <span className="spacer" />
-          <button className="btn ghost small" onClick={() => showTodo(typeof own.at === "number" ? `signals-${sys.name}` : `convsignals-${sys.name}`)}>
-            Signals in Setup
-          </button>
+          {mayEdit() && (
+            <button className="btn ghost small" onClick={() => showTodo(typeof own.at === "number" ? `signals-${sys.name}` : `convsignals-${sys.name}`)}>
+              Signals in Setup
+            </button>
+          )}
         </div>
       )}
       <div className="row">
@@ -162,7 +164,7 @@ export function Tones({ s, sys, hours }: { s: AppState; sys: DashSystem; hours: 
           <Info>Pages, alert tones, DTMF and Morse IDs are found in the voice of every kind of call, and listed here as they're heard.</Info>
         </p>
       ) : (
-        <ToneTable rows={shown.slice(0, 300)} system={sys.name} at={own?.at ?? null} />
+        <ToneTable rows={shown.slice(0, 300)} system={sys.name} at={mayEdit() ? (own?.at ?? null) : null} />
       )}
       {shown.length > 300 && <p className="muted small">300 of {shown.length} shown.</p>}
     </Card>

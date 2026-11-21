@@ -6,7 +6,7 @@
 
 import { useState } from "react";
 import { autoTuneOn, configIndex, formatGain, formatMhz, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
-import { can, setView, tuneGain, tuneStop, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
+import { can, mayEdit, setView, tuneGain, tuneStop, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, Hint, Info, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, dur, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, GainSetting, Source, SourceStatus } from "../protocol.ts";
@@ -109,7 +109,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           <Info label="Why unused">{UNUSED_SOURCE_WHY}</Info>
         </div>
       )}
-      {k >= 0 && (!small || off) && can("tuneGain") && running(s) && !src.ended && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
+      {k >= 0 && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
       {!small && (
         <div className="row src-facts">
           {/* (Gain: Setup's — the desktop recorder takes a new gain while recording.) */}
@@ -538,7 +538,7 @@ export function RfPage() {
   if (i !== null && s.sources[i]) return <SourceDetail s={s} i={i} />;
   return (
     <div className="page">
-      <AdviceNote advice={advice} />
+      {mayEdit() && <AdviceNote advice={advice} />}
       <BandOverview s={s} />
       {s.sources.map((src, k) => (
         <div key={k} className="src-row">
@@ -546,7 +546,7 @@ export function RfPage() {
           <SourceWaterfall s={s} i={k} />
         </div>
       ))}
-      {!web && <IqCaptureCard />}
+      {!web && mayEdit() && <IqCaptureCard />}
     </div>
   );
 }

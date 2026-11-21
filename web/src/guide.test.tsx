@@ -19,7 +19,7 @@ function connect(survey: FromRecorder): void {
   transport.send = () => {};
   transport.onConnection(true);
   transport.onMessage({ type: "config", config: defaultConfig(), version: 1 });
-  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: [] });
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: [] });
   transport.onMessage(survey);
 }
 

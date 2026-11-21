@@ -29,7 +29,7 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
       ],
     }),
   );
-  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service"] }] as const) {
+  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service"] }] as const) {
     transport.onMessage(m as never);
   }
   const html = renderToString(<ConventionalPanel c={c} k={0} />);

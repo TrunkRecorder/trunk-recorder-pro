@@ -95,7 +95,8 @@ RUN mkdir -p /data/config/trunk-pro /data/TrunkRecorderPro
 WORKDIR /data
 VOLUME /data
 EXPOSE 8080
-# Reachable from outside the container: there is no login, so only publish
-# the port on a network you trust.
+# Reachable from outside the container, and signing in is off until it's
+# turned on (trunk-pro access, or Setup): only publish the port on a network
+# you trust.
 ENTRYPOINT ["trunk-pro"]
 CMD ["serve", "--no-open", "--bind", "0.0.0.0"]
