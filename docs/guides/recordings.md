@@ -157,7 +157,9 @@ It is written on a single line.
 | `voice_mode` | What its voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm` or `am`. With `system_type`, a conventional P25 call is `conventional` / `p25`, a SmartNet analog one `smartnet` / `fm` |
 | `short_name` | The system's short name |
 | `site` | The site the kept copy was heard on (a system of one site: its short name). Not on conventional calls. A call heard on several sites is saved once |
-| `sites` | Every site the call was recorded on, `site` first. Not on conventional calls |
+| `site_id` | The `id` of that site in the config: the same across renames. Not on conventional calls |
+| `sites` | Every site the call was recorded on (`id` and `name`), `site` first. Not on conventional calls |
+| `system_id` | The system's `id` in the config: the same across renames |
 | `patched_talkgroups` | Only when the talkgroup was patched with others: all of them |
 | `freqList` | One entry for the call: `freq`, `time`, `pos` (0), `len` (seconds of audio), `error_count` (FEC errors), `spike_count` (0) |
 | `errorList` | Per 10 s of audio: `pos`, `len`, `frames`, `error_count`, `bad_frames` (repeated, muted or erased), `max_frame_errors` |

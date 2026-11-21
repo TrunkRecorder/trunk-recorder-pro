@@ -39,7 +39,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use trunk_recorder_plugin::filter::{talkgroup_list, talkgroup_matches};
 
-use trunk_core::trunk::SystemId;
+use trunk_core::trunk::{SiteId, SystemId};
 
 use crate::config::{Config, DelayRule};
 
@@ -54,6 +54,10 @@ pub struct About {
     /// Some of it was decrypted with our keys (only plugins with
     /// `shareDecrypted` may have it, then or later).
     pub decrypted: bool,
+    /// The sites it's of, by id: a unit event's, those a recorded call was
+    /// heard on (none: no one site's, as a call as it goes).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<SiteId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -167,7 +171,7 @@ mod tests {
             "dcfd" => 1,
             _ => 99,
         };
-        About { system: SystemId(id), talkgroup: tg, decrypted: false }
+        About { system: SystemId(id), talkgroup: tg, ..Default::default() }
     }
     fn mins(d: &Delays, plugin: &str, about: &About) -> u64 {
         d.delay(plugin, about).as_secs() / MIN

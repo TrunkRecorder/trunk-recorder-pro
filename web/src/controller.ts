@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "../../docs/api/client.js";
-import { copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
+import { copyOverride, copyOwn, copyPerSite, OVERRIDE, PER_SITE, pluginCopies } from "./protocol.ts";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
@@ -1378,6 +1378,12 @@ function blank(v: PluginValues | undefined): boolean {
   return !v || Object.values(v).every((x) => x === undefined || x === null || x === "" || (Array.isArray(x) && x.length === 0));
 }
 
+/** A copy from its parts, each left out when there's nothing in it: its own settings, what it overrides, its sites' own. */
+function copyOf(own: PluginValues, over: PluginValues, perSite: Record<string, PluginValues>): PluginValues {
+  const sites = Object.fromEntries(Object.entries(perSite).filter(([, v]) => !blank(v)));
+  return { ...own, ...(blank(over) ? {} : { [OVERRIDE]: over }), ...(Object.keys(sites).length ? { [PER_SITE]: sites } : {}) };
+}
+
 export function setPluginEnabled(id: string, enabled: boolean): void {
   updateConfig((x) => {
     const all = (x.plugins ??= {});
@@ -1387,26 +1393,37 @@ export function setPluginEnabled(id: string, enabled: boolean): void {
 /** Whether a plugin is given calls decrypted with the recorder's keys. */
 /** Plugin `id` on or off for the system with id `system` (`systemsOff`). */
 export function setPluginSystemOn(id: string, system: number, on: boolean): void {
+  setPluginOff(id, "systemsOff", system, !on);
+}
+
+/** Plugin `id` on or off for the site with id `site` (`sitesOff`). */
+export function setPluginSiteOn(id: string, site: number, on: boolean): void {
+  setPluginOff(id, "sitesOff", site, !on);
+}
+
+function setPluginOff(id: string, list: "systemsOff" | "sitesOff", which: number, off: boolean): void {
   updateConfig((x) => {
     const all = (x.plugins ??= {});
     const p = { ...(all[id] ?? { enabled: false }) };
-    const off = (p.systemsOff ?? []).filter((y) => y !== system);
-    if (!on) off.push(system);
-    if (off.length) p.systemsOff = off.sort((a, b) => a - b);
-    else delete p.systemsOff;
+    const ids = (p[list] ?? []).filter((y) => y !== which);
+    if (off) ids.push(which);
+    if (ids.length) p[list] = ids.sort((a, b) => a - b);
+    else delete p[list];
     all[id] = p;
   });
 }
 
-/** Remove what systems set again of plugin `id`'s settings that it doesn't let them (`offered`: those it does): the recorder ignores those. */
-export function dropIgnoredOverrides(id: string, offered: string[]): void {
+/** Remove what systems and sites set again of plugin `id`'s settings that it doesn't let them (`offered`: those it does, of
+ * its own; `siteOffered`: of its settings for each system): the recorder ignores those. */
+export function dropIgnoredOverrides(id: string, offered: string[], siteOffered: string[]): void {
+  const keep = (v: PluginValues, keys: string[]) => Object.fromEntries(Object.entries(v).filter(([k]) => keys.includes(k)));
   updateConfig((x) => {
     for (const sys of [...x.systems, ...x.conventional]) {
       const v = sys.plugins?.[id];
       if (v === undefined || v === null) continue;
       const copies = pluginCopies(v).map((c) => {
-        const over = Object.fromEntries(Object.entries(copyOverride(c)).filter(([k]) => offered.includes(k)));
-        return Object.keys(over).length ? { ...copyOwn(c), [OVERRIDE]: over } : copyOwn(c);
+        const sites = Object.fromEntries(Object.entries(copyPerSite(c)).map(([s, values]) => [s, keep(values, siteOffered)]));
+        return copyOf(copyOwn(c), keep(copyOverride(c), offered), sites);
       });
       if (copies.length === 1 && !Object.keys(copies[0]).length) delete sys.plugins![id];
       else sys.plugins![id] = copies.length === 1 ? copies[0] : copies;
@@ -1452,8 +1469,7 @@ function editSystemPlugin(system: SystemRef, id: string, f: (copies: PluginValue
 export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues, copy = 0): void {
   editSystemPlugin(system, id, (c) => {
     while (c.length <= copy) c.push({});
-    const over = copyOverride(c[copy]);
-    c[copy] = blank(over) ? copyOwn(values) : { ...copyOwn(values), [OVERRIDE]: over };
+    c[copy] = copyOf(copyOwn(values), copyOverride(c[copy]), copyPerSite(c[copy]));
     return c;
   });
 }
@@ -1461,8 +1477,15 @@ export function setSystemPluginSettings(system: SystemRef, id: string, values: P
 export function setSystemPluginOverride(system: SystemRef, id: string, over: PluginValues, copy = 0): void {
   editSystemPlugin(system, id, (c) => {
     while (c.length <= copy) c.push({});
-    const own = copyOwn(c[copy]);
-    c[copy] = blank(over) ? own : { ...own, [OVERRIDE]: over };
+    c[copy] = copyOf(copyOwn(c[copy]), over, copyPerSite(c[copy]));
+    return c;
+  });
+}
+/** What site `site` (its id) of a system sets again of a copy's settings for a plugin; empty: as the system's. */
+export function setSystemPluginSiteSettings(system: SystemRef, id: string, site: number, values: PluginValues, copy = 0): void {
+  editSystemPlugin(system, id, (c) => {
+    while (c.length <= copy) c.push({});
+    c[copy] = copyOf(copyOwn(c[copy]), copyOverride(c[copy]), { ...copyPerSite(c[copy]), [String(site)]: values });
     return c;
   });
 }

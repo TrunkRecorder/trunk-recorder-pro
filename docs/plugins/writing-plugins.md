@@ -102,16 +102,19 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 | `totals` | `Totals` | Every series the recorder measures, as running totals since recording started, every 10 s ([Series](#series)): with the sites, conventional channels and radios they're of. Take the difference of two for a window of your own (`Totals::since`). Node health reports are made of them: the SDK's `health` module turns them into one ([node health reports](../api/node-health.md)). (Since SDK 0.12.0.) |
 | `log` | `LogLine` | Each line TRP logs, at the level its log is set to: `time` (Unix s), `level` (`trace` … `fatal`), `system` (when it's one's), `text`, and `line`, the whole line as the console prints it (no colour). For sending the log on (to MQTT, a chat). A plugin isn't sent its own lines; don't log for each one you get. (Since SDK 0.10.0.) |
 
-Every event carries the system's `short_name`, which is its identity. The numeric `system` index is
-for the current run only, so store anything by short name. It counts from 0: the trunked systems
-being recorded first, then the conventional ones (there is no `CONVENTIONAL` index any more); a
+Every event carries the system's `system_id`, its identity: the same across runs and renames, never
+another system's (`SystemInfo::id` in `hello`). Store anything by it. Events also carry `short_name`,
+what users know the system by, which changes when it's renamed, and the numeric `system` index, for
+the current run only (adding, removing or turning off a system renumbers the rest). The index counts
+from 0: the trunked systems being recorded first, then the conventional ones (there is no `CONVENTIONAL` index any more); a
 system's `kind` in `hello` (`p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional`) says which it is. Calls and unit events also carry `site`,
-the name of the site they were heard on (a system of one site: its short name), and `status` has an
-entry per site, with its `site_name`. A call heard on several sites of a system is one call: one
+the name of the site they were heard on (a system of one site: its short name), and its `site_id`,
+the site's identity as `system_id` is the system's (`SiteInfo::id`); `status` has an entry per site,
+with its `site_name` and `site_id`. A call heard on several sites of a system is one call: one
 `call.start` when its first copy begins and one `call.end` when its last copy ends, under the first copy's `id`. Its `site` and
 `freq_hz` are those of the copy speaking for it (one being recorded, if any is), and a `call.update` says when that changes.
 `call.concluded` is for the copy kept, and it and live audio carry that site's own call id; its record's `sites`
-names every site the call was recorded on, the kept copy's first (to send a call where any of them goes, say). A plugin too far behind can lose
+names every site the call was recorded on (`id` and `name`), the kept copy's first. A plugin too far behind can lose
 other events, but not a call's start or end.
 
 ### Series
@@ -276,13 +279,41 @@ Read those for a system from `System::settings`, which is your `Config` with wha
 again, and the rest from `Setup::config`. An uploader that builds one client per server and starts
 its `CallQueue` with `start_by`, keyed by server, handles it all. (Since SDK 0.13.0.)
 
-### Systems a plugin is off for
+### Settings for each site
+
+A system with several sites can give each of them some of your settings for a system
+(`SystemConfig`) of its own: those you name in the manifest's `site_overrides`, such as the account an
+uploader sends that site's calls to. A system's card in Setup then has a row for each of its sites with
+those fields, empty ones as the system's. Each `System::sites` entry has the site's `id`, `name` and
+`config`: your `SystemConfig` with what the site set again (`None`: as the system's).
+
+Send a recorded call with `System::targets(&call.call)`: the settings of each site that heard it that
+has its own, and the system's once when one that heard it has none. A call two such sites heard goes
+to both; one only a site without its own heard goes with the system's. (Since SDK 0.14.0.)
+
+```rust
+fn manifest() -> Manifest {
+    Manifest { site_overrides: vec!["apiKey".into(), "systemId".into()], ..trunk_recorder_plugin::manifest!() }
+}
+// …
+for t in system.targets(&call.call) {
+    upload(t.config, &call); // t.site: the site whose own these are (None: the system's)
+}
+```
+
+### Systems and sites a plugin is off for
 
 The user can turn your plugin off for a system, in Setup → Plugins, when every topic you take is one
 system's (`Manifest::per_system`: all but `totals`). Then nothing about that system reaches you:
 it isn't in `hello`, its events and live media aren't sent, `status` leaves it out, `log` lines
 about it aren't sent (lines about no one system still are), and `calls.query` doesn't find its
-calls. Nothing to do in the plugin; just don't count on hearing of every system.
+calls.
+
+A site of a system can be turned off for it too, on the system's card. Then it isn't among the
+system's `sites` in `hello`, its unit events and `status` entry aren't sent, and nor is a recorded call
+only it heard (a call another site heard as well still comes). Calls as they go (`call.start`,
+`call.update`, `call.end`, live audio) are the system's, and still come. Nothing to do in the plugin;
+just don't count on hearing of every system or site.
 
 ### Settings and the form
 

@@ -23,9 +23,9 @@ use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
     format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
-    Status, SystemInfo, VoiceChunk, API_VERSION, EXIT_CONFIG,
+    SiteInfo, Status, SystemInfo, VoiceChunk, API_VERSION, EXIT_CONFIG,
 };
-use trunk_core::trunk::{LiveAudio, SystemId};
+use trunk_core::trunk::{LiveAudio, SiteId, SystemId};
 
 use super::delay::About;
 use super::hold::{Hold, Offer, Outlet};
@@ -115,6 +115,8 @@ struct Plugin {
     share_decrypted: bool,
     /// The systems it's turned off for (`systemsOff`): nothing about them is given it.
     off: BTreeSet<SystemId>,
+    /// The sites it's turned off for (`sitesOff`): what's of them alone isn't given it.
+    sites_off: BTreeSet<SiteId>,
     withheld_said: AtomicBool,
     /// Whether it was said that it isn't streamed the live media of calls it's delayed for.
     audio_held_said: AtomicBool,
@@ -174,6 +176,8 @@ pub struct Spec {
     pub share_decrypted: bool,
     /// The systems it's turned off for (`systemsOff`).
     pub off: BTreeSet<SystemId>,
+    /// The sites it's turned off for (`sitesOff`).
+    pub sites_off: BTreeSet<SiteId>,
 }
 
 impl Spec {
@@ -192,6 +196,7 @@ impl Spec {
                     data_dir: None,
                     share_decrypted: p.share_decrypted && cfg.has_keys(),
                     off: p.systems_off.iter().copied().collect(),
+                    sites_off: p.sites_off.iter().copied().collect(),
                 })
             })
             .collect()
@@ -237,9 +242,14 @@ impl PluginHost {
                         notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: "is given calls decrypted with your keys (shareDecrypted)".into() });
                     }
                     // (Some of what it takes is every system's: it can't be off for one.)
-                    if !s.off.is_empty() && !m.per_system() {
-                        notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: "takes every system's figures (totals), so it can't be off for a system: it's on for all of them".into() });
+                    if (!s.off.is_empty() || !s.sites_off.is_empty()) && !m.per_system() {
+                        notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: "takes every system's figures (totals), so it can't be off for a system or site: it's on for all of them".into() });
                         s.off.clear();
+                        s.sites_off.clear();
+                    }
+                    let site_props = m.system_config.as_ref().and_then(|c| c.get("properties")).and_then(Value::as_object);
+                    for k in m.site_overrides.iter().filter(|k| !site_props.is_some_and(|p| p.contains_key(*k))) {
+                        notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("says a site can set \"{k}\" again, but it has no such setting for a system") });
                     }
                     let props = m.config.as_ref().and_then(|c| c.get("properties")).and_then(Value::as_object);
                     for k in m.system_overrides.iter().filter(|k| !props.is_some_and(|p| p.contains_key(*k))) {
@@ -254,12 +264,18 @@ impl PluginHost {
                         None => unset.push((field, vec![system.to_string()])),
                     };
                     let mut own_settings = BTreeMap::new();
+                    let mut site_settings: BTreeMap<SiteId, Value> = BTreeMap::new();
                     for (id, entry) in std::mem::take(&mut s.systems).into_iter().filter(|(id, _)| !s.off.contains(id)) {
                         let name = systems.iter().find(|y| y.id == id).map_or_else(|| format!("system {id}"), |y| y.info.short_name.clone());
-                        let (own, merged, ignored) = resolve(m.config.as_ref(), &m.system_overrides, &s.config, entry);
+                        let (mut own, merged, ignored) = resolve(m.config.as_ref(), &m.system_overrides, &s.config, entry);
                         for k in ignored {
                             notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" can't be set for one system (the plugin doesn't offer it); ignored") });
                         }
+                        let (sites, ignored) = resolve_sites(m.system_config.as_ref(), &m.site_overrides, &mut own);
+                        for k in ignored {
+                            notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" can't be set for one site (the plugin doesn't offer it); ignored") });
+                        }
+                        site_settings.extend(sites);
                         for f in unset_required(m.config.as_ref(), merged.as_ref().unwrap_or(&s.config)) {
                             note_unset(f, &name);
                         }
@@ -284,7 +300,7 @@ impl PluginHost {
                         notes(Note::Log { plugin: s.id, level: Level::Warn, text });
                         continue;
                     }
-                    ready.push((s, m, settings));
+                    ready.push((s, m, settings, site_settings));
                 }
                 Err(e) => {
                     notes(Note::State { plugin: s.id.clone(), state: State::Error, message: e.clone() });
@@ -292,10 +308,10 @@ impl PluginHost {
                 }
             }
         }
-        let wants_m4a = ready.iter().any(|(_, m, _)| m.subscribes(topic::CALL_CONCLUDED) && m.wants_format(format::M4A));
+        let wants_m4a = ready.iter().any(|(_, m, _, _)| m.subscribes(topic::CALL_CONCLUDED) && m.wants_format(format::M4A));
         let encoder = if wants_m4a { Encoder::find(audio.encoder) } else { None };
         if wants_m4a && encoder.is_none() {
-            let who: Vec<&str> = ready.iter().filter(|(_, m, _)| m.wants_format(format::M4A)).map(|(s, _, _)| s.id.as_str()).collect();
+            let who: Vec<&str> = ready.iter().filter(|(_, m, _, _)| m.wants_format(format::M4A)).map(|(s, _, _, _)| s.id.as_str()).collect();
             let text = if audio.encoder == crate::config::M4aEncoder::None {
                 format!("M4A encoding is off: {} get WAV only", who.join(", "))
             } else {
@@ -307,7 +323,7 @@ impl PluginHost {
         let mut live = false;
         let mut plugins = Vec::new();
         let mut queues = Vec::new();
-        for (s, m, settings) in ready {
+        for (s, m, settings, site_settings) in ready {
             topics.calls |= m.subscribes(topic::CALL_START) || m.subscribes(topic::CALL_END);
             topics.call_updates |= m.subscribes(topic::CALL_UPDATE);
             topics.units |= m.subscribes(topic::UNIT);
@@ -332,6 +348,14 @@ impl PluginHost {
                     .map(|y| SystemInfo {
                         config: s.systems.get(&y.id).cloned().unwrap_or(Value::Null),
                         settings: settings.get(&y.id).cloned().unwrap_or(Value::Null),
+                        // (Not those it's off for.)
+                        sites: y
+                            .info
+                            .sites
+                            .iter()
+                            .filter(|t| !s.sites_off.contains(&SiteId(t.id)))
+                            .map(|t| SiteInfo { config: site_settings.get(&SiteId(t.id)).cloned().unwrap_or(Value::Null), ..t.clone() })
+                            .collect(),
                         ..y.info.clone()
                     })
                     .collect(),
@@ -358,6 +382,7 @@ impl PluginHost {
                 drained_at: Arc::new(Mutex::new(None)),
                 share_decrypted: s.share_decrypted,
                 off: s.off,
+                sites_off: s.sites_off,
                 withheld_said: AtomicBool::new(false),
                 audio_held_said: AtomicBool::new(false),
             });
@@ -415,22 +440,23 @@ impl PluginHost {
     /// An event from the session.
     pub fn event(&self, m: &HostMessage) {
         let sh = &self.shared;
-        let on = |system: SystemId, talkgroup: Option<u32>| About { system, talkgroup, decrypted: false };
+        let on = |system: SystemId, talkgroup: Option<u32>| About { system, talkgroup, ..Default::default() };
         let (t, about) = match m {
             HostMessage::CallStart(c) => (topic::CALL_START, on(sh.id_at(c.system), Some(c.talkgroup))),
             HostMessage::CallUpdate(c) => (topic::CALL_UPDATE, on(sh.id_at(c.system), Some(c.talkgroup))),
             HostMessage::CallEnd(c) => (topic::CALL_END, on(sh.id_at(c.system), Some(c.talkgroup))),
-            HostMessage::Unit(u) => (topic::UNIT, on(sh.id_at(u.system), u.talkgroup)),
+            HostMessage::Unit(u) => (topic::UNIT, About { sites: vec![SiteId(u.site_id)], ..on(sh.id_at(u.system), u.talkgroup) }),
             // (Its tones may have been heard in decrypted voice: only plugins allowed that get it.)
             HostMessage::TonePattern(t) => (topic::TONE_PATTERN, About { decrypted: t.decrypted, ..on(sh.id_named(&t.short_name), Some(t.talkgroup)) }),
-            // (Every system's: each plugin is sent those it's on for. Never delayed.)
+            // (Every site's: each plugin is sent those it's on for. Never delayed.)
             HostMessage::Status(st) => {
                 let all = line(m);
                 for p in sh.plugins.iter().filter(|p| p.manifest.subscribes(topic::STATUS)) {
-                    let l = if st.systems.iter().all(|x| !p.off.contains(&sh.id_at(x.scope.index))) {
+                    let on = |x: &&trunk_recorder_plugin::SystemStatus| !p.off.contains(&sh.id_at(x.scope.index)) && !p.sites_off.contains(&SiteId(x.scope.site_id));
+                    let l = if st.systems.iter().all(|x| on(&x)) {
                         all.clone()
                     } else {
-                        let systems = st.systems.iter().filter(|x| !p.off.contains(&sh.id_at(x.scope.index))).cloned().collect();
+                        let systems = st.systems.iter().filter(on).cloned().collect();
                         line(&HostMessage::Status(Status { systems, ..st.clone() }))
                     };
                     sh.offer(p, topic::STATUS, &l, &About::default(), None, None);
@@ -492,10 +518,10 @@ impl PluginHost {
         if !self.live {
             return;
         }
-        let about = About { system: self.shared.id_at(a.system), talkgroup: Some(a.talkgroup), decrypted: a.decrypted };
+        let about = About { system: self.shared.id_at(a.system), talkgroup: Some(a.talkgroup), decrypted: a.decrypted, ..Default::default() };
         if self.shared.wants(topic::AUDIO) {
             let pcm = trunk_recorder_plugin::base64::encode(&trunk_core::wav::pcm16(&a.samples));
-            let chunk = AudioChunk { call_id: a.call_id, system: a.system, short_name: short_name.to_string(), talkgroup: a.talkgroup, sample_rate: 8000, pcm };
+            let chunk = AudioChunk { call_id: a.call_id, system: a.system, system_id: self.shared.id_at(a.system).0, short_name: short_name.to_string(), talkgroup: a.talkgroup, sample_rate: 8000, pcm };
             self.shared.dispatch(topic::AUDIO, &line(&HostMessage::Audio(chunk)), &about, None, None);
         }
         if let Some(chunk) = voice.filter(|_| self.topics.voice) {
@@ -503,28 +529,28 @@ impl PluginHost {
         }
     }
 
-    /// The plugins that take concluded calls of `system` (its index; each
-    /// reports on every one it's given); not one that gave up (a config
-    /// error), nor one off for the system. (`decrypted`: a call decrypted with
-    /// our keys, which only plugins with `shareDecrypted` take.)
-    pub fn call_takers(&self, system: u16, decrypted: bool) -> usize {
-        self.takers(system, decrypted).count()
+    /// The plugins that take finished call `record` of `system` (its index;
+    /// each reports on every one it's given); not one that gave up (a config
+    /// error), nor one off for the system, or for every site that heard it.
+    /// (`decrypted`: a call decrypted with our keys, which only plugins with
+    /// `shareDecrypted` take.)
+    pub fn call_takers(&self, system: u16, record: &CallRecord, decrypted: bool) -> usize {
+        self.takers(system, record, decrypted).count()
     }
 
-    /// [`Self::call_takers`]: those of the plugins that take concluded calls
-    /// that may have one of `system` (its index), `decrypted` or not.
-    fn takers(&self, system: u16, decrypted: bool) -> impl Iterator<Item = &Plugin> {
+    /// [`Self::call_takers`]: those of the plugins that take concluded calls that may have it.
+    fn takers(&self, system: u16, record: &CallRecord, decrypted: bool) -> impl Iterator<Item = &Plugin> {
         let sh = &self.shared;
-        let about = About { system: sh.id_at(system), talkgroup: None, decrypted };
+        let about = About { decrypted, ..about_record(sh.id_at(system), record) };
         sh.plugins.iter().filter(move |p| p.manifest.subscribes(topic::CALL_CONCLUDED) && p.tx.lock().unwrap().is_some() && sh.may_take(p, &about))
     }
 
-    /// What the plugins take of a finished call of `system` (its index;
+    /// What the plugins take of finished call `record` of `system` (its index;
     /// `decrypted`: one decrypted with our keys, which only plugins with
     /// `shareDecrypted` take): how many, and whether one takes the WAV, one
     /// wants an .m4a ([`super::archive::plan`] says what's written for them).
-    pub fn plugin_audio(&self, system: u16, decrypted: bool) -> super::archive::PluginAudio {
-        let takers: Vec<&Plugin> = self.takers(system, decrypted).collect();
+    pub fn plugin_audio(&self, system: u16, record: &CallRecord, decrypted: bool) -> super::archive::PluginAudio {
+        let takers: Vec<&Plugin> = self.takers(system, record, decrypted).collect();
         super::archive::PluginAudio { takers: takers.len(), wav: takers.iter().any(|p| takes_wav(&p.manifest)), m4a: takers.iter().any(|p| p.manifest.wants_format(format::M4A)) }
     }
 
@@ -538,13 +564,13 @@ impl PluginHost {
     /// finish thread wrote what [`super::archive::plan`] said): to the
     /// plugins that take it. `decrypted`: some of it was decrypted with our keys.
     pub fn concluded(&self, system: u16, rel: &str, record: CallRecord, files: CallFiles, decrypted: bool) {
-        if self.call_takers(system, decrypted) == 0 {
+        if self.call_takers(system, &record, decrypted) == 0 {
             if decrypted {
                 self.shared.say_all_withheld(topic::CALL_CONCLUDED);
             }
             return;
         }
-        let about = About { system: self.shared.id_at(system), talkgroup: Some(record.talkgroup), decrypted };
+        let about = About { decrypted, ..about_record(self.shared.id_at(system), &record) };
         let call = ConcludedCall { path: rel.to_string(), system, call: record, files };
         self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(rel), None);
     }
@@ -608,6 +634,52 @@ impl Drop for PluginHost {
 /// The key in a system's settings for a plugin that holds the plugin's own
 /// settings it overrides: `{ "apiKey": "…", "override": { "server": "…" } }`.
 pub const OVERRIDE: &str = "override";
+
+/// The key in a system's settings for a plugin that holds each of its sites'
+/// own (by site id): `{ "apiKey": "…", "perSite": { "3": { "systemId": 77 } } }`.
+pub const PER_SITE: &str = "perSite";
+
+/// What recorded call `r` of `system` is about: its talkgroup, and the sites
+/// that heard it (none named: its own, if any).
+fn about_record(system: SystemId, r: &CallRecord) -> About {
+    let mut sites: Vec<SiteId> = r.sites.iter().map(|s| SiteId(s.id)).filter(|s| s.0 != 0).collect();
+    if sites.is_empty() && r.site_id != 0 {
+        sites.push(SiteId(r.site_id));
+    }
+    About { system, talkgroup: Some(r.talkgroup), decrypted: r.decrypted, sites }
+}
+
+/// Each site's settings for a plugin, from a system's own (`own`, which
+/// loses [`PER_SITE`]): by site id, the system's with what the site sets
+/// again of those the plugin lets it (`overridable`, [`Manifest::site_overrides`],
+/// each a setting of its `schema`, `system_config`). A site that sets none
+/// isn't there. And the keys sites set that they may not (left out).
+fn resolve_sites(schema: Option<&Value>, overridable: &[String], own: &mut Value) -> (BTreeMap<SiteId, Value>, Vec<String>) {
+    let per_site = match own.as_object_mut().and_then(|o| o.remove(PER_SITE)) {
+        Some(Value::Object(o)) => o,
+        _ => return (BTreeMap::new(), Vec::new()),
+    };
+    let props = schema.and_then(|s| s.get("properties")).and_then(Value::as_object);
+    let mut sites = BTreeMap::new();
+    let mut ignored = Vec::new();
+    for (id, set) in per_site {
+        let Ok(id) = id.parse::<u32>() else { continue };
+        let mut merged = own.as_object().cloned().unwrap_or_default();
+        let mut any = false;
+        for (k, v) in set.as_object().into_iter().flatten().filter(|(_, v)| !v.is_null()) {
+            if overridable.contains(k) && props.is_some_and(|p| p.contains_key(k)) {
+                merged.insert(k.clone(), v.clone());
+                any = true;
+            } else if !ignored.contains(k) {
+                ignored.push(k.clone());
+            }
+        }
+        if any {
+            sites.insert(SiteId(id), Value::Object(merged));
+        }
+    }
+    (sites, ignored)
+}
 
 /// A system's settings for a plugin (`entry`): its own (without
 /// [`OVERRIDE`]); the plugin's (`config`) with what it sets again of those
@@ -808,7 +880,7 @@ impl Shared {
     fn log_line(&self, t: &crate::logging::Tapped) {
         let m = HostMessage::Log(LogLine { time: t.time, level: t.level.as_str().into(), system: t.system.unwrap_or_default().into(), text: t.text.into(), line: t.line.into() });
         let l = line(&m);
-        let about = About { system: t.system.map_or_else(SystemId::default, |s| self.id_named(s)), talkgroup: t.talkgroup, decrypted: false };
+        let about = About { system: t.system.map_or_else(SystemId::default, |s| self.id_named(s)), talkgroup: t.talkgroup, ..Default::default() };
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(topic::LOG)) {
             if t.plugin == Some(p.id.as_str()) {
                 continue;
@@ -829,7 +901,7 @@ impl Shared {
     /// The one rule for what's sent ([`Self::offer`]), held ([`Outlet::offer`]),
     /// queried ([`Self::may_have`]) and waited on ([`PluginHost::call_takers`]).
     fn may_take(&self, p: &Plugin, about: &About) -> bool {
-        (!about.decrypted || p.share_decrypted) && !p.off.contains(&about.system)
+        (!about.decrypted || p.share_decrypted) && !p.off.contains(&about.system) && (about.sites.is_empty() || about.sites.iter().any(|s| !p.sites_off.contains(s)))
     }
 
     /// Whether `p` may be given stored call `c` now, as it would have been
@@ -837,7 +909,8 @@ impl Shared {
     /// the call ended has passed.
     fn may_have(&self, p: &Plugin, c: &trunk_recorder_plugin::StoredCall, now_s: i64) -> bool {
         let r = &c.record;
-        let about = About { system: self.id_named(&r.short_name), talkgroup: Some(r.talkgroup), decrypted: r.decrypted };
+        let system = if r.system_id != 0 { SystemId(r.system_id) } else { self.id_named(&r.short_name) };
+        let about = About { decrypted: r.decrypted, ..about_record(system, r) };
         if !self.may_take(p, &about) {
             return false;
         }
@@ -1116,6 +1189,7 @@ mod tests {
             drained_at: Arc::new(Mutex::new(None)),
             share_decrypted,
             off: Default::default(),
+            sites_off: Default::default(),
             withheld_said: AtomicBool::new(false),
             audio_held_said: AtomicBool::new(false),
         };
@@ -1179,9 +1253,10 @@ mod tests {
         let (mut all, all_rx) = test_plugin("mqtt", false);
         let (mut some, some_rx) = test_plugin("notify", false);
         for p in [&mut all, &mut some] {
-            p.manifest.subscribe.extend([topic::STATUS.to_string(), topic::CALL_START.to_string()]);
+            p.manifest.subscribe.extend([topic::STATUS.to_string(), topic::CALL_START.to_string(), topic::UNIT.to_string()]);
         }
         some.off.insert(SystemId(2));
+        some.sites_off.insert(SiteId(5));
         let systems: Vec<RunSystem> = ["a", "b"].iter().enumerate().map(|(i, n)| RunSystem { id: SystemId(i as u32 + 1), info: SystemInfo { index: i as u16, short_name: n.to_string(), ..Default::default() } }).collect();
         let sh = Shared {
             plugins: vec![all, some],
@@ -1209,8 +1284,17 @@ mod tests {
         assert_eq!((&to_some[0]["system"], &to_some[1]["type"]), (&serde_json::json!(0), &serde_json::json!("status")));
         assert_eq!(to_some[1]["systems"].as_array().unwrap().iter().map(|x| x["index"].as_u64().unwrap()).collect::<Vec<_>>(), [0], "only the systems it's on for");
         // Its calls aren't waited on, or encoded, for it.
-        assert_eq!((host.call_takers(0, false), host.call_takers(1, false)), (2, 1));
-        assert_eq!(host.plugin_audio(1, false).takers, 1);
+        let rec = CallRecord::default();
+        assert_eq!((host.call_takers(0, &rec, false), host.call_takers(1, &rec, false)), (2, 1));
+        assert_eq!(host.plugin_audio(1, &rec, false).takers, 1);
+        // Off for a site: a call only it heard isn't for it, one another site heard too is.
+        let heard = |ids: &[u32]| CallRecord { sites: ids.iter().map(|&id| trunk_recorder_plugin::SiteRef { id, name: String::new() }).collect(), ..Default::default() };
+        assert_eq!((host.call_takers(0, &heard(&[5]), false), host.call_takers(0, &heard(&[5, 6]), false)), (1, 2));
+        assert_eq!(host.call_takers(0, &CallRecord { site_id: 5, ..Default::default() }, false), 1, "the kept copy's site, when none are listed");
+        // Nor its unit events.
+        host.event(&HostMessage::Unit(trunk_recorder_plugin::UnitEvent { system: 0, site_id: 5, ..Default::default() }));
+        host.event(&HostMessage::Unit(trunk_recorder_plugin::UnitEvent { system: 0, site_id: 6, ..Default::default() }));
+        assert_eq!((got(&all_rx).len(), got(&some_rx).len()), (2, 1));
         // Held, then off for its system: not given.
         let off = About { system: SystemId(2), ..Default::default() };
         assert_eq!(Outlet::offer(&*host.shared, "notify", &"x\n".into(), &off), Offer::Gone);
@@ -1244,7 +1328,8 @@ mod tests {
     fn hello_keeper(dir: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let exe = dir.join("keeper");
-        let manifest = r#"{"id":"keeper","name":"Keeper","version":"1.0.0","api":1,"subscribe":["call.concluded"],"system_overrides":["server"],
+        let manifest = r#"{"id":"keeper","name":"Keeper","version":"1.0.0","api":1,"subscribe":["call.concluded"],"system_overrides":["server"],"site_overrides":["k"],
+            "system_config":{"type":"object","properties":{"k":{"type":"integer"},"name":{"type":"string"}}},
             "config":{"type":"object","properties":{"server":{"type":"string","title":"Server","x-required":true}}}}"#.replace('\n', " ");
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho \"$line\" > hello.json\necho '{{\"type\":\"ready\"}}'\ncat > /dev/null\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1264,7 +1349,7 @@ mod tests {
         let exe = dir.join("asker");
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{{\"type\":\"calls.query\",\"request\":7,\"talkgroup\":101}}'\nwhile read l; do case \"$l\" in *'\"type\":\"calls\"'*) echo \"$l\" > answer.json;; esac; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let spec = Spec { id: "asker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default() };
+        let spec = Spec { id: "asker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
         let calls: Calls = Arc::new(|q| CallsPage { next: (q.talkgroup == Some(101)).then(|| "42:x".into()), ..Default::default() });
         let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, Some(calls), None);
         let answer = dir.join("data/answer.json");
@@ -1297,7 +1382,7 @@ mod tests {
         let cfg = json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": ["5"], "delayS": 3600 }] }] });
         hold.set_delays(super::super::delay::Delays::of(&trunk_app::Config::from_value(cfg).unwrap()));
         let systems = vec![RunSystem { id: SystemId(1), info: SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() } }];
-        let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default() };
+        let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
         let notes: Notes = Arc::new(|_| {});
         let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()), None, None);
         hold.attach(Some(host.outlet()));
@@ -1308,7 +1393,7 @@ mod tests {
         call("dcfd/now", 6);
         let frame = trunk_core::trunk::frames::VoiceFrame { codec: trunk_recorder_plugin::Codec::Imbe, bits: vec![0; 88], e0: 0, errs: 0, erased: false, kind: trunk_recorder_plugin::FrameKind::Voice, tone: None };
         let audio = LiveAudio { call_id: 1, system: 0, talkgroup: 5, unit: 0, samples: vec![0.0; 160], frames: vec![frame], decrypted: false };
-        host.live("dcfd", &audio, trunk_app::session::voice_chunk("dcfd", "", &audio).as_ref());
+        host.live("dcfd", &audio, trunk_app::session::voice_chunk(1, "dcfd", "", &audio).as_ref());
         let got = dir.join("data/got.jsonl");
         let lines = || std::fs::read_to_string(&got).unwrap_or_default();
         let t0 = Instant::now();
@@ -1340,7 +1425,12 @@ mod tests {
         let notes_seen = Arc::new(Mutex::new(Vec::new()));
         let seen = notes_seen.clone();
         let notes: Notes = Arc::new(move |n| seen.lock().unwrap().push(n));
-        let systems: Vec<RunSystem> = ["a", "b"].iter().enumerate().map(|(i, n)| RunSystem { id: SystemId(i as u32 + 1), info: SystemInfo { index: i as u16, short_name: n.to_string(), kind: "p25".into(), ..Default::default() } }).collect();
+        let site = |id: u32, name: &str| SiteInfo { id, name: name.into(), config: Value::Null };
+        let systems: Vec<RunSystem> = ["a", "b"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| RunSystem { id: SystemId(i as u32 + 1), info: SystemInfo { index: i as u16, short_name: n.to_string(), kind: "p25".into(), sites: vec![site(7 + 2 * i as u32, "north"), site(8 + 2 * i as u32, "south")], ..Default::default() } })
+            .collect();
         let spec = |config: Value, a: Value, b: Value, data: &str| Spec {
             id: "keeper".into(),
             copy: 0,
@@ -1350,11 +1440,12 @@ mod tests {
             data_dir: Some(dir.join(data)),
             share_decrypted: false,
             off: Default::default(),
+            sites_off: Default::default(),
         };
         let audio = super::super::AudioSettings::default();
 
         // No server for the recorder, but each system names one.
-        let s = spec(Value::Null, json!({ "k": 1, "override": { "server": "https://a" } }), json!({ "override": { "server": "https://b" } }), "both");
+        let s = spec(Value::Null, json!({ "k": 1, "name": "A", "override": { "server": "https://a" }, "perSite": { "8": { "k": 5, "name": "not offered" } } }), json!({ "override": { "server": "https://b" } }), "both");
         let mut host = PluginHost::start(vec![s], &audio, &systems, &dir, notes.clone());
         assert!(!host.is_empty(), "{:?}", notes_seen.lock().unwrap());
         let hello = dir.join("both/hello.json");
@@ -1364,7 +1455,10 @@ mod tests {
         }
         host.shutdown(Duration::from_secs(1));
         let h: Value = serde_json::from_str(&std::fs::read_to_string(&hello).unwrap()).unwrap();
-        assert_eq!(h["systems"][0]["config"], json!({ "k": 1 }), "the override isn't the system's own setting");
+        assert_eq!(h["systems"][0]["config"], json!({ "k": 1, "name": "A" }), "the override and the sites' aren't the system's own settings");
+        // Each site's: the system's with what it sets again of those the plugin offers (south's k, not its name).
+        assert_eq!((&h["systems"][0]["sites"][0]["id"], h["systems"][0]["sites"][0].get("config")), (&json!(7), None), "north sets none");
+        assert_eq!(h["systems"][0]["sites"][1]["config"], json!({ "k": 5, "name": "A" }));
         assert_eq!(h["systems"][0]["settings"], json!({ "server": "https://a" }));
         assert_eq!(h["systems"][1]["settings"], json!({ "server": "https://b" }));
 
@@ -1423,6 +1517,7 @@ mod tests {
             data_dir: Some(dir.join(data)),
             share_decrypted: false,
             off: Default::default(),
+            sites_off: Default::default(),
         };
         let wait = |cond: &dyn Fn() -> bool| {
             let t0 = Instant::now();
@@ -1459,7 +1554,7 @@ mod tests {
         let manifest = r#"{"id":"logger","name":"L","version":"1.0.0","api":1,"subscribe":["log"]}"#;
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let spec = Spec { id: "logger".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default() };
+        let spec = Spec { id: "logger".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
         let hold = Hold::new(Arc::default());
         let cfg = serde_json::json!({ "systems": [{ "shortName": "held", "pluginDelays": [{ "delayS": 3600 }] }] });
         hold.set_delays(super::super::delay::Delays::of(&trunk_app::Config::from_value(cfg).unwrap()));
@@ -1501,7 +1596,7 @@ mod tests {
             let save = format!(r#"{{"type":"settings.save","request":7,"settings":{save}}}"#);
             std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{save}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-            Spec { id: name.into(), copy: 0, exe, config: json!({ "token": "t" }), systems: BTreeMap::new(), data_dir: Some(dir.join(name).with_extension("d")), share_decrypted: false, off: Default::default() }
+            Spec { id: name.into(), copy: 0, exe, config: json!({ "token": "t" }), systems: BTreeMap::new(), data_dir: Some(dir.join(name).with_extension("d")), share_decrypted: false, off: Default::default(), sites_off: Default::default() }
         };
         let saved: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
         let s2 = saved.clone();
@@ -1552,7 +1647,7 @@ mod tests {
         let answer = r#"r=$(echo "$l" | sed 's/.*"request":\([0-9]*\).*/\1/'); echo "{\"type\":\"action.result\",\"request\":$r,\"ok\":true,\"message\":\"sent to $(echo "$l" | sed 's/.*"to":"\([^"]*\)".*/\1/')\"}""#;
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do case \"$l\" in *'\"action\":\"test\"'*) {answer};; esac; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let spec = Spec { id: "act".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default() };
+        let spec = Spec { id: "act".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
         let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}));
         let wait = Duration::from_secs(5);
         assert_eq!(host.action("act", "test".into(), json!({ "to": "discord" }), wait), Ok((true, "sent to discord".into())));

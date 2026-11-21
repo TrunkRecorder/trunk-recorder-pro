@@ -142,6 +142,7 @@ a link to the system's page in the directory. The directory's answer is kept as 
 |---|:---:|---|---|---|
 | `name` | | the system's `shortName` | string | The site's name, unique in its system: what the talkgroup file's `Preferred Site` names, the `site` in call JSON and the log. Leave it out for a system of one site |
 | `enabled` | | `true` | bool | `false` keeps the site without recording from it (**Record** on its card) |
+| `id` | | given | integer | The site's number: given when the config is read, the same through renames, never another site's (any system's). Plugins know the site by it. Leave it to the recorder |
 | `directoryId` | | `""` | string | Set by [sharing](#sharing-with-the-directory): the directory's ID for the site |
 | `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |

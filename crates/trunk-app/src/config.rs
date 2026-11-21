@@ -13,7 +13,7 @@ use trunk_core::trunk::{
     check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, Identity, SaveRules, SourceConfig,
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
-pub use trunk_core::trunk::{usable_half_width, SystemId, DEFAULT_GUARD_HZ};
+pub use trunk_core::trunk::{usable_half_width, SiteId, SystemId, DEFAULT_GUARD_HZ};
 use crate::place::{advise, coverage, place_sources, receiver, Advice, Choices, Coverage, Group, Placing, Targets, Weighted};
 use trunk_core::trunk::Pins;
 
@@ -418,6 +418,10 @@ impl Source {
 ///   "sites": [ { "controlChannelsHz": [851012500] },
 ///              { "name": "dcfd-south", "controlChannelsHz": [852337500], "expect": { "rfss": 1, "site": 2 } } ] }
 /// ```
+fn no_site_id(v: &SiteId) -> bool {
+    v.0 == 0
+}
+
 fn no_id(v: &SystemId) -> bool {
     v.0 == 0
 }
@@ -609,6 +613,10 @@ fn signals_problem(system: &str, defs: &[SignalDef]) -> Option<String> {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Site {
+    /// Its number, the same across renames and runs, never another site's
+    /// (any system's): what plugins know it by ([`Config::assign_system_ids`]).
+    #[serde(skip_serializing_if = "no_site_id")]
+    pub id: SiteId,
     /// Its name, unique in its system (empty: the system's short name). The
     /// talkgroup file's Preferred Site names it; calls and plugins say it.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -1068,6 +1076,7 @@ impl Default for System {
 impl Default for Site {
     fn default() -> Self {
         Site {
+            id: SiteId::default(),
             name: String::new(),
             directory_id: String::new(),
             enabled: true,
@@ -1624,6 +1633,10 @@ pub struct PluginSetup {
     /// every system's figures, `totals`, can't be: [`trunk_recorder_plugin::Manifest::per_system`]).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub systems_off: Vec<SystemId>,
+    /// The sites it's turned off for (as `systems_off`, by [`SiteId`]): their
+    /// unit events and status aren't sent, nor a recorded call only they heard.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites_off: Vec<SiteId>,
 }
 
 /// Plugins wait this long for some calls: those its fields pick, each left
@@ -2228,6 +2241,9 @@ pub struct Config {
     /// one given, so a removed system's id is never given again.
     #[serde(skip_serializing_if = "is_zero_u32")]
     pub next_system_id: u32,
+    /// The next site id to give, as [`Config::next_system_id`] (any system's sites).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub next_site_id: u32,
     pub recording: Recording,
     pub server: Server,
     /// The plugins, by id: on or off, and their settings for the whole recorder.
@@ -2328,6 +2344,7 @@ impl Default for Config {
             systems: vec![],
             conventional: vec![],
             next_system_id: 0,
+            next_site_id: 0,
             recording: Recording::default(),
             server: Server::default(),
             plugins: BTreeMap::new(),
@@ -2592,9 +2609,31 @@ impl Config {
 
     /// Give every system (trunked and conventional) without an id the next
     /// one, and a second with the same id one of its own; [`Config::next_system_id`]
-    /// stays above them all, so an id is never given twice.
-    /// Whether any was given one.
+    /// stays above them all, so an id is never given twice. Sites the same,
+    /// from [`Config::next_site_id`]. Whether any was given one.
     pub fn assign_system_ids(&mut self) -> bool {
+        let sites = self.assign_site_ids();
+        self.assign_ids_of_systems() || sites
+    }
+
+    fn assign_site_ids(&mut self) -> bool {
+        let given = self.systems.iter().flat_map(|s| &s.sites).map(|s| s.id.0).max().unwrap_or(0);
+        let mut next = self.next_site_id.max(given + 1);
+        let mut seen = std::collections::HashSet::new();
+        let mut any = false;
+        for id in self.systems.iter_mut().flat_map(|s| &mut s.sites).map(|s| &mut s.id.0) {
+            if *id == 0 || !seen.insert(*id) {
+                *id = next;
+                seen.insert(next);
+                next += 1;
+                any = true;
+            }
+        }
+        self.next_site_id = next;
+        any
+    }
+
+    fn assign_ids_of_systems(&mut self) -> bool {
         let given = self.systems.iter().map(|s| s.id.0).chain(self.conventional.iter().map(|c| c.id.0)).max().unwrap_or(0);
         let mut next = self.next_system_id.max(given + 1);
         let mut seen = std::collections::HashSet::new();
@@ -3202,7 +3241,7 @@ impl Config {
                 let rules = self.recording.with(&sys.recording);
                 let sites = sys
                     .active_sites()
-                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: Identity::of_site(&s.expect), protocol: s.protocol(sys) })
+                    .map(|s| SiteConfig { id: s.id, name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: Identity::of_site(&s.expect), protocol: s.protocol(sys) })
                     .collect();
                 SystemConfig {
                     id: sys.id,

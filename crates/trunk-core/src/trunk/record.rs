@@ -2,7 +2,7 @@
 //! create_call_json) so existing tooling reads it, and TR's file base name.
 
 
-pub use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SrcEntry, ToneEntry, TonePattern};
+pub use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SiteRef, SrcEntry, ToneEntry, TonePattern};
 
 use super::calls::{Call, Voice};
 use crate::dsp::inband::signal::{matching, Signal};
@@ -20,10 +20,13 @@ pub struct ConcludeInfo<'a> {
     pub short_name: &'a str,
     /// Its system's kind ([`super::Protocol::kind`], or "conventional").
     pub system_type: &'a str,
-    /// Its site's name (empty: a conventional system's call, which has none).
+    /// Its system's id ([`CallRecord::system_id`]).
+    pub system_id: super::SystemId,
+    /// Its site's name and id (empty, 0: a conventional system's call, which has none).
     pub site: &'a str,
+    pub site_id: super::SiteId,
     /// Every site it was recorded on, `site` first ([`CallRecord::sites`]).
-    pub sites: &'a [String],
+    pub sites: &'a [(super::SiteId, String)],
     /// Wall-clock epoch ms at sample-clock time 0.
     pub epoch_ms_at_zero: f64,
     pub audio_seconds: f64,
@@ -254,8 +257,10 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         system_type: info.system_type.to_string(),
         voice_mode: call.voice.mode_name().to_string(),
         short_name: info.short_name.to_string(),
+        system_id: info.system_id.0,
         site: info.site.to_string(),
-        sites: info.sites.to_vec(),
+        site_id: info.site_id.0,
+        sites: info.sites.iter().map(|(id, name)| SiteRef { id: id.0, name: name.clone() }).collect(),
         // Only when patched with another, as Trunk Recorder writes it.
         patched_talkgroups: if super::patches::patched(call.patched_talkgroups.len()) { call.patched_talkgroups.clone() } else { Vec::new() },
         freq_list: vec![FreqEntry {
@@ -438,7 +443,9 @@ mod tests {
         let info = ConcludeInfo {
             short_name: "s",
             system_type: "p25",
+            system_id: Default::default(),
             site: "",
+            site_id: Default::default(),
             sites: &[],
             epoch_ms_at_zero: 0.0,
             audio_seconds: 1.0,
@@ -548,10 +555,13 @@ pub struct SaveContext<'a> {
     pub short_name: &'a str,
     /// Its system's kind ([`super::Protocol::kind`], or "conventional").
     pub system_type: &'a str,
-    /// The site's name (empty: conventional).
+    /// Its system's id.
+    pub system_id: super::SystemId,
+    /// The site's name and id (empty, 0: conventional).
     pub site: &'a str,
+    pub site_id: super::SiteId,
     /// Every site it was recorded on, `site` first ([`ConcludeInfo::sites`]).
-    pub sites: &'a [String],
+    pub sites: &'a [(super::SiteId, String)],
     /// Wall clock (Unix ms) at the engine's time 0.
     pub epoch_ms_at_zero: f64,
     /// Its radios' talker aliases, and its unit names file.
@@ -659,7 +669,9 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
         &ConcludeInfo {
             short_name: cx.short_name,
             system_type: cx.system_type,
+            system_id: cx.system_id,
             site: cx.site,
+            site_id: cx.site_id,
             sites: cx.sites,
             epoch_ms_at_zero: cx.epoch_ms_at_zero,
             audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,

@@ -114,10 +114,11 @@ pub fn audio_frame(a: &LiveAudio) -> Vec<u8> {
 /// Live voice as the vocoder frames its audio was made from (`unit_name`: the
 /// talker's, "": none): what the `voice` plugin topic and interfaces listening
 /// with `voice` are sent ([`Output::Audio`]). None: analog, no frames.
-pub fn voice_chunk(short_name: &str, unit_name: &str, a: &LiveAudio) -> Option<trunk_recorder_plugin::VoiceChunk> {
+pub fn voice_chunk(system_id: u32, short_name: &str, unit_name: &str, a: &LiveAudio) -> Option<trunk_recorder_plugin::VoiceChunk> {
     (!a.frames.is_empty()).then(|| trunk_recorder_plugin::VoiceChunk {
         call_id: a.call_id,
         system: a.system,
+        system_id,
         short_name: short_name.to_string(),
         talkgroup: a.talkgroup,
         unit: a.unit,
@@ -383,7 +384,7 @@ pub struct Session {
     /// Capture rules are on: tell them what happens ([`Output::Fact`]).
     pub want_facts: bool,
     /// Each site, as calls number them: its system's number and its name.
-    sites: Vec<(u16, String)>,
+    sites: Vec<(u16, String, trunk_core::trunk::SiteId)>,
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
@@ -436,7 +437,7 @@ impl Session {
             if let Some(b) = bandplan(&bandplan_key(&systems[system as usize], s)).or_else(|| bandplan(crate::migrate::old_bandplan(s))) {
                 engine.load_bandplan(i, &b);
             }
-            sites.push((system, s.name.clone()));
+            sites.push((system, s.name.clone(), s.id));
         }
         let n = cfg.sources.len();
         // (A capture played as fast as it can be has no wall clock to keep to.)
@@ -988,6 +989,11 @@ impl Session {
         site.and_then(|s| self.sites.get(s as usize)).map_or(String::new(), |s| s.1.clone())
     }
 
+    /// Site `site`'s id, as plugins know it (0: none).
+    fn site_id(&self, site: Option<u16>) -> u32 {
+        site.and_then(|s| self.sites.get(s as usize)).map_or(0, |s| s.2 .0)
+    }
+
     /// How the log names system `system` (its site `site`): "dcfd", or "dcfd/south".
     fn site_label(&self, system: u16, site: Option<u16>) -> String {
         trunk_core::trunk::SiteKey { system: self.system_name(system), site: &self.site_name(site) }.to_string()
@@ -1120,8 +1126,10 @@ impl Session {
         CallInfo {
             id: c.id,
             system: c.system,
+            system_id: self.system_id(c.system).0,
             short_name: self.system_name(c.system).to_string(),
             site: self.site_name(c.site),
+            site_id: self.site_id(c.site),
             talkgroup: c.talkgroup,
             talkgroup_ota: c.talkgroup_ota,
             talkgroup_tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
@@ -1173,8 +1181,10 @@ impl Session {
     fn site_scope(y: &trunk_core::trunk::SiteStatus) -> trunk_recorder_plugin::SiteScope {
         trunk_recorder_plugin::SiteScope {
             index: y.system,
+            system_id: y.system_id.0,
             short_name: y.short_name.clone(),
             site_name: y.site_name.clone(),
+            site_id: y.site_id.0,
             key: y.key.clone(),
             protocol: y.kind.to_string(),
             control_channel_hz: y.control_channel_hz,
@@ -1235,7 +1245,7 @@ impl Session {
                         if m.source >= 0 {
                             let unit = m.source as u32;
                             let (tag, alpha_tag) = (self.unit_tag(system, unit), talkgroup.map(|tg| self.alpha_tag(system, tg)).unwrap_or_default());
-                            let e = UnitEvent { system, short_name: name.clone(), site: self.site_name(Some(site)), kind: kind.into(), unit, tag, talkgroup, alpha_tag, emergency: m.emergency, time: self.wall(m.time_s) };
+                            let e = UnitEvent { system, system_id: self.system_id(system).0, short_name: name.clone(), site: self.site_name(Some(site)), site_id: self.site_id(Some(site)), kind: kind.into(), unit, tag, talkgroup, alpha_tag, emergency: m.emergency, time: self.wall(m.time_s) };
                             out.push(Output::Plugin(HostMessage::Unit(e)));
                         }
                     }
@@ -1272,7 +1282,7 @@ impl Session {
                 let voice = (self.plugin_topics.voice || voice_listened)
                     .then(|| {
                         let unit_name = if audio.unit != 0 { self.unit_tag(audio.system, audio.unit) } else { String::new() };
-                        voice_chunk(&short_name, &unit_name, &audio)
+                        voice_chunk(self.system_id(audio.system).0, &short_name, &unit_name, &audio)
                     })
                     .flatten();
                 out.push(Output::Audio { short_name, audio, voice, voice_listened });
@@ -1326,7 +1336,7 @@ impl Session {
                 if self.plugin_topics.tone_patterns {
                     let alpha_tag = t.alpha_tag.clone();
                     let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
-                    let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, src_tag: self.unit_tag(t.system, t.src), decrypted: t.decrypted, time, pattern };
+                    let ev = trunk_recorder_plugin::TonePatternEvent { short_name: name, system_id: self.system_id(t.system).0, site: self.site_name(t.site), call_num: t.call_id as u64, talkgroup: t.talkgroup, alpha_tag, src_tag: self.unit_tag(t.system, t.src), decrypted: t.decrypted, time, pattern };
                     out.push(Output::Plugin(HostMessage::TonePattern(ev)));
                 }
             }
