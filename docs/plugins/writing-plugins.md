@@ -110,7 +110,8 @@ the name of the site they were heard on (a system of one site: its short name), 
 entry per site, with its `site_name`. A call heard on several sites of a system is one call: one
 `call.start` when its first copy begins and one `call.end` when its last copy ends, under the first copy's `id`. Its `site` and
 `freq_hz` are those of the copy speaking for it (one being recorded, if any is), and a `call.update` says when that changes.
-`call.concluded` is for the copy kept, and it and live audio carry that site's own call id. A plugin too far behind can lose
+`call.concluded` is for the copy kept, and it and live audio carry that site's own call id; its record's `sites`
+names every site the call was recorded on, the kept copy's first (to send a call where any of them goes, say). A plugin too far behind can lose
 other events, but not a call's start or end.
 
 ### Series

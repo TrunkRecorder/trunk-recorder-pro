@@ -557,6 +557,11 @@ pub struct CallRecord {
     /// of one site: its short name; none for a conventional system's).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site: String,
+    /// Every site of its system it was recorded on (this recorder's addition):
+    /// the one its copy was kept from ([`Self::site`]) first, then those whose
+    /// copies were the same call. None for a conventional system's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<String>,
     /// Every talkgroup patched with this one during the call, its own
     /// included; absent (empty) when it wasn't patched with another.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -629,6 +634,7 @@ impl Default for CallRecord {
             voice_mode: String::new(),
             short_name: String::new(),
             site: String::new(),
+            sites: Vec::new(),
             patched_talkgroups: Vec::new(),
             freq_list: Vec::new(),
             error_list: Vec::new(),

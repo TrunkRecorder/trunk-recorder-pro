@@ -90,6 +90,13 @@
           "type": "string",
           "description": "The site its copy was kept from (a system of one site: its short name)."
         },
+        "sites": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every site it was recorded on, `site` first."
+        },
         "talkgroup": {
           "type": "number"
         },

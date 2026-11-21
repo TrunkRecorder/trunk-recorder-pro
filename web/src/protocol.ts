@@ -966,6 +966,8 @@ export interface CallRecord {
   short_name?: string;
   /** The site its copy was kept from (a system of one site: its short name). */
   site?: string;
+  /** Every site it was recorded on, `site` first. */
+  sites?: string[];
   talkgroup: number;
   /** Conventional P25 / DMR / NXDN: the talkgroup the air named (`talkgroup` is what the call is filed under, which a channel row may set to another number). */
   talkgroup_ota?: number;

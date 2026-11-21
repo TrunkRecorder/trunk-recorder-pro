@@ -22,6 +22,8 @@ pub struct ConcludeInfo<'a> {
     pub system_type: &'a str,
     /// Its site's name (empty: a conventional system's call, which has none).
     pub site: &'a str,
+    /// Every site it was recorded on, `site` first ([`CallRecord::sites`]).
+    pub sites: &'a [String],
     /// Wall-clock epoch ms at sample-clock time 0.
     pub epoch_ms_at_zero: f64,
     pub audio_seconds: f64,
@@ -253,6 +255,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         voice_mode: call.voice.mode_name().to_string(),
         short_name: info.short_name.to_string(),
         site: info.site.to_string(),
+        sites: info.sites.to_vec(),
         // Only when patched with another, as Trunk Recorder writes it.
         patched_talkgroups: if super::patches::patched(call.patched_talkgroups.len()) { call.patched_talkgroups.clone() } else { Vec::new() },
         freq_list: vec![FreqEntry {
@@ -436,6 +439,7 @@ mod tests {
             short_name: "s",
             system_type: "p25",
             site: "",
+            sites: &[],
             epoch_ms_at_zero: 0.0,
             audio_seconds: 1.0,
             errors: &errors,
@@ -546,6 +550,8 @@ pub struct SaveContext<'a> {
     pub system_type: &'a str,
     /// The site's name (empty: conventional).
     pub site: &'a str,
+    /// Every site it was recorded on, `site` first ([`ConcludeInfo::sites`]).
+    pub sites: &'a [String],
     /// Wall clock (Unix ms) at the engine's time 0.
     pub epoch_ms_at_zero: f64,
     /// Its radios' talker aliases, and its unit names file.
@@ -654,6 +660,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
             short_name: cx.short_name,
             system_type: cx.system_type,
             site: cx.site,
+            sites: cx.sites,
             epoch_ms_at_zero: cx.epoch_ms_at_zero,
             audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,
             errors: &frames.errors,

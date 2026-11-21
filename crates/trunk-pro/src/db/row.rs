@@ -62,6 +62,8 @@ struct Detail {
     signals: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     patched_talkgroups: Vec<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sites: Vec<String>,
     /// Fields of the record this version doesn't know.
     #[serde(skip_serializing_if = "Map::is_empty")]
     extra: Map<String, Value>,
@@ -85,6 +87,7 @@ pub fn call_values(row: &CallRow) -> Vec<V> {
         tone_patterns: r.tone_patterns.clone(),
         signals: r.signals.clone(),
         patched_talkgroups: r.patched_talkgroups.clone(),
+        sites: r.sites.clone(),
         extra: r.extra.clone(),
     };
     vec![
@@ -243,6 +246,7 @@ pub fn stored_call(r: &Row, at: usize, short_name: String, src_list: Vec<SrcEntr
         voice_mode: r.text(i(42)),
         short_name,
         site: r.text(i(2)),
+        sites: detail.sites,
         patched_talkgroups: detail.patched_talkgroups,
         freq_list: detail.freq_list,
         error_list: detail.error_list,
