@@ -70,7 +70,14 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         .layer(Extension(Door::Builtin))
         .layer(middleware::from_fn_with_state((ctx.clone(), loopback), guard))
         .with_state(ctx.clone());
-    tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
+    // The interfaces the config serves: now, and each time they change.
+    let ctx3 = ctx.clone();
+    tokio::spawn(async move {
+        loop {
+            crate::interfaces::serve::reconcile(ctx3.clone()).await;
+            ctx3.interfaces_due.notified().await;
+        }
+    });
     #[cfg(unix)]
     tokio::spawn(reopen_log_on_hangup());
     let ctx2 = ctx.clone();
@@ -567,7 +574,7 @@ fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
 fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
     use crate::kept;
     let config = ctx.config.lock().unwrap().clone();
-    let mut m: Vec<ToClient> = config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)).filter_map(|n| Some(ToClient::Units { system: n.clone(), csv: kept::read_units(&ctx.db, n)? })).collect();
+    let mut m: Vec<ToClient> = config.system_ids().filter_map(|(id, n)| Some(ToClient::Units { system: n.to_string(), csv: kept::read_units(&ctx.db, id)? })).collect();
     if ctx.heard_last.lock().unwrap().is_none() {
         let saved = kept::read(&ctx.db, trunk_app::saving::Kind::Heard, "").and_then(|t| serde_json::from_str::<Value>(&t).ok());
         m.push(ToClient::Heard { heard: saved.unwrap_or(json!({})) });
@@ -575,14 +582,27 @@ fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
     m
 }
 
+/// A browser's whole list of the system named `system` ([`runtime::set_names`]).
+/// None for a name no system has is nothing to do: a browser clears the old
+/// name's list after a rename or a removal, and the names went with the id.
+fn set_list<R: runtime::NameList>(ctx: &Ctx, system: &str, rows: Vec<R>, from: Option<trunk_core::trunk::Origin>) -> Result<(), String> {
+    match runtime::system_named(ctx, system) {
+        Ok(id) => runtime::set_names(ctx, id, rows, from),
+        Err(_) if rows.is_empty() => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// The greeting's messages that need nothing found or listed: `devices` for
 /// control access only; `kept` from [`kept_now`].
 pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, history: ToClient, kept: Vec<ToClient>) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
     let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
-    for (system, n) in ctx.names.lock().unwrap().iter() {
-        m.push(ToClient::Talkgroups { system: system.clone(), talkgroups: n.talkgroups.clone() });
-        m.push(ToClient::UnitNames { system: system.clone(), unit_names: n.unit_names.clone() });
+    for (id, n) in ctx.names.lock().unwrap().iter() {
+        // (A system gone from the config: its names are kept, not shown.)
+        let Some((_, system)) = config.system_ids().find(|(i, _)| i == id) else { continue };
+        m.push(ToClient::Talkgroups { system: system.to_string(), talkgroups: n.talkgroups.clone() });
+        m.push(ToClient::UnitNames { system: system.to_string(), unit_names: n.unit_names.clone() });
     }
     // Each system's talker aliases; the codes conventional frequencies carried: as last told, else as saved.
     let (heard, units): (Vec<ToClient>, Vec<ToClient>) = kept.into_iter().partition(|k| matches!(k, ToClient::Heard { .. }));
@@ -590,10 +610,10 @@ pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, his
     // Each system's MDC1200 radios, as the registry has them (their IDs shown in hex).
     {
         let radio = ctx.shared.radio.lock().unwrap();
-        for system in radio.systems.keys() {
-            let units = radio.mdc_units(system);
+        for (id, system) in config.system_ids() {
+            let units = radio.mdc_units(id);
             if !units.is_empty() {
-                m.push(ToClient::MdcUnits { system: system.clone(), units });
+                m.push(ToClient::MdcUnits { system: system.to_string(), units });
             }
         }
     }
@@ -807,8 +827,9 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     }
 }
 
-/// Change the config on the recorder's side (a plugin added or removed):
-/// saved, sent to every browser, and the plugins restarted if it changes them.
+/// Change the config on the recorder's side (a plugin added or removed, a
+/// call sign heard, a gain tuned): saved, sent to every browser, and applied
+/// as a browser's edit is ([`apply_config`]).
 pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<(), String> {
     let mut cfg = ctx.config.lock().unwrap();
     let old = cfg.clone();
@@ -820,9 +841,48 @@ pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config))
     ctx.config_changed(&cfg);
     let c = cfg.clone();
     drop(cfg);
-    ctx.plugins.set_delays(&c);
-    ctx.plugins.apply(&old, &c);
+    apply_config(ctx, &old, &c);
     Ok(())
+}
+
+/// The config, saved and told ([`Ctx::config_changed`]), went from `old` to
+/// `new`: what takes it at once does. The one way a change is applied,
+/// whoever made it (a browser's `setConfig`, the recorder's own [`edit_config`]).
+/// Blocks (plugins may restart): not from async code.
+pub(crate) fn apply_config(ctx: &Ctx, old: &crate::config::Config, new: &crate::config::Config) {
+    if old.log != new.log {
+        crate::logging::configure(&new.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
+    }
+    if old.keys != new.keys || old.systems != new.systems || old.conventional != new.conventional {
+        crate::unlock::config_changed(ctx, new);
+    }
+    // Their delays apply at once, to what's waiting too (no restart).
+    ctx.plugins.set_delays(new);
+    // Sharing switched on or off (or what it uses changed, like licenses): at once too.
+    for sys in &new.systems {
+        if old.systems.iter().find(|o| o.id == sys.id) != Some(sys) {
+            ctx.tell_engine(crate::runtime::EngineCmd::ShareSystem(sys.clone()));
+        }
+    }
+    // A radio's gain changed while recording: it takes it now (the ones that can), the
+    // rest at the next start, which the log says; the banner says whether a restart waits.
+    for (i, g) in ctx.live_sources(old, new) {
+        // A radio whose gain is being tuned: the edit wins.
+        ctx.tune.edited(&new.sources[i]);
+        if let Some(g) = g {
+            log::info!("{}: gain changed while recording, applied now: {g}", new.sources[i].title(i));
+        } else {
+            log::info!("{}: changed while recording; the change applies when recording starts next (Stop, then Start)", new.sources[i].title(i));
+        }
+    }
+    ctx.restart_check(new);
+    // Interfaces turned on or off, moved, added: served so at once.
+    if old.server.interfaces != new.server.interfaces {
+        ctx.interfaces_due.notify_one();
+    }
+    // Plugins' settings changed while recording: sent to those that take them as
+    // they run, else they restart with them.
+    ctx.plugins.apply(old, new);
 }
 
 fn void<T>(_: T) {}
@@ -914,40 +974,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                     let old = std::mem::replace(&mut *cur, c.clone());
                     (old, saved, ctx.config_changed(&cur))
                 };
-                if old.log != c.log {
-                    crate::logging::configure(&c.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
-                }
-                if old.keys != c.keys || old.systems != c.systems || old.conventional != c.conventional {
-                    crate::unlock::config_changed(ctx, &c);
-                }
-                // Their delays apply at once, to what's waiting too (no restart).
-                ctx.plugins.set_delays(&c);
-                // Sharing switched on or off (or what it uses changed, like licenses): at once too.
-                for sys in &c.systems {
-                    if old.systems.iter().find(|o| o.short_name == sys.short_name) != Some(sys) {
-                        ctx.tell_engine(crate::runtime::EngineCmd::ShareSystem(sys.clone()));
-                    }
-                }
-                // A radio's gain changed while recording: it takes it now (the ones that can), the
-                // rest at the next start, which the log says; the banner says whether a restart waits.
-                for (i, g) in ctx.live_sources(&old, &c) {
-                    // A radio whose gain is being tuned: the edit wins.
-                    ctx.tune.edited(&c.sources[i]);
-                    if let Some(g) = g {
-                        log::info!("{}: gain changed while recording, applied now: {g}", c.sources[i].title(i));
-                    } else {
-                        log::info!("{}: changed while recording; the change applies when recording starts next (Stop, then Start)", c.sources[i].title(i));
-                    }
-                }
-                ctx.restart_check(&c);
-                // Interfaces turned on or off, moved, added: served so at once.
-                if old.server.interfaces != c.server.interfaces {
-                    tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
-                }
-                // Plugins' settings changed while recording: sent to those that take them as
-                // they run, else they restart with them.
                 let ctx2 = ctx.clone();
-                let _ = tokio::task::spawn_blocking(move || ctx2.plugins.apply(&old, &c)).await;
+                let _ = tokio::task::spawn_blocking(move || apply_config(&ctx2, &old, &c)).await;
                 Some(ToClient::ConfigSaved { version: now, error: saved.err().map(|e| format!("Couldn't save the config: {e}")) })
             }
             Err(e) => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: Some(format!("Bad config: {e}")) }),
@@ -956,15 +984,15 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         // (Off the async workers: the store's queue can be full, and the edit holds the talkgroups' lock while it hands over.)
         Command::SetTalkgroups { system, talkgroups, from } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_names(&ctx2, &system, talkgroups, from)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || set_list(&ctx2, &system, talkgroups, from)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         Command::SetUnitNames { system, unit_names, from } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_names(&ctx2, &system, unit_names, from)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || set_list(&ctx2, &system, unit_names, from)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         Command::SetUnitName { system, unit, name } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_unit_name(&ctx2, &system, unit, name)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || runtime::set_unit_name(&ctx2, runtime::system_named(&ctx2, &system)?, unit, name)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         // (Captures read and write the disk: off the async workers.)
         Command::IqCaptures { id } => {
@@ -1034,7 +1062,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         }
         Command::SetTalkgroup { system, talkgroup, edit } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroup(&ctx2, &system, talkgroup, edit)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroup(&ctx2, runtime::system_named(&ctx2, &system)?, talkgroup, edit)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         // A key container with no passwordFile, unlocked with a password typed in, or locked again
         // (docs/configuration/systems.md). The password is never kept.
@@ -1065,9 +1093,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             failed(r)
         }
         Command::Start => {
-            let cfg = ctx.config.lock().unwrap().clone();
             let ctx2 = ctx.clone();
-            tokio::task::spawn_blocking(move || ctx2.begin_recording(cfg)).await.ok().and_then(Result::err).map(ToClient::error)
+            tokio::task::spawn_blocking(move || ctx2.begin_recording()).await.ok().and_then(Result::err).map(ToClient::error)
         }
         Command::Stop => {
             let ctx2 = ctx.clone();
@@ -1347,6 +1374,20 @@ mod tests {
         let caps = capabilities(&off).await;
         assert!(!caps.contains(&Capability::Calls) && !caps.contains(&Capability::History), "{caps:?}");
         assert_eq!(caps.len(), Capability::ALL.len() - 2);
+    }
+
+    /// A change the recorder makes itself is applied as a browser's is: a
+    /// system's sharing switched on reaches the recording at once.
+    #[test]
+    fn the_recorders_own_edit_is_applied_as_a_browsers() {
+        let dir = crate::db::TestDir::new("own-edit");
+        let ctx = crate::runtime::test_ctx(&dir);
+        let (tx, rx) = std::sync::mpsc::channel();
+        *ctx.engine.lock().unwrap() = Some(tx);
+        super::edit_config(&ctx, |c| c.systems[0].share = true).unwrap();
+        assert!(rx.try_iter().any(|m| matches!(m, crate::runtime::EngineCmd::ShareSystem(s) if s.share)), "told the recording");
+        super::edit_config(&ctx, |c| c.systems[0].share = true).unwrap();
+        assert!(rx.try_recv().is_err(), "nothing changed, nothing told");
     }
 
     /// An edit of the config as it was before someone else's change is

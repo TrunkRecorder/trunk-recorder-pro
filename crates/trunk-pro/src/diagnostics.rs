@@ -45,7 +45,7 @@ fn config_shape(cfg: &Config, names: &NameLists) -> Value {
                 "sites": s.sites.len(),
                 "controlChannels": s.sites.iter().map(|x| x.control_channels_hz.len()).sum::<usize>(),
                 "modulation": s.sites.first().map(|x| serde_json::to_value(x.modulation).unwrap_or_default()),
-                "talkgroups": names.get(&s.short_name).map_or(0, |n| n.talkgroups.len()),
+                "talkgroups": names.get(&s.id).map_or(0, |n| n.talkgroups.len()),
                 "plugins": s.plugins.len(),
             })
         })
@@ -206,7 +206,7 @@ mod tests {
         }))
         .unwrap();
         let mut names = NameLists::new();
-        names.insert("SECRET-SHORT".into(), SystemNames { talkgroups: vec![trunk_core::trunk::TalkgroupRow { tg: trunk_core::trunk::Talkgroup { number: 7, alpha_tag: "SECRET-TG".into(), ..Default::default() }, ..Default::default() }], ..Default::default() });
+        names.insert(cfg.id_of("SECRET-SHORT").unwrap(), SystemNames { talkgroups: vec![trunk_core::trunk::TalkgroupRow { tg: trunk_core::trunk::Talkgroup { number: 7, alpha_tag: "SECRET-TG".into(), ..Default::default() }, ..Default::default() }], ..Default::default() });
         use trunk_app::stats::MonitorEvent as E;
         // (As the monitor has them: by the source's series name.)
         let source = trunk_core::metrics::key_part(&cfg.sources[0].label());

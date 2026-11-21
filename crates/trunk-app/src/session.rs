@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value};
 use trunk_core::metrics;
-use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus};
+use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus, SystemId};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -130,6 +130,9 @@ pub fn voice_chunk(short_name: &str, unit_name: &str, a: &LiveAudio) -> Option<t
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
 /// Recorder's folders are in local time, which only the platform knows.
 pub type LocalOffset = fn(i64) -> i32;
+
+/// What sees each of the engine's events as a session handles it ([`Session::watch`]).
+pub type EventWatch = Box<dyn FnMut(&Event, &Engine) + Send>;
 
 /// A source's counts this run ([`Session::source_counts`]).
 #[derive(Clone, Debug, Default)]
@@ -412,16 +415,20 @@ pub struct Session {
     share: crate::share::Ledger,
     /// This install's anonymous ID for the directory (the platform keeps it); empty: nothing is shared.
     recorder_id: String,
+    /// Given each of the engine's events before the session handles it (`replay` prints them).
+    pub watch: Option<EventWatch>,
 }
 
 impl Session {
     /// `bandplan`: the band plan saved for a site, by its key
     /// ([`Session::bandplans`], [`bandplan_key`]).
     /// `names`: each system's talkgroups and radio names ([`crate::config::NameLists`]).
-    pub fn new(cfg: Config, names: &crate::config::NameLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
+    pub fn new(mut cfg: Config, names: &crate::config::NameLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
+        // (A config read is numbered; one built in code may not be.)
+        cfg.assign_system_ids();
         let engine = Engine::new(cfg.engine_config(epoch_ms, names))?;
         let systems = engine.systems();
         let mut sites = Vec::new();
@@ -480,6 +487,7 @@ impl Session {
             call_signs: Default::default(),
             share: Default::default(),
             recorder_id: String::new(),
+            watch: None,
         };
         session.share = crate::share::Ledger::new(session.cfg.systems.iter());
         Ok(session)
@@ -509,40 +517,42 @@ impl Session {
     }
 
     /// A system's talkgroups are now `rows` (a list loaded): calls from now on go by them.
-    pub fn set_talkgroups(&mut self, short_name: &str, rows: &[trunk_core::trunk::TalkgroupRow]) -> bool {
-        let set = self.engine.set_talkgroups(short_name, crate::config::talkgroups_of(rows));
+    pub fn set_talkgroups(&mut self, system: SystemId, rows: &[trunk_core::trunk::TalkgroupRow]) -> bool {
+        let Some(i) = self.index_of(system) else { return false };
+        let set = self.engine.set_talkgroups(i, crate::config::talkgroups_of(rows));
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
         set
     }
 
-    /// One talkgroup of the system named `short_name`, as it is now (none: not one of its talkgroups).
-    pub fn set_talkgroup(&mut self, short_name: &str, number: u32, row: Option<trunk_core::trunk::Talkgroup>) -> bool {
-        self.meas.shared().names.lock().unwrap().set_talkgroup(short_name, number, row.clone());
-        self.engine.set_talkgroup(short_name, number, row)
+    /// One talkgroup of system `system`, as it is now (none: not one of its talkgroups).
+    pub fn set_talkgroup(&mut self, system: SystemId, number: u32, row: Option<trunk_core::trunk::Talkgroup>) -> bool {
+        let Some(i) = self.index_of(system) else { return false };
+        self.meas.shared().names.lock().unwrap().set_talkgroup(system, number, row.clone());
+        self.engine.set_talkgroup(i, number, row)
     }
 
-    /// The system named `short_name`'s own names for its radios are now `rows`: calls from now on are named by them.
+    /// System `system`'s own names for its radios are now `rows`: calls from now on are named by them.
     /// The sites running, each with the source its control channel is on.
     pub fn sites(&self) -> Vec<trunk_core::trunk::SiteStatus> {
         self.engine.status().sites
     }
 
-    pub fn set_unit_names(&mut self, short_name: &str, rows: &[trunk_core::trunk::UnitNameRow]) -> bool {
-        let set = self.engine.set_unit_names(short_name, rows);
+    pub fn set_unit_names(&mut self, system: SystemId, rows: &[trunk_core::trunk::UnitNameRow]) -> bool {
+        let Some(i) = self.index_of(system) else { return false };
+        let set = self.engine.set_unit_names(i, rows);
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
         set
     }
 
-    /// The encryption keys of the system named `short_name` (trunked or
+    /// The encryption keys of system `system` (trunked or
     /// conventional): voice channels opened from now on decrypt with them.
-    pub fn set_keys(&mut self, short_name: &str, keys: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> bool {
-        self.engine.set_keys(short_name, keys)
+    pub fn set_keys(&mut self, system: SystemId, keys: Option<std::sync::Arc<trunk_core::p25::crypt::Keyring>>) -> bool {
+        self.index_of(system).is_some_and(|i| self.engine.set_keys(i, keys))
     }
 
-    /// A radio's talker alias on the system named `short_name`.
-    pub fn unit_alias(&self, short_name: &str, unit: u32) -> Option<String> {
-        let sys = self.cfg.call_systems().into_iter().find(|s| s.short_name == short_name)?.index;
-        self.engine.unit_alias(sys, unit)
+    /// A radio's talker alias on system `system`.
+    pub fn unit_alias(&self, system: SystemId, unit: u32) -> Option<String> {
+        self.engine.unit_alias(self.index_of(system)?, unit)
     }
 
 
@@ -742,37 +752,33 @@ impl Session {
     }
 
     /// Preload each system's talker aliases: `units` gives the CSV saved
-    /// for a short name ([`Saved::Units`]).
-    pub fn load_units(&mut self, units: &dyn Fn(&str) -> Option<String>) {
-        for n in self.engine.systems().iter().map(|s| s.short_name.clone()) {
-            // A system's (and what its sites learned as systems of their own: newest wins).
-            let mut names = vec![n.clone()];
-            names.extend(self.cfg.systems.iter().filter(|s| s.short_name == n).flat_map(crate::migrate::old_names));
-            let csv: Vec<String> = names.iter().filter_map(|x| units(x)).collect();
-            if !csv.is_empty() {
-                self.engine.load_units(&n, &csv.join("\n"));
-                self.meas.shared().names.lock().unwrap().set_units(&n, &csv.join("\n"));
+    /// for a system ([`Saved::Units`]).
+    pub fn load_units(&mut self, units: &dyn Fn(SystemId) -> Option<String>) {
+        for (i, id) in self.ids().into_iter().enumerate() {
+            if let Some(csv) = units(id) {
+                self.engine.load_units(i as u16, &csv);
+                self.meas.shared().names.lock().unwrap().set_units(id, &csv);
             }
         }
     }
 
     /// Forget the talker aliases of system `system` (none: every system's),
     /// as deleted from the store: none is saved again unless heard again.
-    pub fn forget_units(&mut self, system: Option<&str>) {
+    pub fn forget_units(&mut self, system: Option<SystemId>) {
         let mut book = self.meas.shared().names.lock().unwrap();
-        for n in self.engine.systems().iter().map(|s| s.short_name.clone()).filter(|n| system.is_none_or(|s| s == n)) {
-            self.engine.load_units(&n, "");
-            book.set_units(&n, "");
+        for (i, id) in self.ids().into_iter().enumerate().filter(|(_, id)| system.is_none_or(|s| s == *id)) {
+            self.engine.load_units(i as u16, "");
+            book.set_units(id, "");
         }
     }
 
-    /// (short name, talker alias CSV) of each system that learned an alias
+    /// (system, talker alias CSV) of each system that learned an alias
     /// since the last call, to save; the names the dashboard shows take them.
-    fn units_changed(&mut self) -> Vec<(String, String)> {
-        let changed = self.engine.units_changed();
+    fn units_changed(&mut self) -> Vec<(SystemId, String)> {
+        let changed: Vec<(SystemId, String)> = self.engine.units_changed().into_iter().map(|(i, csv)| (self.system_id(i), csv)).collect();
         let mut book = self.meas.shared().names.lock().unwrap();
-        for (name, csv) in &changed {
-            book.set_units(name, csv);
+        for (id, csv) in &changed {
+            book.set_units(*id, csv);
         }
         changed
     }
@@ -952,6 +958,26 @@ impl Session {
         self.cfg.short_name_of(system).unwrap_or("conv")
     }
 
+    /// The id of system `system` (a call's), as this run's config has it.
+    pub fn system_id(&self, system: u16) -> SystemId {
+        self.cfg.call_systems().get(system as usize).map_or_else(Default::default, |s| s.id)
+    }
+
+    /// System `id`'s short name, as this run's config has it ("": not one of the run's).
+    pub fn short_name(&self, id: SystemId) -> &str {
+        self.index_of(id).map_or("", |i| self.system_name(i))
+    }
+
+    /// The number calls of system `id` carry this run (none: not one of the run's).
+    pub fn index_of(&self, id: SystemId) -> Option<u16> {
+        self.cfg.call_systems().iter().find(|s| s.id == id).map(|s| s.index)
+    }
+
+    /// Each system's id, as calls number them.
+    fn ids(&self) -> Vec<SystemId> {
+        self.cfg.call_systems().iter().map(|s| s.id).collect()
+    }
+
     /// The system of site `site` (a call's `site`).
     fn system_of(&self, site: u16) -> u16 {
         self.sites.get(site as usize).map_or(0, |s| s.0)
@@ -969,13 +995,13 @@ impl Session {
 
     /// Talkgroups as the interface shows them: number and alpha tag ([`NameBook::tg`]; "": none).
     fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-        tg_names(&self.meas.shared().names.lock().unwrap(), self.system_name(system), tgs)
+        tg_names(&self.meas.shared().names.lock().unwrap(), self.system_id(system), tgs)
     }
 
     /// Talkgroup `tg`'s name in system `system` ([`NameBook::tg`]; "": none), as plugins' events give it (`alpha_tag`).
     /// (Where there's a call, its own name: a conventional row names its calls more closely than a number can.)
     fn alpha_tag(&self, system: u16, tg: u32) -> String {
-        self.meas.shared().names.lock().unwrap().alpha_tag(self.system_name(system), tg)
+        self.meas.shared().names.lock().unwrap().alpha_tag(self.system_id(system), tg)
     }
 
     /// Radio `unit`'s name ("": none), as a call's JSON gives it (`tag`): by
@@ -1192,9 +1218,12 @@ impl Session {
     }
 
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
+        if let Some(w) = self.watch.as_mut() {
+            w(&ev, &self.engine);
+        }
         if let Some(sys) = self.event_system(&ev) {
             let name = self.system_name(sys).to_string();
-            self.meas.observe(&ev, &name, &self.engine, out);
+            self.meas.observe(&ev, self.system_id(sys), &name, &self.engine, out);
         }
         match ev {
             Event::Message { site, msg: m } => {
@@ -1577,7 +1606,7 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
 
 
 /// Talkgroups of system `system` with their names ([`NameBook::tg`]).
-fn tg_names(names: &NameBook, system: &str, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
+fn tg_names(names: &NameBook, system: SystemId, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
     tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": names.alpha_tag(system, tg) })).collect()
 }
 
@@ -1586,11 +1615,12 @@ fn tg_names(names: &NameBook, system: &str, tgs: impl IntoIterator<Item = u32>) 
 /// (each site hears them: once each).
 fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>, Vec<Value>) {
     let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
+    let id = engine.systems().iter().find(|s| s.short_name == system).map_or_else(Default::default, |s| s.id);
     for y in engine.status().sites.iter().filter(|y| y.short_name == system) {
-        let (dmr, nxdn) = protocol_detail(&y.protocol, &|tg| tg_names(names, system, [tg]).remove(0));
+        let (dmr, nxdn) = protocol_detail(&y.protocol, &|tg| tg_names(names, id, [tg]).remove(0));
         sites.push(json!({ "index": y.site, "name": y.site_name, "dmr": dmr, "nxdn": nxdn }));
         for (sg, members) in &y.patches {
-            let p = json!({ "supergroup": tg_names(names, system, [*sg])[0], "members": tg_names(names, system, members.iter().copied()) });
+            let p = json!({ "supergroup": tg_names(names, id, [*sg])[0], "members": tg_names(names, id, members.iter().copied()) });
             if !patches.iter().any(|h| h["supergroup"] == p["supergroup"]) {
                 patches.push(p);
             }

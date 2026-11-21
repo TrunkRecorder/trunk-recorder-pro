@@ -46,6 +46,19 @@ impl Talkgroup {
     pub fn encrypted_mode(&self) -> bool {
         matches!(self.mode.as_str(), "E" | "TE" | "DE")
     }
+
+    /// Talkgroup `tg` as a conventional row names it: the `row`'s names over
+    /// the talkgroup `file`'s row for it, which still says how it's treated
+    /// (Ignore, its mode, priority and preferred site). The one merge for the
+    /// engine's calls and the dashboard's names.
+    pub fn named_by_row(row: &Talkgroup, tg: u32, file: Option<&Talkgroup>) -> Talkgroup {
+        let names = |t: Talkgroup| Talkgroup { number: tg, alpha_tag: row.alpha_tag.clone(), description: row.description.clone(), tag: row.tag.clone(), group: row.group.clone(), ..t };
+        match file {
+            Some(f) if f.mode.is_empty() => names(Talkgroup { mode: row.mode.clone(), ..f.clone() }),
+            Some(f) => names(f.clone()),
+            None => names(row.clone()),
+        }
+    }
 }
 
 pub type Talkgroups = HashMap<u32, Talkgroup>;

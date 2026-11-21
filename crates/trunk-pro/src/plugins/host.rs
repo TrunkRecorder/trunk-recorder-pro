@@ -25,11 +25,11 @@ use trunk_recorder_plugin::{
     format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
     SystemInfo, VoiceChunk, API_VERSION, EXIT_CONFIG,
 };
-use trunk_core::trunk::LiveAudio;
+use trunk_core::trunk::{LiveAudio, SystemId};
 
 use super::delay::About;
 use super::hold::{Hold, Offer, Outlet};
-use super::{describe, executable, Encoder};
+use super::{describe, executable, Encoder, RunSystem};
 
 /// What the plugins are up to, for the interface (or the terminal).
 #[derive(Clone, Debug)]
@@ -67,14 +67,16 @@ pub type Saves = Arc<dyn Fn(&str, serde_json::Map<String, Value>) -> Result<(), 
 const QUEUE: usize = 1024;
 
 /// A call's start or end, by its id. A plugin keeps track of what's going by
-/// these, so one isn't lost as other events are when the plugin falls behind.
+/// these, so one isn't lost as other events are when the plugin falls behind;
+/// nor is an answer to something it asked, which it waits for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Life {
     Start(u32),
     End(u32),
+    Answer,
 }
 
-/// Starts and ends a plugin's queue had no room for, in order.
+/// Starts, ends and answers a plugin's queue had no room for, in order.
 #[derive(Default)]
 struct Owed(VecDeque<(Life, Arc<str>)>);
 
@@ -118,6 +120,8 @@ struct Plugin {
 
 struct Shared {
     plugins: Vec<Plugin>,
+    /// The run's systems: what a line's system number (or short name, a log line's) is.
+    systems: Vec<RunSystem>,
     stopping: AtomicBool,
     /// Plugins may start (false: wait for the ones they replace to exit).
     go: Arc<AtomicBool>,
@@ -147,8 +151,6 @@ pub struct PluginHost {
     pub topics: PluginTopics,
     /// Some plugin wants calls' live media ([`topic::is_live`]: audio, voice).
     pub live: bool,
-    /// Each system's short name, by its number (for concluded calls).
-    names: BTreeMap<u16, String>,
     /// The log's tap that hands its lines to the plugins taking `log` ([`crate::logging::tap`]).
     log_tap: Option<u64>,
     done: bool,
@@ -161,9 +163,9 @@ pub struct Spec {
     pub copy: usize,
     pub exe: PathBuf,
     pub config: Value,
-    /// Its settings for each system, by short name; [`OVERRIDE`] in one
+    /// Its settings for each system, by id; [`OVERRIDE`] in one
     /// overrides some of `config` for that system.
-    pub systems: BTreeMap<String, Value>,
+    pub systems: BTreeMap<SystemId, Value>,
     /// Its data folder (None: the usual, in the config folder).
     pub data_dir: Option<PathBuf>,
     /// It may be given calls decrypted with our keys (`shareDecrypted`, when a system has keys).
@@ -194,7 +196,7 @@ impl Spec {
 impl PluginHost {
     /// Start `specs`. `systems`: every system calls come from (their `config` is filled in here).
     /// A plugin that can't start is reported and left out.
-    pub fn start(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[SystemInfo], capture_dir: &Path, notes: Notes) -> PluginHost {
+    pub fn start(specs: Vec<Spec>, audio: &super::AudioSettings, systems: &[RunSystem], capture_dir: &Path, notes: Notes) -> PluginHost {
         Self::start_when(specs, audio, systems, capture_dir, notes, Arc::new(AtomicBool::new(true)), None, None, None)
     }
 
@@ -206,7 +208,7 @@ impl PluginHost {
     pub fn start_when(
         specs: Vec<Spec>,
         audio: &super::AudioSettings,
-        systems: &[SystemInfo],
+        systems: &[RunSystem],
         capture_dir: &Path,
         notes: Notes,
         go: Arc<AtomicBool>,
@@ -237,8 +239,9 @@ impl PluginHost {
                         Some((_, on)) => on.push(system.to_string()),
                         None => unset.push((field, vec![system.to_string()])),
                     };
-                    let mut systems = BTreeMap::new();
-                    for (name, entry) in std::mem::take(&mut s.systems) {
+                    let mut own_settings = BTreeMap::new();
+                    for (id, entry) in std::mem::take(&mut s.systems) {
+                        let name = systems.iter().find(|y| y.id == id).map_or_else(|| format!("system {id}"), |y| y.info.short_name.clone());
                         let (own, merged, unknown) = resolve(m.config.as_ref(), &s.config, entry);
                         for k in unknown {
                             notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" isn't one of its settings, so it can't be overridden; ignored") });
@@ -247,11 +250,11 @@ impl PluginHost {
                             note_unset(f, &name);
                         }
                         if let Some(v) = merged {
-                            settings.insert(name.clone(), v);
+                            settings.insert(id, v);
                         }
-                        systems.insert(name, own);
+                        own_settings.insert(id, own);
                     }
-                    s.systems = systems;
+                    s.systems = own_settings;
                     // (Used by no system: its own settings decide.)
                     if s.systems.is_empty() {
                         unset_required(m.config.as_ref(), &s.config).into_iter().for_each(|f| note_unset(f, ""));
@@ -312,9 +315,9 @@ impl PluginHost {
                 systems: systems
                     .iter()
                     .map(|y| SystemInfo {
-                        config: s.systems.get(&y.short_name).cloned().unwrap_or(Value::Null),
-                        settings: settings.get(&y.short_name).cloned().unwrap_or(Value::Null),
-                        ..y.clone()
+                        config: s.systems.get(&y.id).cloned().unwrap_or(Value::Null),
+                        settings: settings.get(&y.id).cloned().unwrap_or(Value::Null),
+                        ..y.info.clone()
                     })
                     .collect(),
                 capture_dir: capture_dir.to_path_buf(),
@@ -343,7 +346,7 @@ impl PluginHost {
                 audio_held_said: AtomicBool::new(false),
             });
         }
-        let shared = Arc::new(Shared { plugins, stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0), calls, saves });
+        let shared = Arc::new(Shared { plugins, systems: systems.to_vec(), stopping: AtomicBool::new(false), go, notes, hold, answers: Default::default(), requests: AtomicU64::new(0), calls, saves });
         let supervisors = queues
             .into_iter()
             .enumerate()
@@ -353,7 +356,6 @@ impl PluginHost {
             })
             .collect();
         let encoder = encoder.map(|e| (e, audio.bitrate_kbps.clamp(8, 320)));
-        let names = systems.iter().map(|y| (y.index, y.short_name.clone())).collect();
         // (These plugins' from now on: the ones they replace stop taking the lines.)
         let log_tap = shared.plugins.iter().any(|p| p.manifest.subscribes(topic::LOG)).then(|| {
             let sh = Arc::downgrade(&shared);
@@ -363,7 +365,7 @@ impl PluginHost {
                 }
             }))
         });
-        PluginHost { shared, encoder, supervisors, topics, live, names, log_tap, done: false }
+        PluginHost { shared, encoder, supervisors, topics, live, log_tap, done: false }
     }
 
     /// Each plugin's process: drops, restarts, uptime.
@@ -396,14 +398,15 @@ impl PluginHost {
 
     /// An event from the session.
     pub fn event(&self, m: &HostMessage) {
-        let on = |system: &str, talkgroup: Option<u32>| About { system: system.to_string(), talkgroup, decrypted: false };
+        let sh = &self.shared;
+        let on = |system: SystemId, talkgroup: Option<u32>| About { system, talkgroup, decrypted: false };
         let (t, about) = match m {
-            HostMessage::CallStart(c) => (topic::CALL_START, on(&c.short_name, Some(c.talkgroup))),
-            HostMessage::CallUpdate(c) => (topic::CALL_UPDATE, on(&c.short_name, Some(c.talkgroup))),
-            HostMessage::CallEnd(c) => (topic::CALL_END, on(&c.short_name, Some(c.talkgroup))),
-            HostMessage::Unit(u) => (topic::UNIT, on(&u.short_name, u.talkgroup)),
+            HostMessage::CallStart(c) => (topic::CALL_START, on(sh.id_at(c.system), Some(c.talkgroup))),
+            HostMessage::CallUpdate(c) => (topic::CALL_UPDATE, on(sh.id_at(c.system), Some(c.talkgroup))),
+            HostMessage::CallEnd(c) => (topic::CALL_END, on(sh.id_at(c.system), Some(c.talkgroup))),
+            HostMessage::Unit(u) => (topic::UNIT, on(sh.id_at(u.system), u.talkgroup)),
             // (Its tones may have been heard in decrypted voice: only plugins allowed that get it.)
-            HostMessage::TonePattern(t) => (topic::TONE_PATTERN, About { decrypted: t.decrypted, ..on(&t.short_name, Some(t.talkgroup)) }),
+            HostMessage::TonePattern(t) => (topic::TONE_PATTERN, About { decrypted: t.decrypted, ..on(sh.id_named(&t.short_name), Some(t.talkgroup)) }),
             // (No one system's: never delayed.)
             HostMessage::Status(_) => (topic::STATUS, About::default()),
             HostMessage::Totals(_) => (topic::TOTALS, About::default()),
@@ -461,7 +464,7 @@ impl PluginHost {
         if !self.live {
             return;
         }
-        let about = About { system: short_name.to_string(), talkgroup: Some(a.talkgroup), decrypted: a.decrypted };
+        let about = About { system: self.shared.id_at(a.system), talkgroup: Some(a.talkgroup), decrypted: a.decrypted };
         if self.shared.wants(topic::AUDIO) {
             let pcm = trunk_recorder_plugin::base64::encode(&trunk_core::wav::pcm16(&a.samples));
             let chunk = AudioChunk { call_id: a.call_id, system: a.system, short_name: short_name.to_string(), talkgroup: a.talkgroup, sample_rate: 8000, pcm };
@@ -504,8 +507,7 @@ impl PluginHost {
             }
             return;
         }
-        let short_name = self.names.get(&system).cloned().unwrap_or_else(|| record.short_name.clone());
-        let about = About { system: short_name, talkgroup: Some(record.talkgroup), decrypted };
+        let about = About { system: self.shared.id_at(system), talkgroup: Some(record.talkgroup), decrypted };
         let call = ConcludedCall { path: rel.to_string(), system, call: record, files };
         self.shared.dispatch(topic::CALL_CONCLUDED, &line(&HostMessage::CallConcluded(call)), &about, Some(rel), None);
     }
@@ -657,6 +659,16 @@ impl Shared {
         }
     }
 
+    /// The id of the run's system `index` (a line's `system`; none: no one system's).
+    fn id_at(&self, index: u16) -> SystemId {
+        self.systems.iter().find(|y| y.info.index == index).map_or_else(SystemId::default, |y| y.id)
+    }
+
+    /// The id of the run's system named `short_name` (none: no one system's).
+    fn id_named(&self, short_name: &str) -> SystemId {
+        self.systems.iter().find(|y| y.info.short_name == short_name).map_or_else(SystemId::default, |y| y.id)
+    }
+
     /// Some plugin subscribes to topic `t`.
     fn wants(&self, t: &str) -> bool {
         self.plugins.iter().any(|p| p.manifest.subscribes(t))
@@ -669,25 +681,31 @@ impl Shared {
     /// call's start or end, which a plugin is never left without.
     fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>, life: Option<Life>) {
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t)) {
-            if about.decrypted && !p.share_decrypted {
-                self.say_withheld(p);
-                continue;
-            }
-            if let Some(h) = self.hold.as_ref().filter(|h| !h.delay(&p.id, about).is_zero()) {
-                // Live media late isn't live: a delayed call's isn't streamed at all.
-                if topic::is_live(t) {
-                    if !p.audio_held_said.swap(true, Ordering::Relaxed) {
-                        self.note_log(&p.id, Level::Info, "isn't given the live audio or voice of calls it's delayed for");
-                    }
-                } else if life.is_some() {
-                    h.keep(&p.id, about, l, call);
-                } else if !h.push(&p.id, about, l, call) {
-                    self.dropped(p);
-                }
-                continue;
-            }
-            self.send(p, t, l, life);
+            self.offer(p, t, l, about, call, life);
         }
+    }
+
+    /// [`Self::dispatch`]'s rules for one plugin: the one way anything about a
+    /// system reaches a plugin.
+    fn offer(&self, p: &Plugin, t: &str, l: &Arc<str>, about: &About, call: Option<&str>, life: Option<Life>) {
+        if about.decrypted && !p.share_decrypted {
+            self.say_withheld(p);
+            return;
+        }
+        if let Some(h) = self.hold.as_ref().filter(|h| !h.delay(&p.id, about).is_zero()) {
+            // Live media late isn't live: a delayed call's isn't streamed at all.
+            if topic::is_live(t) {
+                if !p.audio_held_said.swap(true, Ordering::Relaxed) {
+                    self.note_log(&p.id, Level::Info, "isn't given the live audio or voice of calls it's delayed for");
+                }
+            } else if life.is_some() {
+                h.keep(&p.id, about, l, call);
+            } else if !h.push(&p.id, about, l, call) {
+                self.dropped(p);
+            }
+            return;
+        }
+        self.send(p, t, l, life);
     }
 
     /// Give `l` to `p` now. What's owed comes after what's queued, so a
@@ -743,17 +761,38 @@ impl Shared {
     }
 
     /// A line TRP logged: to each plugin taking `log`, but not its own notes.
+    /// One about a system, or a call of it, is delayed as that system's (that
+    /// talkgroup's) calls are for the plugin.
     fn log_line(&self, t: &crate::logging::Tapped) {
         let m = HostMessage::Log(LogLine { time: t.time, level: t.level.as_str().into(), system: t.system.unwrap_or_default().into(), text: t.text.into(), line: t.line.into() });
         let l = line(&m);
+        let about = About { system: t.system.map_or_else(SystemId::default, |s| self.id_named(s)), talkgroup: t.talkgroup, decrypted: false };
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(topic::LOG)) {
             if t.plugin == Some(p.id.as_str()) {
                 continue;
             }
-            if self.give(p, &l) == Offer::Full {
-                self.dropped(p);
-            }
+            self.offer(p, topic::LOG, &l, &about, None, None);
         }
+    }
+
+    /// Answer something `p` asked (`calls.query`, `settings.save`): never
+    /// lost, and never waited for (the answer is given from the thread that
+    /// reads what it says).
+    fn answer(&self, p: &Plugin, l: &Arc<str>) {
+        self.send(p, "", l, Some(Life::Answer));
+    }
+
+    /// Whether `p` may be given stored call `c` now, as it would have been
+    /// sent it: a decrypted one only with `shareDecrypted`, a delayed one only
+    /// once its delay since the call ended has passed.
+    fn may_have(&self, p: &Plugin, c: &trunk_recorder_plugin::StoredCall, now_s: i64) -> bool {
+        let r = &c.record;
+        if r.decrypted && !p.share_decrypted {
+            return false;
+        }
+        let about = About { system: self.id_named(&r.short_name), talkgroup: Some(r.talkgroup), decrypted: r.decrypted };
+        let delay = self.hold.as_ref().map_or(Duration::ZERO, |h| h.delay(&p.id, &about));
+        delay.is_zero() || r.stop_time + delay.as_secs() as i64 <= now_s
     }
 
     /// Put `l` in `p`'s queue.
@@ -931,15 +970,16 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
                 }
                 continue;
             }
-            // (Answered on its own queue, behind what's already waiting for it.)
+            // (Answered on its own queue, behind what's already waiting for it: only the calls it would
+            // have been sent by now.)
             Ok(PluginMessage::CallsQuery { request, query }) => {
-                let page = match &sh.calls {
+                let mut page = match &sh.calls {
                     Some(answer) => answer(&query),
                     None => CallsPage { error: Some("no recorder to ask".into()), ..Default::default() },
                 };
-                if let Some(tx) = p.tx.lock().unwrap().as_ref() {
-                    let _ = tx.send(Arc::from(line(&HostMessage::Calls { request, page })));
-                }
+                let now_s = crate::clock::unix_s() as i64;
+                page.entries.retain(|c| sh.may_have(p, c, now_s));
+                sh.answer(p, &line(&HostMessage::Calls { request, page }));
                 continue;
             }
             // (Answered on its own queue, behind the settings the save sends it.)
@@ -952,9 +992,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
                     Ok(()) => (true, String::new()),
                     Err(e) => (false, e),
                 };
-                if let Some(tx) = p.tx.lock().unwrap().as_ref() {
-                    let _ = tx.send(line(&HostMessage::SettingsSaved { request, ok, message }));
-                }
+                sh.answer(p, &line(&HostMessage::SettingsSaved { request, ok, message }));
                 continue;
             }
             Ok(PluginMessage::Unknown) => continue,
@@ -1054,6 +1092,7 @@ mod tests {
         let log = said.clone();
         let sh = Shared {
             plugins: vec![allowed, public],
+            systems: Vec::new(),
             stopping: AtomicBool::new(false),
             go: Arc::new(AtomicBool::new(true)),
             notes: Arc::new(move |n| {
@@ -1068,7 +1107,7 @@ mod tests {
             saves: None,
         };
         let msg: Arc<str> = "x\n".into();
-        let (clear, decrypted) = (About { system: "dcfd".into(), ..Default::default() }, About { system: "dcfd".into(), decrypted: true, ..Default::default() });
+        let (clear, decrypted) = (About { system: SystemId(1), ..Default::default() }, About { system: SystemId(1), decrypted: true, ..Default::default() });
         sh.dispatch(topic::CALL_CONCLUDED, &msg, &clear, None, None);
         assert!(local_rx.try_recv().is_ok() && public_rx.try_recv().is_ok(), "a clear call goes to both");
         sh.dispatch(topic::CALL_CONCLUDED, &msg, &decrypted, None, None);
@@ -1154,8 +1193,8 @@ mod tests {
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let hold = Hold::new(Arc::default());
         let cfg = json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": ["5"], "delayS": 3600 }] }] });
-        hold.set_delays(super::super::delay::Delays::of(&serde_json::from_value(cfg).unwrap()));
-        let systems = vec![SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() }];
+        hold.set_delays(super::super::delay::Delays::of(&trunk_app::Config::from_value(cfg).unwrap()));
+        let systems = vec![RunSystem { id: SystemId(1), info: SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() } }];
         let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
         let notes: Notes = Arc::new(|_| {});
         let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()), None, None);
@@ -1199,13 +1238,13 @@ mod tests {
         let notes_seen = Arc::new(Mutex::new(Vec::new()));
         let seen = notes_seen.clone();
         let notes: Notes = Arc::new(move |n| seen.lock().unwrap().push(n));
-        let systems: Vec<SystemInfo> = ["a", "b"].iter().enumerate().map(|(i, n)| SystemInfo { index: i as u16, short_name: n.to_string(), kind: "p25".into(), ..Default::default() }).collect();
+        let systems: Vec<RunSystem> = ["a", "b"].iter().enumerate().map(|(i, n)| RunSystem { id: SystemId(i as u32 + 1), info: SystemInfo { index: i as u16, short_name: n.to_string(), kind: "p25".into(), ..Default::default() } }).collect();
         let spec = |config: Value, a: Value, b: Value, data: &str| Spec {
             id: "keeper".into(),
             copy: 0,
             exe: exe.clone(),
             config,
-            systems: BTreeMap::from([("a".to_string(), a), ("b".to_string(), b)]),
+            systems: BTreeMap::from([(SystemId(1), a), (SystemId(2), b)]),
             data_dir: Some(dir.join(data)),
             share_decrypted: false,
         };
@@ -1303,8 +1342,15 @@ mod tests {
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let spec = Spec { id: "logger".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
-        let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, super::super::notes_to_log());
+        let hold = Hold::new(Arc::default());
+        let cfg = serde_json::json!({ "systems": [{ "shortName": "held", "pluginDelays": [{ "delayS": 3600 }] }] });
+        hold.set_delays(super::super::delay::Delays::of(&trunk_app::Config::from_value(cfg).unwrap()));
+        let held = [RunSystem { id: SystemId(1), info: SystemInfo { index: 0, short_name: "held".into(), kind: "p25".into(), ..Default::default() } }];
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &held, &dir, super::super::notes_to_log(), Arc::new(AtomicBool::new(true)), Some(hold.clone()), None, None);
+        hold.attach(Some(host.outlet()));
         crate::logging::text(trunk_app::log::Level::Warning, "info", "log-topic-test: TRP said");
+        // One about a system the plugin is delayed for waits as its calls do.
+        crate::logging::record(&trunk_app::log::Record::text(trunk_app::log::Level::Warning, Some("held"), "log-topic-test: of a delayed system"));
         crate::logging::plugin_note("logger", trunk_app::log::Level::Info, "log-topic-test: its own");
         let t0 = Instant::now();
         let lines = || std::fs::read_to_string(dir.join("data/lines.jsonl")).unwrap_or_default();

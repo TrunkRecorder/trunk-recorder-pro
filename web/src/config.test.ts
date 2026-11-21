@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -198,4 +198,11 @@ test("advice for the sources (the recorder's Config::advice): a typed-in centre 
   c.sources[0].centerHz = a.sources[0].centerHz!;
   c.sources[0].rateHz = a.sources[0].rateHz;
   assert.equal(sourceAdvice(c, [undefined]), null, "taken: nothing more to say");
+});
+
+test("each kind of system is as the recorder's table says: named, and locked by its fields", () => {
+  assert.deepEqual([kindLabel("edacs"), kindLabel("smartnet"), kindLabel(undefined)], ["EDACS", "SmartNet", "P25"]);
+  assert.deepEqual([systemType("edacs"), systemType("nope"), systemType(3)], ["edacs", "p25", "p25"]);
+  assert.deepEqual(siteLockFields({ type: "p25" }), ["nac", "wacn", "sysId", "rfss", "site"]);
+  assert.deepEqual([siteLockFields({ type: "nxdn" }), siteLockFields({ type: "nxdn", nxdnType: "typeD" }), siteLockFields({ type: "dmr" })], [["sysId", "site"], [], []]);
 });

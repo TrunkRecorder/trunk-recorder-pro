@@ -13,7 +13,7 @@ use trunk_core::trunk::{
     check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, Identity, SaveRules, SourceConfig,
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
-pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
+pub use trunk_core::trunk::{usable_half_width, SystemId, DEFAULT_GUARD_HZ};
 use crate::place::{advise, coverage, place_sources, receiver, Advice, Choices, Coverage, Group, Placing, Targets, Weighted};
 use trunk_core::trunk::Pins;
 
@@ -418,8 +418,8 @@ impl Source {
 ///   "sites": [ { "controlChannelsHz": [851012500] },
 ///              { "name": "dcfd-south", "controlChannelsHz": [852337500], "expect": { "rfss": 1, "site": 2 } } ] }
 /// ```
-fn no_id(v: &u32) -> bool {
-    *v == 0
+fn no_id(v: &SystemId) -> bool {
+    v.0 == 0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -428,7 +428,7 @@ pub struct System {
     /// Its number, the same across renames: what the store keeps its calls,
     /// talkgroups and registry by ([`Config::assign_system_ids`]). Never reused.
     #[serde(skip_serializing_if = "no_id")]
-    pub id: u32,
+    pub id: SystemId,
     pub short_name: String,
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -670,6 +670,10 @@ pub struct Site {
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 fn is_zero_u16(v: &u16) -> bool {
     *v == 0
 }
@@ -761,6 +765,35 @@ choice! {
         Nxdn = "nxdn",
         /// EDACS Standard or Networked (analog and ProVoice voice).
         Edacs = "edacs",
+    }
+}
+
+/// What a kind of system is, beside its name: one table, which the
+/// interface's `web/src/systemKinds.gen.ts` is written from (the test
+/// `the_webs_system_kinds_are_these` keeps it so).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KindInfo {
+    /// As people write it ("SmartNet").
+    pub label: &'static str,
+    /// Its sites are watched whole, every frequency at once (DMR, NXDN,
+    /// EDACS), not followed by one control channel.
+    pub watched: bool,
+    /// The site-lock fields its control channel states ([`SiteIdentity`]'s,
+    /// as the config writes them), which a site's `expect` is checked by. (NXDN
+    /// Type-D states none: [`System::site_lock_fields`].)
+    pub site_lock: &'static [&'static str],
+}
+
+impl SystemKind {
+    pub fn info(self) -> KindInfo {
+        match self {
+            SystemKind::P25 => KindInfo { label: "P25", watched: false, site_lock: &["nac", "wacn", "sysId", "rfss", "site"] },
+            SystemKind::Smartnet => KindInfo { label: "SmartNet", watched: false, site_lock: &["sysId", "site"] },
+            // (Sites told apart by colour code, which a site field of its own holds.)
+            SystemKind::Dmr => KindInfo { label: "DMR", watched: true, site_lock: &[] },
+            SystemKind::Nxdn => KindInfo { label: "NXDN", watched: true, site_lock: &["sysId", "site"] },
+            SystemKind::Edacs => KindInfo { label: "EDACS", watched: true, site_lock: &["site"] },
+        }
     }
 }
 
@@ -898,6 +931,12 @@ impl System {
         self.kind == SystemKind::Edacs
     }
 
+    /// The site-lock fields its control channels state ([`KindInfo::site_lock`]):
+    /// its kind's, but none for NXDN Type-D (its repeaters are told apart by RAN).
+    pub fn site_lock_fields(&self) -> &'static [&'static str] {
+        if self.is_nxdn() && self.nxdn_type == NxdnType::TypeD { &[] } else { self.kind.info().site_lock }
+    }
+
     /// Recording it: enabled, with a site that is.
     pub fn active(&self) -> bool {
         self.enabled && self.sites.iter().any(Site::active)
@@ -1002,7 +1041,7 @@ impl Site {
 impl Default for System {
     fn default() -> Self {
         System {
-            id: 0,
+            id: SystemId::default(),
             other: BTreeMap::new(),
             keys: String::new(),
             short_name: "sys1".into(),
@@ -1077,7 +1116,7 @@ pub use trunk_core::trunk::identity::SiteIdentity;
 pub struct Conventional {
     /// Its number, as a trunked system's ([`System::id`]): numbered together.
     #[serde(skip_serializing_if = "no_id")]
-    pub id: u32,
+    pub id: SystemId,
     /// Folder and record name of its calls (Trunk Recorder's shortName).
     pub short_name: String,
     /// What people call it ("County Fire"); the short name is its folder.
@@ -1149,7 +1188,7 @@ impl UnitNames {
 impl Default for Conventional {
     fn default() -> Self {
         Conventional {
-            id: 0,
+            id: SystemId::default(),
             other: BTreeMap::new(),
             keys: String::new(),
             short_name: "conv".into(),
@@ -1357,6 +1396,27 @@ pub fn keep_p25_numbers(channels: &mut [Channel]) -> usize {
 }
 
 impl Channel {
+    /// A row on `freq_hz` in `mode`, recording anything it hears, named nothing.
+    pub fn new(freq_hz: f64, mode: ConvMode) -> Channel {
+        Channel {
+            freq_hz,
+            mode,
+            name: String::new(),
+            talkgroup: None,
+            code: String::new(),
+            slot: None,
+            match_talkgroup: None,
+            description: String::new(),
+            tag: String::new(),
+            group: String::new(),
+            squelch_db: None,
+            bandwidth_khz: None,
+            enabled: true,
+            receive_on: Vec::new(),
+            auto_tune: false,
+        }
+    }
+
     /// What it records (code, slot and talkgroup), read for its mode.
     pub fn parsed_access(&self) -> Result<Option<Access>, String> {
         Access::join(self.mode, &self.code, self.slot, self.match_talkgroup)
@@ -1801,6 +1861,8 @@ pub const RTL_DEFAULT_GAIN_DB: f64 = 25.4;
 pub struct CallSystem<'a> {
     /// The number its calls carry (`Call::system`).
     pub index: u16,
+    /// Its number in the config: what's kept of it goes by.
+    pub id: SystemId,
     pub short_name: &'a str,
     /// "p25", "smartnet", "dmr", "nxdn", "edacs" or "conventional".
     pub kind: &'static str,
@@ -1849,7 +1911,7 @@ pub struct Config {
     pub conventional: Vec<Conventional>,
     /// The next system id to give ([`Config::assign_system_ids`]): above every
     /// one given, so a removed system's id is never given again.
-    #[serde(skip_serializing_if = "no_id")]
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub next_system_id: u32,
     pub recording: Recording,
     pub server: Server,
@@ -2218,11 +2280,11 @@ impl Config {
     /// stays above them all, so an id is never given twice.
     /// Whether any was given one.
     pub fn assign_system_ids(&mut self) -> bool {
-        let given = self.systems.iter().map(|s| s.id).chain(self.conventional.iter().map(|c| c.id)).max().unwrap_or(0);
+        let given = self.systems.iter().map(|s| s.id.0).chain(self.conventional.iter().map(|c| c.id.0)).max().unwrap_or(0);
         let mut next = self.next_system_id.max(given + 1);
         let mut seen = std::collections::HashSet::new();
         let mut given = false;
-        for id in self.systems.iter_mut().map(|s| &mut s.id).chain(self.conventional.iter_mut().map(|c| &mut c.id)) {
+        for id in self.systems.iter_mut().map(|s| &mut s.id.0).chain(self.conventional.iter_mut().map(|c| &mut c.id.0)) {
             if *id == 0 || !seen.insert(*id) {
                 *id = next;
                 seen.insert(next);
@@ -2234,8 +2296,14 @@ impl Config {
         given
     }
 
+    /// The id of the system (trunked or conventional) named `short_name` now:
+    /// how a name given from outside (the interface, a plugin) is resolved.
+    pub fn id_of(&self, short_name: &str) -> Option<SystemId> {
+        self.system_ids().find(|(_, n)| *n == short_name).map(|(id, _)| id)
+    }
+
     /// Each system's id and short name (trunked, then conventional).
-    pub fn system_ids(&self) -> impl Iterator<Item = (u32, &str)> {
+    pub fn system_ids(&self) -> impl Iterator<Item = (SystemId, &str)> {
         self.systems.iter().map(|s| (s.id, s.short_name.as_str())).chain(self.conventional.iter().map(|c| (c.id, c.short_name.as_str())))
     }
 
@@ -2412,12 +2480,12 @@ impl Config {
     /// ([`ConvChannel::names_ahead`]), by system short name: the dashboard's
     /// names for them, ahead of the system's talkgroups', as a call's are. (A
     /// number that comes from the air is named by the calls that carry it.)
-    pub fn row_talkgroups(&self) -> HashMap<String, Talkgroups> {
-        let names: Vec<&str> = self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|v| v.short_name.as_str())).collect();
-        let mut out: HashMap<String, Talkgroups> = HashMap::new();
+    pub fn row_talkgroups(&self) -> HashMap<SystemId, Talkgroups> {
+        let ids: Vec<SystemId> = self.call_systems().iter().map(|s| s.id).collect();
+        let mut out: HashMap<SystemId, Talkgroups> = HashMap::new();
         for c in self.engine_channels() {
-            if let (Some(t), Some(name)) = (c.names_ahead(), names.get(c.system)) {
-                out.entry(name.to_string()).or_default().entry(t.number).or_insert_with(|| t.clone());
+            if let (Some(t), Some(id)) = (c.names_ahead(), ids.get(c.system)) {
+                out.entry(*id).or_default().entry(t.number).or_insert_with(|| t.clone());
             }
         }
         out
@@ -2542,7 +2610,7 @@ impl Config {
         };
         let mut groups: Vec<Group> = self
             .active_sites()
-            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.is_dmr() || sys.is_nxdn() || sys.is_edacs(), &s.voice_channels_hz, &sys.receive_on))
+            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.kind.info().watched, &s.voice_channels_hz, &sys.receive_on))
             .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
             let rows: Vec<&Channel> = v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0).collect();
@@ -2639,6 +2707,10 @@ impl Config {
             if let Some(site) = sys.sites.iter().find(|x| !seen.insert(sys.site_name(x))) {
                 return Some(format!("Two sites of {} are named \"{}\" — each needs a name of its own.", sys.short_name, sys.site_name(site)));
             }
+            // Nor another system's short name: what was kept under a site's name is still read as its system's (migrate::old_names).
+            if let Some(n) = sys.sites.iter().map(|x| sys.site_name(x)).find(|n| *n != sys.short_name && names.contains(n)) {
+                return Some(format!("A site of {} is named \"{n}\", which is another system's short name — one of them needs another name.", sys.short_name));
+            }
         }
         None
     }
@@ -2723,7 +2795,7 @@ impl Config {
                     return Some(format!("{name}: {e}"));
                 }
             }
-            if sys.is_dmr() || sys.is_nxdn() || sys.is_edacs() {
+            if sys.kind.info().watched {
                 let out: Vec<String> = g.need_missed.iter().map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
                     let what = if sys.is_dmr() { "DMR" } else if sys.is_nxdn() { "NXDN" } else { "EDACS" };
@@ -2789,12 +2861,12 @@ impl Config {
     /// conventional ones. The one place that number is worked out for a
     /// config — the engine, plugins, status and the interface all go by it.
     pub fn call_systems(&self) -> Vec<CallSystem<'_>> {
-        let trunked = self.active_systems().map(|s| (&s.short_name, s.kind.name(), &s.recording, &s.plugins, &s.plugin_delays[..]));
-        let conventional = self.active_conventional().map(|c| (&c.short_name, "conventional", &c.recording, &c.plugins, &c.plugin_delays[..]));
+        let trunked = self.active_systems().map(|s| (s.id, &s.short_name, s.kind.name(), &s.recording, &s.plugins, &s.plugin_delays[..]));
+        let conventional = self.active_conventional().map(|c| (c.id, &c.short_name, "conventional", &c.recording, &c.plugins, &c.plugin_delays[..]));
         trunked
             .chain(conventional)
             .enumerate()
-            .map(|(i, (short_name, kind, recording, plugins, plugin_delays))| CallSystem { index: i as u16, short_name, kind, recording, plugins, plugin_delays })
+            .map(|(i, (id, short_name, kind, recording, plugins, plugin_delays))| CallSystem { index: i as u16, id, short_name, kind, recording, plugins, plugin_delays })
             .collect()
     }
 
@@ -2805,8 +2877,8 @@ impl Config {
 
     /// The engine's config, with each system's talkgroups (kept apart from the config).
     pub fn engine_config(&self, epoch_ms: f64, names: &NameLists) -> EngineConfig {
-        let tg = |short: &str| names.get(short).map_or_else(Default::default, |n| talkgroups_of(&n.talkgroups));
-        let units = |short: &str, u: &UnitNames| UnitTags::new(names.get(short).map_or(&[][..], |n| &n.unit_names), u.mode.engine());
+        let tg = |id: SystemId| names.get(&id).map_or_else(Default::default, |n| talkgroups_of(&n.talkgroups));
+        let units = |id: SystemId, u: &UnitNames| UnitTags::new(names.get(&id).map_or(&[][..], |n| &n.unit_names), u.mode.engine());
         let centers = self.resolved_centers();
         // (Keys are read by the app: [`Config::load_keys`].)
         let mut systems: Vec<SystemConfig> = self
@@ -2818,10 +2890,11 @@ impl Config {
                     .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: Identity::of_site(&s.expect), protocol: s.protocol(sys) })
                     .collect();
                 SystemConfig {
+                    id: sys.id,
                     calls: rules.call_config(),
                     save: rules.save_rules(),
-                    talkgroups: tg(&sys.short_name),
-                    unit_tags: units(&sys.short_name, &sys.unit_names),
+                    talkgroups: tg(sys.id),
+                    unit_tags: units(sys.id, &sys.unit_names),
                     signals: engine_signals(&sys.signals),
                     pins: self.pins(&sys.receive_on),
                     preferred_site: sys.preferred_site.clone(),
@@ -2835,10 +2908,11 @@ impl Config {
         for v in self.active_conventional() {
             let r = self.recording.with(&v.recording);
             systems.push(SystemConfig {
+                id: v.id,
                 calls: r.call_config(),
                 save: r.save_rules(),
-                talkgroups: tg(&v.short_name),
-                unit_tags: units(&v.short_name, &v.unit_names),
+                talkgroups: tg(v.id),
+                unit_tags: units(v.id, &v.unit_names),
                 signals: engine_signals(&v.signals),
                 ..SystemConfig::conventional(&v.short_name)
             });
@@ -2977,22 +3051,22 @@ impl SystemNames {
     }
 }
 
-/// Each system's names ([`SystemNames`]), by its short name.
-pub type NameLists = BTreeMap<String, SystemNames>;
+/// Each system's names ([`SystemNames`]), by its id: a rename keeps them.
+pub type NameLists = BTreeMap<SystemId, SystemNames>;
 
 /// `lists` with system `system`'s names, as `edit` leaves them: a system with none left has no entry.
-pub fn edit_names<T>(lists: &mut NameLists, system: &str, edit: impl FnOnce(&mut SystemNames) -> T) -> T {
-    let names = lists.entry(system.to_string()).or_default();
+pub fn edit_names<T>(lists: &mut NameLists, system: SystemId, edit: impl FnOnce(&mut SystemNames) -> T) -> T {
+    let names = lists.entry(system).or_default();
     let out = edit(names);
     if names.is_empty() {
-        lists.remove(system);
+        lists.remove(&system);
     }
     out
 }
 
 /// Talkgroups only, as [`NameLists`] (tests and examples).
-pub fn talkgroup_lists<'a>(lists: impl IntoIterator<Item = (&'a str, Vec<trunk_core::trunk::TalkgroupRow>)>) -> NameLists {
-    lists.into_iter().map(|(n, talkgroups)| (n.to_string(), SystemNames { talkgroups, ..Default::default() })).collect()
+pub fn talkgroup_lists(lists: impl IntoIterator<Item = (SystemId, Vec<trunk_core::trunk::TalkgroupRow>)>) -> NameLists {
+    lists.into_iter().map(|(id, talkgroups)| (id, SystemNames { talkgroups, ..Default::default() })).collect()
 }
 
 /// A system's talkgroups as the engine looks them up, by number.
@@ -3006,9 +3080,33 @@ pub fn talkgroups_path(dir: &Path, short_name: &str) -> PathBuf {
     dir.join(format!("{short_name}.talkgroups.csv"))
 }
 
+/// The interface's table of system kinds (`web/src/systemKinds.gen.ts`), from [`SystemKind::info`].
+#[cfg(test)]
+fn system_kinds_ts() -> String {
+    let mut ts = String::from("// Written from the recorder's table (trunk-app config.rs, SystemKind::info): don't edit.\n// `TRP_WRITE=1 cargo test -p trunk-app the_webs_system_kinds_are_these` writes it again.\n\n/** What each kind of system is, beside its name. */\nexport const SYSTEM_KINDS = {\n");
+    for k in SystemKind::ALL {
+        let i = k.info();
+        let lock: Vec<String> = i.site_lock.iter().map(|f| format!("\"{f}\"")).collect();
+        ts += &format!("  {}: {{ label: \"{}\", watched: {}, siteLock: [{}] }},\n", k.name(), i.label, i.watched, lock.join(", "));
+    }
+    ts += "} as const;\n\nexport type SystemKind = keyof typeof SYSTEM_KINDS;\n";
+    ts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The interface's table of system kinds is this one's (`TRP_WRITE=1` writes it).
+    #[test]
+    fn the_webs_system_kinds_are_these() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/systemKinds.gen.ts");
+        let ts = system_kinds_ts();
+        if std::env::var_os("TRP_WRITE").is_some() {
+            std::fs::write(&path, &ts).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), ts, "web/src/systemKinds.gen.ts is out of date: TRP_WRITE=1 cargo test -p trunk-app the_webs_system_kinds_are_these");
+    }
 
     /// Every system gets an id the first time a config is read or set, a
     /// second with the same id one of its own, and an id is never given
@@ -3016,13 +3114,13 @@ mod tests {
     #[test]
     fn systems_get_ids_never_given_twice() {
         let mut c = Config::from_json(r#"{"systems":[{"shortName":"a"},{"shortName":"b","id":7}],"conventional":[{"shortName":"c"}]}"#).unwrap();
-        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(8, "a"), (7, "b"), (9, "c")]);
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(SystemId(8), "a"), (SystemId(7), "b"), (SystemId(9), "c")]);
         assert_eq!(c.next_system_id, 10);
         c.systems.remove(1);
         c.systems.push(System { short_name: "d".into(), ..Default::default() });
-        c.conventional[0].id = 8;
+        c.conventional[0].id = SystemId(8);
         c.assign_system_ids();
-        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(8, "a"), (10, "d"), (11, "c")], "a new one past the removed 7; a copied id made its own");
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(SystemId(8), "a"), (SystemId(10), "d"), (SystemId(11), "c")], "a new one past the removed 7; a copied id made its own");
         let saved = serde_json::to_value(&c).unwrap();
         assert_eq!((saved["systems"][0]["id"].as_u64(), saved["nextSystemId"].as_u64()), (Some(8), Some(12)));
     }
@@ -3258,7 +3356,9 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let files = talkgroup_lists([("county", trunk_core::trunk::parse_rows("1,County TG\n")), ("fire", trunk_core::trunk::parse_rows("7,Fire Ops\n"))]);
+        let mut c = c;
+        c.assign_system_ids();
+        let files = talkgroup_lists([(c.id_of("county").unwrap(), trunk_core::trunk::parse_rows("1,County TG\n")), (c.id_of("fire").unwrap(), trunk_core::trunk::parse_rows("7,Fire Ops\n"))]);
         let e = c.engine_config(0.0, &files);
         let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
         assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
@@ -3280,8 +3380,11 @@ mod tests {
             }"#,
         )
         .unwrap();
+        let mut c = c;
+        c.assign_system_ids();
+        let town_id = c.id_of("town").unwrap();
         let rows = c.row_talkgroups();
-        let town = &rows["town"];
+        let town = &rows[&town_id];
         let mut named: Vec<(u32, &str)> = town.values().map(|t| (t.number, t.alpha_tag.as_str())).collect();
         named.sort();
         // The analog row's default and the P25 row's TG Number; not the catch-all (its numbers come from the air), nor a row without names.
@@ -3289,11 +3392,11 @@ mod tests {
         assert_eq!(town[&46012].tag, "Law Dispatch");
         // Ahead of the talkgroup file, whose Ignore flag stays.
         let mut book = crate::stats::NameBook::default();
-        let files = talkgroup_lists([("town", trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))]);
+        let files = talkgroup_lists([(town_id, trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))]);
         book.set_config(&c, &files);
-        assert_eq!(book.tg("town", 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
-        assert_eq!(book.tg("town", 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));
-        assert!(book.tg("town", 7).is_none());
+        assert_eq!(book.tg(town_id, 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
+        assert_eq!(book.tg(town_id, 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));
+        assert!(book.tg(town_id, 7).is_none());
     }
 
     #[test]
@@ -3594,6 +3697,9 @@ mod tests {
         assert_eq!(sites, [("east", "east", true), ("east", "east-2", true), ("west", "west", false)]);
         c.systems[0].sites[1].name = "east".into();
         assert!(c.problem().unwrap().contains("Two sites of east are named \"east\""), "{:?}", c.problem());
+        // Nor may a site take another system's short name.
+        c.systems[0].sites[1].name = "west".into();
+        assert!(c.problem().unwrap().contains("A site of east is named \"west\""), "{:?}", c.problem());
         c.systems[0].sites.pop();
         // One source can't hold both.
         c.sources.pop();
