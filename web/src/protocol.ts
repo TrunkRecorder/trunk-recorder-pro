@@ -307,6 +307,8 @@ export interface SignalDef {
 
 /** One site of a system: a control channel to follow, and how. */
 export interface Site {
+  /** Its number, the same across renames and runs, never another site's (any system's): what plugins know it by. Given by the recorder. */
+  id?: number;
   /** Its name, unique in its system (absent: the system's short name). The talkgroup file's
    *  Preferred Site names it; calls and plugins say it. */
   name?: string;
@@ -372,6 +374,8 @@ export interface PluginSetup {
   shareDecrypted?: boolean;
   /** The systems (by `id`) it's turned off for: nothing about them is sent to it. Only for a plugin that can be (`PluginInfo.perSystem`). */
   systemsOff?: number[];
+  /** The sites (by `id`) it's turned off for: their unit events and status aren't sent, nor a recorded call only they heard. */
+  sitesOff?: number[];
 }
 
 /** The settings each system can set again for itself (crates/trunk-app/src/config.rs RecordingOverride). */
@@ -542,6 +546,8 @@ export interface Config {
   conventional: Conventional[];
   /** The next system id the recorder gives: above every one given, so none is given twice. */
   nextSystemId?: number;
+  /** The next site id the recorder gives, as `nextSystemId`. */
+  nextSiteId?: number;
   recording: Recording;
   server: {
     /** The address every interface listens on. */
@@ -945,8 +951,10 @@ export interface VoiceFrame {
 /** A digital call's live voice as vocoder frames: the `voice` plugin topic's chunk, as it is. */
 export interface VoiceChunk {
   call_id: number;
-  /** Its system's number this run; `short_name` is its identity. */
+  /** Its system's number this run. */
   system: number;
+  /** Its system's id: the same across renames and runs. */
+  system_id: number;
   short_name: string;
   talkgroup: number;
   /** Who is talking (0: not known yet), and their name. */
@@ -966,8 +974,11 @@ export interface CallRecord {
   short_name?: string;
   /** The site its copy was kept from (a system of one site: its short name). */
   site?: string;
+  /** Its system's and its site's ids (the same across renames and runs). */
+  system_id?: number;
+  site_id?: number;
   /** Every site it was recorded on, `site` first. */
-  sites?: string[];
+  sites?: { id: number; name: string }[];
   talkgroup: number;
   /** Conventional P25 / DMR / NXDN: the talkgroup the air named (`talkgroup` is what the call is filed under, which a channel row may set to another number). */
   talkgroup_ota?: number;
@@ -1352,6 +1363,8 @@ export interface PluginManifest {
   system_config?: PluginSchema;
   /** Those of its settings (`config`'s top-level keys) a system may set again for itself; none: every system has the plugin's. */
   system_overrides?: string[];
+  /** Those of its settings for each system (`system_config`'s top-level keys) a site may set again for itself; none: a system's sites have its settings. */
+  site_overrides?: string[];
   homepage?: string;
   repository?: string;
   authors?: string[];
@@ -1422,15 +1435,24 @@ export type SystemPluginValues = PluginValues | PluginValues[];
 /** The key in a system's settings for a plugin that holds the plugin settings it overrides. */
 export const OVERRIDE = "override";
 
+/** The key in a system's settings for a plugin that holds each site's own (by site id): what it sets again of the system's. */
+export const PER_SITE = "perSite";
+
 /** A system's settings for a plugin, one per copy of it. */
 export function pluginCopies(v: SystemPluginValues | undefined): PluginValues[] {
   return v === undefined || v === null ? [] : Array.isArray(v) ? v : [v];
 }
 
-/** A copy's own settings (without what it overrides). */
+/** A copy's own settings (without what it overrides, nor its sites'). */
 export function copyOwn(v: PluginValues | undefined): PluginValues {
-  const { [OVERRIDE]: _, ...own } = v ?? {};
+  const { [OVERRIDE]: _, [PER_SITE]: __, ...own } = v ?? {};
   return own;
+}
+
+/** Each site's own settings in a copy, by site id. */
+export function copyPerSite(v: PluginValues | undefined): Record<string, PluginValues> {
+  const o = v?.[PER_SITE];
+  return o && typeof o === "object" && !Array.isArray(o) ? (o as Record<string, PluginValues>) : {};
 }
 
 /** The plugin settings a copy overrides. */

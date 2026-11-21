@@ -243,7 +243,7 @@ fn run_calls(a: &Args) {
         None => std::env::temp_dir().join(format!("trunk-pro-plugin-run-{id}")),
     };
     eprintln!("Data folder: {}", data_dir.display());
-    let mut spec = Spec { id, copy: 0, exe, config, systems, data_dir: Some(data_dir), share_decrypted, off: Default::default() };
+    let mut spec = Spec { id, copy: 0, exe, config, systems, data_dir: Some(data_dir), share_decrypted, off: Default::default(), sites_off: Default::default() };
     if let Some(s) = a.get("settings") {
         let v: Value = std::fs::read_to_string(s).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| die(&format!("{s}: not JSON")));
         spec.config = v.get("config").cloned().unwrap_or(Value::Null);
@@ -289,15 +289,16 @@ fn run_calls(a: &Args) {
         let rel = base.strip_prefix(&capture_dir).map(Path::to_path_buf).unwrap_or(base.clone());
         // (A call JSON that can't be read is taken for a decrypted one.)
         let decrypted = record.as_ref().map_or(true, |r| r.decrypted);
+        let record = record.unwrap_or_default();
         // (An .m4a made here for a plugin that wants one, as the recorder's finish thread would.)
         let mut files = super::host::files_on_disk(&base);
-        if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(system, decrypted).m4a) {
+        if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(system, &record, decrypted).m4a) {
             let to = PathBuf::from(format!("{}.m4a", base.display()));
             if e.m4a(&std::fs::read(&files.wav).unwrap_or_default(), &to, *kbps).is_ok() {
                 files.m4a = Some(to);
             }
         }
-        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), record.unwrap_or_default(), files, decrypted);
+        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), record, files, decrypted);
     }
     let grace: f64 = a.get("grace").and_then(|s| s.parse().ok()).unwrap_or(30.0);
     host.shutdown(Duration::from_secs_f64(grace));

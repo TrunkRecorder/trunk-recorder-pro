@@ -24,9 +24,11 @@ import {
   setPluginEnabled,
   setPluginSettings,
   setPluginShareDecrypted,
+  setPluginSiteOn,
   setPluginSystemOn,
   setSystemPluginOverride,
   setSystemPluginSettings,
+  setSystemPluginSiteSettings,
   settingsOpened,
   setView,
   systemAt,
@@ -37,7 +39,7 @@ import {
   type SystemRef,
   isRecording,
 } from "./controller.ts";
-import { activeSystems } from "./config.ts";
+import { activeSystems, siteNameOf } from "./config.ts";
 import { EveryDelays, PluginDelay } from "./Delays.tsx";
 import { IconPuzzle, IconUpload, IconWave } from "./Onboarding.tsx";
 import { showTodo } from "./Setup.tsx";
@@ -47,11 +49,11 @@ import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { Card, Fig } from "./charts.tsx";
 import { ToneList } from "./ToneList.tsx";
 import { openTodos } from "./todo.ts";
-import { copyOwn, pluginCopies } from "./protocol.ts";
-import { fieldsOf, ignoredOf, offFor, overridable, overridableSchema, overrideOf } from "./pluginSettings.ts";
+import { copyOwn, copyPerSite, pluginCopies } from "./protocol.ts";
+import { fieldsOf, ignoredOf, offFor, offForSite, overridable, overridableSchema, overrideOf, siteOverridable, siteSchema } from "./pluginSettings.ts";
 import { applies, fillTemplate, followRenames, mentions, refOptions, summarize, type KeyMemory } from "./pluginForm.ts";
 import { signalChoices, signalRef } from "./Signals.tsx";
-import type { Config, InstallProgress, PluginContribution, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList, SignalDef } from "./protocol.ts";
+import type { Config, System, InstallProgress, PluginContribution, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList, SignalDef } from "./protocol.ts";
 import { Author, InstallStage, newer, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
 
 /** "apiKey" → "Api key": a label for a field the plugin didn't title. */
@@ -578,9 +580,12 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
   const c = s.config;
   if (!c || !s.plugins) return null;
   const sys = systemAt(c, props.system);
+  // A trunked system's sites, when it has several: each can be set up on its own.
+  const sites = sys && "sites" in sys && sys.sites.length > 1 ? sys.sites : [];
+  const perSite = (p: PluginInfo) => sites.length > 0 && (p.perSystem || siteOverridable(p.manifest!).length > 0);
   // (Off for this system, or with nothing for one system to set: not here.)
   const plugins = s.plugins.plugins.filter(
-    (p) => pluginOn(c, p.id) && p.manifest && !offFor(c, p.id, sys?.id) && (hasFields(p.manifest.system_config) || overridable(p.manifest).length > 0),
+    (p) => pluginOn(c, p.id) && p.manifest && !offFor(c, p.id, sys?.id) && (hasFields(p.manifest.system_config) || overridable(p.manifest).length > 0 || perSite(p)),
   );
   // A copy of its own makes sense for a plugin that's told which systems are its.
   const copyable = plugins.filter((p) => hasFields(p.manifest!.system_config));
@@ -622,6 +627,47 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
                   </Held>
                 </>
               )}
+              {i === 0 && p.perSystem && sites.length > 0 && (
+                <div className="plugin-systems small" role="group" aria-label={`Sites ${m.name} is on for`}>
+                  <span className="muted">Sites</span>{" "}
+                  {sites.map((site) => {
+                    const off = offForSite(c, p.id, site.id);
+                    const name = siteNameOf(sys as System, site);
+                    return (
+                      <button
+                        type="button"
+                        key={name}
+                        className={`chip tick${off ? "" : " on"}`}
+                        aria-pressed={!off}
+                        disabled={site.id === undefined}
+                        title={site.id === undefined ? "Saved first" : off ? `Off for ${name}: a call only it heard isn't sent` : `On for ${name}`}
+                        onClick={() => setPluginSiteOn(p.id, site.id!, off)}
+                      >
+                        {name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {siteOverridable(m).length > 0 &&
+                sites
+                  .filter((site) => site.id !== undefined && !offForSite(c, p.id, site.id))
+                  .map((site) => {
+                    const own = copyPerSite(values)[String(site.id)] ?? {};
+                    const name = siteNameOf(sys as System, site);
+                    const set = fieldsOf(siteSchema(m)).filter(([k]) => !emptyValue(own[k]));
+                    return (
+                      <details className="plugin-override" key={site.id} open={set.length > 0}>
+                        <summary>
+                          {name}
+                          <span className="muted"> · {set.length ? set.map(([k]) => labelOf(m.system_config, k)).join(", ") : `as ${sys.shortName}`}</span>
+                        </summary>
+                        <Held id={`site:${sys.shortName}:${p.id}:${i}:${site.id}`} name={m.name} saved={own} save={(v) => setSystemPluginSiteSettings(props.system, p.id, site.id!, v, i)} restarts>
+                          {(o, change) => <SchemaFields schema={siteSchema(m)} values={o} inherited={copyOwn(values)} onChange={change} id={`${idOf(i)}-site${site.id}`} />}
+                        </Held>
+                      </details>
+                    );
+                  })}
               {overridable(m).length > 0 && (
                 <Held id={`override:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={over} save={(v) => setSystemPluginOverride(props.system, p.id, v, i)} restarts>
                   {(o, change) => <PluginOverride m={m} over={o} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={change} />}
@@ -778,7 +824,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
       {m && ignoring.length > 0 && (
         <div className="plugin-systems small" role="status">
           <span className="warn-text">Ignored overrides</span> <span className="muted">{ignoring.join(", ")}</span>{" "}
-          <button type="button" className="btn ghost small" onClick={() => dropIgnoredOverrides(p.id, m.system_overrides ?? [])} title={`Settings these systems set again that ${m.name} doesn't let them`}>
+          <button type="button" className="btn ghost small" onClick={() => dropIgnoredOverrides(p.id, m.system_overrides ?? [], m.site_overrides ?? [])} title={`Settings these systems set again that ${m.name} doesn't let them`}>
             Remove
           </button>
         </div>

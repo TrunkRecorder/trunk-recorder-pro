@@ -77,3 +77,26 @@ test("Settings a system sets again that the plugin doesn't offer are shown as ig
   assert.match(panel, /Ignored overrides<\/span> <span class="muted">west<\/span>/);
   assert.match(panel, />Remove</);
 });
+
+test("A system with sites: each is turned on and off, and sets again what the plugin offers it", () => {
+  const c = defaultConfig();
+  const sys = newSystem(c, { shortName: "east", sites: [{ name: "north", controlChannelsHz: [851e6] }, { name: "south", controlChannelsHz: [852e6] }] });
+  sys.id = 1;
+  sys.sites[0].id = 7;
+  sys.sites[1].id = 8;
+  c.systems.push(sys);
+  c.plugins = { up: { enabled: true, settings: {}, sitesOff: [8] } };
+  const system_config = { type: "object", properties: { apiKey: { type: "string", title: "API key" }, systemId: { type: "integer", title: "System ID" } } };
+  transport.onMessage({ type: "config", config: c, version: 1 });
+  const manifest = { id: "up", name: "Up", version: "1.0.0", description: "", api: 1, subscribe: ["call.concluded"], audio_formats: [], system_config, site_overrides: ["systemId"] } as PluginManifest;
+  transport.onMessage({ type: "plugins", encoderFound: null, plugins: [plugin("up", { manifest })] });
+  const card = html(<SystemPluginSettings system={0} />);
+  assert.match(card, /aria-label="Sites Up is on for"/);
+  assert.match(card, /aria-pressed="true"[^>]*>north</);
+  assert.match(card, /aria-pressed="false"[^>]*>south</);
+  // North's own row offers its System ID, not its API key; south, off, has none.
+  assert.match(card, /<summary>north<span class="muted"> · as east<\/span><\/summary>/);
+  assert.match(card, /id="sp-up-east-site7-systemId"/);
+  assert.doesNotMatch(card, /sp-up-east-site7-apiKey/);
+  assert.doesNotMatch(card, /<summary>south/);
+});

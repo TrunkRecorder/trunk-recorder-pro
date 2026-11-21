@@ -90,10 +90,30 @@
           "type": "string",
           "description": "The site its copy was kept from (a system of one site: its short name)."
         },
+        "system_id": {
+          "type": "number",
+          "description": "Its system's and its site's ids (the same across renames and runs)."
+        },
+        "site_id": {
+          "type": "number"
+        },
         "sites": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "number"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "additionalProperties": false
           },
           "description": "Every site it was recorded on, `site` first."
         },
@@ -1403,6 +1423,10 @@
         "nextSystemId": {
           "type": "number",
           "description": "The next system id the recorder gives: above every one given, so none is given twice."
+        },
+        "nextSiteId": {
+          "type": "number",
+          "description": "The next site id the recorder gives, as `nextSystemId`."
         },
         "recording": {
           "$ref": "#/definitions/Recording"
@@ -6189,6 +6213,13 @@
           },
           "description": "Those of its settings (`config`'s top-level keys) a system may set again for itself; none: every system has the plugin's."
         },
+        "site_overrides": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Those of its settings for each system (`system_config`'s top-level keys) a site may set again for itself; none: a system's sites have its settings."
+        },
         "homepage": {
           "type": "string"
         },
@@ -6587,6 +6618,13 @@
             "type": "number"
           },
           "description": "The systems (by `id`) it's turned off for: nothing about them is sent to it. Only for a plugin that can be (`PluginInfo.perSystem`)."
+        },
+        "sitesOff": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The sites (by `id`) it's turned off for: their unit events and status aren't sent, nor a recorded call only they heard."
         }
       },
       "required": [
@@ -7141,6 +7179,10 @@
     "Site": {
       "type": "object",
       "properties": {
+        "id": {
+          "type": "number",
+          "description": "Its number, the same across renames and runs, never another site's (any system's): what plugins know it by. Given by the recorder."
+        },
         "name": {
           "type": "string",
           "description": "Its name, unique in its system (absent: the system's short name). The talkgroup file's Preferred Site names it; calls and plugins say it."
@@ -10987,7 +11029,11 @@
         },
         "system": {
           "type": "number",
-          "description": "Its system's number this run; `short_name` is its identity."
+          "description": "Its system's number this run."
+        },
+        "system_id": {
+          "type": "number",
+          "description": "Its system's id: the same across renames and runs."
         },
         "short_name": {
           "type": "string"
@@ -11016,6 +11062,7 @@
       "required": [
         "call_id",
         "system",
+        "system_id",
         "short_name",
         "talkgroup",
         "unit",

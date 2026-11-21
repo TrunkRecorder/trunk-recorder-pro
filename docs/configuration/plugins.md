@@ -32,6 +32,7 @@ The top-level `plugins` object is keyed by plugin id. Each entry:
 | `settings` | | `null` | any | Its settings for the whole recorder, as the plugin's own schema describes them (the `config` schema in its manifest; `trunk-pro plugin describe <executable>` prints it) |
 | `path` | | `""` | string | Run this executable instead of the installed one: a build of your own, while developing a plugin. Use an absolute path |
 | `shareDecrypted` | | `false` | bool | Give it calls decrypted with your keys (their audio and files). See [Decrypted calls](../plugins/README.md#decrypted-calls) |
+| `sitesOff` | | `[]` | integer array | The sites (by their `id`) it's turned off for: their radio activity and status aren't sent to it, nor a recorded call only they heard. In Setup: **Sites** on the system's card |
 | `systemsOff` | | `[]` | integer array | The systems (by `id`) it's turned off for: nothing about them is sent to it. Not for a plugin that takes `totals` (every system's figures): it's on for all of them, with a warning in its log. In Setup: **Systems** on its card |
 
 A plugin with no entry is off. Unknown keys in an entry are dropped on save.
@@ -68,6 +69,23 @@ In Setup, each plugin that offers some has a *shared settings* section on a syst
 Any other key is ignored, with a warning in its log; its card in Setup → Plugins lists the systems
 with such keys (**Ignored overrides**), and **Remove** clears them. An uploader keeps a separate
 queue for each server it sends to, so a server that's down doesn't hold up uploads to the others.
+
+### Settings for each site
+
+`perSite` in a system's settings for a plugin gives each of its sites, by the site's `id`, its own
+values for those of the plugin's per-system settings the plugin lets a site set again
+(`site_overrides` in its manifest). Settings a site leaves out are the system's.
+
+```json
+{ "shortName": "dcfd", "type": "p25",
+  "sites": [{ "id": 7, "name": "north", … }, { "id": 8, "name": "south", … }],
+  "plugins": { "broadcastify": { "apiKey": "...", "systemId": 42,
+                                 "perSite": { "8": { "systemId": 77 } } } } }
+```
+
+A call south heard goes to Broadcastify system 77, and one only north heard to 42. In Setup, each site
+has a row of its own on the system's card. Keys the plugin doesn't offer are ignored, with a warning in
+its log. Each site gets its `id` when the config is read, and keeps it through renames.
 
 ### Several copies of a plugin
 

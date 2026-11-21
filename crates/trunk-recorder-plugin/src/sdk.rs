@@ -115,7 +115,9 @@ impl<C, S> Setup<C, S> {
 pub struct System<C, S> {
     /// The number events carry for it, for this run only.
     pub index: u16,
-    /// Its identity: unique among the recorder's systems, and what users know it by.
+    /// Its identity: the same across runs and renames ([`SystemInfo::id`]).
+    pub id: u32,
+    /// Unique among the recorder's systems, and what users know it by (it changes when it's renamed).
     pub short_name: String,
     /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
     pub kind: String,
@@ -126,13 +128,64 @@ pub struct System<C, S> {
     pub fcc: std::collections::BTreeMap<String, FccLicense>,
     pub fcc_call_sign: String,
     pub fcc_name: String,
-    /// Its sites.
-    pub sites: Vec<SiteInfo>,
+    /// Its sites (not those the plugin is off for), with the plugin's settings for each.
+    pub sites: Vec<Site<S>>,
     /// The plugin's settings for this system (`None`: left empty).
     pub config: Option<S>,
     /// The plugin's own settings ([`Setup::config`]) as they are for this
     /// system, with those it sets again ([`Manifest::system_overrides`]).
     pub settings: C,
+}
+
+/// A site of a [`System`], and the plugin's settings for it.
+#[derive(Clone, Debug)]
+pub struct Site<S> {
+    /// Its identity: the same across runs and renames ([`SiteInfo::id`]).
+    pub id: u32,
+    /// What calls carry as `site` (it changes when it's renamed).
+    pub name: String,
+    /// The plugin's settings for this site: the system's with those it sets
+    /// again ([`Manifest::site_overrides`]). `None`: as the system's.
+    pub config: Option<S>,
+}
+
+/// Settings a recorded call goes with ([`System::targets`]): a site's own, or the system's.
+#[derive(Debug)]
+pub struct Target<'a, S> {
+    /// The site they're its own (None: the system's).
+    pub site: Option<&'a Site<S>>,
+    pub config: &'a S,
+}
+
+impl<C, S> System<C, S> {
+    /// What recorded call `call` goes with, one for each place it's to go:
+    /// the settings of each site that heard it ([`CallRecord::sites`], else
+    /// its kept copy's) that has its own, and the system's once when one
+    /// that heard it has none of its own (or it names no site). A site the
+    /// plugin is off for counts for nothing; empty: it goes nowhere (no
+    /// settings for it). Uploaders sending a site's calls to an account of
+    /// its own, say, send it once for each.
+    pub fn targets(&self, call: &CallRecord) -> Vec<Target<'_, S>> {
+        let heard: Vec<(u32, &str)> = match call.sites.is_empty() {
+            true => vec![(call.site_id, call.site.as_str())],
+            false => call.sites.iter().map(|s| (s.id, s.name.as_str())).collect(),
+        };
+        // (By id; a call from before ids, by name.)
+        let site_of = |(id, name): (u32, &str)| self.sites.iter().find(|s| if id != 0 { s.id == id } else { !name.is_empty() && s.name == name });
+        let mut out: Vec<Target<'_, S>> = Vec::new();
+        let mut system = heard.iter().all(|&(id, name)| id == 0 && name.is_empty());
+        for site in heard.into_iter().filter_map(site_of) {
+            match &site.config {
+                Some(config) if !out.iter().any(|t| t.site.is_some_and(|s| s.id == site.id)) => out.push(Target { site: Some(site), config }),
+                Some(_) => {}
+                None => system = true,
+            }
+        }
+        if let Some(config) = self.config.as_ref().filter(|_| system) {
+            out.push(Target { site: None, config });
+        }
+        out
+    }
 }
 
 /// The way back to the recorder: logs, health, results. Cheap to clone and
@@ -390,7 +443,15 @@ fn setup<P: Plugin>(hello: Hello) -> Result<Setup<P::Config, P::SystemConfig>, S
             Value::Null => None,
             v => Some(parse::<P::SystemConfig>(v, &format!("settings for {}", s.short_name))?),
         };
-        systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc: s.fcc, fcc_call_sign: s.fcc_call_sign, fcc_name: s.fcc_name, sites: s.sites, config, settings });
+        let mut sites = Vec::new();
+        for t in s.sites {
+            let config = match t.config {
+                Value::Null => None,
+                v => Some(parse::<P::SystemConfig>(v, &format!("settings for {}'s site {}", s.short_name, t.name))?),
+            };
+            sites.push(Site { id: t.id, name: t.name, config });
+        }
+        systems.push(System { index: s.index, id: s.id, short_name: s.short_name, kind: s.kind, name: s.name, fcc: s.fcc, fcc_call_sign: s.fcc_call_sign, fcc_name: s.fcc_name, sites, config, settings });
     }
     Ok(Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats })
 }
@@ -456,6 +517,34 @@ mod tests {
             }
             Ok(Servers)
         }
+    }
+
+    /// A recorded call goes with the settings of each site that heard it that
+    /// has its own, and the system's once for those that don't.
+    #[test]
+    fn a_call_goes_by_the_sites_that_heard_it() {
+        let site = |id: u32, name: &str, config: Option<u32>| Site { id, name: name.into(), config };
+        let sys = System::<(), u32> {
+            index: 0,
+            id: 1,
+            short_name: "s".into(),
+            kind: "p25".into(),
+            name: String::new(),
+            fcc: Default::default(),
+            fcc_call_sign: String::new(),
+            fcc_name: String::new(),
+            sites: vec![site(7, "north", None), site(8, "south", Some(77)), site(9, "east", Some(88))],
+            config: Some(42),
+            settings: (),
+        };
+        let heard = |ids: &[u32]| CallRecord { sites: ids.iter().map(|&id| SiteRef { id, name: String::new() }).collect(), ..Default::default() };
+        let to = |c: &CallRecord| sys.targets(c).iter().map(|t| (t.site.map(|s| s.id), *t.config)).collect::<Vec<_>>();
+        assert_eq!(to(&heard(&[7, 8])), [(Some(8), 77), (None, 42)], "south's own, and the system's for north");
+        assert_eq!(to(&heard(&[8, 9, 8])), [(Some(8), 77), (Some(9), 88)], "each once; none heard it without its own");
+        assert_eq!(to(&heard(&[5])), [], "a site it's off for (not among its sites)");
+        assert_eq!(to(&CallRecord::default()), [(None, 42)], "no site named: the system's");
+        // From before ids: by name.
+        assert_eq!(to(&CallRecord { site: "south".into(), ..Default::default() }), [(Some(8), 77)]);
     }
 
     /// A system's settings are the plugin's with what it overrides.

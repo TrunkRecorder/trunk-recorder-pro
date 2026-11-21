@@ -155,6 +155,20 @@ impl std::fmt::Display for SystemId {
     }
 }
 
+/// A site's number in the config, as [`SystemId`] is a system's: the same
+/// across renames and runs, never given twice (any system's sites), so it
+/// alone says which site. 0: none given. Within a run the engine knows sites
+/// by their place (`Call::site`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct SiteId(pub u32);
+
+impl std::fmt::Display for SiteId {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// A system: what it decides about its calls, once for all of it, and where
 /// they come from — its sites, each a control channel to follow, or (none)
 /// the conventional channels that name it ([`ConvChannel::system`]). A call
@@ -263,6 +277,8 @@ impl std::fmt::Display for SiteKey<'_> {
 /// One site of a trunked system: a control channel to follow.
 #[derive(Clone, Debug)]
 pub struct SiteConfig {
+    /// Its number in the config ([`SiteId`]).
+    pub id: SiteId,
     /// Its name, unique in its system (left empty, the engine gives it its
     /// system's short name): the talkgroup file's Preferred Site, its band
     /// plan's file.
@@ -279,7 +295,7 @@ pub struct SiteConfig {
 
 impl Default for SiteConfig {
     fn default() -> Self {
-        SiteConfig { name: String::new(), control_channels: vec![], bank: BankConfig::default(), expect: Identity::default(), protocol: Protocol::P25 }
+        SiteConfig { id: SiteId::default(), name: String::new(), control_channels: vec![], bank: BankConfig::default(), expect: Identity::default(), protocol: Protocol::P25 }
     }
 }
 
@@ -431,11 +447,13 @@ pub struct SiteStatus {
     /// channel are left out of [`Status::sites`], so this isn't always the
     /// position there.
     pub site: u16,
-    /// Its system's number (`Call::system`) and short name.
+    /// Its system's number (`Call::system`), id and short name.
     pub system: u16,
+    pub system_id: SystemId,
     pub short_name: String,
-    /// The site's name ([`SiteConfig::name`]).
+    /// The site's name and id ([`SiteConfig::name`], [`SiteConfig::id`]).
     pub site_name: String,
+    pub site_id: SiteId,
     /// Its series' key ([`SiteKey::stats_key`]).
     pub key: String,
     /// Its protocol, as calls name it (`p25`, `smartnet`…: [`Protocol::kind`]).
@@ -1648,8 +1666,10 @@ impl Trunk {
         SiteStatus {
             site: self.site,
             system: self.system,
+            system_id: sys.id,
             short_name: sys.short_name.clone(),
             site_name: self.cfg.name.clone(),
+            site_id: self.cfg.id,
             key: sys.site_key(&self.cfg).stats_key(),
             kind: self.cfg.protocol.kind(),
             now_s: self.now_s,
@@ -2480,8 +2500,8 @@ impl Core {
         // Its own first, then the others, each once.
         let mut order: Vec<u16> = site.into_iter().collect();
         order.extend(sites.iter().copied().filter(|s| Some(*s) != site));
-        let mut names: Vec<String> = Vec::new();
-        for n in order.iter().filter_map(|&s| self.trunks.get(s as usize)).map(|t| t.cfg.name.clone()) {
+        let mut names: Vec<(SiteId, String)> = Vec::new();
+        for n in order.iter().filter_map(|&s| self.trunks.get(s as usize)).map(|t| (t.cfg.id, t.cfg.name.clone())) {
             if !names.contains(&n) {
                 names.push(n);
             }
@@ -2495,7 +2515,9 @@ impl Core {
                 keep_encrypted: sys.cfg.calls.record_encrypted,
                 short_name: &sys.cfg.short_name,
                 system_type: trunk.map_or("conventional", |t| t.cfg.protocol.kind()),
+                system_id: sys.cfg.id,
                 site: trunk.map_or("", |t| &t.cfg.name),
+                site_id: trunk.map_or_else(SiteId::default, |t| t.cfg.id),
                 sites: &names,
                 epoch_ms_at_zero: epoch_ms,
                 units: Some(&sys.aliases),
@@ -3651,8 +3673,8 @@ mod tests {
         // It says every site it was recorded on, the kept one first; far's, its own.
         let sites = |id: CallId| ev.iter().find_map(|x| match x { Event::Concluded(k) if k.call.id == id => Some((k.record.site.clone(), k.record.sites.clone())), _ => None }).unwrap();
         let (site, all) = sites(west);
-        assert_eq!((all.len(), &all[0]), (2, &site), "{all:?}");
-        assert_eq!(sites(far).1, [sites(far).0]);
+        assert_eq!((all.len(), &all[0].name), (2, &site), "{all:?}");
+        assert_eq!(sites(far).1.iter().map(|s| s.name.clone()).collect::<Vec<_>>(), [sites(far).0]);
         // The talkgroup prefers east, and east has 90 % of west's clean audio.
         let (ev, [east, _, far]) = two_sites(95, "EAST", true);
         assert_eq!(saved(&ev), [far, east]);

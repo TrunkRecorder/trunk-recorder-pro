@@ -359,13 +359,14 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<RunSystem> {
             let primary = fcc_primary(&fcc, &ccs).cloned().unwrap_or_default();
             let info = trunk_recorder_plugin::SystemInfo {
                 index: s.index,
+                id: s.id.0,
                 short_name: s.short_name.to_string(),
                 kind: s.kind.into(),
                 name,
                 fcc: fcc.into_iter().map(|(k, l)| (k, trunk_recorder_plugin::FccLicense { call_sign: l.call_sign, name: l.name })).collect(),
                 fcc_call_sign: primary.call_sign,
                 fcc_name: primary.name,
-                sites: sys.map_or_else(Vec::new, |y| y.active_sites().map(|t| trunk_recorder_plugin::SiteInfo { name: y.site_name(t).to_string() }).collect()),
+                sites: sys.map_or_else(Vec::new, |y| y.active_sites().map(|t| trunk_recorder_plugin::SiteInfo { id: t.id.0, name: y.site_name(t).to_string(), config: Value::Null }).collect()),
                 ..Default::default()
             };
             RunSystem { id: s.id, info }
