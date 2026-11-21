@@ -183,10 +183,6 @@
             "$ref": "#/definitions/AuthPasskey"
           },
           "description": "Their passkeys: added by them, signed in, from a browser (POST /api/passkey/register/…); removed or renamed by editing this."
-        },
-        "signedOut": {
-          "type": "number",
-          "description": "When they were signed out everywhere (Unix s, POST /api/logout `{all: true}`): browsers' sessions signed in then or before end; access tokens sent with each request don't."
         }
       },
       "required": [

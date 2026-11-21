@@ -670,8 +670,6 @@ export interface AuthUser {
   token?: AuthToken;
   /** Their passkeys: added by them, signed in, from a browser (POST /api/passkey/register/…); removed or renamed by editing this. */
   passkeys?: AuthPasskey[];
-  /** When they were signed out everywhere (Unix s, POST /api/logout `{all: true}`): browsers' sessions signed in then or before end; access tokens sent with each request don't. */
-  signedOut?: number;
 }
 
 /** A passkey: its name ("iPhone"), when it was added (Unix s), its credential id (base64url) and `key`, WebAuthn's record of it (its public key and counter; the recorder's to read). */

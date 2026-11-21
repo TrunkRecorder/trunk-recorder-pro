@@ -508,7 +508,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                               type="button"
                               className="btn ghost small"
                               aria-label={`Sign ${name} out everywhere`}
-                              title={u.signedOut ? `Every browser of theirs · last ${day(u.signedOut)}` : "Every browser of theirs"}
+                              title="Every browser of theirs"
                               onClick={() => void signOutAll(name)}
                             >
                               Sign out

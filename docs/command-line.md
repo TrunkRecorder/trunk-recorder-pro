@@ -763,8 +763,9 @@ Signing in: who may, each user with a role and an access token (see
 [Access](configuration/server-and-log.md#access)), for a recorder with no browser nearby, and the
 way back in when you've lost your token. Every subcommand takes `--config file.json`, for a
 recorder that runs with a config other than the default (run it as the account the recorder runs
-as). They write the config file; a running recorder picks the change up when it restarts, so
-restart it right away (a setting saved from the browser before then would write over the change).
+as). They write the config file (`access signout`, `access-state.json` beside it); a running
+recorder picks the change up when it restarts, so restart it right away (a setting saved from the
+browser before then would write over the change).
 Setup → **Recording** → **Access** does the same at once.
 
 | Subcommand | What it does |
@@ -772,7 +773,7 @@ Setup → **Recording** → **Access** does the same at once.
 | `access list` | Whether signing in is on, what `anonymous` allows, the [proxy in front](configuration/server-and-log.md#behind-a-proxy-that-signs-people-in) if set (its header, addresses, what others get and its names mapped to users), and each user: their name, role, the day their token was made, the day they were last signed out everywhere, and their passkeys (name and day). |
 | `access add <name> [--access listen\|control]` | Add a user (control unless `--access listen`) with an access token. Its secret is printed once, on stdout (the rest on stderr), so `trunk-pro access add kiosk --access listen > kiosk.token` keeps it in a file. |
 | `access remove <name>` | Remove a user: whoever signed in as them is signed out. Refused if they're the last one with control access while signing in is on. |
-| `access signout <name>` | Sign a user out everywhere: every browser signed in as them until now signs in again (the user's `signedOut`). Their access token still works for a program that sends it with each request: remove the token, or the user, for that. `access list` shows the day. |
+| `access signout <name>` | Sign a user out everywhere: every browser signed in as them until now signs in again. Their access token still works for a program that sends it with each request: remove the token, or the user, for that. `access list` shows the day. |
 | `access passkey remove <name> <passkey>` | Remove one of a user's passkeys, by its name as `access list` shows it: whoever signed in with it is signed out. Refused if it's the last way in for the last control user while signing in is on. (Passkeys are added from a browser: Setup → Access.) |
 | `access on` | Turn signing in on. Refused until there's a user with control access. |
 | `access off` | Turn signing in off: the recovery when you're locked out. |

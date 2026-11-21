@@ -360,7 +360,10 @@ fn signing_in_from_the_command_line_to_the_socket() {
         assert_eq!(get(&r.url("/api/session"), &[("cookie", c)]).json()["user"], Value::Null, "signed out");
     }
     assert_eq!(get(&r.url("/api/v1/calls"), &[("authorization", &as_luke)]).status, 200, "a token sent each time still counts");
-    assert!(dir.read_config()["server"]["auth"]["users"]["luke"]["signedOut"].is_i64());
+    // (Kept beside the config, not in it: signing in and out changes no config.)
+    let state: Value = serde_json::from_str(&std::fs::read_to_string(dir.0.join("access-state.json")).unwrap()).unwrap();
+    assert!(state["signedOut"]["luke"].is_i64(), "{state}");
+    assert!(!std::fs::read_to_string(dir.config()).unwrap().contains("signedOut"));
     let kept = cookie_of(&post(&r.url("/api/login"), &[], &kiosk));
     let log = r.stop();
 

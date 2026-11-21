@@ -400,6 +400,7 @@ plans, talker aliases, the Heard list, the radio registry and the dashboard's hi
 | `interface-registry.json` | The interface store's cached index |
 | `plugin-hold/` | Finished calls waiting out a [plugin delay](plugins.md#delays), one `.json` each. Deleting one drops that call for its plugin |
 | `session-key` | What browsers' sign-ins are signed with ([Access](server-and-log.md#access)). Deleting it signs every browser out |
+| `access-state.json` | When each user was last signed out everywhere, and each passkey's count of sign-ins ([Access](server-and-log.md#access)). Deleting it lets sessions signed out everywhere count again until they expire |
 | `logs/` | Log files, when `log.file` is on and `log.dir` is empty |
 | `spool/` | macOS only: where the RAM spool's RAM disk is mounted, when `recording.ramSpool` is on |
 

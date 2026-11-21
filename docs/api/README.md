@@ -467,7 +467,8 @@ the built-in interface's port, signs the user this request is out
 everywhere: every browser's session of theirs signed in until now ends
 (their connections close), this one's cookie too; 204. `{"all": true,
 "user": "kiosk"}` does it for another user, with control access. It's
-recorded in the config (the user's `signedOut`). It ends sessions only: an
+kept beside the config (`access-state.json`), not in it: no `config`
+message follows. It ends sessions only: an
 access token sent with each request (`Authorization: Bearer`, `?token=`)
 still works, so a token that may have been seen is to be made again.
 

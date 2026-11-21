@@ -47,6 +47,7 @@ use crate::toolkit::{hex, percent_decode, percent_encode, sha256_hex, unhex};
 pub mod cli;
 pub mod cloudflare;
 pub mod passkey;
+pub mod state;
 
 /// Which port a request came in on.
 #[derive(Clone, Debug)]
@@ -92,15 +93,17 @@ pub struct Caller {
 
 impl Who {
     /// What its credential allows with signing in on (none: it must sign in),
-    /// as the config has it now, and the clock: nothing once it's expired ([`Who::until`]).
-    pub fn grants(&self, auth: &Auth) -> Option<ApiAccess> {
+    /// as the config has it now, and the clock: nothing once it's expired
+    /// ([`Who::until`]), or a session signed in before its user was signed
+    /// out everywhere (`sessions` keeps when).
+    pub fn grants(&self, auth: &Auth, sessions: &Sessions) -> Option<ApiAccess> {
         if self.until().is_some_and(|t| crate::clock::unix_s() as u64 >= t) {
             return None;
         }
         match self {
             Who::Anonymous => auth.anonymous,
             // (A session signed in before they were signed out everywhere: nothing.)
-            Who::User { name, credential, until } => auth.users.get(name).filter(|u| holds(u, credential) && !until.is_some_and(|t| signed_out(u, t))).map(|u| u.access),
+            Who::User { name, credential, until } => auth.users.get(name).filter(|u| holds(u, credential) && !until.is_some_and(|t| sessions.signed_out(name, t))).map(|u| u.access),
             // (The proxy gone, or set as it can't be, `peer` no longer its (or Cloudflare's in its
             // place), Cloudflare's application another, or its name another user's now: nothing.)
             Who::Proxy { asserted, user, via } => {
@@ -188,7 +191,7 @@ impl Caller {
         if !cfg.server.auth.enabled {
             return door;
         }
-        Some(door?.min(self.who.grants(&cfg.server.auth)?))
+        Some(door?.min(self.who.grants(&cfg.server.auth, &ctx.sessions)?))
     }
 
     /// Its port's access, by `cfg` (None once its interface is gone or off), whoever it is.
@@ -224,13 +227,6 @@ pub fn passkey_credential(id: &str) -> String {
     format!("pk:{id}")
 }
 
-/// Whether a session of user `u`'s that expires at `until` was signed in
-/// when (or before) they were signed out everywhere (`signedOut`): it was
-/// signed in [`SESSION_S`] before it expires.
-fn signed_out(u: &AuthUser, until: u64) -> bool {
-    u.signed_out.is_some_and(|at| (until.saturating_sub(SESSION_S) as i64) <= at)
-}
-
 /// Whether user `u` still has `credential`: their token's hash, or a passkey of theirs ([`passkey_credential`]).
 pub fn holds(u: &AuthUser, credential: &str) -> bool {
     match credential.strip_prefix("pk:") {
@@ -256,7 +252,7 @@ pub fn identify(auth: &Auth, sessions: &Sessions, keys: &cloudflare::Keys, heade
     let param = query.into_iter().flat_map(|q| q.split('&')).filter_map(|kv| kv.strip_prefix("token=").map(str::to_string));
     let secret = bearer.chain(param).find_map(|s| signs_in(auth, &s));
     // (A session's user removed, or their token made again since: nobody.)
-    let session = || if cookie_ok { sessions.of(headers).filter(|w| w.grants(auth).is_some()) } else { None };
+    let session = || if cookie_ok { sessions.of(headers).filter(|w| w.grants(auth, sessions).is_some()) } else { None };
     // (A browser sends the proxy its cookie from another site's page too: the header counts where the cookie would.)
     let proxy = || if cookie_ok { proxied(auth, keys, headers, peer) } else { None };
     secret.or_else(session).or_else(proxy).unwrap_or(Who::Anonymous)
@@ -325,9 +321,12 @@ pub const SESSION_KEY_FILE: &str = "session-key";
 /// when, signed with this recorder's key, which nothing else knows (it's
 /// never in the config, which control pages are sent). Removing the user,
 /// making their token again, removing the passkey or signing them out
-/// everywhere (`signedOut`, after it was signed in) ends the session (it no
-/// longer [`Who::grants`] anything); so does a new key, and its expiry.
+/// everywhere (after it was signed in) ends the session (it no longer
+/// [`Who::grants`] anything); so does a new key, and its expiry.
 pub struct Sessions {
+    /// What signing in keeps beside the key: who was signed out everywhere
+    /// and when, and passkeys' counts ([`state::State`]).
+    pub state: state::State,
     key: [u8; 32],
     /// The cookie's name: this key's, so recorders on one host name (other
     /// ports: cookies don't keep to one) don't take each other's.
@@ -337,8 +336,13 @@ pub struct Sessions {
 impl Sessions {
     /// The recorder's: its key kept in [`SESSION_KEY_FILE`] in `dir`, made the
     /// first time (readable by its owner alone). One that can't be read or
-    /// kept is made for this run alone: signing out every browser when it ends.
+    /// kept is made for this run alone: signing out every browser when it
+    /// ends. Its state, kept beside it ([`state::STATE_FILE`]).
     pub fn load(dir: &Path) -> Sessions {
+        Sessions { state: state::State::load(dir), ..Sessions::key_in(dir) }
+    }
+
+    fn key_in(dir: &Path) -> Sessions {
         let path = dir.join(SESSION_KEY_FILE);
         match std::fs::read_to_string(&path) {
             Ok(s) => match unhex(s.trim()).and_then(|b| <[u8; 32]>::try_from(b).ok()) {
@@ -358,15 +362,34 @@ impl Sessions {
         s
     }
 
-    /// One with a new key, kept nowhere.
+    /// One with a new key, kept nowhere (nor its state).
     pub fn fresh() -> Sessions {
         let mut key = [0u8; 32];
         getrandom::fill(&mut key).expect("No random numbers to make the session key with");
         Sessions::with_key(key)
     }
 
+    /// One with a new key, kept nowhere; its state kept in `dir`.
+    #[cfg(test)]
+    pub fn fresh_in(dir: &Path) -> Sessions {
+        Sessions { state: state::State::load(dir), ..Sessions::fresh() }
+    }
+
     fn with_key(key: [u8; 32]) -> Sessions {
-        Sessions { cookie: format!("trp_{}", &hex(&Sha256::digest(key))[..8]), key }
+        Sessions { state: Default::default(), cookie: format!("trp_{}", &hex(&Sha256::digest(key))[..8]), key }
+    }
+
+    /// Whether a session of `user`'s that expires at `until` was signed in
+    /// when (or before) they were signed out everywhere: it was signed in
+    /// [`SESSION_S`] before it expires.
+    fn signed_out(&self, user: &str, until: u64) -> bool {
+        self.state.signed_out(user).is_some_and(|at| (until.saturating_sub(SESSION_S) as i64) <= at)
+    }
+
+    /// Sign `user` out everywhere: every session of theirs signed in until
+    /// now ends. Kept ([`state::State`]), or why not. Blocking.
+    pub fn sign_out(&self, auth: &Auth, user: &str) -> Result<(), String> {
+        self.state.sign_out(auth, user, crate::clock::unix_s() as i64)
     }
 
     /// A session for `user` signed in with `credential`, for [`SESSION_S`]
@@ -443,7 +466,7 @@ impl Sessions {
 }
 
 /// Write `text` to `path`, readable by its owner alone (on unix).
-fn keep_private(path: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn keep_private(path: &Path, text: &str) -> std::io::Result<()> {
     use std::io::Write;
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create(true).truncate(true);
@@ -474,7 +497,7 @@ pub fn add_user(auth: &mut Auth, name: &str, access: ApiAccess) -> Result<Secret
     getrandom::fill(&mut b).map_err(|e| format!("No random numbers to make a secret with: {e}"))?;
     let secret = format!("trp_{}", hex(&b));
     let token = AuthToken { hash: sha256_hex(secret.as_bytes()), created: crate::clock::unix_s() as i64 };
-    auth.users.insert(name.into(), AuthUser { access, token: Some(token), passkeys: vec![], signed_out: None });
+    auth.users.insert(name.into(), AuthUser { access, token: Some(token), passkeys: vec![] });
     Ok(Secret::new(secret))
 }
 
@@ -580,7 +603,7 @@ mod tests {
         // A user with no token signs in with nothing.
         auth.users.get_mut("luke").unwrap().token = None;
         assert_eq!(identify(&auth, &sessions, &keys, &with(header::AUTHORIZATION, format!("Bearer {s}")), None, false, None), Who::Anonymous, "no token");
-        assert_eq!(luke.grants(&auth), None);
+        assert_eq!(luke.grants(&auth, &sessions), None);
     }
 
     /// What the log says of signing in and passkeys: who, which passkey (by
@@ -633,7 +656,7 @@ mod tests {
         use trunk_app::config::AuthProxy;
         let mut auth = Auth { enabled: true, ..Default::default() };
         let secret = add_user(&mut auth, "kiosk", ApiAccess::Listen).unwrap();
-        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
+        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
         let mut proxy = AuthProxy { from: vec!["127.0.0.1".into(), "fd00::/8".into()], ..Default::default() };
         proxy.users.insert("luke@example.com".into(), "luke".into());
         auth.proxy = Some(proxy);
@@ -651,7 +674,7 @@ mod tests {
         let luke = Who::Proxy { asserted: "luke@example.com".into(), user: "luke".into(), via: Via::Header(local) };
         let h = named(&[("remote-user", "luke@example.com")]);
         assert_eq!(who(&auth, &h, true, local), luke, "mapped to luke");
-        assert_eq!((luke.user(), luke.grants(&auth)), (Some("luke"), Some(ApiAccess::Control)), "luke's role, no token needed");
+        assert_eq!((luke.user(), luke.grants(&auth, &sessions)), (Some("luke"), Some(ApiAccess::Control)), "luke's role, no token needed");
         assert_eq!(who(&auth, &named(&[("Remote-User", " luke ")]), true, v6), Who::Proxy { asserted: "luke".into(), user: "luke".into(), via: Via::Header(v6) }, "the same name, trimmed; a v6 block");
         assert_eq!(who(&auth, &h, true, elsewhere), Who::Anonymous, "from another address: anyone could send it");
         assert_eq!(who(&auth, &h, false, local), Who::Anonymous, "another site's page: as the cookie, it doesn't count");
@@ -672,17 +695,17 @@ mod tests {
         assert_eq!(who(&auth, &stranger, true, local), Who::Anonymous);
         auth.proxy.as_mut().unwrap().other = Some(ApiAccess::Listen);
         let zoe = who(&auth, &stranger, true, local);
-        assert_eq!((zoe.user(), zoe.grants(&auth)), (Some("Zoë"), Some(ApiAccess::Listen)), "UTF-8, as sent");
+        assert_eq!((zoe.user(), zoe.grants(&auth, &sessions)), (Some("Zoë"), Some(ApiAccess::Listen)), "UTF-8, as sent");
         // As the config is now: a mapping changed, the address no longer the proxy's, the proxy or the user gone.
         let mut a = auth.clone();
         a.proxy.as_mut().unwrap().users.insert("luke@example.com".into(), "kiosk".into());
-        assert_eq!(luke.grants(&a), None, "its name is another user's now");
+        assert_eq!(luke.grants(&a, &sessions), None, "its name is another user's now");
         let mut a = auth.clone();
         a.proxy.as_mut().unwrap().from = vec!["10.0.0.1".into()];
-        assert_eq!(luke.grants(&a), None, "not the proxy's address now");
-        assert_eq!(luke.grants(&Auth { proxy: None, ..auth.clone() }), None, "no proxy");
+        assert_eq!(luke.grants(&a, &sessions), None, "not the proxy's address now");
+        assert_eq!(luke.grants(&Auth { proxy: None, ..auth.clone() }, &sessions), None, "no proxy");
         auth.users.remove("luke");
-        assert_eq!(luke.grants(&auth), None, "luke removed");
+        assert_eq!(luke.grants(&auth, &sessions), None, "luke removed");
         assert_eq!(identify(&Auth { enabled: false, ..auth.clone() }, &sessions, &keys, &h, None, true, Some(local)), Who::Anonymous, "signing in off");
     }
 
@@ -699,7 +722,7 @@ mod tests {
         let keys = cloudflare::Keys::from(move |_| Ok(served.clone()));
         let mut auth = Auth { enabled: true, ..Default::default() };
         let secret = add_user(&mut auth, "kiosk", ApiAccess::Listen).unwrap();
-        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
+        auth.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
         let cf = AuthCloudflare { team: "radio".into(), aud: AUD.into() };
         let mut proxy = AuthProxy { cloudflare: Some(cf.clone()), from: vec!["127.0.0.1".into()], ..Default::default() };
         proxy.users.insert("luke@example.com".into(), "luke".into());
@@ -721,7 +744,7 @@ mod tests {
         let h = named(&[("Cf-Access-Jwt-Assertion", &token)]);
         assert_eq!(who(&auth, &h, true), luke, "from an address not listed: the signature is the proof");
         assert_eq!(identify(&auth, &sessions, &keys, &h, None, true, None), luke, "no peer known");
-        assert_eq!(luke.grants(&auth), Some(ApiAccess::Control));
+        assert_eq!(luke.grants(&auth, &sessions), Some(ApiAccess::Control));
         assert_eq!(who(&auth, &h, false), Who::Anonymous, "another site's page: as the cookie, it doesn't count");
         for (pairs, why) in [(vec![("Cf-Access-Authenticated-User-Email", "luke@example.com")], "the email header alone"), (vec![("Remote-User", "luke")], "the proxy's header: not Cloudflare's"),
                              (vec![("Cf-Access-Jwt-Assertion", "nope")], "not a token"), (vec![("Cf-Access-Jwt-Assertion", token.as_str()), ("Cf-Access-Jwt-Assertion", token.as_str())], "two tokens")] {
@@ -734,19 +757,19 @@ mod tests {
         let ann = named(&[("Cf-Access-Jwt-Assertion", &a.sign(&claims("ann@example.com", now)))]);
         assert_eq!(who(&auth, &ann, true), Who::Anonymous, "other none");
         auth.proxy.as_mut().unwrap().other = Some(ApiAccess::Listen);
-        assert_eq!(who(&auth, &ann, true).grants(&auth), Some(ApiAccess::Listen));
+        assert_eq!(who(&auth, &ann, true).grants(&auth, &sessions), Some(ApiAccess::Listen));
         // A token says who first.
         let both = named(&[("Cf-Access-Jwt-Assertion", &token), ("Authorization", &format!("Bearer {}", secret.expose()))]);
         assert_eq!(who(&auth, &both, true), signs_in(&auth, secret.expose()).unwrap(), "a token wins");
         // As the config is now: Cloudflare's application another, or Cloudflare gone (the header's way instead).
         let mut b = auth.clone();
         b.proxy.as_mut().unwrap().cloudflare.as_mut().unwrap().aud = "another".into();
-        assert_eq!(luke.grants(&b), None, "another application");
+        assert_eq!(luke.grants(&b, &sessions), None, "another application");
         let mut b = auth.clone();
         b.proxy.as_mut().unwrap().cloudflare = None;
-        assert_eq!(luke.grants(&b), None, "no Cloudflare");
+        assert_eq!(luke.grants(&b, &sessions), None, "no Cloudflare");
         let by_header = Who::Proxy { asserted: "luke".into(), user: "luke".into(), via: Via::Header("127.0.0.1".parse().unwrap()) };
-        assert_eq!((by_header.grants(&b), by_header.grants(&auth)), (Some(ApiAccess::Control), None), "the header's sign-in, with Cloudflare set: nobody");
+        assert_eq!((by_header.grants(&b, &sessions), by_header.grants(&auth, &sessions)), (Some(ApiAccess::Control), None), "the header's sign-in, with Cloudflare set: nobody");
     }
 
     /// Signing in off, a request may do what its port allows; on, no more
@@ -800,7 +823,7 @@ mod tests {
         let luke = Who::User { name: "luke.b ÿ".into(), credential: hash.clone(), until: v.split('.').nth(2).and_then(|t| t.parse().ok()) };
         assert!(v.starts_with("luke%2Eb%20%C3%BF.") && v.split('.').count() == 4, "{v}");
         assert_eq!(sessions.verify(&v), Some(luke.clone()), "dots and more in a name");
-        assert_eq!(luke.grants(&auth), Some(ApiAccess::Control));
+        assert_eq!(luke.grants(&auth, &sessions), Some(ApiAccess::Control));
         let parts: Vec<&str> = v.split('.').collect();
         let with = |i: usize, p: &str| parts.iter().enumerate().map(|(j, x)| if j == i { p } else { *x }).collect::<Vec<_>>().join(".");
         let expires = parts[2].parse::<u64>().unwrap();
@@ -814,7 +837,7 @@ mod tests {
         assert_eq!(Sessions::fresh().verify(&v), None, "another key's");
         // Its token made again: the session names a credential it no longer has.
         auth.users.get_mut("luke.b ÿ").unwrap().token = Some(AuthToken { hash: sha256_hex(b"another"), created: 2 });
-        assert_eq!(sessions.verify(&v).unwrap().grants(&auth), None, "remade: signed out");
+        assert_eq!(sessions.verify(&v).unwrap().grants(&auth, &sessions), None, "remade: signed out");
         // The key file: made once, private, read back (the same cookie name); another folder, another recorder.
         let (dir, elsewhere) = (crate::db::TestDir::new("session-key"), crate::db::TestDir::new("session-key-2"));
         let (a, b, other) = (Sessions::load(&dir), Sessions::load(&dir), Sessions::load(&elsewhere));
@@ -893,13 +916,14 @@ mod tests {
         let hash = auth.users["luke"].token.as_ref().unwrap().hash.clone();
         let now = crate::clock::unix_s() as u64;
         let signed_in_at = |t: u64| Who::User { name: "luke".into(), credential: hash.clone(), until: Some(t + SESSION_S) };
-        assert_eq!(signed_in_at(now - 100).grants(&auth), Some(ApiAccess::Control), "never signed out");
-        auth.users.get_mut("luke").unwrap().signed_out = Some(now as i64);
-        assert_eq!(signed_in_at(now - 100).grants(&auth), None, "before");
-        assert_eq!(signed_in_at(now).grants(&auth), None, "at the same second");
-        assert_eq!(signed_in_at(now + 1).grants(&auth), Some(ApiAccess::Control), "after");
+        let sessions = Sessions::fresh();
+        assert_eq!(signed_in_at(now - 100).grants(&auth, &sessions), Some(ApiAccess::Control), "never signed out");
+        sessions.state.sign_out(&auth, "luke", now as i64).unwrap();
+        assert_eq!(signed_in_at(now - 100).grants(&auth, &sessions), None, "before");
+        assert_eq!(signed_in_at(now).grants(&auth, &sessions), None, "at the same second");
+        assert_eq!(signed_in_at(now + 1).grants(&auth, &sessions), Some(ApiAccess::Control), "after");
         let token = Who::User { name: "luke".into(), credential: hash, until: None };
-        assert_eq!(token.grants(&auth), Some(ApiAccess::Control), "a secret sent with each request: not a session");
+        assert_eq!(token.grants(&auth, &sessions), Some(ApiAccess::Control), "a secret sent with each request: not a session");
     }
 
     /// What a request carries that isn't a credential signs nobody in: a
@@ -963,10 +987,10 @@ mod tests {
             for peer in [anyone, "::ffff:203.0.113.9".parse().unwrap()] {
                 assert_eq!(identify(&auth, &sessions, &keys, &h, None, true, Some(peer)), Who::Anonymous, "{from} {peer}");
             }
-            assert_eq!(forged.grants(&auth), None, "{from}");
+            assert_eq!(forged.grants(&auth, &sessions), None, "{from}");
         }
         auth.proxy = Some(AuthProxy { from: vec!["203.0.113.0/24".into()], ..Default::default() });
         assert_eq!(identify(&auth, &sessions, &keys, &h, None, true, Some(anyone)), forged, "as it can be");
-        assert_eq!(forged.grants(&auth), Some(ApiAccess::Control));
+        assert_eq!(forged.grants(&auth, &sessions), Some(ApiAccess::Control));
     }
 }

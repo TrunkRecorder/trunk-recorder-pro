@@ -1875,8 +1875,11 @@ now, so a removed user, or a token made again, gives nothing at once); with no t
 `anonymous`'s. With nothing, only what `server::open` lets through answers: `/api/version`,
 `/api/login`, `/api/logout`, `/api/session`, `/signin`, and the API's static files (docs, schema,
 types, client.js, examples); a browser asking for any other page gets `signin.html` in its place,
-anything else 401 `WWW-Authenticate: Bearer`. A WebSocket's access is checked again at each `config` message
-and each command; when it has changed, the socket is closed and the client reconnects to a new
+anything else 401 `WWW-Authenticate: Bearer`. What signing in changes isn't a setting, so it's kept
+beside the config, not in it (`access::state::State`, `access-state.json`, held by `Sessions`): when
+each user was last signed out everywhere and each passkey's record as last counted, so a sign-in
+changes no config and bumps no version. A WebSocket's access is checked again at each `config` message,
+each change of that state and each command; when it has changed, the socket is closed and the client reconnects to a new
 greeting. Secrets are 32 random bytes (`trp_` + hex), stored as SHA-256; `createToken` and
 `trunk-pro access` (`access/cli.rs`) make a user with one (`access::add_user`).
 

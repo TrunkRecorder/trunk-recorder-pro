@@ -462,7 +462,8 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         clock: Default::default(),
         unlocked: Default::default(),
         iq: Default::default(),
-        sessions: crate::access::Sessions::fresh(),
+        // (Its state kept beside the config, as the recorder's is.)
+        sessions: crate::access::Sessions::fresh_in(dir),
         passkeys: Default::default(),
         cloudflare: Default::default(),
         tls: Default::default(),

@@ -1959,11 +1959,6 @@ pub struct AuthUser {
     /// by them, signed in, from a browser.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub passkeys: Vec<AuthPasskey>,
-    /// When they were signed out everywhere, Unix s: a browser's session
-    /// signed in then or before no longer counts (an access token sent with
-    /// each request still does: made again, it doesn't).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signed_out: Option<i64>,
 }
 
 /// An access token: its secret's SHA-256 (hex), never the secret.
@@ -1979,7 +1974,8 @@ pub struct AuthToken {
 /// A passkey: what it's called, when it was added, its credential id
 /// (base64url) and `key`, WebAuthn's record of it (webauthn-rs's `Passkey`,
 /// as it serializes: its public key, counter and flags; nothing secret), which
-/// the recorder alone reads.
+/// the recorder alone reads, as it was added (its count of sign-ins since is
+/// kept beside the config, not here: signing in changes no config).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthPasskey {
@@ -4211,12 +4207,12 @@ mod tests {
         let c = Config::default();
         assert!(!serde_json::to_string(&c).unwrap().contains("auth"), "off: no auth key");
         assert_eq!(c.server.auth.problem(), None);
-        let user = |access| AuthUser { access, token: Some(AuthToken { hash: "ab".repeat(32), created: 1_794_000_000 }), passkeys: vec![], signed_out: None };
+        let user = |access| AuthUser { access, token: Some(AuthToken { hash: "ab".repeat(32), created: 1_794_000_000 }), passkeys: vec![] };
         let mut a = Auth { enabled: true, ..Default::default() };
         assert!(a.problem().unwrap().contains("control"), "nobody at all");
         a.users.insert("wall".into(), user(ApiAccess::Listen));
         assert!(a.problem().is_some(), "a listen user can't turn it off");
-        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
         assert!(a.problem().is_some(), "a control user with nothing to sign in with can't either");
         let passkey = AuthPasskey { name: "iPhone".into(), created: 1_794_000_000, id: "AQID".into(), key: serde_json::json!({ "cred": {} }) };
         a.users.get_mut("luke").unwrap().passkeys.push(passkey.clone());
@@ -4277,13 +4273,13 @@ mod tests {
         // A control user with no token: a way in only through the proxy.
         a.proxy = Some(only("127.0.0.1"));
         a.enabled = true;
-        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
-        a.users.insert("wall".into(), AuthUser { access: ApiAccess::Listen, token: None, passkeys: vec![], signed_out: None });
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        a.users.insert("wall".into(), AuthUser { access: ApiAccess::Listen, token: None, passkeys: vec![] });
         assert_eq!(a.problem(), None, "the proxy can name luke");
         assert!(Auth { proxy: None, ..a.clone() }.problem().unwrap().contains("control"), "no proxy: nobody can");
         a.users.remove("luke");
         assert!(a.problem().unwrap().contains("control"), "a proxy with nobody with control to name");
-        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![], signed_out: None });
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
         // Its names: a user's, or mapped to one; else other's, by its own name.
         a.proxy.as_mut().unwrap().users.insert("luke@example.com".into(), "luke".into());
         a.proxy.as_mut().unwrap().users.insert("ghost@example.com".into(), "nobody".into());

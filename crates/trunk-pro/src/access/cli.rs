@@ -1,7 +1,7 @@
 //! `trunk-pro access …`: who may sign in, and signing in on or off — the
 //! first user and their access token on a recorder with no browser nearby,
-//! and the way back in for whoever lost theirs. They're written to the config; a running recorder
-//! takes them once it's restarted.
+//! and the way back in for whoever lost theirs. They're written to the config (signing out
+//! everywhere, to the state beside it: [`super::state`]); a running recorder takes them once it's restarted.
 
 use std::path::{Path, PathBuf};
 
@@ -63,10 +63,11 @@ fn list(a: &Args) {
             println!("    {theirs} is {ours}");
         }
     }
+    let state = super::state::State::load(&crate::paths::data_dir());
     let day = |t: i64| chrono::DateTime::from_timestamp(t, 0).map_or(String::new(), |d| format!(" {}", d.format("%Y-%m-%d")));
     for (name, u) in &auth.users {
         let token = u.token.as_ref().map_or("no token".to_string(), |t| format!("token{}", day(t.created)));
-        let out = u.signed_out.map(|t| format!(", signed out everywhere{}", day(t))).unwrap_or_default();
+        let out = state.signed_out(name).map(|t| format!(", signed out everywhere{}", day(t))).unwrap_or_default();
         println!("  {name} [{}] {token}{out}", u.access.name());
         for p in &u.passkeys {
             println!("    passkey \"{}\"{}", p.name, day(p.created));
@@ -103,10 +104,11 @@ fn remove(a: &Args) {
 
 fn sign_out(a: &Args) {
     let name = a.positional.get(1).unwrap_or_else(|| die("trunk-pro access signout <name>"));
-    let (path, mut cfg) = load_config(a);
-    let Some(u) = cfg.server.auth.users.get_mut(name.trim()) else { die(&format!("There's no user named \"{}\".", name.trim())) };
-    u.signed_out = Some(crate::clock::unix_s() as i64);
-    save(&path, &cfg);
+    let (_, cfg) = load_config(a);
+    if !cfg.server.auth.users.contains_key(name.trim()) {
+        die(&format!("There's no user named \"{}\".", name.trim()));
+    }
+    super::state::State::load(&crate::paths::data_dir()).sign_out(&cfg.server.auth, name.trim(), crate::clock::unix_s() as i64).unwrap_or_else(|e| die(&e));
     println!("{} signed out everywhere.", name.trim());
 }
 

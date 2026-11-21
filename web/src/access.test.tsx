@@ -350,9 +350,6 @@ test("Access: each user signed out everywhere from their row, signing in on; Une
   const off = full();
   off.server.auth!.enabled = false;
   assert.doesNotMatch(renderToString(<AccessSection c={off} />), /out everywhere/, "off: no sessions to end");
-  const out = full();
-  out.server.auth!.users!.kiosk.signedOut = 1_763_400_000;
-  assert.match(renderToString(<AccessSection c={out} />), new RegExp(`title="Every browser of theirs · last ${new Date(1_763_400_000_000).toLocaleDateString().replace(/\//g, "\\/")}"`));
   // Where this page is.
   assert.equal(unencrypted({ protocol: "http:", hostname: "localhost" }), false);
   assert.equal(unencrypted({ protocol: "http:", hostname: "127.0.0.1" }), false);

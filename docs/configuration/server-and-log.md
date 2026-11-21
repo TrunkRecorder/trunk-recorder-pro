@@ -77,7 +77,9 @@ signed with a key the recorder keeps in `session-key` beside the config (made th
 readable by its owner alone, never in the config). Removing the user, making their token again
 or removing the passkey ends their sessions; deleting `session-key` (then restarting the recorder) signs every browser
 out. If the recorder can't keep the file it says so in the log, and browsers are signed out
-whenever it restarts. A dashboard left open is closed when its session expires, and asks to sign in again.
+whenever it restarts. What changes as people sign in and out is kept beside the config too, in
+`access-state.json`, not in it (signing in never changes the config): when each user was last
+signed out everywhere, and each passkey's count of sign-ins. A dashboard left open is closed when its session expires, and asks to sign in again.
 
 **Signing out everywhere.** A browser that may have been left signed in somewhere (a lost phone, a
 shared computer): click your name in the top bar → **Sign out everywhere**, or, as an Admin, a
@@ -154,7 +156,7 @@ sign-in page (`/signin`).
 | `enabled` | `false` | Signing in on. It needs a user with control access and a token or a passkey (or, with a [proxy](#behind-a-proxy-that-signs-people-in) set, nothing: the proxy can name them), so someone can turn it off again |
 | `anonymous` | none | `"listen"`: what a request without a token may do. `"control"` is refused (it would be the same as off) |
 | `proxy` | off | A reverse proxy in front that signs people in: `from`, `header` (or `cloudflare`), `users`, `other`. See [Behind a proxy that signs people in](#behind-a-proxy-that-signs-people-in) |
-| `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and what they sign in with: `token`, `hash` (the secret's SHA-256) and `created` (Unix s); `passkeys`, each `name`, `created`, `id` (the credential's, base64url) and `key` (its public key and counter, as the recorder's WebAuthn library keeps it); `signedOut` (Unix s), when they were last [signed out everywhere](#access): browsers' sessions from then or before don't count. Made in Setup or with `trunk-pro access add`, not by hand; a passkey can be renamed or removed by hand |
+| `users` | `{}` | By name: `access` (`"listen"` or `"control"`) and what they sign in with: `token`, `hash` (the secret's SHA-256) and `created` (Unix s); `passkeys`, each `name`, `created`, `id` (the credential's, base64url) and `key` (its public key, as the recorder's WebAuthn library keeps it). Made in Setup or with `trunk-pro access add`, not by hand; a passkey can be renamed or removed by hand |
 
 Changes in Setup apply at once: connections whose access changed are closed and reconnect with
 what they have now. Changes made with `trunk-pro access` are written to the config file and take

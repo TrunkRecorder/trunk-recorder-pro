@@ -273,7 +273,7 @@ fn sign_in_start_at(sessions: &Sessions, rp: &Rp, now: u64) -> Result<Value, Str
 }
 
 /// Who signed in: their name, the passkey's id, and what webauthn-rs found
-/// when the config should keep the passkey's count (it went up: see [`sign_in_finish`], [`keep_count`]).
+/// when the passkey's count is to be kept (it went up: see [`sign_in_finish`], [`keep_count`]).
 #[derive(Clone, Debug)]
 pub struct SignedIn {
     pub user: String,
@@ -288,7 +288,8 @@ pub struct SignedIn {
 ///
 /// Its counter: a passkey kept on one device counts its uses, and one that
 /// counts less than last time may be a copy, which webauthn-rs refuses — so
-/// the config keeps the count, written when it goes up. Passkeys synced
+/// the count is kept (beside the config: `sessions`' state), written when it
+/// goes up. Passkeys synced
 /// between devices count nothing (0, always): signing in with them writes
 /// nothing, nor does a change in their backed-up flag (nothing checks it).
 pub fn sign_in_finish(ceremonies: &Ceremonies, sessions: &Sessions, rp: &Rp, auth: &Auth, id: &str, credential: Value) -> Result<SignedIn, String> {
@@ -311,7 +312,7 @@ fn sign_in_finish_at(ceremonies: &Ceremonies, sessions: &Sessions, rp: &Rp, auth
     let cred_id = b64(cred_id);
     let found = auth.users.iter().find_map(|(name, u)| u.passkeys.iter().find(|p| p.id == cred_id).map(|p| (name, p)));
     let Some((user, p)) = found.filter(|(name, _)| user_handle(name) == handle) else { return Err("Not a passkey of this recorder's (removed?).".into()) };
-    let passkey = passkey_of(p).ok_or("That passkey's record in the config can't be read.")?;
+    let passkey: Passkey = serde_json::from_value(sessions.state.passkey(p)).map_err(|_| "That passkey's record can't be read.")?;
     let result = webauthn.finish_discoverable_authentication_v2(&credential, w.state, &passkey).map_err(|e| rp.refused("That passkey didn't sign in", e))?;
     if !ceremonies.sign_in_once(&w.nonce, w.until, now) {
         return Err("That sign-in was used already: try again.".into());
@@ -320,23 +321,21 @@ fn sign_in_finish_at(ceremonies: &Ceremonies, sessions: &Sessions, rp: &Rp, auth
     Ok(SignedIn { user: user.clone(), id: cred_id, counted })
 }
 
-/// Keep `signed`'s count in `auth` (see [`sign_in_finish`]): the passkey's
-/// record as it is now, its counter raised to it, never lowered (two
-/// sign-ins at once: the higher stays). Whether it changed.
-pub fn keep_count(auth: &mut Auth, signed: &SignedIn) -> bool {
-    let Some(result) = &signed.counted else { return false };
-    let Some(p) = auth.users.get_mut(&signed.user).and_then(|u| u.passkeys.iter_mut().find(|p| p.id == signed.id)) else { return false };
-    let Some(mut passkey) = passkey_of(p) else { return false };
-    if passkey.update_credential(result) != Some(true) {
-        return false;
-    }
-    match serde_json::to_value(&passkey) {
-        Ok(key) => {
-            p.key = key;
-            true
+/// Keep `signed`'s count in `sessions`' state (see [`sign_in_finish`]):
+/// the passkey's record as it is now, its counter raised to it, never
+/// lowered (two sign-ins at once: the higher stays). Whether it changed, or
+/// why it couldn't be kept. Blocking: it writes the state's file.
+pub fn keep_count(sessions: &Sessions, auth: &Auth, signed: &SignedIn) -> Result<bool, String> {
+    let Some(result) = &signed.counted else { return Ok(false) };
+    let Some(p) = auth.users.get(&signed.user).and_then(|u| u.passkeys.iter().find(|p| p.id == signed.id)) else { return Ok(false) };
+    sessions.state.change(auth, |kept| {
+        let record = kept.passkeys.get(&p.id).unwrap_or(&p.key);
+        let Ok(mut passkey) = serde_json::from_value::<Passkey>(record.clone()) else { return false };
+        if passkey.update_credential(result) != Some(true) {
+            return false;
         }
-        Err(_) => false,
-    }
+        serde_json::to_value(&passkey).map(|key| kept.passkeys.insert(p.id.clone(), key)).is_ok()
+    })
 }
 
 #[cfg(test)]
@@ -436,13 +435,13 @@ mod tests {
         let sessions = Sessions::fresh();
         let who = sessions.verify(&sessions.issue("luke", &passkey_credential("AbC-_9"))).unwrap();
         assert!(matches!(&who, Who::User { name, credential, until: Some(_) } if name == "luke" && credential == "pk:AbC-_9"), "{who:?}");
-        assert_eq!(who.grants(&auth), Some(ApiAccess::Control));
+        assert_eq!(who.grants(&auth, &sessions), Some(ApiAccess::Control));
         assert!(!holds(&auth.users["luke"], "pk:other") && !holds(&auth.users["luke"], "AbC-_9"), "another passkey's, or the id as a token's hash");
         // The token taken away: the passkey's session stays.
         auth.users.get_mut("luke").unwrap().token = None;
-        assert_eq!(who.grants(&auth), Some(ApiAccess::Control));
+        assert_eq!(who.grants(&auth, &sessions), Some(ApiAccess::Control));
         auth.users.get_mut("luke").unwrap().passkeys.clear();
-        assert_eq!(who.grants(&auth), None, "removed: signed out");
+        assert_eq!(who.grants(&auth, &sessions), None, "removed: signed out");
     }
 
     /// Bogus answers are refused; so is a finish of another's add, or a
@@ -532,8 +531,11 @@ mod tests {
         assert!(signed.counted.is_some(), "counted: kept");
         // The same answer again (before its count's kept, or for a passkey that counts nothing): once.
         assert!(sign_in_finish(&c, &sessions, &rp, &auth, &id, answer).unwrap_err().contains("used already"), "replayed");
-        assert!(keep_count(&mut auth, &signed));
-        assert_eq!(auth.users["luke"].passkeys[0].key["cred"]["counter"], 5);
+        let config = auth.clone();
+        assert!(keep_count(&sessions, &auth, &signed).unwrap());
+        let counter = |auth: &Auth| sessions.state.passkey(&auth.users["luke"].passkeys[0])["cred"]["counter"].clone();
+        assert_eq!(counter(&auth), 5);
+        assert_eq!(auth, config, "kept beside the config: no config changed");
         // Counted back: a copy, refused.
         assert!(sign_in(3, origin, "luke", &auth).2.unwrap_err().contains("compromised"));
         // Another site's page answering, another port's (an interface's page), or another user's handle: refused.
@@ -544,9 +546,9 @@ mod tests {
         // Two at once, from the count of 5: the higher stays, whichever's kept last.
         let (_, _, seven) = sign_in(7, origin, "luke", &auth);
         let (_, _, nine) = sign_in(9, origin, "luke", &auth);
-        assert!(keep_count(&mut auth, &nine.unwrap()));
-        assert!(!keep_count(&mut auth, &seven.unwrap()), "lower: not kept");
-        assert_eq!(auth.users["luke"].passkeys[0].key["cred"]["counter"], 9, "never lowered");
+        assert!(keep_count(&sessions, &auth, &nine.unwrap()).unwrap());
+        assert!(!keep_count(&sessions, &auth, &seven.unwrap()).unwrap(), "lower: not kept");
+        assert_eq!(counter(&auth), 9, "never lowered");
         // Expired: 5 minutes on.
         let started = sign_in_start_at(&sessions, &rp, crate::clock::unix_s() as u64 - CEREMONY.as_secs()).unwrap();
         let answer = key.get(&started["options"]["publicKey"], origin, 10, "luke");

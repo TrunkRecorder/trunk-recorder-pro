@@ -296,7 +296,7 @@ async fn admitted(ctx: &Arc<Ctx>, loopback: bool, door: Door, mut req: Request, 
             let mut res = if cors && req.method() == Method::OPTIONS && req.headers().contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {
                 let allow = [(header::ACCESS_CONTROL_ALLOW_METHODS, "GET, POST"), (header::ACCESS_CONTROL_ALLOW_HEADERS, "Authorization, Content-Type"), (header::ACCESS_CONTROL_MAX_AGE, "600")];
                 (StatusCode::NO_CONTENT, allow).into_response()
-            } else if auth.enabled && who.grants(&auth).is_none() && !open(req.uri().path()) {
+            } else if auth.enabled && who.grants(&auth, &ctx.sessions).is_none() && !open(req.uri().path()) {
                 sign_in(&req)
             } else {
                 req.extensions_mut().insert(Caller { door, who });
@@ -509,10 +509,10 @@ async fn passkey_sign_in_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): 
         }
     };
     if signed.counted.is_some() {
-        // (Its count, kept against the record as it is then: see passkey::keep_count. Not kept, a
-        // copy of the passkey could count from the old number: no sign-in.)
+        // (Its count, kept against the record as it is then, beside the config: see
+        // passkey::keep_count. Not kept, a copy of the passkey could count from the old number: no sign-in.)
         let (ctx2, signed2) = (ctx.clone(), signed.clone());
-        let kept = tokio::task::spawn_blocking(move || edit_config(&ctx2, |c| void(passkey::keep_count(&mut c.server.auth, &signed2)))).await.unwrap_or_else(|e| Err(e.to_string()));
+        let kept = tokio::task::spawn_blocking(move || passkey::keep_count(&ctx2.sessions, &auth, &signed2)).await.unwrap_or_else(|e| Err(e.to_string()));
         if let Err(e) = kept {
             log::warn!("Passkey {} of {}: its counter couldn't be kept ({e}): not signed in", signed.id, signed.user);
             return (StatusCode::SERVICE_UNAVAILABLE, format!("Not signed in: the passkey's count couldn't be saved ({e}).\n")).into_response();
@@ -525,7 +525,7 @@ async fn passkey_sign_in_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): 
 /// `POST /api/logout`: this recorder's cookie, expired (other recorders' on
 /// the same host name are theirs). `{"all": true}`: signed out everywhere
 /// too, every browser's session of the user's signed in until now
-/// (`signedOut`; their access token's still good: made again, it isn't), on
+/// (kept beside the config; their access token's still good: made again, it isn't), on
 /// the built-in interface's port; `{"all": true, "user": name}` another
 /// user, by a user with control access.
 async fn logout(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, body: String) -> Response {
@@ -544,7 +544,7 @@ async fn logout(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller
         return (StatusCode::FORBIDDEN, "Signing out everywhere is on the recorder's own page.\n").into_response();
     }
     let me = match &caller.who {
-        Who::User { name, .. } if caller.who.grants(&ctx.config.lock().unwrap().server.auth).is_some() => Some(name.clone()),
+        Who::User { name, .. } if caller.who.grants(&ctx.config.lock().unwrap().server.auth, &ctx.sessions).is_some() => Some(name.clone()),
         _ => None,
     };
     let user = match v["user"].as_str() {
@@ -558,14 +558,11 @@ async fn logout(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller
     };
     let (ctx2, who) = (ctx.clone(), user.clone());
     let done = tokio::task::spawn_blocking(move || {
-        let mut found = false;
-        edit_config(&ctx2, |c| {
-            if let Some(u) = c.server.auth.users.get_mut(&who) {
-                u.signed_out = Some(crate::clock::unix_s() as i64);
-                found = true;
-            }
-        })?;
-        found.then_some(()).ok_or_else(|| format!("There's no user named \"{who}\"."))
+        let auth = ctx2.config.lock().unwrap().server.auth.clone();
+        if !auth.users.contains_key(&who) {
+            return Err(format!("There's no user named \"{who}\"."));
+        }
+        ctx2.sessions.sign_out(&auth, &who)
     })
     .await
     .unwrap_or_else(|e| Err(e.to_string()));
@@ -1152,6 +1149,8 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, caller: Caller) {
     // Live audio: off until the browser asks; optionally one system and/or talkgroup only.
     let mut listen: Option<Listen> = None;
     let mut subs = Subs::new(&ctx, Default::default());
+    // Its user signed out everywhere: no config changes, so told of it here.
+    let mut signed_out = ctx.sessions.state.changes();
     loop {
         tokio::select! {
             msg = rx.recv() => match msg {
@@ -1213,6 +1212,12 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, caller: Caller) {
             _ = expiry(caller.who.until()) => {
                 send(&mut socket, Message::Close(None)).await;
                 return;
+            },
+            Ok(()) = signed_out.changed() => {
+                if caller.access(&ctx) != Some(access) {
+                    send(&mut socket, Message::Close(None)).await;
+                    return;
+                }
             },
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(t))) => {
@@ -2187,7 +2192,7 @@ mod tests {
         let (code, h, who) = post("/api/passkey/login/finish", host.clone(), finish.clone()).await;
         assert_eq!((code, json(&who)), (200, serde_json::json!({ "access": "control", "user": "luke" })));
         let cookie = h["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
-        assert_eq!(ctx.sessions.verify(cookie.split_once('=').unwrap().1).unwrap().grants(&ctx.config.lock().unwrap().server.auth), Some(crate::config::ApiAccess::Control));
+        assert_eq!(ctx.sessions.verify(cookie.split_once('=').unwrap().1).unwrap().grants(&ctx.config.lock().unwrap().server.auth, &ctx.sessions), Some(crate::config::ApiAccess::Control));
         let signed = session(vec![("cookie", cookie.clone())]).await;
         assert_eq!((&signed["user"], &signed["access"]), (&"luke".into(), &"control".into()));
         let (code, _, why) = post("/api/passkey/login/finish", host.clone(), finish).await;
@@ -2197,8 +2202,9 @@ mod tests {
         assert_eq!(session(vec![("cookie", cookie)]).await["user"], serde_json::Value::Null);
     }
 
-    /// A passkey that counts its uses: its count kept as it goes up; when it
-    /// can't be (the config can't be written), no sign-in.
+    /// A passkey that counts its uses: its count kept as it goes up, beside
+    /// the config (which doesn't change: nobody's edit is refused for a
+    /// sign-in); when it can't be (its file can't be written), no sign-in.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_passkey_s_count_unsaved_signs_nobody_in() {
@@ -2232,21 +2238,24 @@ mod tests {
                 post("/api/passkey/login/finish", vec![], Some(serde_json::json!({ "id": started["id"], "credential": answer }).to_string())).await
             }
         };
+        let before = ctx.config.lock().unwrap().clone();
+        let counter = || ctx.sessions.state.passkey(&ctx.config.lock().unwrap().server.auth.users["luke"].passkeys[0])["cred"]["counter"].clone();
+        let id = before.server.auth.users["luke"].passkeys[0].id.clone();
+        let on_disk = || json(&std::fs::read_to_string(ctx.config_path.with_file_name(crate::access::state::STATE_FILE)).unwrap())["passkeys"][&id]["cred"]["counter"].clone();
         let (code, h, _) = sign_in(5).await;
         assert!(code == 200 && h.get("set-cookie").is_some());
-        assert_eq!(ctx.config.lock().unwrap().server.auth.users["luke"].passkeys[0].key["cred"]["counter"], 5, "kept");
+        assert_eq!((counter(), on_disk()), (5.into(), 5.into()), "kept");
         let folder = ctx.config_path.parent().unwrap().to_path_buf();
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
         let (code, h, why) = sign_in(6).await;
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(code == 503 && h.get("set-cookie").is_none() && why.contains("count couldn't be saved"), "{code} {why}");
-        // Not saved, not kept: the config in use is what's on disk (edit_config leaves it as it was).
-        assert_eq!(ctx.config.lock().unwrap().server.auth.users["luke"].passkeys[0].key["cred"]["counter"], 5, "as on disk");
-        let on_disk = std::fs::read_to_string(&ctx.config_path).unwrap();
-        assert_eq!(json(&on_disk)["server"]["auth"]["users"]["luke"]["passkeys"][0]["key"]["cred"]["counter"], 5);
+        // Not saved, not kept: the count in use is what's on disk.
+        assert_eq!((counter(), on_disk()), (5.into(), 5.into()), "as on disk");
         let (code, _, _) = sign_in(6).await;
         assert_eq!(code, 200, "saved now");
-        assert_eq!(ctx.config.lock().unwrap().server.auth.users["luke"].passkeys[0].key["cred"]["counter"], 6);
+        assert_eq!((counter(), on_disk()), (6.into(), 6.into()));
+        assert_eq!(*ctx.config.lock().unwrap(), before, "no config changed");
     }
 
     /// A WebSocket is greeted with what it may do and as whom; a listen
@@ -2561,12 +2570,14 @@ mod tests {
         let signed = h["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
         let ws = socket(signed.clone()).await;
         let all = Some(r#"{"all":true}"#);
+        let before = ctx.config.lock().unwrap().clone();
         assert_eq!(http(wall, "POST", "/api/logout", &[("cookie", &signed)], all).await.0, 403, "not through an interface's port");
         assert_eq!(http(addr, "POST", "/api/logout", &[], all).await.0, 401, "nobody signed in");
         let (code, h, _) = http(addr, "POST", "/api/logout", &[("cookie", &signed)], all).await;
         assert!(code == 204 && h["set-cookie"].to_str().unwrap().contains("Max-Age=0"), "{code}");
-        let at = ctx.config.lock().unwrap().server.auth.users["luke"].signed_out.unwrap();
-        assert!(at.abs_diff(crate::clock::unix_s() as i64) <= 2 && std::fs::read_to_string(&ctx.config_path).unwrap().contains("\"signedOut\""), "saved");
+        let at = ctx.sessions.state.signed_out("luke").unwrap();
+        assert!(at.abs_diff(crate::clock::unix_s() as i64) <= 2, "kept");
+        assert_eq!(*ctx.config.lock().unwrap(), before, "beside the config: no config changed (nor its version: nobody's edit refused)");
         assert_eq!(user(vec![("cookie", signed.clone())]).await, serde_json::Value::Null, "signed out");
         assert_eq!(user(vec![("cookie", cookie("luke", now + 60))]).await, serde_json::Value::Null, "every session signed in before");
         assert!(closes(ws, 5).await, "its socket closed");
