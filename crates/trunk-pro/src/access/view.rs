@@ -27,7 +27,7 @@ macro_rules! shown {
 pub fn listen_config(c: &Config) -> Config {
     // Withheld: plugin settings (API keys) and what's sent when, key
     // sources, and what the config has that the recorder doesn't know.
-    let mut c = shown!(c.clone(), Config { sources, systems, conventional, next_system_id, recording, server, log, storage, monitor, diagnostics }
+    let mut c = shown!(c.clone(), Config { sources, systems, conventional, next_system_id, next_site_id, recording, server, log, storage, monitor, diagnostics }
         withheld { plugins, plugin_delays, keys, other, notes, numbered });
     c.sources = c.sources.into_iter().map(|s| shown!(s, Source { kind, center_hz, rate_hz, ppm, auto_tune, guard_hz, name })).collect();
     c.systems = c.systems.into_iter().map(system).collect();
@@ -50,7 +50,7 @@ fn system(s: System) -> System {
     let mut s = shown!(s, System { id, short_name, name, receive_on, fcc, share, directory, kind, enabled, unit_names, recording, default_mode, nxdn_type, signals, preferred_site, sites }
         withheld { keys, plugins, plugin_delays, other });
     s.signals = s.signals.into_iter().map(signal).collect();
-    s.sites = s.sites.into_iter().map(|x| shown!(x, Site { name, directory_id, enabled, control_channels_hz, modulation, expect, voice_channels_hz, bandplan, bandplan_base_hz, bandplan_spacing_hz, bandplan_offset, bandplan_high_hz, lcn_table_hz, dmr_channels_hz, color_code, nxdn_rate, nxdn_channels_hz, ran, esk }
+    s.sites = s.sites.into_iter().map(|x| shown!(x, Site { id, name, directory_id, enabled, control_channels_hz, modulation, expect, voice_channels_hz, bandplan, bandplan_base_hz, bandplan_spacing_hz, bandplan_offset, bandplan_high_hz, lcn_table_hz, dmr_channels_hz, color_code, nxdn_rate, nxdn_channels_hz, ran, esk }
         withheld { other })).collect();
     s
 }
