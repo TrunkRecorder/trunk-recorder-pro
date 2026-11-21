@@ -35,7 +35,8 @@ use crate::mbe;
 use crate::nxdn::voice::{NxdnVoice, VCH_S};
 use crate::nxdn::Rate;
 use crate::p25::alias::AliasLc;
-use crate::p25::crypt::Keyring;
+use crate::p25::crypt::{KeyCheck, Keyring, Keystream, Phase, SyncCheck, Verdict};
+use crate::p25::voice::EncryptionSync;
 use crate::p25::diversity::{best_frame, Bank, BankConfig, Group};
 use crate::p25::phase2::{self, Packet};
 
@@ -237,6 +238,118 @@ impl Encryption {
     /// A hint, which only an unknown (or hinted) state takes.
     pub(super) fn hinted(self) -> Self {
         if matches!(self, Encryption::Unknown | Encryption::Hinted) { Encryption::Hinted } else { self }
+    }
+}
+
+/// A P25 transmission's encryption as its voice is heard, Phase 1 and Phase 2
+/// alike: what the voice is, the sync it's under and the next one, the
+/// keystream, the cipher told, and whether any of it was decrypted. The
+/// phases differ in where the syncs come (HDU and LDU2; MAC_PTT and ESS) and
+/// in the key check: full-rate voice has a tell ([`KeyCheck`]), half-rate
+/// none, so a Phase 2 transmission is taken as decrypted at its first frame.
+pub(super) struct Crypt {
+    phase: Phase,
+    pub(super) voice: Encryption,
+    /// The sync the current superframe's voice is under, and the one the
+    /// last sync heard (LDU2, ESS) brought for the next.
+    pub(super) es: Option<EncryptionSync>,
+    pub(super) es_next: Option<EncryptionSync>,
+    /// Each sync heard checked against the MI LFSR's prediction.
+    pub(super) chain: SyncCheck,
+    /// The cipher last told for this transmission.
+    cipher: Option<CipherId>,
+    /// The keystream of the superframe `es` is for, when the system has the key.
+    ks: Option<Keystream>,
+    /// Some voice of this transmission was decrypted: voice that can't be
+    /// now (its sync lost) is muted, not dropped.
+    pub(super) decrypting: bool,
+    /// Whether the key decrypts this transmission to voice, and whether that
+    /// was told; a wrong key's voice isn't decrypted.
+    check: KeyCheck,
+    reported: bool,
+    wrong_key: bool,
+}
+
+impl Crypt {
+    pub(super) fn new(phase: Phase) -> Crypt {
+        Crypt { phase, voice: Encryption::Unknown, es: None, es_next: None, chain: SyncCheck::default(), cipher: None, ks: None, decrypting: false, check: KeyCheck::default(), reported: false, wrong_key: false }
+    }
+
+    /// A new transmission: nothing known of its encryption.
+    pub(super) fn reset(&mut self) {
+        *self = Crypt::new(self.phase);
+    }
+
+    /// The voice from now on is under `es`: its keystream, when `keys` have
+    /// the key (by talkgroup `tg`: the one named, or the grant's).
+    pub(super) fn set_es(&mut self, es: Option<EncryptionSync>, keys: &Option<Arc<Keyring>>, tg: Option<u32>) {
+        self.es = es;
+        self.ks = match (keys, &es) {
+            (Some(keys), Some(es)) => keys.keystream(es, tg, self.phase),
+            _ => None,
+        };
+    }
+
+    /// The cipher told for this transmission.
+    pub(super) fn cipher(&self) -> Option<CipherId> {
+        self.cipher
+    }
+
+    /// The keystream to decrypt with: none without the key, or once it proved wrong.
+    pub(super) fn keystream(&self) -> Option<&Keystream> {
+        self.ks.as_ref().filter(|_| !self.wrong_key)
+    }
+
+    /// What a sync says the voice is; told when it becomes encrypted (`active`: a transmission is going).
+    pub(super) fn set_voice(&mut self, v: Encryption, active: bool) -> Option<TrackerOut> {
+        let was = self.voice.encrypted();
+        self.voice = v;
+        (active && v.encrypted() && !was).then(|| TrackerOut::Info { source: None, flags: Flags { encrypted: true, ..Default::default() } })
+    }
+
+    /// A message says the voice is encrypted (its protected bit): until a sync says.
+    pub(super) fn hint(&mut self, active: bool) -> Option<TrackerOut> {
+        let v = self.voice.hinted();
+        self.set_voice(v, active)
+    }
+
+    /// `es`'s cipher: told once a transmission.
+    pub(super) fn report_cipher(&mut self, es: &EncryptionSync, active: bool) -> Option<TrackerOut> {
+        let id = CipherId { algid: es.algid, keyid: es.keyid };
+        (active && self.cipher != Some(id)).then(|| {
+            self.cipher = Some(id);
+            TrackerOut::Cipher(id)
+        })
+    }
+
+    /// A frame was decrypted; `voice`: whether it could be voice (none: the
+    /// codec has no tell). Whether to play it (not when the key proved
+    /// wrong), and what to tell: decrypted once the key is right (with no
+    /// tell, at once), or the wrong key.
+    pub(super) fn decrypted(&mut self, voice: Option<bool>) -> (bool, Option<TrackerOut>) {
+        self.decrypting = true;
+        let Some(voice) = voice else {
+            return (true, (!std::mem::replace(&mut self.reported, true)).then_some(TrackerOut::Decrypted));
+        };
+        match self.check.frame(voice) {
+            Verdict::Right if !self.reported => {
+                self.reported = true;
+                (true, Some(TrackerOut::Decrypted))
+            }
+            Verdict::Wrong => {
+                (self.wrong_key, self.decrypting) = (true, false);
+                (false, self.cipher.map(TrackerOut::WrongKey))
+            }
+            _ => (true, None),
+        }
+    }
+
+    /// The transmission is over: its key's verdict, if none was told yet.
+    pub(super) fn end(&mut self) -> Option<TrackerOut> {
+        (self.decrypting && !self.reported && self.check.at_end() == Verdict::Right).then(|| {
+            self.reported = true;
+            TrackerOut::Decrypted
+        })
     }
 }
 
