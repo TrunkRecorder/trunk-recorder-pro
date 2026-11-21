@@ -31,6 +31,8 @@ export interface Bundle {
   talkgroupsCsv: string;
   /** Where each site is (lat, lon), where known (a sites file says). */
   locations?: ([number, number] | null)[];
+  /** A sites file: each site's frequencies by where they are in its row, from 1 (what an EDACS site's LCNs are: asType). */
+  byPosition?: Record<string, number>[];
 }
 
 /** The page was opened to import a system (#import=…): the first-run guide waits. (Read as it loads: the import takes the link off.) */
@@ -51,6 +53,13 @@ export function parseBundle(x: unknown): Bundle | null {
  * channels (none marked: all of them; the rest as voice channels), RFSS,
  * site and NAC, and where they are. Its kind of system isn't in it: the
  * import asks. Null when `text` isn't one.
+ *
+ * RadioReference keeps an EDACS site's frequencies by LCN: the nth is LCN n,
+ * an unused LCN below the highest a placeholder (0.0, shown as N/A: its
+ * Database Administrator Handbook, "Logical Channel Numbering"). So each
+ * frequency's place in the row is kept too, a cell that isn't a frequency
+ * holding its place. A site named as of unconfirmed LCNs (the handbook keeps
+ * those apart) gives none.
  */
 export function sitesFileBundle(text: string, fileName: string): Bundle | null {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim());
@@ -62,14 +71,16 @@ export function sitesFileBundle(text: string, fileName: string): Bundle | null {
   const [cSite, cRfss, cNac, cName, cLat, cLon] = [col("site dec", "site", "site number"), col("rfss"), col("site nac", "nac"), col("description", "name", "site name"), col("lat", "latitude"), col("lon", "long", "longitude")];
   const sites: Partial<Site>[] = [];
   const locations: ([number, number] | null)[] = [];
+  const byPosition: Record<string, number>[] = [];
   for (const line of lines.slice(1)) {
     const f = splitCsvLine(line).map((x) => x.trim());
     const get = (c: number) => (c >= 0 && f[c] ? f[c] : undefined);
-    const freqs = f.slice(fcol).flatMap((v) => {
+    const freqs = f.slice(fcol).flatMap((v, k) => {
       const mhz = parseFloat(v.replace(/[ca]$/i, ""));
-      return mhz > 1 && /^\d+(\.\d+)?[ca]?$/i.test(v) ? [{ hz: Math.round((mhz * 1e6) / 50) * 50, control: /c$/i.test(v) }] : [];
+      return mhz > 1 && /^\d+(\.\d+)?[ca]?$/i.test(v) ? [{ hz: Math.round((mhz * 1e6) / 50) * 50, control: /c$/i.test(v), at: k + 1 }] : [];
     });
     if (!freqs.length) continue;
+    byPosition.push(/unconfirmed/i.test(get(cName) ?? "") ? {} : Object.fromEntries(freqs.filter((x) => x.at <= 25).map((x) => [x.at, x.hz])));
     const control = freqs.filter((x) => x.control).map((x) => x.hz);
     const num = (c: number, radix = 10) => (get(c) && !isNaN(parseInt(get(c)!, radix)) ? parseInt(get(c)!, radix) : undefined);
     const expect = Object.fromEntries(Object.entries({ rfss: num(cRfss), site: num(cSite), nac: num(cNac, 16) }).filter(([, v]) => v !== undefined));
@@ -84,13 +95,25 @@ export function sitesFileBundle(text: string, fileName: string): Bundle | null {
   }
   if (!sites.length) return null;
   const id = fileName.replace(/\.csv$/i, "");
-  return { format: "trp-system", v: 1, source: { directory: "", id, rev: 0 }, system: { shortName: id.replace(/^trs_sites_/, "rr-"), sites }, talkgroupsCsv: "", locations };
+  return { format: "trp-system", v: 1, source: { directory: "", id, rev: 0 }, system: { shortName: id.replace(/^trs_sites_/, "rr-"), sites }, talkgroupsCsv: "", locations, byPosition };
 }
 
-/** A bundle's system as `type`: a sites file's sites keep their site lock only as P25 (its other kinds' numbers aren't what their air says). */
+/**
+ * A bundle's system as `type`: a sites file's sites keep their site lock only as P25 (its other kinds' numbers aren't what
+ * their air says), and their other frequencies go where that kind is watched on them (DMR's and NXDN's channels; an EDACS
+ * site's LCNs, each frequency's place in its row: sitesFileBundle).
+ */
 export function asType(b: Bundle, type: NonNullable<SystemInput["type"]>): Bundle {
   if (b.system.type) return b;
-  return { ...b, system: { ...b.system, type, sites: b.system.sites.map((x) => (type === "p25" ? x : { ...x, expect: {} })) } };
+  const site = (x: Partial<Site>, k: number): Partial<Site> => {
+    if (type === "p25") return x;
+    const rest = x.voiceChannelsHz ?? [];
+    const lcns = b.byPosition?.[k] ?? {};
+    const watched: Partial<Site> =
+      type === "dmr" ? { dmrChannelsHz: rest, voiceChannelsHz: [] } : type === "nxdn" ? { nxdnChannelsHz: rest, voiceChannelsHz: [] } : type === "edacs" ? { lcnTableHz: lcns, voiceChannelsHz: [] } : {};
+    return { ...x, expect: {}, ...watched };
+  };
+  return { ...b, system: { ...b.system, type, sites: b.system.sites.map(site) } };
 }
 
 /** How far apart two places are, miles (haversine). */
@@ -366,7 +389,7 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
                   </option>
                 ))}
               </select>
-              <span className="field-hint">As RadioReference lists it</span>
+              <span className="field-hint">{kind === "edacs" ? "LCNs: each frequency's place in the file — check them against RadioReference" : "As RadioReference lists it"}</span>
             </label>
           )}
           {!find && b.locations?.some(Boolean) && <Near b={b} onPick={setSites} />}

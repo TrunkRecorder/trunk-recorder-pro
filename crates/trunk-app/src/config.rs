@@ -2639,6 +2639,10 @@ impl Config {
             if let Some(site) = sys.sites.iter().find(|x| !seen.insert(sys.site_name(x))) {
                 return Some(format!("Two sites of {} are named \"{}\" — each needs a name of its own.", sys.short_name, sys.site_name(site)));
             }
+            // Nor another system's short name: what was kept under a site's name is still read as its system's (migrate::old_names).
+            if let Some(n) = sys.sites.iter().map(|x| sys.site_name(x)).find(|n| *n != sys.short_name && names.contains(n)) {
+                return Some(format!("A site of {} is named \"{n}\", which is another system's short name — one of them needs another name.", sys.short_name));
+            }
         }
         None
     }
@@ -3594,6 +3598,9 @@ mod tests {
         assert_eq!(sites, [("east", "east", true), ("east", "east-2", true), ("west", "west", false)]);
         c.systems[0].sites[1].name = "east".into();
         assert!(c.problem().unwrap().contains("Two sites of east are named \"east\""), "{:?}", c.problem());
+        // Nor may a site take another system's short name.
+        c.systems[0].sites[1].name = "west".into();
+        assert!(c.problem().unwrap().contains("A site of east is named \"west\""), "{:?}", c.problem());
         c.systems[0].sites.pop();
         // One source can't hold both.
         c.sources.pop();

@@ -181,6 +181,8 @@ pub struct Tapped<'a> {
     pub level: Level,
     /// The system it's about (its short name).
     pub system: Option<&'a str>,
+    /// The talkgroup of the call it's about.
+    pub talkgroup: Option<u32>,
     /// The plugin whose note it is ([`plugin_note`]).
     pub plugin: Option<&'a str>,
     /// What it says, after the time and level.
@@ -249,7 +251,7 @@ fn record_from(r: &Record, plugin: Option<&str>) {
     // (No lock held: what it does may log.)
     if let Some((f, text, line)) = tapped {
         TAPPING.with(|t| t.set(true));
-        f(&Tapped { time: now.timestamp_micros() as f64 / 1e6, level: r.level, system: r.system.as_deref(), plugin, text: &text, line: &line });
+        f(&Tapped { time: now.timestamp_micros() as f64 / 1e6, level: r.level, system: r.system.as_deref(), talkgroup: r.call.as_ref().map(|c| c.talkgroup), plugin, text: &text, line: &line });
         TAPPING.with(|t| t.set(false));
     }
 }

@@ -147,7 +147,8 @@ pub enum TrackerOut {
     Cipher(CipherId),
     /// The transmission's voice is being decrypted: once a transmission,
     /// when its key has decrypted enough of it to voice to be sure
-    /// ([`crate::p25::crypt::KeyCheck`]).
+    /// ([`crate::p25::crypt::KeyCheck`]; Phase 2: at its first frame, as
+    /// half-rate voice has no tell to judge a key by).
     Decrypted,
     /// The key for this cipher decrypts the transmission to noise: not the
     /// right key. Its voice is left out.

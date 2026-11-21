@@ -1734,7 +1734,9 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
     // (In the config's own terms.)
     const band: Partial<Site> = b ?? {};
     const fields: Partial<Site> = { controlChannelsHz: sug.controlChannels, expect, voiceChannelsHz: sug.voiceChannels, enabled: true, ...band };
+    // (Only a system of the kind found takes it: the survey offers no other, and one that changed since gets a new system.)
     let sys = target === "new" ? undefined : c.systems[target.system];
+    if (sys?.type !== type) sys = undefined;
     let site: Site;
     if (!sys || target === "new") {
       sys = newSystem(c, { shortName: shortNameFor(c, expect, type === "smartnet"), type, ...fields });
@@ -1743,7 +1745,6 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
       withLicenses(sys, site, true);
     } else if (target.site !== "new" && sys.sites[target.site]) {
       // Replaced: its name and modulation stay.
-      sys.type = type;
       site = normalizeSite({ ...sys.sites[target.site], ...fields }, sys);
       sys.sites[target.site] = site;
       withLicenses(sys, site, false);

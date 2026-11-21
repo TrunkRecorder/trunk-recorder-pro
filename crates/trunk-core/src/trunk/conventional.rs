@@ -1378,7 +1378,13 @@ impl Conventional {
                 l.call.talkgroup_ota = air_tg;
                 if l.call.talkgroup != tg {
                     l.call.talkgroup = tg;
+                    l.call.encrypted |= info.as_ref().is_some_and(|t| t.encrypted_mode());
                     l.call.talkgroup_info = info;
+                    // Gated again as the talkgroup it turned out to be (as a trunked call
+                    // is when a patch names it): an ignored one stops being recorded, and
+                    // one skipped as unknown is recorded from here.
+                    l.call.reason = rules.calls.gate(&l.call, rules.policy());
+                    l.call.recording = l.call.reason.is_none();
                 }
                 out.push(ConvOut::Call(CallEvent::Update(l.call.clone())));
             }
@@ -1481,10 +1487,15 @@ impl Conventional {
         }
     }
 
-    /// The call's names: the row's, if it has any (filed under `tg`); else
+    /// The call's names: the row's, if it has any (filed under `tg`, over
+    /// the talkgroup file's row for it: [`Talkgroup::named_by_row`]); else
     /// the system's talkgroup file's for `tg`.
     fn names(row: &ConvChannel, tg: u32, talkgroups: &Talkgroups) -> Option<Talkgroup> {
-        row.info.clone().map(|t| Talkgroup { number: tg, ..t }).or_else(|| talkgroups.get(&tg).cloned())
+        let file = talkgroups.get(&tg);
+        match &row.info {
+            Some(r) => Some(Talkgroup::named_by_row(r, tg, file)),
+            None => file.cloned(),
+        }
     }
 
     /// Tone patterns call `l` heard by `now_s`, with who sent them.
@@ -2294,6 +2305,11 @@ mod tests {
     }
 
     fn p25_calls(txs: &[(f64, u16, u16)], rows: Vec<ConvChannel>, secs: f64) -> (Vec<(Call, String)>, Vec<String>) {
+        p25_calls_of(txs, rows, secs, Talkgroups::new())
+    }
+
+    /// [`p25_calls`], with the system's talkgroup file.
+    fn p25_calls_of(txs: &[(f64, u16, u16)], rows: Vec<ConvChannel>, secs: f64, talkgroups: Talkgroups) -> (Vec<(Call, String)>, Vec<String>) {
         use crate::p25::synth::{dibits, imbe, modulate, Tx};
         let (fs, center, freq) = (480_000.0, 155_000_000.0, 155_050_000.0);
         let mut x = 3u32;
@@ -2322,7 +2338,7 @@ mod tests {
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             conventional: rows.into_iter().map(|r| ConvChannel { freq_hz: freq, ..r }).collect(),
-            systems: vec![conv_system("conv")],
+            systems: vec![SystemConfig { talkgroups, ..conv_system("conv") }],
             ..Default::default()
         };
         let e = Engine::new(cfg).unwrap();
@@ -2376,6 +2392,20 @@ mod tests {
             [(45351, Some(1), "Townville PW".into()), (45353, Some(2), "Townville Parks".into()), (7, Some(7), "Townville (other)".into())]
         );
         assert_eq!(skipped, ["NAC 4F1 TG 1"]);
+    }
+
+    /// The talkgroup file's Ignore holds for a row with names of its own, and
+    /// for a talkgroup only the air names.
+    #[test]
+    fn an_ignored_talkgroup_is_not_recorded_whatever_names_it() {
+        let file = |tg: u32, ignore: bool| Talkgroups::from([(tg, Talkgroup { number: tg, alpha_tag: "File".into(), ignore, ..Default::default() })]);
+        let named = || vec![p25_row("", Some(46012), "Townville PD")];
+        let (calls, _) = p25_calls_of(&[(0.3, 0x293, 1)], named(), 3.0, file(46012, false));
+        assert_eq!(filed(&calls), [(46012, Some(1), "Townville PD".into())]);
+        let (calls, _) = p25_calls_of(&[(0.3, 0x293, 1)], named(), 3.0, file(46012, true));
+        assert_eq!(filed(&calls), []);
+        let (calls, _) = p25_calls_of(&[(0.3, 0x293, 1)], vec![p25_row("", None, "")], 3.0, file(1, true));
+        assert_eq!(filed(&calls), []);
     }
 
     #[test]

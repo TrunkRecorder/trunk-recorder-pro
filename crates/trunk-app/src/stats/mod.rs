@@ -125,10 +125,12 @@ impl NameBook {
     /// Talkgroup `tg` of `system`: named as its calls are — by a row, else
     /// by the system's talkgroups (whose Ignore flag it keeps either way).
     pub fn tg(&self, system: &str, tg: u32) -> Option<TgInfo> {
-        let file = tg_info(&self.talkgroups, system, tg);
         match self.rows.get(system).and_then(|r| r.get(&tg)) {
-            Some(row) => Some(TgInfo { alpha_tag: row.alpha_tag.clone(), ignore: file.is_some_and(|f| f.ignore) }),
-            None => file,
+            Some(row) => {
+                let t = trunk_core::trunk::Talkgroup::named_by_row(row, tg, self.talkgroups.get(system).and_then(|f| f.get(&tg)));
+                Some(TgInfo { alpha_tag: t.alpha_tag, ignore: t.ignore })
+            }
+            None => tg_info(&self.talkgroups, system, tg),
         }
     }
 

@@ -669,25 +669,31 @@ impl Shared {
     /// call's start or end, which a plugin is never left without.
     fn dispatch(&self, t: &str, l: &Arc<str>, about: &About, call: Option<&str>, life: Option<Life>) {
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(t)) {
-            if about.decrypted && !p.share_decrypted {
-                self.say_withheld(p);
-                continue;
-            }
-            if let Some(h) = self.hold.as_ref().filter(|h| !h.delay(&p.id, about).is_zero()) {
-                // Live media late isn't live: a delayed call's isn't streamed at all.
-                if topic::is_live(t) {
-                    if !p.audio_held_said.swap(true, Ordering::Relaxed) {
-                        self.note_log(&p.id, Level::Info, "isn't given the live audio or voice of calls it's delayed for");
-                    }
-                } else if life.is_some() {
-                    h.keep(&p.id, about, l, call);
-                } else if !h.push(&p.id, about, l, call) {
-                    self.dropped(p);
-                }
-                continue;
-            }
-            self.send(p, t, l, life);
+            self.offer(p, t, l, about, call, life);
         }
+    }
+
+    /// [`Self::dispatch`]'s rules for one plugin: the one way anything about a
+    /// system reaches a plugin.
+    fn offer(&self, p: &Plugin, t: &str, l: &Arc<str>, about: &About, call: Option<&str>, life: Option<Life>) {
+        if about.decrypted && !p.share_decrypted {
+            self.say_withheld(p);
+            return;
+        }
+        if let Some(h) = self.hold.as_ref().filter(|h| !h.delay(&p.id, about).is_zero()) {
+            // Live media late isn't live: a delayed call's isn't streamed at all.
+            if topic::is_live(t) {
+                if !p.audio_held_said.swap(true, Ordering::Relaxed) {
+                    self.note_log(&p.id, Level::Info, "isn't given the live audio or voice of calls it's delayed for");
+                }
+            } else if life.is_some() {
+                h.keep(&p.id, about, l, call);
+            } else if !h.push(&p.id, about, l, call) {
+                self.dropped(p);
+            }
+            return;
+        }
+        self.send(p, t, l, life);
     }
 
     /// Give `l` to `p` now. What's owed comes after what's queued, so a
@@ -743,16 +749,17 @@ impl Shared {
     }
 
     /// A line TRP logged: to each plugin taking `log`, but not its own notes.
+    /// One about a system, or a call of it, is delayed as that system's (that
+    /// talkgroup's) calls are for the plugin.
     fn log_line(&self, t: &crate::logging::Tapped) {
         let m = HostMessage::Log(LogLine { time: t.time, level: t.level.as_str().into(), system: t.system.unwrap_or_default().into(), text: t.text.into(), line: t.line.into() });
         let l = line(&m);
+        let about = About { system: t.system.unwrap_or_default().into(), talkgroup: t.talkgroup, decrypted: false };
         for p in self.plugins.iter().filter(|p| p.manifest.subscribes(topic::LOG)) {
             if t.plugin == Some(p.id.as_str()) {
                 continue;
             }
-            if self.give(p, &l) == Offer::Full {
-                self.dropped(p);
-            }
+            self.offer(p, topic::LOG, &l, &about, None, None);
         }
     }
 
@@ -1303,8 +1310,14 @@ mod tests {
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
         let spec = Spec { id: "logger".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false };
-        let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, super::super::notes_to_log());
+        let hold = Hold::new(Arc::default());
+        let cfg = serde_json::json!({ "systems": [{ "shortName": "held", "pluginDelays": [{ "delayS": 3600 }] }] });
+        hold.set_delays(super::super::delay::Delays::of(&serde_json::from_value(cfg).unwrap()));
+        let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &[], &dir, super::super::notes_to_log(), Arc::new(AtomicBool::new(true)), Some(hold.clone()), None, None);
+        hold.attach(Some(host.outlet()));
         crate::logging::text(trunk_app::log::Level::Warning, "info", "log-topic-test: TRP said");
+        // One about a system the plugin is delayed for waits as its calls do.
+        crate::logging::record(&trunk_app::log::Record::text(trunk_app::log::Level::Warning, Some("held"), "log-topic-test: of a delayed system"));
         crate::logging::plugin_note("logger", trunk_app::log::Level::Info, "log-topic-test: its own");
         let t0 = Instant::now();
         let lines = || std::fs::read_to_string(dir.join("data/lines.jsonl")).unwrap_or_default();
