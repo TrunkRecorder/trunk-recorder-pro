@@ -10,6 +10,9 @@ macro_rules! choice {
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
         pub enum $name { $( $(#[$vm])* $v ),+ }
         impl $name {
+            /// Every one, in order.
+            pub const ALL: &'static [$name] = &[$( $name::$v ),+];
+
             /// As the config writes it.
             pub fn name(self) -> &'static str {
                 match self { $( $name::$v => choice!(@first $($lit)|+) ),+ }

@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
+import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, kindLabel, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -1960,7 +1960,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                 <span className="ob-row-main">
                   <b>{x.shortName}</b>
                   <span className="ob-quiet">
-                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : x.type === "nxdn" ? "NXDN" : "P25"}
+                    {kindLabel(x.type)}
                     {x.sites.length > 1 ? ` · ${x.sites.length} sites` : ""} · {x.sites.flatMap((y) => y.controlChannelsHz).map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
                   </span>
                 </span>

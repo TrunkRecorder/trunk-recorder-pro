@@ -6,7 +6,7 @@
 // would leave out.
 
 import { useEffect, useRef, useState } from "react";
-import { activeSites, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, resolvedCenters, siteNameOf, watchedChannels } from "./config.ts";
+import { activeSites, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, kindLabel, resolvedCenters, siteNameOf, watchedChannels } from "./config.ts";
 import { isRecording, profileSource, updateConfig, useApp } from "./controller.ts";
 import { decimal, type TextCodec } from "./fieldText.ts";
 import { Figs, Info } from "./charts.tsx";
@@ -26,7 +26,7 @@ function watched(c: Config): { hz: number; label: string }[] {
   for (const { sys, site } of activeSites(c)) {
     const name = siteNameOf(sys, site);
     for (const f of site.controlChannelsHz) out.push({ hz: f, label: `${name} control` });
-    for (const f of watchedChannels(sys, site)) out.push({ hz: f, label: `${name} ${sys.type === "dmr" ? "DMR" : "NXDN"}` });
+    for (const f of watchedChannels(sys, site)) out.push({ hz: f, label: `${name} ${kindLabel(sys.type)}` });
     for (const f of site.voiceChannelsHz) out.push({ hz: f, label: `${name} voice` });
   }
   for (const ch of enabledChannels(c)) out.push({ hz: ch.freqHz, label: ch.name || "conventional" });

@@ -15,7 +15,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Fig, Figs, Info } from "./charts.tsx";
-import { fccPrimary, newSiteName, normalizeSite, normalizeSystem, sameSystem, trpBase, type SystemInput } from "./config.ts";
+import { fccPrimary, kindLabel, newSiteName, normalizeSite, normalizeSystem, sameSystem, SYSTEM_KINDS, trpBase, type SystemInput } from "./config.ts";
 import { findOnAir, findPlaces, setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
 import { bundleSiteName, lookForBundle } from "./lookFor.ts";
 import { cleanShortName } from "./fieldText.ts";
@@ -291,7 +291,6 @@ export function DirectoryImport() {
 /** FCC licensees are in capitals: "DISTRICT OF COLUMBIA" → "District of Columbia". */
 const titleCase = (s: string) => (s !== s.toUpperCase() ? s : s.toLowerCase().replace(/\b([a-z])([a-z']*)/g, (w, a: string, r: string, i: number) => (i > 0 && ["of", "and", "the", "for", "in", "on", "at", "to"].includes(w) ? w : a.toUpperCase() + r)));
 const mhz = (hz: number) => (hz / 1e6).toFixed(5).replace(/0{1,2}$/, "");
-const TYPES: Record<string, string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS" };
 /** What a bundle's system is called: its name, else who holds its licenses. */
 export const nameOf = (b: Bundle) => b.system.name || (b.source.licensee ? titleCase(b.source.licensee) : "") || b.system.shortName || "a system";
 
@@ -367,7 +366,7 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
             <Figs
               inline
               items={[
-                { k: "Type", v: fromFile ? "RadioReference sites" : (TYPES[b.system.type ?? ""] ?? b.system.type ?? "—") },
+                { k: "Type", v: fromFile ? "RadioReference sites" : (b.system.type ? kindLabel(b.system.type) : "—") },
                 { k: "Sites", v: b.system.sites.length },
                 !fromFile && { k: "Talkgroups", v: tgCount, title: "Named talkgroups" },
                 licenses > 0 && { k: "FCC licenses", v: licenses },
@@ -383,7 +382,7 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
             <label className="field">
               <span className="field-label">Kind of system</span>
               <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
-                {Object.entries(TYPES).map(([k, label]) => (
+                {Object.entries(SYSTEM_KINDS).map(([k, { label }]) => (
                   <option key={k} value={k}>
                     {label}
                   </option>

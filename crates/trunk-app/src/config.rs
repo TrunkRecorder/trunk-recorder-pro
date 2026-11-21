@@ -768,6 +768,35 @@ choice! {
     }
 }
 
+/// What a kind of system is, beside its name: one table, which the
+/// interface's `web/src/systemKinds.gen.ts` is written from (the test
+/// `the_webs_system_kinds_are_these` keeps it so).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KindInfo {
+    /// As people write it ("SmartNet").
+    pub label: &'static str,
+    /// Its sites are watched whole, every frequency at once (DMR, NXDN,
+    /// EDACS), not followed by one control channel.
+    pub watched: bool,
+    /// The site-lock fields its control channel states ([`SiteIdentity`]'s,
+    /// as the config writes them), which a site's `expect` is checked by. (NXDN
+    /// Type-D states none: [`System::site_lock_fields`].)
+    pub site_lock: &'static [&'static str],
+}
+
+impl SystemKind {
+    pub fn info(self) -> KindInfo {
+        match self {
+            SystemKind::P25 => KindInfo { label: "P25", watched: false, site_lock: &["nac", "wacn", "sysId", "rfss", "site"] },
+            SystemKind::Smartnet => KindInfo { label: "SmartNet", watched: false, site_lock: &["sysId", "site"] },
+            // (Sites told apart by colour code, which a site field of its own holds.)
+            SystemKind::Dmr => KindInfo { label: "DMR", watched: true, site_lock: &[] },
+            SystemKind::Nxdn => KindInfo { label: "NXDN", watched: true, site_lock: &["sysId", "site"] },
+            SystemKind::Edacs => KindInfo { label: "EDACS", watched: true, site_lock: &["site"] },
+        }
+    }
+}
+
 choice! {
     /// SmartNet: the voice of a talkgroup never heard granted.
     pub enum SmartnetMode {
@@ -900,6 +929,12 @@ impl System {
     }
     pub fn is_edacs(&self) -> bool {
         self.kind == SystemKind::Edacs
+    }
+
+    /// The site-lock fields its control channels state ([`KindInfo::site_lock`]):
+    /// its kind's, but none for NXDN Type-D (its repeaters are told apart by RAN).
+    pub fn site_lock_fields(&self) -> &'static [&'static str] {
+        if self.is_nxdn() && self.nxdn_type == NxdnType::TypeD { &[] } else { self.kind.info().site_lock }
     }
 
     /// Recording it: enabled, with a site that is.
@@ -2575,7 +2610,7 @@ impl Config {
         };
         let mut groups: Vec<Group> = self
             .active_sites()
-            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.is_dmr() || sys.is_nxdn() || sys.is_edacs(), &s.voice_channels_hz, &sys.receive_on))
+            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.kind.info().watched, &s.voice_channels_hz, &sys.receive_on))
             .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
             let rows: Vec<&Channel> = v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0).collect();
@@ -2760,7 +2795,7 @@ impl Config {
                     return Some(format!("{name}: {e}"));
                 }
             }
-            if sys.is_dmr() || sys.is_nxdn() || sys.is_edacs() {
+            if sys.kind.info().watched {
                 let out: Vec<String> = g.need_missed.iter().map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
                     let what = if sys.is_dmr() { "DMR" } else if sys.is_nxdn() { "NXDN" } else { "EDACS" };
@@ -3045,9 +3080,33 @@ pub fn talkgroups_path(dir: &Path, short_name: &str) -> PathBuf {
     dir.join(format!("{short_name}.talkgroups.csv"))
 }
 
+/// The interface's table of system kinds (`web/src/systemKinds.gen.ts`), from [`SystemKind::info`].
+#[cfg(test)]
+fn system_kinds_ts() -> String {
+    let mut ts = String::from("// Written from the recorder's table (trunk-app config.rs, SystemKind::info): don't edit.\n// `TRP_WRITE=1 cargo test -p trunk-app the_webs_system_kinds_are_these` writes it again.\n\n/** What each kind of system is, beside its name. */\nexport const SYSTEM_KINDS = {\n");
+    for k in SystemKind::ALL {
+        let i = k.info();
+        let lock: Vec<String> = i.site_lock.iter().map(|f| format!("\"{f}\"")).collect();
+        ts += &format!("  {}: {{ label: \"{}\", watched: {}, siteLock: [{}] }},\n", k.name(), i.label, i.watched, lock.join(", "));
+    }
+    ts += "} as const;\n\nexport type SystemKind = keyof typeof SYSTEM_KINDS;\n";
+    ts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The interface's table of system kinds is this one's (`TRP_WRITE=1` writes it).
+    #[test]
+    fn the_webs_system_kinds_are_these() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/systemKinds.gen.ts");
+        let ts = system_kinds_ts();
+        if std::env::var_os("TRP_WRITE").is_some() {
+            std::fs::write(&path, &ts).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), ts, "web/src/systemKinds.gen.ts is out of date: TRP_WRITE=1 cargo test -p trunk-app the_webs_system_kinds_are_these");
+    }
 
     /// Every system gets an id the first time a config is read or set, a
     /// second with the same id one of its own, and an id is never given

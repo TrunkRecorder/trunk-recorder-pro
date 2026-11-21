@@ -100,8 +100,8 @@ impl VoiceKind {
             VoiceKind::Nxdn(r) => r.cutoff_hz(),
             VoiceKind::Dmr => crate::dmr::CHANNEL_CUTOFF_HZ,
             VoiceKind::ProVoice => crate::edacs::CHANNEL_CUTOFF_HZ,
-            // (P25 Phase 1 and 2, and SmartNet's analog FM.)
-            _ => 7000.0,
+            // (P25 Phase 1 and 2, and SmartNet's analog FM; AM and auto aren't trunked voice.)
+            VoiceKind::Fdma | VoiceKind::Tdma | VoiceKind::Analog | VoiceKind::Am | VoiceKind::Auto => 7000.0,
         }
     }
 
