@@ -131,6 +131,9 @@ pub fn voice_chunk(short_name: &str, unit_name: &str, a: &LiveAudio) -> Option<t
 /// Recorder's folders are in local time, which only the platform knows.
 pub type LocalOffset = fn(i64) -> i32;
 
+/// What sees each of the engine's events as a session handles it ([`Session::watch`]).
+pub type EventWatch = Box<dyn FnMut(&Event, &Engine) + Send>;
+
 /// A source's counts this run ([`Session::source_counts`]).
 #[derive(Clone, Debug, Default)]
 pub struct SourceCounts {
@@ -413,7 +416,7 @@ pub struct Session {
     /// This install's anonymous ID for the directory (the platform keeps it); empty: nothing is shared.
     recorder_id: String,
     /// Given each of the engine's events before the session handles it (`replay` prints them).
-    pub watch: Option<Box<dyn FnMut(&Event, &Engine) + Send>>,
+    pub watch: Option<EventWatch>,
 }
 
 impl Session {
