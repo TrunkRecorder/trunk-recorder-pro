@@ -412,6 +412,8 @@ pub struct Session {
     share: crate::share::Ledger,
     /// This install's anonymous ID for the directory (the platform keeps it); empty: nothing is shared.
     recorder_id: String,
+    /// Given each of the engine's events before the session handles it (`replay` prints them).
+    pub watch: Option<Box<dyn FnMut(&Event, &Engine) + Send>>,
 }
 
 impl Session {
@@ -482,6 +484,7 @@ impl Session {
             call_signs: Default::default(),
             share: Default::default(),
             recorder_id: String::new(),
+            watch: None,
         };
         session.share = crate::share::Ledger::new(session.cfg.systems.iter());
         Ok(session)
@@ -1212,6 +1215,9 @@ impl Session {
     }
 
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
+        if let Some(w) = self.watch.as_mut() {
+            w(&ev, &self.engine);
+        }
         if let Some(sys) = self.event_system(&ev) {
             let name = self.system_name(sys).to_string();
             self.meas.observe(&ev, self.system_id(sys), &name, &self.engine, out);

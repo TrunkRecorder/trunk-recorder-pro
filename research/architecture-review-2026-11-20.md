@@ -125,14 +125,14 @@ repeating problems:
 
 ### Config changes and lifecycle
 
-- [ ] **V** Two config-change pipelines: SetConfig applies logging, unlock,
+- [x] **V** (fixed on `review-step2`: `server::apply_config`, interfaces served from one notified task) Two config-change pipelines: SetConfig applies logging, unlock,
   share, live sources, interfaces and plugins inline; `edit_config` applies
   only save, delays and plugins. `trunk-pro/src/server.rs:895-954` vs
   `:812-826`. Fix: one `Ctx::apply_config(old, new)`.
-- [ ] **V** Start clones the config before waiting on the lifecycle lock, so
+- [x] **V** (fixed on `review-step2`: Start reads the config once the run before has stopped) Start clones the config before waiting on the lifecycle lock, so
   an edit made during the stop is neither run nor flagged.
   `server.rs:1067-1070`, `runtime.rs:274`.
-- [ ] **V** Replay replaces the CLI's config with the capture's and never sets
+- [x] **V** (fixed on `review-step2`: replay sets the keys on every system, its capture's too) Replay replaces the CLI's config with the capture's and never sets
   keys, so `--keys` is ignored. `trunk-pro/src/main.rs:545-549`.
 
 ### Web
@@ -172,7 +172,7 @@ repeating problems:
 - [ ] **R** Conventional writes voice output, end of copy, gating and naming
   again beside the trunked path, and never passes `VoiceParams` to decoders
   (`conventional.rs:1144`).
-- [ ] **R** `replay` is a second engine host that bypasses Session
+- [x] **R** (fixed on `review-step2`: replay is a Session over file sources, its config the capture's or one made from the flags; same call files byte for byte on the regress captures, ~2.5% more instructions, the session's own work) `replay` is a second engine host that bypasses Session
   (`main.rs:397-739`); regress, the CPU gate and the corpus all test it, not
   the path production runs. Make replay a headless Session over file sources.
 - [ ] **R** Plugin `CallInfo` and browser `call_view` are two hand-built

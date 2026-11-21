@@ -1361,6 +1361,27 @@ pub fn keep_p25_numbers(channels: &mut [Channel]) -> usize {
 }
 
 impl Channel {
+    /// A row on `freq_hz` in `mode`, recording anything it hears, named nothing.
+    pub fn new(freq_hz: f64, mode: ConvMode) -> Channel {
+        Channel {
+            freq_hz,
+            mode,
+            name: String::new(),
+            talkgroup: None,
+            code: String::new(),
+            slot: None,
+            match_talkgroup: None,
+            description: String::new(),
+            tag: String::new(),
+            group: String::new(),
+            squelch_db: None,
+            bandwidth_khz: None,
+            enabled: true,
+            receive_on: Vec::new(),
+            auto_tune: false,
+        }
+    }
+
     /// What it records (code, slot and talkgroup), read for its mode.
     pub fn parsed_access(&self) -> Result<Option<Access>, String> {
         Access::join(self.mode, &self.code, self.slot, self.match_talkgroup)
