@@ -445,6 +445,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         recent: Mutex::new(Default::default()),
         db,
         quit: tokio::sync::Notify::new(),
+        interfaces_due: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         tune: Default::default(),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),

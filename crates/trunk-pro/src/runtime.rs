@@ -119,6 +119,8 @@ pub struct Ctx {
     pub db: crate::db::Db,
     /// Signalled by a browser's `quit`.
     pub quit: tokio::sync::Notify,
+    /// The interfaces the config serves changed: the server serves them so ([`crate::interfaces::serve::reconcile`]).
+    pub interfaces_due: tokio::sync::Notify,
     /// The survey's latest snapshot, for browsers that connect meanwhile.
     pub survey_last: Mutex<Option<ToClient>>,
     pub plugins: plugins::manage::Plugins,
@@ -268,10 +270,10 @@ impl Ctx {
         publish(&self.hub, p.message());
     }
 
-    /// Start recording with `cfg`, in place of whatever the radios were
+    /// Start recording with the config, in place of whatever the radios were
     /// doing (nothing once quitting). The engine thread reports the phase.
     /// A survey goes on only on a spare radio the new config doesn't use.
-    pub fn begin_recording(self: &Arc<Self>, cfg: Config) -> Result<(), String> {
+    pub fn begin_recording(self: &Arc<Self>) -> Result<(), String> {
         let mut l = self.lifecycle.lock().unwrap();
         if l.quitting {
             return Ok(());
@@ -279,6 +281,8 @@ impl Ctx {
         if let Some(r) = l.recording.take() {
             r.stop();
         }
+        // (Taken once the run before has stopped: an edit made meanwhile is the one run.)
+        let cfg = self.config.lock().unwrap().clone();
         if l.survey.as_ref().is_some_and(|s| s.uses_any(&cfg.sources)) {
             self.end_survey(&mut l);
         }
@@ -445,6 +449,11 @@ impl Ctx {
     /// either list has it, and is held against what it runs with: a gain it
     /// can take live ([`live_gain`]) is set, and the run then has it.
     pub fn live_sources(&self, old: &Config, now: &Config) -> Vec<(usize, Option<Gain>)> {
+        // (No radio changed: nothing to take, and no lock taken. The engine thread edits the config
+        // too, a call sign heard, and Stop waits for it with the lifecycle held.)
+        if (0..now.sources.len()).all(|i| now.same_radio(i, &old.sources).is_some_and(|j| old.sources[j].radio() == now.sources[i].radio())) {
+            return vec![];
+        }
         let l = self.lifecycle.lock().unwrap();
         let Some(r) = l.recording.as_ref().filter(|r| !r.finished()) else { return vec![] };
         let mut run = self.run.lock().unwrap();
@@ -458,6 +467,10 @@ impl Ctx {
                 out.push((i, None));
                 continue;
             };
+            // (The run has it already: a gain the tuner kept.)
+            if run.sources[k].radio() == s.radio() {
+                continue;
+            }
             let gain = live_gain(&run.sources[k], s).zip(r.controls.get(k)).map(|(g, c)| {
                 *c.gain.lock().unwrap() = Some(g);
                 run.sources[k] = s.clone();

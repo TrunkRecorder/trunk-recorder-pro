@@ -70,7 +70,14 @@ pub async fn serve(ctx: Arc<Ctx>, listener: std::net::TcpListener) -> std::io::R
         .layer(Extension(Door::Builtin))
         .layer(middleware::from_fn_with_state((ctx.clone(), loopback), guard))
         .with_state(ctx.clone());
-    tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
+    // The interfaces the config serves: now, and each time they change.
+    let ctx3 = ctx.clone();
+    tokio::spawn(async move {
+        loop {
+            crate::interfaces::serve::reconcile(ctx3.clone()).await;
+            ctx3.interfaces_due.notified().await;
+        }
+    });
     #[cfg(unix)]
     tokio::spawn(reopen_log_on_hangup());
     let ctx2 = ctx.clone();
@@ -820,8 +827,9 @@ async fn session(ctx: Arc<Ctx>, mut socket: WebSocket, door: Door) {
     }
 }
 
-/// Change the config on the recorder's side (a plugin added or removed):
-/// saved, sent to every browser, and the plugins restarted if it changes them.
+/// Change the config on the recorder's side (a plugin added or removed, a
+/// call sign heard, a gain tuned): saved, sent to every browser, and applied
+/// as a browser's edit is ([`apply_config`]).
 pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config)) -> Result<(), String> {
     let mut cfg = ctx.config.lock().unwrap();
     let old = cfg.clone();
@@ -833,9 +841,48 @@ pub(crate) fn edit_config(ctx: &Ctx, f: impl FnOnce(&mut crate::config::Config))
     ctx.config_changed(&cfg);
     let c = cfg.clone();
     drop(cfg);
-    ctx.plugins.set_delays(&c);
-    ctx.plugins.apply(&old, &c);
+    apply_config(ctx, &old, &c);
     Ok(())
+}
+
+/// The config, saved and told ([`Ctx::config_changed`]), went from `old` to
+/// `new`: what takes it at once does. The one way a change is applied,
+/// whoever made it (a browser's `setConfig`, the recorder's own [`edit_config`]).
+/// Blocks (plugins may restart): not from async code.
+pub(crate) fn apply_config(ctx: &Ctx, old: &crate::config::Config, new: &crate::config::Config) {
+    if old.log != new.log {
+        crate::logging::configure(&new.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
+    }
+    if old.keys != new.keys || old.systems != new.systems || old.conventional != new.conventional {
+        crate::unlock::config_changed(ctx, new);
+    }
+    // Their delays apply at once, to what's waiting too (no restart).
+    ctx.plugins.set_delays(new);
+    // Sharing switched on or off (or what it uses changed, like licenses): at once too.
+    for sys in &new.systems {
+        if old.systems.iter().find(|o| o.id == sys.id) != Some(sys) {
+            ctx.tell_engine(crate::runtime::EngineCmd::ShareSystem(sys.clone()));
+        }
+    }
+    // A radio's gain changed while recording: it takes it now (the ones that can), the
+    // rest at the next start, which the log says; the banner says whether a restart waits.
+    for (i, g) in ctx.live_sources(old, new) {
+        // A radio whose gain is being tuned: the edit wins.
+        ctx.tune.edited(&new.sources[i]);
+        if let Some(g) = g {
+            log::info!("{}: gain changed while recording, applied now: {g}", new.sources[i].title(i));
+        } else {
+            log::info!("{}: changed while recording; the change applies when recording starts next (Stop, then Start)", new.sources[i].title(i));
+        }
+    }
+    ctx.restart_check(new);
+    // Interfaces turned on or off, moved, added: served so at once.
+    if old.server.interfaces != new.server.interfaces {
+        ctx.interfaces_due.notify_one();
+    }
+    // Plugins' settings changed while recording: sent to those that take them as
+    // they run, else they restart with them.
+    ctx.plugins.apply(old, new);
 }
 
 fn void<T>(_: T) {}
@@ -927,40 +974,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                     let old = std::mem::replace(&mut *cur, c.clone());
                     (old, saved, ctx.config_changed(&cur))
                 };
-                if old.log != c.log {
-                    crate::logging::configure(&c.log, ctx.config_path.parent().unwrap_or(std::path::Path::new(".")));
-                }
-                if old.keys != c.keys || old.systems != c.systems || old.conventional != c.conventional {
-                    crate::unlock::config_changed(ctx, &c);
-                }
-                // Their delays apply at once, to what's waiting too (no restart).
-                ctx.plugins.set_delays(&c);
-                // Sharing switched on or off (or what it uses changed, like licenses): at once too.
-                for sys in &c.systems {
-                    if old.systems.iter().find(|o| o.short_name == sys.short_name) != Some(sys) {
-                        ctx.tell_engine(crate::runtime::EngineCmd::ShareSystem(sys.clone()));
-                    }
-                }
-                // A radio's gain changed while recording: it takes it now (the ones that can), the
-                // rest at the next start, which the log says; the banner says whether a restart waits.
-                for (i, g) in ctx.live_sources(&old, &c) {
-                    // A radio whose gain is being tuned: the edit wins.
-                    ctx.tune.edited(&c.sources[i]);
-                    if let Some(g) = g {
-                        log::info!("{}: gain changed while recording, applied now: {g}", c.sources[i].title(i));
-                    } else {
-                        log::info!("{}: changed while recording; the change applies when recording starts next (Stop, then Start)", c.sources[i].title(i));
-                    }
-                }
-                ctx.restart_check(&c);
-                // Interfaces turned on or off, moved, added: served so at once.
-                if old.server.interfaces != c.server.interfaces {
-                    tokio::spawn(crate::interfaces::serve::reconcile(ctx.clone()));
-                }
-                // Plugins' settings changed while recording: sent to those that take them as
-                // they run, else they restart with them.
                 let ctx2 = ctx.clone();
-                let _ = tokio::task::spawn_blocking(move || ctx2.plugins.apply(&old, &c)).await;
+                let _ = tokio::task::spawn_blocking(move || apply_config(&ctx2, &old, &c)).await;
                 Some(ToClient::ConfigSaved { version: now, error: saved.err().map(|e| format!("Couldn't save the config: {e}")) })
             }
             Err(e) => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: Some(format!("Bad config: {e}")) }),
@@ -1078,9 +1093,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             failed(r)
         }
         Command::Start => {
-            let cfg = ctx.config.lock().unwrap().clone();
             let ctx2 = ctx.clone();
-            tokio::task::spawn_blocking(move || ctx2.begin_recording(cfg)).await.ok().and_then(Result::err).map(ToClient::error)
+            tokio::task::spawn_blocking(move || ctx2.begin_recording()).await.ok().and_then(Result::err).map(ToClient::error)
         }
         Command::Stop => {
             let ctx2 = ctx.clone();
@@ -1360,6 +1374,20 @@ mod tests {
         let caps = capabilities(&off).await;
         assert!(!caps.contains(&Capability::Calls) && !caps.contains(&Capability::History), "{caps:?}");
         assert_eq!(caps.len(), Capability::ALL.len() - 2);
+    }
+
+    /// A change the recorder makes itself is applied as a browser's is: a
+    /// system's sharing switched on reaches the recording at once.
+    #[test]
+    fn the_recorders_own_edit_is_applied_as_a_browsers() {
+        let dir = crate::db::TestDir::new("own-edit");
+        let ctx = crate::runtime::test_ctx(&dir);
+        let (tx, rx) = std::sync::mpsc::channel();
+        *ctx.engine.lock().unwrap() = Some(tx);
+        super::edit_config(&ctx, |c| c.systems[0].share = true).unwrap();
+        assert!(rx.try_iter().any(|m| matches!(m, crate::runtime::EngineCmd::ShareSystem(s) if s.share)), "told the recording");
+        super::edit_config(&ctx, |c| c.systems[0].share = true).unwrap();
+        assert!(rx.try_recv().is_err(), "nothing changed, nothing told");
     }
 
     /// An edit of the config as it was before someone else's change is

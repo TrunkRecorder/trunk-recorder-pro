@@ -1050,6 +1050,7 @@ fn serve(a: &Args) {
         recent: Mutex::new(std::collections::VecDeque::new()),
         db,
         quit: tokio::sync::Notify::new(),
+        interfaces_due: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         tune: Default::default(),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
@@ -1096,8 +1097,7 @@ fn serve(a: &Args) {
     }
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
     if auto {
-        let cfg = ctx.config.lock().unwrap().clone();
-        if let Err(e) = ctx.begin_recording(cfg) {
+        if let Err(e) = ctx.begin_recording() {
             log::error!("Not started: {e}");
         }
     }
