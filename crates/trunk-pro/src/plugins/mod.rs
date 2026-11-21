@@ -12,10 +12,13 @@
 //! }
 //! ```
 //!
-//! A system can override some of a plugin's settings for itself (another
-//! server for it, say): `"openmhz": { "apiKey": "…", "override": { "server": "…" } }`.
-//! The plugin is told of each system's settings, the plugin's with its
-//! overrides, along with its own ([`host`] does the merging).
+//! A system can set again those of a plugin's settings the plugin offers
+//! (`system_overrides` in its manifest; another server for it, say):
+//! `"openmhz": { "apiKey": "…", "override": { "server": "…" } }`. The plugin
+//! is told of each system's settings, the plugin's with what it set again,
+//! along with its own ([`host`] does the merging). A plugin can be off for a
+//! system (`systemsOff`): nothing about it reaches the plugin ([`host`]'s
+//! one rule for that, `may_take`).
 //!
 //! A system can have several copies of a plugin (a list of settings in place
 //! of one, `"openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }]`, to upload it

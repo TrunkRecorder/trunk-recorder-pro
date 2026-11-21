@@ -69,9 +69,9 @@ The lifecycle, as the recorder (the "host") sees it:
 2. **Start.** When recording starts, the recorder runs the executable with no arguments, in its
    data folder (`plugin-data/<id>/`) as its working folder (in a process group of its own on Linux
    and macOS), and writes `hello`: the
-   plugin's settings, every system (short name, kind, the plugin's settings for it, and, when
-   the system overrides some of the plugin's own settings, those settings as they are for it:
-   `settings`), the recordings folder, the data folder, and the audio formats calls will carry.
+   plugin's settings, every system it's on for (short name, kind, the plugin's settings for it,
+   and, when the system sets again some of the plugin's own settings that it offers, those settings
+   as they are for it: `settings`), the recordings folder, the data folder, and the audio formats calls will carry.
 3. **Ready.** The plugin answers `ready` once its settings are good. If they aren't, it sends an
    error `status` saying what to fix and exits with status **78**: the recorder shows the message
    and doesn't restart it until its settings change or recording starts again.
@@ -110,7 +110,8 @@ the name of the site they were heard on (a system of one site: its short name), 
 entry per site, with its `site_name`. A call heard on several sites of a system is one call: one
 `call.start` when its first copy begins and one `call.end` when its last copy ends, under the first copy's `id`. Its `site` and
 `freq_hz` are those of the copy speaking for it (one being recorded, if any is), and a `call.update` says when that changes.
-`call.concluded` is for the copy kept, and it and live audio carry that site's own call id. A plugin too far behind can lose
+`call.concluded` is for the copy kept, and it and live audio carry that site's own call id; its record's `sites`
+names every site the call was recorded on, the kept copy's first (to send a call where any of them goes, say). A plugin too far behind can lose
 other events, but not a call's start or end.
 
 ### Series
@@ -259,11 +260,29 @@ a queue of its own, don't), and the smaller ones are short enough to read in one
 
 ### Settings for each system
 
-A system can override any of your recorder-wide settings (`Config`) for itself, such as sending its
-calls to another server. Read them for a system from `System::settings`, which is your `Config` with
-that system's overrides applied, and use `Setup::config` only for what isn't any one system's. An
-uploader that builds one client per server and starts its `CallQueue` with `start_by`, keyed by
-server, handles it all.
+A system can set again those of your recorder-wide settings (`Config`) you name in the manifest's
+`system_overrides`, such as the server its calls go to. Name only the ones you read per system: a
+system's card in Setup offers those and no others, and the recorder ignores any other it finds (with
+a warning in your log, and **Remove** on your card in Setup). None is the default: every system then
+has your settings as they are.
+
+```rust
+fn manifest() -> Manifest {
+    Manifest { system_overrides: vec!["server".into()], ..trunk_recorder_plugin::manifest!() }
+}
+```
+
+Read those for a system from `System::settings`, which is your `Config` with what that system set
+again, and the rest from `Setup::config`. An uploader that builds one client per server and starts
+its `CallQueue` with `start_by`, keyed by server, handles it all. (Since SDK 0.13.0.)
+
+### Systems a plugin is off for
+
+The user can turn your plugin off for a system, in Setup → Plugins, when every topic you take is one
+system's (`Manifest::per_system`: all but `totals`). Then nothing about that system reaches you:
+it isn't in `hello`, its events and live media aren't sent, `status` leaves it out, `log` lines
+about it aren't sent (lines about no one system still are), and `calls.query` doesn't find its
+calls. Nothing to do in the plugin; just don't count on hearing of every system.
 
 ### Settings and the form
 
@@ -286,7 +305,7 @@ The form understands:
 | `"x-system": true` on a string | A menu of the recorder's systems; follows renames |
 | `"x-required": true` | Must be filled in; until it is, the plugin (or that system) shows as not set up. Mark it with `#[schemars(extend("x-required" = true))]` |
 | array whose items are an `enum` | The choices, to tick |
-| `"x-systems": true` on an array of strings | The recorder's systems, to tick |
+| `"x-systems": true` on an array of strings | The recorder's systems, to tick; follows renames |
 | `"x-talkgroups": true` on an array of strings | Talkgroups, typed as everywhere in the app (spaces, commas or semicolons between; `1000 - 1099` one range), and each checked. `Talkgroups` sets it |
 | `"x-signals": true` on an array of strings | Every system's [signals](../guides/signals.md), to tick, as `system:ID` |
 | `"x-ref": "<list>"` | Items of the top-level array `<list>` (by their `id`, else their `name`): a menu on a string, items to tick on an array. Renaming an item renames what names it |

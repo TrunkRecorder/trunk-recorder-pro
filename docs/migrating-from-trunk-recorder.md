@@ -197,7 +197,8 @@ Trunked systems need none: calls start from the control channel's grants. See th
 In Trunk Recorder each site is a system of its own, joined by `multiSite`. Here one system (one short
 name, folder and talkgroup file) lists its sites, each a control channel to follow. A call heard on
 several of them is saved once, keeping the best copy rather than the first. The call JSON's
-`short_name` is the system, and `site` the site its copy was kept from.
+`short_name` is the system, `site` the site its copy was kept from, and `sites` every site it was
+recorded on.
 
 ### No recorder counts
 

@@ -2152,7 +2152,7 @@ impl Core {
                         if tune_ref {
                             self.radio.score_call(on.source, &call, rec.freq_error_hz());
                         }
-                        self.write_call(Held { call: call.clone(), rec, on }, None, None);
+                        self.write_call(Held { call: call.clone(), rec, on }, None, None, &[]);
                     }
                     let (_, told) = self.multisite.conclude(&call, None, |_| false);
                     self.events.push(Event::CopyEnd(call));
@@ -2452,13 +2452,15 @@ impl Core {
         // Best first, each saved unless one saved holds it (Kept::holds); those are its duplicates.
         // (None kept: each was reported not saved.) The copies share the first's start, in their transmission_id.
         let first_s = copies.iter().map(|h| h.call.start_s).fold(f64::INFINITY, f64::min);
+        // The sites it was recorded on: each saved call of it says them all.
+        let sites: Vec<u16> = copies.iter().filter_map(|h| h.call.site).collect();
         let mut kept: Vec<Kept> = Vec::new();
         for h in copies {
             match kept.iter().find(|k| k.holds(&h)) {
                 Some(k) => self.events.push(Event::Duplicate { call: h.call, kept: k.call.clone() }),
                 None => {
                     let k = Kept::of(&h);
-                    if self.write_call(h, Some(first_s), Some(call_num)) {
+                    if self.write_call(h, Some(first_s), Some(call_num), &sites) {
                         kept.push(k);
                     }
                 }
@@ -2469,11 +2471,21 @@ impl Core {
 
     /// A finished call's record and audio, as [`Event::Concluded`]; false
     /// when not kept (silent, or shorter than its system's minimum).
-    /// `first_s`: when the first of its copies began, `call_num`: its call's id (multi-site).
-    fn write_call(&mut self, h: Held, first_s: Option<f64>, call_num: Option<CallId>) -> bool {
+    /// `first_s`: when the first of its copies began, `call_num`: its call's id (multi-site);
+    /// `sites`: the sites its copies were recorded on (its own among them).
+    fn write_call(&mut self, h: Held, first_s: Option<f64>, call_num: Option<CallId>, sites: &[u16]) -> bool {
         let (site, system) = (h.call.site, h.call.system);
         let Some(sys) = self.systems.get(system as usize) else { return false };
         let trunk = site.and_then(|s| self.trunks.get(s as usize));
+        // Its own first, then the others, each once.
+        let mut order: Vec<u16> = site.into_iter().collect();
+        order.extend(sites.iter().copied().filter(|s| Some(*s) != site));
+        let mut names: Vec<String> = Vec::new();
+        for n in order.iter().filter_map(|&s| self.trunks.get(s as usize)).map(|t| t.cfg.name.clone()) {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
         // One epoch for all of a call's times (and its copies'): the one it began under.
         let epoch_ms = self.wall.at(first_s.unwrap_or(h.call.start_s));
         let saved = save_call(
@@ -2484,6 +2496,7 @@ impl Core {
                 short_name: &sys.cfg.short_name,
                 system_type: trunk.map_or("conventional", |t| t.cfg.protocol.kind()),
                 site: trunk.map_or("", |t| &t.cfg.name),
+                sites: &names,
                 epoch_ms_at_zero: epoch_ms,
                 units: Some(&sys.aliases),
                 unit_tags: Some(&sys.cfg.unit_tags).filter(|t| !t.is_empty() || t.mode != Default::default()),
@@ -3635,6 +3648,11 @@ mod tests {
         let (ev, [east, west, far]) = two_sites(80, "", true);
         assert_eq!(saved(&ev), [far, west], "west decoded more; far is another system");
         assert!(ev.iter().any(|x| matches!(x, Event::Duplicate { call, kept } if call.id == east && kept.id == west)));
+        // It says every site it was recorded on, the kept one first; far's, its own.
+        let sites = |id: CallId| ev.iter().find_map(|x| match x { Event::Concluded(k) if k.call.id == id => Some((k.record.site.clone(), k.record.sites.clone())), _ => None }).unwrap();
+        let (site, all) = sites(west);
+        assert_eq!((all.len(), &all[0]), (2, &site), "{all:?}");
+        assert_eq!(sites(far).1, [sites(far).0]);
         // The talkgroup prefers east, and east has 90 % of west's clean audio.
         let (ev, [east, _, far]) = two_sites(95, "EAST", true);
         assert_eq!(saved(&ev), [far, east]);

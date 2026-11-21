@@ -13,6 +13,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import {
   addPlugin,
   addSystemPluginCopy,
+  dropIgnoredOverrides,
   installFromGitHub,
   installFromStore,
   pluginAction,
@@ -23,6 +24,7 @@ import {
   setPluginEnabled,
   setPluginSettings,
   setPluginShareDecrypted,
+  setPluginSystemOn,
   setSystemPluginOverride,
   setSystemPluginSettings,
   settingsOpened,
@@ -45,8 +47,8 @@ import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { Card, Fig } from "./charts.tsx";
 import { ToneList } from "./ToneList.tsx";
 import { openTodos } from "./todo.ts";
-import { copyOverride, copyOwn, pluginCopies } from "./protocol.ts";
-import { fieldsOf } from "./pluginSettings.ts";
+import { copyOwn, pluginCopies } from "./protocol.ts";
+import { fieldsOf, ignoredOf, offFor, overridable, overridableSchema, overrideOf } from "./pluginSettings.ts";
 import { applies, fillTemplate, followRenames, mentions, refOptions, summarize, type KeyMemory } from "./pluginForm.ts";
 import { signalChoices, signalRef } from "./Signals.tsx";
 import type { Config, InstallProgress, PluginContribution, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList, SignalDef } from "./protocol.ts";
@@ -88,9 +90,9 @@ function systemSetUp(m: PluginManifest, values: PluginValues | undefined, inheri
   return fieldsOf(m.system_config).some(([k]) => !emptyValue(values?.[k]) || !emptyValue(inherited?.[k]));
 }
 
-/** …and one copy of it: its own settings, and the plugin's with what it overrides. */
+/** …and one copy of it: its own settings, and the plugin's with what it sets again of them. */
 function copySetUp(m: PluginManifest, copy: PluginValues | undefined, every: PluginValues | undefined): boolean {
-  return systemSetUp(m, copyOwn(copy), every) && missing(m.config, copyOverride(copy), every).length === 0;
+  return systemSetUp(m, copyOwn(copy), every) && missing(m.config, overrideOf(m, copy), every).length === 0;
 }
 
 /** …and every copy of it, when it has several. */
@@ -99,13 +101,22 @@ function copiesSetUp(m: PluginManifest, copies: PluginValues[], every: PluginVal
 }
 
 /** The plugin's required settings left empty for the whole recorder that
- * some system it's set up for doesn't fill in either (with no system set up
- * for it: all of them). */
+ * some system it's on and set up for doesn't fill in either (with no system
+ * set up for it: all of them). */
 function pluginNeeds(m: PluginManifest, c: Config, id: string): string[] {
   const every = c.plugins?.[id]?.settings;
-  const copies = systemsOf(c).flatMap((x) => x.copies(id));
+  const copies = systemsOf(c)
+    .filter((x) => !offFor(c, id, x.id))
+    .flatMap((x) => x.copies(id));
   const unset = requiredOf(m.config).filter((k) => emptyValue(every?.[k]));
-  return copies.length ? unset.filter((k) => copies.some((v) => emptyValue(copyOverride(v)[k]))) : unset;
+  return copies.length ? unset.filter((k) => copies.some((v) => emptyValue(overrideOf(m, v)[k]))) : unset;
+}
+
+/** The systems that set again settings of plugin `id` it doesn't let them (ignored by the recorder), by short name. */
+function ignoringSystems(m: PluginManifest, c: Config, id: string): string[] {
+  return systemsOf(c)
+    .filter((x) => x.copies(id).some((v) => ignoredOf(m, v).length > 0))
+    .map((x) => x.name);
 }
 
 const labelOf = (schema: PluginSchema | undefined, k: string) => schema?.properties?.[k]?.title ?? spell(k);
@@ -125,14 +136,15 @@ function hasKeys(c: Config): boolean {
   return activeSystems(c).some((s) => !!s.keys?.trim()) || c.conventional.some((x) => x.enabled && !!x.keys?.trim());
 }
 
-function systemsOf(c: Config): { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] {
-  const out: { at: SystemRef; name: string; copies: (id: string) => PluginValues[] }[] = c.systems.map((x, i) => ({
+function systemsOf(c: Config): { at: SystemRef; id: number | undefined; name: string; copies: (id: string) => PluginValues[] }[] {
+  const out: { at: SystemRef; id: number | undefined; name: string; copies: (id: string) => PluginValues[] }[] = c.systems.map((x, i) => ({
     at: i,
+    id: x.id,
     name: x.shortName,
     copies: (id: string) => pluginCopies(x.plugins?.[id]),
   }));
   c.conventional.forEach((v, k) => {
-    if (v.channels.length) out.push({ at: { conv: k }, name: v.shortName, copies: (id) => pluginCopies(v.plugins?.[id]) });
+    if (v.channels.length) out.push({ at: { conv: k }, id: v.id, name: v.shortName, copies: (id) => pluginCopies(v.plugins?.[id]) });
   });
   return out;
 }
@@ -566,7 +578,10 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
   const c = s.config;
   if (!c || !s.plugins) return null;
   const sys = systemAt(c, props.system);
-  const plugins = s.plugins.plugins.filter((p) => pluginOn(c, p.id) && p.manifest && (hasFields(p.manifest.system_config) || hasFields(p.manifest.config)));
+  // (Off for this system, or with nothing for one system to set: not here.)
+  const plugins = s.plugins.plugins.filter(
+    (p) => pluginOn(c, p.id) && p.manifest && !offFor(c, p.id, sys?.id) && (hasFields(p.manifest.system_config) || overridable(p.manifest).length > 0),
+  );
   // A copy of its own makes sense for a plugin that's told which systems are its.
   const copyable = plugins.filter((p) => hasFields(p.manifest!.system_config));
   if (!sys || !sys.shortName || plugins.length === 0) return null;
@@ -582,7 +597,7 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
         const copies = pluginCopies(sys.plugins?.[p.id]);
         const idOf = (i: number) => `sp-${p.id}-${sys.shortName}${i ? `-${i + 1}` : ""}`;
         return (copies.length ? copies : [undefined]).map((values, i) => {
-          const over = copyOverride(values);
+          const over = overrideOf(m, values);
           const to = destinationOf(m, over);
           return (
             <fieldset className="plugin-group" key={`${p.id}-${i}`}>
@@ -607,7 +622,7 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
                   </Held>
                 </>
               )}
-              {hasFields(m.config) && (
+              {overridable(m).length > 0 && (
                 <Held id={`override:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={over} save={(v) => setSystemPluginOverride(props.system, p.id, v, i)} restarts>
                   {(o, change) => <PluginOverride m={m} over={o} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={change} />}
                 </Held>
@@ -641,13 +656,14 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
   );
 }
 
-/** A system's copy of a plugin: the plugin's own settings, to change for
- * this system alone. Those left empty are as for every system (shown as
- * the placeholder). */
+/** A system's copy of a plugin: those of the plugin's own settings it lets
+ * a system set again (`system_overrides`), to change for this system alone.
+ * Those left empty are as for every system (shown as the placeholder). */
 function PluginOverride(props: { m: PluginManifest; over: PluginValues; every: PluginValues | undefined; system: string; id: string; onChange: (v: PluginValues) => void }) {
   const { m, over, every } = props;
-  const changed = fieldsOf(m.config).filter(([k]) => !emptyValue(over[k]) || typeof over[k] === "boolean");
-  const [open, setOpen] = useState(changed.length > 0 || missing(m.config, over, every).length > 0);
+  const schema = overridableSchema(m);
+  const changed = fieldsOf(schema).filter(([k]) => !emptyValue(over[k]) || typeof over[k] === "boolean");
+  const [open, setOpen] = useState(changed.length > 0 || missing(schema, over, every).length > 0);
   return (
     <details className="plugin-override" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
       <summary>
@@ -658,7 +674,7 @@ function PluginOverride(props: { m: PluginManifest; over: PluginValues; every: P
         </span>
       </summary>
       <p className="field-hint">Empty: default</p>
-      <SchemaFields schema={m.config} values={over} inherited={every} onChange={props.onChange} id={props.id} />
+      <SchemaFields schema={schema} values={over} inherited={every} onChange={props.onChange} id={props.id} />
       {changed.length > 0 && (
         <button type="button" className="btn ghost small" onClick={() => props.onChange({})}>
           Reset to default
@@ -716,7 +732,8 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
   const settings = c.plugins?.[p.id]?.settings;
   const imported = openTodos(s).find((t) => t.target === `plugin-${p.id}`);
   const systems = systemsOf(c);
-  const perSystem = !!m && hasFields(m.system_config);
+  const ownSettings = !!m && hasFields(m.system_config);
+  const ignoring = m ? ignoringSystems(m, c, p.id) : [];
   return (
     <article className={`plugin-card${on ? "" : " off"}${imported ? " needs" : ""}`} aria-labelledby={`ps-${p.id}`} id={`need-plugin-${p.id}`}>
       {imported && <div className="field-needs">{imported.text}</div>}
@@ -737,7 +754,36 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
           </div>
         )
       )}
-      {m && perSystem && (
+      {m && on && p.perSystem && systems.length > 0 && (
+        <div className="plugin-systems small" role="group" aria-label={`Systems ${m.name} is on for`}>
+          <span className="muted">Systems</span>{" "}
+          {systems.map((x) => {
+            const off = offFor(c, p.id, x.id);
+            return (
+              <button
+                type="button"
+                key={x.name}
+                className={`chip tick${off ? "" : " on"}`}
+                aria-pressed={!off}
+                disabled={x.id === undefined}
+                title={x.id === undefined ? "Saved first" : off ? `Off for ${x.name}: nothing of it is sent` : `On for ${x.name}`}
+                onClick={() => setPluginSystemOn(p.id, x.id!, off)}
+              >
+                {x.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {m && ignoring.length > 0 && (
+        <div className="plugin-systems small" role="status">
+          <span className="warn-text">Ignored overrides</span> <span className="muted">{ignoring.join(", ")}</span>{" "}
+          <button type="button" className="btn ghost small" onClick={() => dropIgnoredOverrides(p.id, m.system_overrides ?? [])} title={`Settings these systems set again that ${m.name} doesn't let them`}>
+            Remove
+          </button>
+        </div>
+      )}
+      {m && ownSettings && (
         <div className="plugin-systems small">
           <span className="muted">For each system:</span>{" "}
           {systems.length === 0 ? (
@@ -745,7 +791,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
           ) : !on ? (
             <span className="muted">turn it on first.</span>
           ) : (
-            systems.map((x) => {
+            systems.filter((x) => !offFor(c, p.id, x.id)).map((x) => {
               const ok = copiesSetUp(m, x.copies(p.id), settings);
               return (
                 <button

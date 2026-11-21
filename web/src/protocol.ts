@@ -370,6 +370,8 @@ export interface PluginSetup {
   path?: string;
   /** Give it calls decrypted with the recorder's keys (their audio and files). Off: none are. */
   shareDecrypted?: boolean;
+  /** The systems (by `id`) it's turned off for: nothing about them is sent to it. Only for a plugin that can be (`PluginInfo.perSystem`). */
+  systemsOff?: number[];
 }
 
 /** The settings each system can set again for itself (crates/trunk-app/src/config.rs RecordingOverride). */
@@ -1048,6 +1050,8 @@ export interface CallRecord {
   short_name?: string;
   /** The site its copy was kept from (a system of one site: its short name). */
   site?: string;
+  /** Every site it was recorded on, `site` first. */
+  sites?: string[];
   talkgroup: number;
   /** Conventional P25 / DMR / NXDN: the talkgroup the air named (`talkgroup` is what the call is filed under, which a channel row may set to another number). */
   talkgroup_ota?: number;
@@ -1430,6 +1434,8 @@ export interface PluginManifest {
   audio_formats: string[];
   config?: PluginSchema;
   system_config?: PluginSchema;
+  /** Those of its settings (`config`'s top-level keys) a system may set again for itself; none: every system has the plugin's. */
+  system_overrides?: string[];
   homepage?: string;
   repository?: string;
   authors?: string[];
@@ -1528,6 +1534,8 @@ export interface PluginInfo {
   unlistedFrom?: string | null;
   /** Null when it can't be asked (see `problem`). */
   manifest: PluginManifest | null;
+  /** It can be turned off for a system: everything it takes is one system's (not `totals`). */
+  perSystem: boolean;
   problem: string | null;
   runtime: PluginRuntime;
 }

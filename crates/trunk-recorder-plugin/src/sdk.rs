@@ -17,10 +17,9 @@ use crate::schema;
 pub trait Plugin: Sized {
     /// The plugin's settings. `#[serde(default)]` on the struct lets a user
     /// leave any of them empty. The settings form is drawn from its schema
-    /// (see [`crate::schema`]). [`NoConfig`] for none. A system can override
-    /// any of them (another server for it, say): read them for a system from
-    /// [`System::settings`], and from [`Setup::config`] only for what isn't
-    /// any one system's.
+    /// (see [`crate::schema`]). [`NoConfig`] for none. A system can set
+    /// again those [`Manifest::system_overrides`] names (another server for
+    /// it, say): read those for a system from [`System::settings`].
     type Config: DeserializeOwned + JsonSchema;
     /// Settings for each system, when the plugin needs some (an API key per
     /// system, say). [`NoConfig`] for none.
@@ -83,9 +82,9 @@ pub use crate::schema::NoConfig;
 #[derive(Clone, Debug)]
 pub struct Setup<C, S> {
     /// The plugin's settings for the whole recorder (each system's, with
-    /// its overrides: [`System::settings`]).
+    /// what it sets again: [`System::settings`]).
     pub config: C,
-    /// Every system, with the plugin's settings for it.
+    /// Every system, with the plugin's settings for it (not those it's turned off for).
     pub systems: Vec<System<C, S>>,
     pub host: HostInfo,
     pub capture_dir: PathBuf,
@@ -132,7 +131,7 @@ pub struct System<C, S> {
     /// The plugin's settings for this system (`None`: left empty).
     pub config: Option<S>,
     /// The plugin's own settings ([`Setup::config`]) as they are for this
-    /// system, with any it overrides.
+    /// system, with those it sets again ([`Manifest::system_overrides`]).
     pub settings: C,
 }
 
