@@ -785,11 +785,13 @@ fn decode_config(cfg: &Config, written: &[Written]) -> Value {
     json!({ "sources": sources, "systems": systems, "conventional": conventional, "recording": keep(&cfg_json["recording"], RECORDING_KEYS) })
 }
 
-/// Of each system's talkgroups, what changes how calls are decoded or kept: no names.
-fn decode_talkgroups(names: &NameLists) -> Value {
-    let rows = names.iter().filter_map(|(system, n)| {
+/// Of each of `cfg`'s systems' talkgroups, what changes how calls are decoded or kept: no names.
+/// By short name: a capture's config numbers its systems afresh when it's read.
+fn decode_talkgroups(names: &NameLists, cfg: &Config) -> Value {
+    let rows = cfg.system_ids().filter_map(|(id, system)| {
+        let n = names.get(&id)?;
         let kept: Vec<Value> = n.talkgroups.iter().filter(|r| !matches!(r.tg.mode.as_str(), "" | "D") || r.tg.ignore).map(|r| json!({ "number": r.tg.number, "mode": r.tg.mode, "ignore": r.tg.ignore })).collect();
-        (!kept.is_empty()).then(|| (system.clone(), Value::Array(kept)))
+        (!kept.is_empty()).then(|| (system.to_string(), Value::Array(kept)))
     });
     Value::Object(rows.collect())
 }
@@ -890,7 +892,7 @@ fn save(ctx: &Ctx, cfg: &Config, dir: &Path, req: &Request, before: &(Live, f64)
     });
     let context = json!({
         "trp:config": decode_config(cfg, &written),
-        "trp:talkgroups": decode_talkgroups(&names),
+        "trp:talkgroups": decode_talkgroups(&names, cfg),
         "trp:bandplans": after.bandplans,
         "trp:live": live_summary(&from, &after.status, after_ms, start_ms),
         "trp:state": engine_state(&before.0.status, seconds_from(start_ms, before.1)),
@@ -1242,7 +1244,10 @@ pub fn open(path: &str) -> Result<Opened, String> {
     let mut names = NameLists::new();
     for (system, rows) in g["trp:talkgroups"].as_object().into_iter().flatten() {
         let talkgroups = serde_json::from_value(rows.clone()).map_err(|e| format!("{path}: its trp:talkgroups: {e}"))?;
-        names.insert(system.clone(), SystemNames { talkgroups, ..Default::default() });
+        // (Of the systems it was made with: without them, nothing takes them.)
+        if let Some(id) = config.as_ref().and_then(|c| c.id_of(system)) {
+            names.insert(id, SystemNames { talkgroups, ..Default::default() });
+        }
     }
     let bandplans = g["trp:bandplans"].as_array().into_iter().flatten().map(|b| b.as_str().unwrap_or("").to_string()).collect();
     let live = &g["trp:live"];
@@ -1306,8 +1311,10 @@ mod tests {
     fn talkgroups_keep_how_they_decode_and_no_names() {
         let mut names = NameLists::new();
         let row = |number, mode: &str, alpha: &str| trunk_core::trunk::TalkgroupRow { tg: trunk_core::trunk::Talkgroup { number, mode: mode.into(), alpha_tag: alpha.into(), ..Default::default() }, ..Default::default() };
-        names.insert("x".into(), SystemNames { talkgroups: vec![row(1, "D", "SECRET-A"), row(2, "A", "SECRET-B")], ..Default::default() });
-        let v = decode_talkgroups(&names);
+        let mut cfg = Config::default();
+        cfg.systems.push(crate::config::System { id: trunk_core::trunk::SystemId(4), short_name: "x".into(), ..Default::default() });
+        names.insert(trunk_core::trunk::SystemId(4), SystemNames { talkgroups: vec![row(1, "D", "SECRET-A"), row(2, "A", "SECRET-B")], ..Default::default() });
+        let v = decode_talkgroups(&names, &cfg);
         assert!(!v.to_string().contains("SECRET"));
         assert_eq!(v["x"].as_array().unwrap().len(), 1, "digital is the default: only the exception is kept");
         assert_eq!(v["x"][0]["number"], 2);

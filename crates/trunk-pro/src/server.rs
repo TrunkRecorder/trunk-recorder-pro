@@ -567,7 +567,7 @@ fn capabilities(ctx: &Ctx) -> Vec<trunk_app::protocol::Capability> {
 fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
     use crate::kept;
     let config = ctx.config.lock().unwrap().clone();
-    let mut m: Vec<ToClient> = config.systems.iter().map(|s| &s.short_name).chain(config.conventional.iter().map(|c| &c.short_name)).filter_map(|n| Some(ToClient::Units { system: n.clone(), csv: kept::read_units(&ctx.db, n)? })).collect();
+    let mut m: Vec<ToClient> = config.system_ids().filter_map(|(id, n)| Some(ToClient::Units { system: n.to_string(), csv: kept::read_units(&ctx.db, id)? })).collect();
     if ctx.heard_last.lock().unwrap().is_none() {
         let saved = kept::read(&ctx.db, trunk_app::saving::Kind::Heard, "").and_then(|t| serde_json::from_str::<Value>(&t).ok());
         m.push(ToClient::Heard { heard: saved.unwrap_or(json!({})) });
@@ -575,14 +575,27 @@ fn kept_now(ctx: &Ctx) -> Vec<ToClient> {
     m
 }
 
+/// A browser's whole list of the system named `system` ([`runtime::set_names`]).
+/// None for a name no system has is nothing to do: a browser clears the old
+/// name's list after a rename or a removal, and the names went with the id.
+fn set_list<R: runtime::NameList>(ctx: &Ctx, system: &str, rows: Vec<R>, from: Option<trunk_core::trunk::Origin>) -> Result<(), String> {
+    match runtime::system_named(ctx, system) {
+        Ok(id) => runtime::set_names(ctx, id, rows, from),
+        Err(_) if rows.is_empty() => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// The greeting's messages that need nothing found or listed: `devices` for
 /// control access only; `kept` from [`kept_now`].
 pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, history: ToClient, kept: Vec<ToClient>) -> Vec<ToClient> {
     let config = ctx.config.lock().unwrap().clone();
     let mut m = vec![ctx.phase.lock().unwrap().message(), ToClient::Config { config: Box::new(config.clone()), version: ctx.config_version.load(Ordering::SeqCst) }];
-    for (system, n) in ctx.names.lock().unwrap().iter() {
-        m.push(ToClient::Talkgroups { system: system.clone(), talkgroups: n.talkgroups.clone() });
-        m.push(ToClient::UnitNames { system: system.clone(), unit_names: n.unit_names.clone() });
+    for (id, n) in ctx.names.lock().unwrap().iter() {
+        // (A system gone from the config: its names are kept, not shown.)
+        let Some((_, system)) = config.system_ids().find(|(i, _)| i == id) else { continue };
+        m.push(ToClient::Talkgroups { system: system.to_string(), talkgroups: n.talkgroups.clone() });
+        m.push(ToClient::UnitNames { system: system.to_string(), unit_names: n.unit_names.clone() });
     }
     // Each system's talker aliases; the codes conventional frequencies carried: as last told, else as saved.
     let (heard, units): (Vec<ToClient>, Vec<ToClient>) = kept.into_iter().partition(|k| matches!(k, ToClient::Heard { .. }));
@@ -590,10 +603,10 @@ pub(crate) fn greeting_now(ctx: &Ctx, devices: Option<Value>, radios: Value, his
     // Each system's MDC1200 radios, as the registry has them (their IDs shown in hex).
     {
         let radio = ctx.shared.radio.lock().unwrap();
-        for system in radio.systems.keys() {
-            let units = radio.mdc_units(system);
+        for (id, system) in config.system_ids() {
+            let units = radio.mdc_units(id);
             if !units.is_empty() {
-                m.push(ToClient::MdcUnits { system: system.clone(), units });
+                m.push(ToClient::MdcUnits { system: system.to_string(), units });
             }
         }
     }
@@ -956,15 +969,15 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         // (Off the async workers: the store's queue can be full, and the edit holds the talkgroups' lock while it hands over.)
         Command::SetTalkgroups { system, talkgroups, from } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_names(&ctx2, &system, talkgroups, from)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || set_list(&ctx2, &system, talkgroups, from)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         Command::SetUnitNames { system, unit_names, from } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_names(&ctx2, &system, unit_names, from)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || set_list(&ctx2, &system, unit_names, from)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         Command::SetUnitName { system, unit, name } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_unit_name(&ctx2, &system, unit, name)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || runtime::set_unit_name(&ctx2, runtime::system_named(&ctx2, &system)?, unit, name)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         // (Captures read and write the disk: off the async workers.)
         Command::IqCaptures { id } => {
@@ -1034,7 +1047,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         }
         Command::SetTalkgroup { system, talkgroup, edit } => {
             let ctx2 = ctx.clone();
-            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroup(&ctx2, &system, talkgroup, edit)).await.unwrap_or_else(|e| Err(e.to_string())))
+            failed(tokio::task::spawn_blocking(move || runtime::set_talkgroup(&ctx2, runtime::system_named(&ctx2, &system)?, talkgroup, edit)).await.unwrap_or_else(|e| Err(e.to_string())))
         }
         // A key container with no passwordFile, unlocked with a password typed in, or locked again
         // (docs/configuration/systems.md). The password is never kept.

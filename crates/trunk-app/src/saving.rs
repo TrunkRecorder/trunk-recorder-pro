@@ -53,7 +53,7 @@ impl Kind {
 #[derive(Debug)]
 pub enum Saved {
     /// A system's talker aliases (Trunk Recorder's unitTagsOTA CSV).
-    Units { system: String, csv: String },
+    Units { system: trunk_core::trunk::SystemId, csv: String },
     /// What sharing with the directory did (each record's version, the last share).
     Sharing(String),
     /// A site's band plan; `key`: [`crate::session::bandplan_key`].
@@ -65,7 +65,7 @@ pub enum Saved {
     /// The rows of a system's radio registry that changed (or went) since
     /// last time. A store appends them and writes the whole now and then
     /// (trunk-pro's `db::store`); the browser writes the system whole.
-    Registry { system: String, changes: Box<RegistryChanges> },
+    Registry { system: trunk_core::trunk::SystemId, changes: Box<RegistryChanges> },
 }
 
 impl Saved {
@@ -80,10 +80,10 @@ impl Saved {
         }
     }
 
-    /// Which of its kind it is: the system, the site's key, or "" (one of its kind).
+    /// Which of its kind it is: the site's key, or "" (one of its kind, or
+    /// a system's: its `system`).
     pub fn key(&self) -> &str {
         match self {
-            Saved::Units { system, .. } | Saved::Registry { system, .. } => system,
             Saved::Bandplan { key, .. } => key,
             _ => "",
         }

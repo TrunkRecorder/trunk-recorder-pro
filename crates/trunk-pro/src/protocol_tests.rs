@@ -535,6 +535,8 @@ fn the_servers_messages() {
     .unwrap();
     cfg.sources.extend(more.sources);
     cfg.systems = more.systems;
+    cfg.assign_system_ids();
+    let p25 = cfg.id_of("p25").unwrap();
     cfg.server.allowed_origins = vec!["http://localhost:3000".into()];
     cfg.server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, path: "ui/wall".into(), ..Default::default() });
     cfg.server.interfaces.insert("trunkamp".into(), trunk_app::config::Interface { port: 8082, access: trunk_app::config::ApiAccess::Control, ..Default::default() });
@@ -551,10 +553,10 @@ fn the_servers_messages() {
             sources: vec![trunk_core::trunk::CallSource { src: 7, ..Default::default() }, trunk_core::trunk::CallSource { src: 8, time_s: 2.0, ..Default::default() }],
             ..Default::default()
         };
-        r.call_start("p25", &c, now - 10);
-        r.call_end("p25", &c, now - 6);
-        r.message("p25", &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
-        r.concluded("p25", &serde_json::from_value(json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] })).unwrap(), now);
+        r.call_start(p25, &c, now - 10);
+        r.call_end(p25, &c, now - 6);
+        r.message(p25, &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
+        r.concluded(p25, &serde_json::from_value(json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] })).unwrap(), now);
     }
     ctx.series.lock().unwrap().insert(&trunk_app::stats::Rollup { t: now / 60 * 60, values: [("sys/p25/cc/good".to_string(), [30.0, 28.0, 33.0])].into() });
     ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), site: Some("south".into()), freq_hz: Some(851_012_500) });
@@ -565,7 +567,9 @@ fn the_servers_messages() {
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
     let unit_names = trunk_core::trunk::read_unit_names("7,Engine 7\n").unit_names;
-    *ctx.names.lock().unwrap() = [("p25".to_string(), trunk_app::config::SystemNames { talkgroups: trunk_core::trunk::parse_rows("101,Fire Dispatch\n"), unit_names })].into();
+    *ctx.names.lock().unwrap() = [(p25, trunk_app::config::SystemNames { talkgroups: trunk_core::trunk::parse_rows("101,Fire Dispatch\n"), unit_names })].into();
+    // (The name book knows the systems as the server sets it from the config.)
+    ctx.shared.names.lock().unwrap().set_config(&cfg, &Default::default());
     // The greeting: hello last, after how things are now; less of it for listen access.
     let heard = |control| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -609,7 +613,7 @@ fn the_servers_messages() {
     // The call store answers `callsQuery`: a call indexed, then asked for by talkgroup.
     let mut record = crate::db::row::tests::record(9179, now * 1000);
     record.short_name = "p25".into();
-    crate::runtime::index_call(&ctx, "p25/2026/10/26/9179-1", &record, true, true);
+    crate::runtime::index_call(&ctx, None, "p25/2026/10/26/9179-1", &record, true, true);
     ctx.db.flush().unwrap();
     let Ok(Command::CallsQuery { id, query }) = Command::parse(r#"{"type":"callsQuery","id":3,"talkgroup":9179}"#) else { panic!("callsQuery") };
     let calls = crate::runtime::calls_query(&ctx, id, &query).to_value();
@@ -618,9 +622,9 @@ fn the_servers_messages() {
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
-    let files = trunk_app::config::talkgroup_lists([("p25", trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))]);
+    let files = trunk_app::config::talkgroup_lists([(p25, trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))]);
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
-    ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
+    ctx.shared.names.lock().unwrap().set_units(p25, "7,Engine 7\n");
     let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
     assert!(named(json!({ "id": 10, "what": "talkgroups", "system": "p25", "hours": 24 })).contains("FD Dispatch"));
     assert!(named(json!({ "id": 11, "what": "units", "system": "p25" })).contains("Engine 7"));

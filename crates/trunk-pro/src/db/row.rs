@@ -19,7 +19,7 @@ pub struct CallRow {
     pub path: String,
     /// The system it's filed under, as the record names it…
     pub short_name: String,
-    /// …and as the store keeps it (`systems.id`): set by `Db::send`.
+    /// …and as the store keeps it (`systems.id`): the run's, else set by `Db::send` from the name.
     pub system_id: i64,
     pub record: CallRecord,
     /// The call's audio file exists.

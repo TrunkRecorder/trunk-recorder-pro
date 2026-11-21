@@ -6,6 +6,7 @@
 //! the live call list), and compacting the store (`compactData`) to give
 //! the space back. Recordings on disk are never touched.
 
+use trunk_core::trunk::SystemId;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -142,7 +143,8 @@ fn registry_csv(ctx: &Ctx, table: DataTable, names: &[(i64, String)], system: Op
     systems.sort_by(|a, b| a.1.cmp(&b.1));
     for (id, name) in systems {
         // (A copy: the names are looked up with the registry's lock let go.)
-        let held = ctx.shared.radio.lock().unwrap().systems.get(name).cloned();
+        let sys = SystemId(*id as u32);
+        let held = ctx.shared.radio.lock().unwrap().systems.get(&sys).cloned();
         let Some(s) = held.map_or_else(|| ctx.db.registry_of(*id), |s| Ok(Some(s)))? else { continue };
         let book = ctx.shared.names.lock().unwrap();
         if radios {
@@ -151,13 +153,13 @@ fn registry_csv(ctx: &Ctx, table: DataTable, names: &[(i64, String)], system: Op
             for (u, r) in units {
                 let tgs: Vec<String> = r.tgs.iter().map(|(tg, n)| format!("{tg}:{n}")).collect();
                 let reg = r.reg.map_or("", |on| if on { "registered" } else { "deregistered" });
-                line(out, [name.clone(), u.to_string(), book.unit(name, *u).unwrap_or_default(), time_s(r.first), time_s(r.last), time_s(r.last_tx), r.tx.to_string(), format!("{:.1}", r.tx_secs), r.aff.map_or(String::new(), |t| t.to_string()), time_s(r.aff_t), reg.into(), tgs.join(" ")]);
+                line(out, [name.clone(), u.to_string(), book.unit(sys, *u).unwrap_or_default(), time_s(r.first), time_s(r.last), time_s(r.last_tx), r.tx.to_string(), format!("{:.1}", r.tx_secs), r.aff.map_or(String::new(), |t| t.to_string()), time_s(r.aff_t), reg.into(), tgs.join(" ")]);
             }
         } else {
             let mut tgs: Vec<_> = s.tgs.iter().collect();
             tgs.sort_by_key(|(t, _)| **t);
             for (t, g) in tgs {
-                let alpha = book.tg(name, *t).map(|i| i.alpha_tag).filter(|a| !a.is_empty()).unwrap_or_else(|| g.name.clone());
+                let alpha = book.tg(sys, *t).map(|i| i.alpha_tag).filter(|a| !a.is_empty()).unwrap_or_else(|| g.name.clone());
                 line(out, [name.clone(), t.to_string(), alpha, time_s(g.first), time_s(g.last), g.calls.to_string(), format!("{:.1}", g.secs), g.enc.to_string()]);
             }
         }
@@ -220,7 +222,7 @@ pub fn summary(ctx: &Ctx, id: u64) -> ToClient {
         .into_iter()
         .map(|(sid, short_name, mut counts)| {
             let in_config = config.iter().any(|(i, _)| *i == sid);
-            let held = ctx.shared.radio.lock().unwrap().systems.get(&short_name).map(|s| (s.units.len(), s.tgs.len()));
+            let held = ctx.shared.radio.lock().unwrap().systems.get(&SystemId(sid as u32)).map(|s| (s.units.len(), s.tgs.len()));
             // (One gone from the config: its registry as stored, not in memory.)
             let (units, tgs) = held.or_else(|| (!in_config).then(|| ctx.db.registry_of(sid).ok().flatten().map(|s| (s.units.len(), s.tgs.len()))).flatten()).unwrap_or_default();
             (counts.radios, counts.heard_talkgroups) = (units as i64, tgs as i64);
@@ -253,7 +255,8 @@ pub fn delete(ctx: &Ctx, id: u64, kinds: &[DataKind], system: Option<u32>) -> To
     };
     let config = config_systems(ctx);
     let in_config = system_id.is_some_and(|sid| config.iter().any(|(i, _)| *i == sid));
-    let mine = |n: &str| name.as_deref().is_none_or(|s| s == n);
+    let id = system.map(SystemId);
+    let mine = |i: SystemId| id.is_none_or(|s| s == i);
     let has = |k: DataKind| kinds.contains(&k);
     let mut n = DataCounts::default();
 
@@ -264,7 +267,7 @@ pub fn delete(ctx: &Ctx, id: u64, kinds: &[DataKind], system: Option<u32>) -> To
                 (n.radios, n.heard_talkgroups) = (s.units.len() as i64, s.tgs.len() as i64);
             }
         }
-        let (units, tgs) = runtime::forget(ctx, name.as_deref(), has(DataKind::TalkerAliases), has(DataKind::Registry));
+        let (units, tgs) = runtime::forget(ctx, id, has(DataKind::TalkerAliases), has(DataKind::Registry));
         n.radios += units as i64;
         n.heard_talkgroups += tgs as i64;
     }
@@ -278,12 +281,12 @@ pub fn delete(ctx: &Ctx, id: u64, kinds: &[DataKind], system: Option<u32>) -> To
     let forget = system_id.is_some() && !in_config && DataKind::ALL.iter().all(|k| has(*k));
     let stored = ctx.db.delete(kinds, system_id, forget, crate::clock::unix_ms() as i64);
     // (People make talkgroups and radio names, the recording never: told to the recording and the interfaces once the store's are gone.)
-    let held: Vec<String> = ctx.names.lock().unwrap().keys().filter(|k| mine(k)).cloned().collect();
+    let held: Vec<SystemId> = ctx.names.lock().unwrap().keys().copied().filter(|k| mine(*k)).collect();
     for s in held {
-        let talkgroups = if has(DataKind::Talkgroups) { runtime::set_names::<TalkgroupRow>(ctx, &s, Vec::new(), None) } else { Ok(()) };
-        let units = if has(DataKind::UnitNames) { runtime::set_names::<UnitNameRow>(ctx, &s, Vec::new(), None) } else { Ok(()) };
+        let talkgroups = if has(DataKind::Talkgroups) { runtime::set_names::<TalkgroupRow>(ctx, s, Vec::new(), None) } else { Ok(()) };
+        let units = if has(DataKind::UnitNames) { runtime::set_names::<UnitNameRow>(ctx, s, Vec::new(), None) } else { Ok(()) };
         if let Err(e) = talkgroups.and(units) {
-            log::warn!("Deleting {s}'s names: {e}");
+            log::warn!("Deleting system {s}'s names: {e}");
         }
     }
     if has(DataKind::Calls) {
@@ -293,7 +296,7 @@ pub fn delete(ctx: &Ctx, id: u64, kinds: &[DataKind], system: Option<u32>) -> To
         publish(&ctx.hub, runtime::history(ctx));
     }
     if has(DataKind::TalkerAliases) {
-        for (_, s) in config.iter().filter(|(_, s)| mine(s)) {
+        for (_, s) in config.iter().filter(|(i, _)| mine(SystemId(*i as u32))) {
             publish(&ctx.hub, ToClient::Units { system: s.clone(), csv: String::new() });
         }
     }
@@ -354,12 +357,13 @@ mod tests {
         let ctx = runtime::test_ctx(&dir.join("cap"));
         let sid = ctx.db.system_id("ohmarcs").unwrap();
         for i in 0..3 {
-            runtime::index_call(&ctx, &format!("ohmarcs/{i}"), &crate::db::row::tests::record(9179, 1_700_000_000_000 + i * 1000), true, true);
+            runtime::index_call(&ctx, None, &format!("ohmarcs/{i}"), &crate::db::row::tests::record(9179, 1_700_000_000_000 + i * 1000), true, true);
         }
-        runtime::set_names(&ctx, "ohmarcs", trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n9179,\"FD, Disp\"\n"), None).unwrap();
+        let id = trunk_app::config::SystemId(sid as u32);
+        runtime::set_names(&ctx, id, trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n9179,\"FD, Disp\"\n"), None).unwrap();
         let mut heard = trunk_app::stats::radio::SystemRadio::default();
         heard.units.insert(9001644, trunk_app::stats::radio::Unit { first: 1_700_000_000, last: 1_700_000_100, tx: 3, tgs: vec![(9179, 3)], ..Default::default() });
-        ctx.shared.radio.lock().unwrap().put("ohmarcs", heard);
+        ctx.shared.radio.lock().unwrap().put(id, heard);
         ctx.db.flush().unwrap();
 
         let (code, file, body) = fetch(&ctx, Door::Builtin, "/api/v1/export/calls").await;

@@ -44,6 +44,9 @@ pub struct ConcludeInfo<'a> {
     pub reception: Reception,
     /// When the first of its copies began (multi-site; None: its own start).
     pub first_s: Option<f64>,
+    /// What its call is known by: its conversation's id, the first copy's
+    /// (multi-site; None: its own). Its `call_num`.
+    pub call_num: Option<super::CallId>,
 }
 
 /// How strong a call came in: its channel's power while it carried the call,
@@ -198,7 +201,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
     let secs = info.audio_seconds;
     let talker = call.sources.iter().map(|s| s.src).find(|&s| s != 0).unwrap_or(0);
     let record = CallRecord {
-        call_num: call.id as u64,
+        call_num: info.call_num.unwrap_or(call.id) as u64,
         transmission_id: format!("{}-{}-{talker}-{}", info.short_name, call.talkgroup, ms(info.first_s.unwrap_or(call.start_s))),
         freq: call.freq_hz,
         freq_error: info.freq_error_hz as i64,
@@ -446,6 +449,7 @@ mod tests {
             freq_error_hz: 0,
             reception: Reception::default(),
             first_s: None,
+            call_num: None,
         };
         let json = call_record(&call, &info).0.to_json();
         assert!(json.contains("\"src\":7,") && json.matches("\"lat\"").count() == 1, "{json}");
@@ -555,6 +559,8 @@ pub struct SaveContext<'a> {
     pub signals: &'a [Signal],
     /// When the first of its copies began (multi-site; None: its own start).
     pub first_s: Option<f64>,
+    /// Its call's id, as the world knows it ([`ConcludeInfo::call_num`]).
+    pub call_num: Option<super::CallId>,
 }
 
 /// The frames as an `.sdr` file when the call's mode has a layout there, else JSON lines.
@@ -661,6 +667,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
             reception,
             freq_error_hz: freq_error_hz.map_or(0, |e| e.round() as i32),
             first_s: cx.first_s,
+            call_num: cx.call_num,
         },
     );
     let frames = frames.captured.filter(|f| !audio.is_empty() && !f.is_empty()).map(|f| capture(&call, &f, audio.len(), freq_error_hz, &reception, cx));

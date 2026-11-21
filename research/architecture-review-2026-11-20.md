@@ -43,21 +43,21 @@ repeating problems:
   `name_problem` does not reject the clash. `trunk-pro/src/db/mod.rs:299-321`,
   `trunk-app/src/migrate.rs:421`, `trunk-app/src/config.rs:2625-2644`.
   Fix: delete `old_names` (no-legacy), or reject the clash.
-- [ ] **V** Renaming a system while recording stops its calls reaching the
+- [x] **V** (fixed on `review-step2`: the run files calls under its config ids) Renaming a system while recording stops its calls reaching the
   store. A config save swaps the name map at once; the engine keeps the old
   name until Stop/Start; `Db::send` drops a call whose name has no id, at
   debug level. Backfill later walks only current names.
   `trunk-pro/src/runtime.rs:235-237`, `db/mod.rs:286-291`.
   Fix: resolve the system id at Start and carry it on the run.
-- [ ] **V** The same rename releases delayed plugin calls. Delay rules are
+- [x] **V** (fixed on `review-step2`: `About` and delay rules by `SystemId`) The same rename releases delayed plugin calls. Delay rules are
   rebuilt under the new name; held and new calls carry the old one, so a
   system-scoped rule no longer picks them. `plugins/delay.rs:85,119-126`,
   `server.rs:924`. Fix: key `About` and rules by system id.
-- [ ] **R** After a rename, `ctx.names` stays keyed by the old name for the
+- [x] **R** (fixed on `review-step2`: `NameLists`, `NameBook` and the registry by `SystemId`) After a rename, `ctx.names` stays keyed by the old name for the
   life of the process: Stop/Start records with no talkgroup rows, and one
   unit-name edit then overwrites the stored list.
   `trunk-pro/src/runtime.rs:101,531,735-738`.
-- [ ] **R** Data → Delete on a removed system empties a current system of the
+- [x] **R** (fixed on `review-step2`: names, aliases and registry deleted by id; dashboard history and the live list still go by name) Data → Delete on a removed system empties a current system of the
   same name (the name-keyed steps run after the id lookup).
   `trunk-pro/src/data.rs:247-284`.
 - [ ] **V** A failed store batch is only logged; urgent name edits vanish.
@@ -89,9 +89,9 @@ repeating problems:
   Not a quick fix, and deliberate: `KeyCheck`'s doc (`p25/crypt.rs:338-347`)
   says half-rate AMBE+2 has no tell (noise hits its erasure and tone codes 1
   time in 30). Needs a different test, or stays a known limit.
-- [ ] **V** The plugin `log` topic skips the dispatch gate (shareDecrypted and
+- [x] **V** The plugin `log` topic skips the dispatch gate (shareDecrypted and
   delays) (fixed on `review-step1`: `Shared::offer`, lines carry their call's
-  talkgroup; `CallsQuery` still open), and `CallsQuery` answers every plugin unfiltered with a blocking
+  talkgroup; `CallsQuery` fixed on `review-step2`: answered through the queue, never blocking, filtered by shareDecrypted and delays), and `CallsQuery` answers every plugin unfiltered with a blocking
   send. `trunk-pro/src/plugins/host.rs:746-757,935-944` vs `:670-691`.
 - [ ] **V** A plugin with a config error can settle a call's archive while
   another plugin is still uploading: `result_at` counts down without checking
@@ -107,7 +107,7 @@ repeating problems:
   `edacs/site.rs:126-128`, `trunk-app/src/session.rs:1070`.
 - [ ] **V** A recorder stays counted until the end of the block, giving a
   false `NoRecorder` at capacity. `engine.rs:1168-1172,2390-2394`.
-- [ ] **V** A multi-site call has three ids: the conversation's (call list,
+- [x] **V** (fixed on `review-step2`: live audio, tone patterns and `call_num` carry the conversation id; no separate copy id, as nothing reads one) A multi-site call has three ids: the conversation's (call list,
   `CallInfo`), the leading copy's (live audio, tone patterns) and the kept
   copy's (`call_num`). The Calls panel's now-playing lookup and any plugin
   join by id fail. `multisite.rs:191-193`, `engine.rs:2234,2329`,
@@ -155,10 +155,10 @@ repeating problems:
 
 ### Identity
 
-- [ ] Key the run, plugin host, delays, hold, `NameLists`, stats series and
+- [ ] (On `review-step2`: the run, plugin host, delays, hold, `NameLists`, `NameBook`, registry and the store by `SystemId`; left by name: stats series, band plans, sharing, capture rules, AutoTune, live listening and the web, which resolve a name against the config at the boundary. Sources not done.) Key the run, plugin host, delays, hold, `NameLists`, stats series and
   band plans by system id, with the short name as a label only. Give sources
   an id for the same reason. This closes six of the bugs above at once.
-- [ ] Stamp one call id on audio, patterns and `call_num`; keep the copy id as
+- [x] (On `review-step2`, without the copy id field) Stamp one call id on audio, patterns and `call_num`; keep the copy id as
   its own field.
 - [ ] **R** Talkgroup names freeze at call start, unit names resolve at save.
 
@@ -245,10 +245,15 @@ controller reducer, the wasm rules and the dashboard key helpers.
    short name; conventional re-gate and name merge; Phase 2 key check; `log`
    topic gate; the two web type bugs; corpus on a nightly schedule.
 2. System id through the run (rename bugs, delays, names, stats keys), then
-   one call id for multi-site.
+   one call id for multi-site. With it, one send function for plugins: every
+   line through the gate, non-blocking, and `CallsQuery` answers filtered row
+   by row (added 2026-11-20).
 3. One `apply_config`, and replay as a headless Session.
 4. Shared P25 crypt state and `VoiceCrypt`; `Watched<P>`; the protocol
    descriptor with generated web types.
+5. Conventional onto the trunked call path: conventional reports voice heard
+   on a frequency for a talkgroup, `calls.rs` admits, re-gates, names and ends
+   it; `VoiceParams` reach conventional decoders (added 2026-11-20).
 
 ## Open questions
 

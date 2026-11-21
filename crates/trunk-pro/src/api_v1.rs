@@ -214,7 +214,7 @@ mod tests {
             (Some(0), true, true)
         );
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
+        runtime::index_call(&ctx, None, "ohmarcs/a", &r, true, true);
         ctx.db.flush().unwrap();
         let (code, body) = get(&ctx, "/api/v1/calls?talkgroup=9179").await;
         assert_eq!(code, 200, "not the docs 404: {body}");
@@ -274,7 +274,7 @@ mod tests {
         let dir = TestDir::new("api-v1-empty");
         let ctx = runtime::test_ctx(&dir.join("api-v1-empty-cap"));
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
+        runtime::index_call(&ctx, None, "ohmarcs/a", &r, true, true);
         ctx.db.flush().unwrap();
         for q in [
             "talkgroup=",
@@ -338,7 +338,7 @@ mod tests {
         crate::db::seed_unopenable(&store);
         let ctx = runtime::test_ctx_with_store(&dir.join("cap"), &store);
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
+        runtime::index_call(&ctx, None, "ohmarcs/a", &r, true, true);
         let (code, body) = get(&ctx, "/api/v1/calls").await;
         let v = json_of(&body);
         assert_eq!((code, v["entries"].as_array().map(Vec::len)), (200, Some(1)), "{body}");

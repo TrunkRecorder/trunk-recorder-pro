@@ -24,7 +24,7 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 use serde_json::{json, Value};
 use trunk_core::metrics::{key_part, Sink};
-use trunk_recorder_plugin::{Level, Manifest, Metrics, Outcome, State, SystemInfo};
+use trunk_recorder_plugin::{Level, Manifest, Metrics, Outcome, State};
 
 use super::delay::Delays;
 use super::hold::Hold;
@@ -203,7 +203,7 @@ fn alone(mut h: Arc<PluginHost>) -> PluginHost {
 
 /// What a recording's plugins start with: the systems, the capture folder,
 /// what answers their `calls.query` and what saves their `settings.save`.
-type StartEnv = (Vec<SystemInfo>, PathBuf, super::Calls, super::Saves);
+type StartEnv = (Vec<super::RunSystem>, PathBuf, super::Calls, super::Saves);
 
 /// The plugins' part of the app's shared state.
 pub struct Plugins {

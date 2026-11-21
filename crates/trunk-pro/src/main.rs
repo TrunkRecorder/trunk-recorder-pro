@@ -1021,12 +1021,13 @@ fn serve(a: &Args) {
     // store. Delete this block with it.
     if !db.is_disabled() {
         fn import<R: runtime::NameList + PartialEq>(db: &db::Db, path: &std::path::Path, cfg: &config::Config, files: &trunk_app::migrate::OldFiles<R>) {
-            let stored = |name: &str| R::stored(db, name).is_ok_and(|rows| !rows.is_empty());
+            let stored = |name: &str| cfg.id_of(name).is_some_and(|id| R::stored(db, id).is_ok_and(|rows| !rows.is_empty()));
             let mut keep = |name: &str, rows: Vec<R>| {
-                R::keep(db, name, rows.clone());
+                let id = cfg.id_of(name).ok_or_else(|| format!("no system is named {name}"))?;
+                R::keep(db, id, rows.clone());
                 db.flush()?;
                 // (Renamed only once it reads back as it went in.)
-                if R::stored(db, name)? == rows { Ok(()) } else { Err("not read back as written".into()) }
+                if R::stored(db, id)? == rows { Ok(()) } else { Err("not read back as written".into()) }
             };
             for n in trunk_app::migrate::files_into_store(path, cfg, files, &stored, &mut keep) {
                 log::info!("{n}");

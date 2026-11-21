@@ -396,7 +396,7 @@ mod tests {
         Delays::of(&serde_json::from_value(v).unwrap())
     }
     fn about(tg: u32) -> About {
-        About { system: "dcfd".into(), talkgroup: Some(tg), decrypted: false }
+        About { system: trunk_app::config::SystemId(1), talkgroup: Some(tg), decrypted: false }
     }
     fn wait_for(f: impl Fn() -> bool) -> bool {
         let t0 = Instant::now();
