@@ -164,12 +164,12 @@ repeating problems:
 
 ### One pipeline per job
 
-- [ ] **R** `VoiceTracker` and `TdmaTracker::Slot` are two copies of one
+- [x] **R** (fixed on `review-step2`: `trunk::voice::Crypt`, the key check the one deliberate difference) `VoiceTracker` and `TdmaTracker::Slot` are two copies of one
   crypto and transmission state machine, already drifted (key check, Info
   cadence, protected LC, end clears talker). Share one `p25::CryptState`.
 - [ ] **R** Encryption state is mirrored through about six stores with
-  one-way latches. One per-transmission `VoiceCrypt` value.
-- [ ] **R** Conventional writes voice output, end of copy, gating and naming
+  one-way latches. One per-transmission `VoiceCrypt` value. (Looked at on `review-step2`, left: the call's flags are what the gates read, the per-transmission ones (`Transmissions`) already are the one value per transmission, and folding them would rework fail-closed logic with no bug to show for it.)
+- [x] **R** (on `review-step2`: one `Call::begin` for a grant's call and a conventional one, one gate (`CallManager::admit`, which now also stops recording a call that no longer passes); conventional already shared the manager's note, length and transmission rules. Its carrier-driven lifecycle stays its own: calls start with voice, rows and tones route them. `VoiceParams` are left out on purpose: a conventional P25 channel matches several NACs to its rows, and conventional DMR has no site variant.) Conventional writes voice output, end of copy, gating and naming
   again beside the trunked path, and never passes `VoiceParams` to decoders
   (`conventional.rs:1144`).
 - [x] **R** (fixed on `review-step2`: replay is a Session over file sources, its config the capture's or one made from the flags; same call files byte for byte on the regress captures, ~2.5% more instructions, the session's own work) `replay` is a second engine host that bypasses Session
@@ -185,9 +185,9 @@ repeating problems:
 
 ### Protocols
 
-- [ ] **R** Watched-site skeleton now has three copies (DMR, NXDN, EDACS). A
+- [x] **R** (on `review-step2`: `WatchedSite` and one `Watched<S>` control channel; each protocol's status stays its own) Watched-site skeleton now has three copies (DMR, NXDN, EDACS). A
   generic `Watched<P>` with one `WatchedStatus`.
-- [ ] **R** A per-protocol descriptor on `Protocol` (voice kinds, cutoff,
+- [x] **R** (on `review-step2`, the part the web repeated: `SystemKind::info` (label, watched, site-lock fields) written to `web/src/systemKinds.gen.ts` and checked by a test; fixed EDACS shown as P25 in Onboarding and as NXDN on the guard band page; trunked voice cutoff exhaustive. Voice kinds, capture support and band plan type are still per site of code.) A per-protocol descriptor on `Protocol` (voice kinds, cutoff,
   identity fields, capture support, band plan type), with the TypeScript union
   and a `SYSTEM_KINDS` record generated from it. Replaces `_ =>` defaults
   (`voice.rs:103`, `session.rs:1605-1640`), the hand-kept `VoiceKind::ALL`,

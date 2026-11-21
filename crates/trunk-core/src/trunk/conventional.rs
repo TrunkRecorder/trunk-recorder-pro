@@ -561,6 +561,17 @@ pub enum ConvOut {
     Patterns { call: Call, heard: Vec<(crate::dsp::inband::pattern::Pattern, u32)>, decrypted: bool, now_s: f64 },
 }
 
+/// A conventional channel as [`CallManager::admit`] sees it: always open, so
+/// a call it admits is recorded (there's no recorder to take, or give back).
+struct Channel;
+
+impl super::calls::RecorderHost for Channel {
+    fn record(&mut self, _call: &Call) -> Result<(), super::calls::Reason> {
+        Ok(())
+    }
+    fn release(&mut self, _call: &Call) {}
+}
+
 /// What a conventional call carried, as a row's code would say it: the
 /// CTCSS / DCS heard ("" for none), the NAC and talkgroup, the DMR colour
 /// code, slot and talkgroup, the NXDN RAN and talkgroup (the air's, not
@@ -1383,8 +1394,7 @@ impl Conventional {
                     // Gated again as the talkgroup it turned out to be (as a trunked call
                     // is when a patch names it): an ignored one stops being recorded, and
                     // one skipped as unknown is recorded from here.
-                    l.call.reason = rules.calls.gate(&l.call, rules.policy());
-                    l.call.recording = l.call.reason.is_none();
+                    CallManager::admit(&mut l.call, rules.calls, rules.policy(), &mut Channel);
                 }
                 out.push(ConvOut::Call(CallEvent::Update(l.call.clone())));
             }
@@ -1392,43 +1402,19 @@ impl Conventional {
         if o.live[slot].is_none() {
             let talkgroup_info = Self::names(row, tg, rules.talkgroups);
             let mut call = Call {
-                site: None,
-                system: ch.system as u16,
-                id: ids.next(),
-                talkgroup: tg,
                 talkgroup_ota: air_tg,
-                freq_hz: ch.freq_hz.round() as u64,
-                voice,
-                unit_to_unit: false,
-                recording: false,
-                followed: false,
-                reason: None,
-                // (Its talkgroup file's mode may say so, as for a trunked grant.)
-                encrypted: talkgroup_info.as_ref().is_some_and(|t| t.encrypted_mode()),
-                cipher: None,
-                decrypted: false,
-                emergency: false,
-                priority: 0,
-                duplex: false,
-                mode: false,
-                start_s: from_s,
                 last_update_s: now_s,
-                heard_s: now_s,
                 last_audio_s: now_s,
-                sources: Vec::new(),
-                talkgroup_info,
-                patched_talkgroups: Vec::new(),
                 ran: h.ran,
                 nac: h.nac,
-                tone: None,
                 tone_set: match row.access {
                     Some(Access::Tone(t)) => Some(t),
                     _ => None,
                 },
+                ..Call::begin(ids.next(), ch.system as u16, None, tg, talkgroup_info, ch.freq_hz.round() as u64, voice, from_s, now_s)
             };
             // Recorded as a trunked call is: not an ignored talkgroup, nor (asked so) an unknown or encrypted one.
-            call.reason = rules.calls.gate(&call, rules.policy());
-            call.recording = call.reason.is_none();
+            CallManager::admit(&mut call, rules.calls, rules.policy(), &mut Channel);
             out.push(ConvOut::Call(CallEvent::Start(call.clone())));
             o.live[slot] = Some(Live { call, rec: Recorded::new(rules.capture_frames, spec), row: r });
         }

@@ -319,6 +319,46 @@ pub struct Call {
 }
 
 impl Call {
+    /// A call beginning at `start_s` on the air (`now_s` by the recorder's clock): talkgroup
+    /// `talkgroup` (named `talkgroup_info`) of system `system` (site `site`; none: conventional),
+    /// on `freq_hz` as `voice`; nothing else known yet, not recorded until it's admitted. The one
+    /// way a call begins, trunked or conventional: a new field is set here, for both.
+    #[allow(clippy::too_many_arguments)]
+    pub fn begin(id: CallId, system: u16, site: Option<u16>, talkgroup: u32, talkgroup_info: Option<Talkgroup>, freq_hz: u64, voice: Voice, start_s: f64, now_s: f64) -> Call {
+        Call {
+            id,
+            site,
+            system,
+            talkgroup,
+            talkgroup_ota: None,
+            freq_hz,
+            voice,
+            unit_to_unit: false,
+            recording: false,
+            followed: false,
+            reason: None,
+            // (Its talkgroup file's mode may say so.)
+            encrypted: talkgroup_info.as_ref().is_some_and(|t| t.encrypted_mode()),
+            cipher: None,
+            decrypted: false,
+            emergency: false,
+            priority: 0,
+            duplex: false,
+            mode: false,
+            start_s,
+            last_update_s: start_s,
+            heard_s: now_s,
+            last_audio_s: start_s,
+            sources: Vec::new(),
+            talkgroup_info,
+            patched_talkgroups: Vec::new(),
+            ran: None,
+            nac: None,
+            tone: None,
+            tone_set: None,
+        }
+    }
+
     /// The call that carries on from this one on its channel at `now_s`
     /// (`how`), `sources` talking: a new id, not recorded until it's taken,
     /// timed from `now_s`. Every field is named: a new one has to say whether it carries on.
@@ -874,42 +914,24 @@ impl CallManager {
         }
         self.reassigned(m.freq_hz, m.voice, m.talkgroup, host, ev);
         let tg = p.talkgroups.get(&m.talkgroup).cloned();
+        // The control channel says (SmartNet), or the talkgroup file does (TR's mode
+        // "A": a Phase 1 grant is of analog voice; a two-slot grant keeps its slot).
+        let voice = match m.voice {
+            Voice::P25 if tg.as_ref().is_some_and(|t| t.mode.starts_with('A')) => Voice::Fm,
+            v => v,
+        };
         let mut c = Call {
-            id: self.ids.next(),
-            site: Some(self.site),
-            system: self.system,
-            talkgroup: m.talkgroup,
-            talkgroup_ota: None,
-            freq_hz: m.freq_hz,
-            // The control channel says (SmartNet), or the talkgroup file does (TR's mode
-            // "A": a Phase 1 grant is of analog voice; a two-slot grant keeps its slot).
-            voice: match m.voice {
-                Voice::P25 if tg.as_ref().is_some_and(|t| t.mode.starts_with('A')) => Voice::Fm,
-                v => v,
-            },
             unit_to_unit,
-            recording: false,
-            followed: false,
-            reason: None,
-            encrypted: m.encrypted || tg.as_ref().is_some_and(|t| t.encrypted_mode()),
-            cipher: None,
-            decrypted: false,
             emergency: m.emergency,
             priority: m.priority,
             duplex: m.duplex,
             mode: m.mode,
-            start_s: m.time_s,
-            last_update_s: m.time_s,
-            heard_s: now_s,
-            last_audio_s: m.time_s,
             sources: if m.source > 0 { vec![CallSource { src: m.source as u32, time_s: m.time_s, audio_pos: None, flags: Flags::of(m), position: None, signal: None }] } else { vec![] },
-            talkgroup_info: tg.clone(),
             patched_talkgroups: self.patches.members_of(m.talkgroup),
             ran: m.ran,
-            nac: None,
-            tone: None,
-            tone_set: None,
+            ..Call::begin(self.ids.next(), self.system, Some(self.site), m.talkgroup, tg, m.freq_hz, voice, m.time_s, now_s)
         };
+        c.encrypted |= m.encrypted;
         // P25 voice: the site's NAC (its voice channels carry the control channel's).
         if c.voice.decryptable() && m.nac != 0 {
             c.nac = Some(m.nac);
@@ -931,14 +953,21 @@ impl CallManager {
 
     /// Record, follow or skip a call: Trunk Recorder's start_recorder()
     /// gates, in its order. A talkgroup not in the file is recorded while
-    /// it's patched with one that is.
-    fn admit(c: &mut Call, cfg: &CallConfig, p: Policy, host: &mut dyn RecorderHost) {
+    /// it's patched with one that is. Admitted again (what it is turned out
+    /// otherwise), one recorded that no longer passes stops being. The one
+    /// way a call is gated, trunked or conventional.
+    pub(super) fn admit(c: &mut Call, cfg: &CallConfig, p: Policy, host: &mut dyn RecorderHost) {
         c.reason = cfg.gate(c, p);
+        if c.reason.is_some() && c.recording {
+            host.release(c);
+            c.recording = false;
+        }
         match c.reason {
             // No audio to record, but its terminators' link control is in
             // the clear: who spoke, and their talker aliases.
             Some(Reason::Encrypted) => c.followed = host.follow(c),
             Some(_) => {}
+            None if c.recording => {}
             None => match host.record(c) {
                 Ok(()) => c.recording = true,
                 Err(r) => c.reason = Some(r),
