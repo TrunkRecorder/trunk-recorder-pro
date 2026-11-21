@@ -5,6 +5,36 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-21
+
+- **Sign-in, optional** (#174). Off by default; off, nothing changes. Users in `server.auth.users`, each **View**
+  (`listen`) or **Admin** (`control`), signing in with an access token (shown once; the config keeps its SHA-256), a
+  passkey, or a proxy that vouches for them (Authelia, Authentik, oauth2-proxy, `tailscale serve` by header; Cloudflare
+  Access by its signed token). A request gets the lower of its port's access and its user's role, so one sign-in covers
+  the dashboard and every interface. **HTTPS** (`server.tls`, PEM certificate and key) covers every port, with renewed
+  files picked up within a minute. View users see no Setup, Plugins or controls, and are sent only the config their pages
+  show: every config field is named as shown or withheld, so a new one isn't sent until it's decided. When each user
+  last signed out everywhere, and each passkey's count, are kept in `access-state.json` beside the config, not in it.
+  `trunk-pro access` manages users from the command line (and is the way back in after a lockout). See Server, Log and
+  Monitor → Access in the configuration docs.
+- **Gain alerts** say the verdict first, then what was measured, then the fix only to someone who can make it
+  (`Gain too high · 2.1% clipping — Tune gain`).
+- **Plugins: a system sets only what a plugin offers** (#191, SDK 0.13.0). A plugin names the settings a system may set
+  again for itself (`system_overrides`: an uploader's server, say); a system's card offers those and no others, and
+  none is the default. Settings a system saved that the plugin doesn't offer are ignored, and its card in Setup →
+  Plugins lists the systems with them, to **Remove**.
+- **Plugins on or off, system by system** (#191). **Systems** on a plugin's card in Setup → Plugins (`systemsOff`):
+  nothing about a system it's off for reaches it, and the recorder doesn't wait on it for that system's calls. For every
+  plugin that takes only what's one system's (all but `totals`), MQTT among them (TrunkRecorder/trunk-plugin-mqtt#10).
+- **Plugins: systems and sites by id; settings for each site** (#192, SDK 0.14.0). Sites get an id as systems do, and
+  plugins are told both (`system_id`, `site_id`, on events and in the call JSON, beside the names), the same through
+  renames. A system with several sites has a row for each on its card, with the settings the plugin lets a site set
+  again (an uploader's account for that site), and **Sites** turns a plugin off for one. A recorded call's `sites` lists
+  every site it was recorded on, the kept copy's first, so an uploader sends a call wherever a site that heard it goes.
+- **The plugins, released with these:** OpenMHz 0.1.10 and Broadcastify Calls 0.1.9 (a site's own account in its row;
+  Broadcastify also sends `tg`, which conventional nodes need), Rdio Scanner 0.1.8, simplestream 0.1.6.
+- **Inside** (#190): systems known by id through a run, one call path for trunked and conventional calls, one table of
+  what each kind of system is, one watched-site control channel for EDACS, DMR and NXDN.
 - **A rule's capture says what set it off.** `trp:trigger` holds the event's facts as the rule's condition saw them (a
   call's system, site, talkgroup, frequency, slot, times, radios, recorder, and for a call not saved why — `silent` or
   `short` — with its audio and voice frames, good and bad), and when it fired, seconds into the capture and Unix ms.
@@ -14,6 +44,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   (`from_s`, `to_s`) and, with a look-back, covers all of it, not just what came after the rule fired. `replay` prints
   each site's control channel blocks over that part ("As live counted"), `replay --summary FILE` writes them as JSON, and
   `tool submission` reports them beside live's for each site (`sites`, `live_good` / `replay_good`, …).
+
+### Updating
+
+
+- **Plugins' per-system settings.** A system's overrides of a setting its plugin doesn't name are ignored: update the
+  plugins (above) with this release. OpenMHz's **Separate sites** and Broadcastify's **Sites of their own** are no
+  longer read: give those sites their accounts in their rows on the system's card.
+- **Held plugin items** (delayed calls) from before this release are dropped, and a multi-site call's copies share one
+  `call_num`.
 
 ## [0.3.9] — 2026-11-20
 
