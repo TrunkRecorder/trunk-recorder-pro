@@ -70,7 +70,7 @@ startup entry; to start it at logon, put a shortcut to `trunk-pro.exe` in your S
 | What | Where |
 |---|---|
 | Settings (`config.json`) | `%APPDATA%\trunk-pro\` (usually `C:\Users\<you>\AppData\Roaming\trunk-pro\`) |
-| Band plans, talker aliases, plugins, statistics | The same folder, beside `config.json` |
+| The store (`trunk-pro.sqlite`: talkgroups, band plans, talker aliases, history), plugins | The same folder, beside `config.json` ([what each file is](../configuration/README.md#files-kept-beside-the-config)) |
 | Log files (when **To files** is on in **Setup → Recording → Log**) | `logs\` in the same folder |
 | Recordings | `%USERPROFILE%\TrunkRecorderPro\` (change it in **Setup → Recording → Recordings folder**) |
 

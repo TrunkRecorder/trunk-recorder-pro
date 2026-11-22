@@ -208,7 +208,7 @@ export function DmrSites(props: { sites: DetailedSite[] }) {
                       <tr key={c.freqHz}>
                         <td className="mono">
                           {formatMhz(c.freqHz)}
-                          {c.control && <span className="chip ok small">{d.variant === "DMR Capacity Plus" ? "rest" : "control"}</span>}
+                          {c.control && <span className="chip ok small">{d.rest ? "rest" : "control"}</span>}
                           {c.colorCode != null && d.colorCode != null && c.colorCode !== d.colorCode && <span className="chip warn small">CC {c.colorCode}</span>}
                         </td>
                         <td className="mono small">{lcn ? `${lcn.lcn}${lcn.configured ? "" : " (learned)"}` : "—"}</td>

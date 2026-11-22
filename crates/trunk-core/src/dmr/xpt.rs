@@ -1,7 +1,7 @@
 //! Receive-only Hytera XPT signaling. Inputs are integrity-checked DMR payloads,
 //! MSB first; CRC/FEC, RF reception, TDMA and voice remain in the DMR receiver,
 //! and what the site makes of them is in [`super::trunking::Site`].
-//! Payload formats and receive-only behavior are described in docs/guides/xpt.md.
+//! Payload formats and receive-only behavior are described in docs/developer/protocols/xpt.md.
 
 use super::slot::{FID_HYTERA, Lc, SlotEvent};
 use crate::bits::field;

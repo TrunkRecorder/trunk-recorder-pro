@@ -13,7 +13,9 @@
     "dev:web": "vite --mode web",
     "build:web": "tsc --noEmit && vite build --mode web",
     "schema": "node scripts/schema.mjs",
-    "test:browser": "node scripts/auth-browser.mjs"
+    "test:browser": "node scripts/auth-browser.mjs",
+    "shots": "node scripts/shots.mjs",
+    "shots:check": "node scripts/shots.mjs --check"
   },
   "dependencies": {
     "maplibre-gl": "^6.13.0",

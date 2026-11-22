@@ -39,6 +39,7 @@ import {
   systemType,
   deviceKey,
   needsDriver,
+  kindNeedsDriver,
   hasBiasT,
   airspyGains,
   pickedBySerial,
@@ -1007,7 +1008,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           <span className="field-label">Kind</span>
           <div className="seg small" role="radiogroup" aria-label={`${sourceTitle(c, i)} kind`}>
             {(Object.keys(SOURCE_KINDS) as Source["type"][])
-              .filter((k) => !SOURCE_KINDS[k].driver || can("drivers"))
+              .filter((k) => !kindNeedsDriver(k) || can("drivers"))
               .map((k) => (
                 <button key={k} role="radio" aria-checked={src.type === k} className={src.type === k ? "on" : ""} onClick={() => setKind(k)}>
                   {SOURCE_KINDS[k].label}

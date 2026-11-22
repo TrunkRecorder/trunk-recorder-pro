@@ -1,4 +1,4 @@
-// Where you are, roughly, on a map: a small circle (5 km across) stays in the
+// Where you are, roughly, on a map: a small circle (10 km across) stays in the
 // middle while you move the map under it. Its centre is the location the
 // license lookup uses: it needs only your general area, which the circle shows.
 // The map (MapLibre, loaded only when this opens) is the systems directory's:

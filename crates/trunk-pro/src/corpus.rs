@@ -5,7 +5,8 @@
 //!
 //! `tool corpus add <capture folder> --manifest FILE --id ID --protocol P [--tier wideband]`
 //! puts a capture in a local manifest, and its files in the cache.
-//! `tool corpus fetch [--only a,b] [--tier t]` downloads what the cache lacks.
+//! `tool corpus fetch [--only a,b] [--tier t]` downloads what the cache lacks, and lays each
+//! capture out under its own names in `<cache>/captures/<id>` (what `run` replays).
 //! `tool corpus run --out DIR [--only a,b] [--tier t] [--against V] [--bless next|V]`
 //! replays each capture into `DIR/<id>`, as `captures/regress.sh` lays its runs
 //! out, and compares each with its expected output; `--bless` keeps what it got
@@ -913,8 +914,8 @@ pub fn run(a: &Args) {
             let entries = chosen(&m, a.get("only"), a.get("tier")).unwrap_or_else(|e| die(&e));
             if what == "fetch" {
                 for e in &entries {
-                    ok(e.files.iter().try_for_each(|f| fetch(base, &cache, f).map(|_| ())));
-                    println!("{}: {} files, {} MB", e.id, e.files.len(), e.bytes / 1_000_000);
+                    let dir = lay_out(base, &cache, e).unwrap_or_else(|err| die(&err));
+                    println!("{}: {} files, {} MB, in {}", e.id, e.files.len(), e.bytes / 1_000_000, dir.display());
                 }
                 return;
             }

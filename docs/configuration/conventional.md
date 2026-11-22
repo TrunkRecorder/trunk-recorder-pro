@@ -1,4 +1,4 @@
-# Conventional Systems
+# Conventional systems
 
 Each entry in `conventional` is a group of single-frequency channels with its own short name,
 recordings folder, call rules, unit names and plugin settings. This page lists the keys for
@@ -28,6 +28,7 @@ anywhere a source covers, including alongside a trunked system. Analog channels 
 |---|:---:|---|---|---|
 | `shortName` | | `"conv"` | string | Its identity: recordings folder, `short_name` in call JSON, how plugins know it. No other system, trunked or conventional, may have it |
 | `name` | | `""` | string | What people call it ("County Fire"), for display |
+| `id` | | given | integer | The system's number, as a [trunked system's](systems.md#keys-for-every-trunked-system): given when the config is read, the same through renames, never reused. Leave it to the recorder |
 | `fcc` | | `{}` | object | Optional: who is licensed on each channel's frequency (they can be different licensees'). See [FCC licenses](systems.md#fcc-licenses) |
 | `enabled` | | `true` | bool | `false` keeps it without recording any of its channels |
 | `squelchDb` | | `8` | number | How far above the measured noise floor a signal must rise to open a channel, dB. The interface allows 3–40 |
@@ -70,10 +71,12 @@ Notes:
   applies to trunked calls only.
 - **Talkgroup names.** A conventional call takes its row's names, if the row has any; else the
   conventional system's own talkgroup file's for the number it's filed under
-  (`<shortName>.talkgroups.csv` beside the config; Setup shows it on a conventional system with
+  (kept in the store; Setup shows it on a conventional system with
   digital channels) — so a digital row with no names lets the file name each talkgroup the air sends. A
   conventional system doesn't borrow the names, or the settings, of a trunked system: give it its
-  own file. The file's format is the [talkgroup file](systems.md#talkgroup-file)'s.
+  own file. The file's format is the [talkgroup file](../guides/talkgroups-and-units.md#format)'s.
+  The **Radio system** page names talkgroups the same way; a talkgroup filed under the air's
+  number, on a row with names, is named once a call of it has been heard.
 - **Recording rules.** A conventional call is recorded, ended and split by its system's rules as a
   trunked call is: a talkgroup the file marks Ignore isn't recorded (its call is still shown), nor
   one it doesn't list when `recordUnknown` is off (a row's own name lists it); the call ends
@@ -119,7 +122,8 @@ A call is filed under:
 | `p25`, `dmr`, `nxdn48`, `nxdn96` | the air's talkgroup; the frequency default when a transmission names none |
 
 A digital call's record keeps the talkgroup the air named as `talkgroup_ota`, also when a row files it
-under another number. That lets several P25 channels whose radios all send TG 1 — the common case —
+under another number, and even when it equals `talkgroup`; it is absent for FM and AM, and for calls
+whose air named none. That lets several P25 channels whose radios all send TG 1 — the common case —
 each file under a number of its own, and keep the 1:
 
 ```json
@@ -138,18 +142,20 @@ users: the most specific row that fits takes a transmission, and a row with none
 one) takes the rest. A transmission no row takes isn't recorded (Setup lists it under the
 frequency, with an Add button).
 
-| Mode | `code` examples | What it matches | `slot` | `matchTalkgroup` |
+| Mode | `code` (bare) | What it matches | `slot` | `matchTalkgroup` |
 |---|---|---|---|---|
-| `fm` | `151.4`, `151.4 PL`, `D023N`, `023 DPL`, `D047I` | A CTCSS tone (67.0–254.1 Hz, standard tones only) or DCS code | — | — |
-| `p25` | `293`, `NAC 293`, `293 NAC`, `$293`, `0x293` | The NAC, in hex (up to 3 digits). `F7E` and `F7F` (a radio's "receive any") mean any | — | 1–65535 |
-| `dmr` | `1`, `CC 1` | Colour code 0–15 | 1, 2 | 1–16777215 |
-| `nxdn48`, `nxdn96` | `5`, `RAN 5` | RAN 0–63. RAN 0 means any | — | 1–65535 |
+| `fm` | `151.4`, `D023N` | A CTCSS tone (67.0–254.1 Hz, standard tones only) or DCS code | — | — |
+| `p25` | `293` | The NAC, in hex (up to 3 digits) | — | 1–65535 |
+| `dmr` | `1` | Colour code 0–15 | 1, 2 | 1–16777215 |
+| `nxdn48`, `nxdn96` | `5` | RAN 0–63 | — | 1–65535 |
 | `am` | (none) | AM carries no code: all three must be empty, and a frequency has one row | — | — |
+| `auto` | (none) | Auto carries no code: all three must be empty, and a frequency has one row | — | — |
 
-Empty, `0`, `S`, `search`, `any` or `none` mean any. A `code` may name the slot and talkgroup too —
-RadioReference's `CC1 TS2 TG201`, `NAC 293 TG 1`, `RAN 5 TG 201` — and is read as the three (if it
-agrees with `slot` and `matchTalkgroup`). Example: one P25 frequency, TG 1 and TG 2 filed apart, the
-rest as the air names them:
+Every spelling a `code` takes (`151.4 PL`, `023 DPL`, `NAC 293`, `CC 1`, `RAN 5`…), and which
+values mean any, are in [Typing a code](../guides/tones.md#typing-a-code). A `code` that names the
+slot and talkgroup too (RadioReference's `CC1 TS2 TG201`) is read as the three, if it agrees with
+`slot` and `matchTalkgroup`. Example: one P25 frequency, TG 1 and TG 2 filed apart, the rest as the
+air names them:
 
 ```json
 { "freqHz": 453500000, "mode": "p25", "code": "293", "matchTalkgroup": 1, "talkgroup": 45351, "name": "Townville PW" },
@@ -164,10 +170,6 @@ Rules for rows sharing a frequency:
 - No two may record the same transmissions (`D023N` and `D047I` are the same DCS signal).
 - The channel opens at the lowest `squelchDb` among them.
 
-Before v0.2.6 a row had one `tone` for all three, and P25 rows sharing a frequency filed under their
-own (default) number; an older config is upgraded when it's read, those P25 rows given the number
-they filed under.
-
 Recording won't start while any of these is broken; the message names the frequency.
 
 ## Channel file (`channelFile`)
@@ -180,11 +182,13 @@ linked:
 - its channels are the file's, and aren't saved in the config (`channels` is written as `[]`);
 - it's re-read when the app starts, whenever settings are saved, at every **Start**, and on
   **Reload**;
-- a file that can't be read keeps the last good list, and Setup shows why under the file name;
+- a file that can't be read keeps the last good list, and Setup shows why under the file name; at
+  **Start**, it stops recording from starting, with the file's problem as the message;
 - **Unlink** stops reading it and keeps its channels in the config.
 
-Channel files are a desktop feature; the browser version has no file to link. Setup's
-**Export CSV** writes the same format from a list.
+Channel files are a desktop feature; the browser version has no file to link. In Setup,
+**Import CSV…** reads the same format into the list (it asks to replace the channels or add to them;
+it isn't shown while a channel file is linked) and **Export CSV** writes it.
 
 ### CSV format
 
@@ -224,9 +228,8 @@ Parsing:
 - Fields can be quoted. Blank lines, `#` comments and a byte-order mark are skipped.
 - A row with no usable frequency is skipped. A bad `Mode`, `TG Number`, `Squelch dB`, `Bandwidth kHz`,
   `Code`, `Slot` or `Match TG` is read as the default. Setup lists each such row after reading the file.
-- A file with a `Tone` column and no `Code` (Trunk Recorder's, or this recorder's before v0.2.6) gets
-  the same upgrade as a config: P25 rows sharing a frequency with no `TG Number` are given the number
-  they filed under before.
+- A file with a `Tone` column and no `Code` (Trunk Recorder's) has its `Tone` read as `Code`, and
+  P25 rows sharing a frequency with no `TG Number` are each given their own number.
 - **Trunk Recorder's channel file reads as is.** Its `Squelch` column (an absolute level) is not
   read: use `Squelch dB`. A `Tone` of `S` (search) needs no setting here, since every analog call's
   tone is identified and written to its JSON anyway.

@@ -3,7 +3,7 @@
 This page covers what Trunk Recorder Pro saves for each call: where the files go and how they are
 named, what is in the call JSON, how the audio is processed, M4A files, which files are kept or
 deleted once plugins have uploaded them, the RAM spool, and the rules that decide which calls are
-kept at all.
+kept at all. Capturing what the radios receive (IQ captures) is on [Captures](captures.md).
 
 Every setting mentioned here is on **Setup → Recording**, and is listed with its key and default in
 the [recording configuration reference](../configuration/recording.md).
@@ -36,6 +36,11 @@ The browser version doesn't write files to a folder: it keeps calls in the brows
 
 ## Choosing folders and file names
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/setup-recording-dark.png">
+  <img src="../img/shots/setup-recording-light.png" alt="The Recording tab of Setup">
+</picture>
+
 To lay files out differently, set **Folders and file names** (`filenameFormat`) under **Call
 rules → Files**. It is a path under the recordings folder, built from tokens such as
 `{talkgroup}` and `{time:%Y}`, with `/` making folders. Leave it empty for the layout above.
@@ -65,48 +70,13 @@ group of its card; left at default, it follows the Recording tab's.
 
 ### Tokens
 
-| Token | Gives |
-|---|---|
-| `{short_name}` | The system's short name |
-| `{sys_num}` | The system's number, from 0: the trunked systems, then the conventional ones |
-| `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
-| `{talkgroup_ota}` | A conventional P25, DMR or NXDN call's talkgroup as the air named it (its row may file it under another `{talkgroup}`); empty for other calls |
-| `{talkgroup_alpha_tag}` | The talkgroup's alpha tag, e.g. `FD_Disp` |
-| `{talkgroup_tag}` | The talkgroup's tag, e.g. `Fire_Dispatch` |
-| `{talkgroup_description}` | The talkgroup's description |
-| `{talkgroup_group}` | The talkgroup's category |
-| `{freq}` | Frequency in Hz |
-| `{freq_mhz}` | Frequency in MHz, four decimals: `858.4875` |
-| `{epoch}` | Start time, seconds since 1970 |
-| `{time:FORMAT}` | Start time in local time |
-| `{ztime:FORMAT}` | Start time in UTC |
-| `{call_num}` | The call's number |
-| `{tdma_slot}` | The slot, on two-slot channels (Phase 2, DMR); empty otherwise |
-| `{audio_type}` | `analog`, `digital` or `digital tdma` |
-| `{emergency}`, `{encrypted}` | `1` or `0` |
-| `{priority}`, `{source_num}`, `{recorder_num}` | As in the call JSON |
-| `{color_code}`, `{ran}` | DMR colour code, NXDN RAN; `-1` when the call has none |
-| `{nac}` | A P25 call's NAC, three hex digits (`293`); empty when it has none |
-| `{system_type}`, `{voice_mode}` | As in the call JSON: `conventional`, `p25`… |
-| `{signal}`, `{noise}` | The call's signal and noise levels in whole dBFS (-45.7 becomes `-45`, as in Trunk Recorder); `0` when not measured |
-
-`FORMAT` is strftime's: `%Y` year, `%m` month, `%d` day, `%H%M%S` time, `%j` day of the year, `%a`
-weekday, `%b` month name, and so on. A `-` after the `%` drops the zero padding (`%-m`, `%-d`).
-`%f` gives milliseconds. `iso` and `iso_ms` are shortcuts for an ISO 8601 time. A time format can
-make folders (`{time:%Y/%m}`).
+The tokens (`{short_name}`, `{site}`, `{talkgroup}`, `{time:%Y}`, …), what each gives, and how a
+name is made safe (`-call_<call number>` added, `:` and unsafe characters replaced, no climbing out
+of the recordings folder) are listed in [File names](../configuration/recording.md#file-names).
 
 ```json
 "filenameFormat": "{short_name}/{time:%Y-%m-%d}/{talkgroup}-{talkgroup_alpha_tag}/{time:%H%M%S}_{freq}"
 ```
-
-### Rendering rules
-
-- `-call_<call number>` is always added to the end of the name, as Trunk Recorder does. (So even a
-  format that copies the default layout gives different names from an empty format.)
-- Text from the talkgroup list has `\ / : * ? " < > |` and spaces turned into `_`.
-- A `:` from a time format (`iso`, `%H:%M`) becomes `-`, because Windows can't have it in a name.
-- Empty folders, `.` and `..` are dropped, so a format can't climb out of the recordings folder.
-- An unknown token is left in the name as typed.
 
 ## What each call saves
 
@@ -142,7 +112,7 @@ It is written on a single line.
 | `clock_off` | `true` when the clock calls are stamped by was off as the call ended: `monitor.clockWarnMs` (250 ms) or more from the time server (or, without one, a radio system's clock), or the operating system said it wasn't synchronized (see [Clock](dashboard.md#clock)). Then its times may be off too. Absent otherwise |
 | `priority`, `mode`, `duplex` | As Trunk Recorder writes them (`mode` and `duplex` are always `0` on conventional calls) |
 | `call_length`, `call_length_ms` | Length of the saved audio, seconds (rounded) and milliseconds |
-| `talkgroup` | Talkgroup number. On a conventional channel, the row's TG Number if it has one, else the talkgroup the air named, else a default from the frequency: see [Tones](tones.md#the-number-a-call-is-filed-under) |
+| `talkgroup` | Talkgroup number. On a conventional channel, the row's TG Number if it has one, else the talkgroup the air named, else a default from the frequency: see [Talkgroup numbers](../configuration/conventional.md#talkgroup-numbers) |
 | `talkgroup_ota` | Conventional P25, DMR and NXDN calls only: the talkgroup the air named, whenever it named one, even when equal to `talkgroup`. Absent otherwise, and on trunked calls |
 | `talkgroup_tag` | The talkgroup's alpha tag |
 | `talkgroup_description` | Its description |
@@ -188,7 +158,7 @@ Before a call is saved:
    transmission, s** are removed. Encrypted transmissions are always removed: what a vocoder makes of
    them is noise.
 2. **Loudness is evened out** (**Even out loudness**, on by default). Each call's speech is
-   brought to about -18.5 LUFS, close to the level Trunk Recorder's uploads have. The gain is
+   brought to about -14 LUFS, louder than Trunk Recorder's uploads (about -18.6). The gain is
    limited to between -18 dB and +24 dB, and a limiter keeps peaks below -2.5 dBFS. A call with less
    than 0.2 s of speech (a keyed radio sending silence, a squelch tail) is left alone rather than
    having its hiss brought up.
@@ -284,7 +254,9 @@ MB** (256 by default). It takes effect the next time recording starts.
 - **macOS:** the app makes a RAM disk of that size (no administrator password needed), mounted out
   of sight inside its data folder (`~/Library/Application Support/trunk-pro/spool`). It doesn't
   appear in the Finder sidebar and isn't indexed by Spotlight.
-- **Linux:** a folder in `/dev/shm`, which is RAM-backed. The app keeps its use under the size you
+- **Linux:** run as a systemd service with a `RuntimeDirectory=` (as the packaged service is), the
+  service's own runtime folder under `/run`; otherwise a folder in `/dev/shm`. Both are
+  RAM-backed. The app keeps its use under the size you
   set. If `/dev/shm` isn't a RAM filesystem on your machine, set `ramSpool.dir` in the config to a
   tmpfs mount of your own.
 - **Other systems (Windows):** there's no automatic spool; set `ramSpool.dir` to a RAM-backed
@@ -308,9 +280,7 @@ When things go wrong, nothing is lost:
   recordings folder and the RAM disk or folder is removed.
 
 The **Overview** page's **Computer** card shows how full the spool is. The dashboard's events
-report it as it fills: `The RAM spool has only N% free: uploads aren't keeping up` (below 25%
-free), `... calls will soon go to the disk` (below 10%), `The RAM spool was full: N calls written
-to the recordings folder instead`, and `The RAM spool has room again`.
+report it as it fills, is full, is deleted and recovers: see [Events](interface.md#events).
 
 ## Spotlight on macOS
 
@@ -319,9 +289,8 @@ recordings folder that gains thousands of calls a day, that's a lot of disk writ
 searches for.
 
 The app checks once a day (and when you change the recordings folder) whether Spotlight indexes the
-folder. If it does, or might, the **Platform** page shows a note: **Spotlight indexes the
-recordings folder** (or **Spotlight may be indexing the recordings folder**) with the steps to stop
-it:
+folder. If it does, or might, the **Platform** page shows a note: **Spotlight indexes
+recordings** (or **Spotlight may index recordings**) with the steps to stop it:
 
 1. Open **System Settings → Spotlight** and click **Search Privacy**.
 2. Click **+** and choose the recordings folder (⇧⌘G in the dialog lets you type a path).
@@ -342,8 +311,15 @@ override them under **Recording** in the **Recording** group of its card; each o
   talkgroup list. A talkgroup patched with a listed one is recorded anyway.
 - **Unit-to-unit calls** (`recordUnitToUnit`, on): private calls between two radios.
 - **Call timeout, s** (`callTimeoutS`, 3): a call ends this long after its last grant or audio.
+- **Conversations** (`conversationMode`, on): a call is the talkgroup's whole conversation, until
+  it has been quiet for the call timeout. Off, each transmission is a call of its own. Trunked
+  systems only. Setup suggests Off for a system with several sites; see
+  [Calls heard on several sites](multi-site.md#calls-heard-on-several-sites).
 
-These first two apply to trunked systems; they have no effect on conventional channels.
+The first two and **Conversations** apply to trunked systems; they have no effect on conventional
+channels. On the Recorder card, **One copy per multi-site call** (`recording.dropDuplicateCalls`,
+on) saves only the best copy of a call heard on several sites; see
+[Calls heard on several sites](multi-site.md#calls-heard-on-several-sites).
 
 **Which calls are kept**
 
@@ -363,101 +339,6 @@ recorded and kept even with no audio, so you have a record of who talked and whe
 encrypted audio is still removed.
 
 A call that isn't kept logs `Call not saved - no audio, or shorter than the minimum`.
-
-## Capture what TRP receives
-
-The **IQ capture** card at the bottom of the **RF** page records what TRP is receiving, to replay
-later or to send in when something isn't working. Pick what to capture, say whether it shows **A problem** or
-**Everything working**, add a note if you like, and press the button. Recording carries on as usual. Nothing is sent anywhere.
-
-| Capture | What it records | Use it for |
-|---|---|---|
-| **Control channel** | One site's control channel, for 30 or 60 seconds from when you press it (a DMR site: each of its frequencies) | Calls that aren't granted or followed, a control channel that decodes badly. A few MB. |
-| **Next call** | The voice channel of the next call to begin on a system, or on one talkgroup, from start to end | Calls that sound bad, are silent or go missing |
-| **Every radio** | Every radio, for 30, 60 or 120 seconds | A problem that isn't one channel's, or a known-good sample of your system to test new versions against |
-
-A capture that waits on the air (a control channel's time, or the next call) is listed under the button with how it's
-going, and **Cancel** gives it up. A channel capture is replayed with `trunk-pro tool channel <folder>`.
-
-Each capture is a folder in `iq-captures/` under the capture directory, or in the folder you choose under **Save captures
-in** (`diagnostics.captureDir` in the config), in [SigMF](https://sigmf.org/): one recording per radio, or the channel's. Use a fast disk:
-several radios can write tens of MB per second, and a busy disk can slow your recordings too. It takes as much disk as the radios' samples: 288 MB a minute for an
-RTL-SDR at 2.4 MS/s, and 2.4 GB a minute for a radio at 10 MS/s. A capture won't start unless it would
-leave 1 GB free.
-
-The capture's metadata has what it takes to decode it: the systems' frequencies and band plans, and
-how the radios were set ([the fields](../sigmf/trp.sigmf-ext.md)). It leaves out names, unit IDs,
-encryption keys, plugin settings, serial numbers and paths. Radio traffic in the samples themselves
-can still be decoded by anyone who has the files.
-
-Beside the recordings, `diagnostics.json` describes the computer and how the radios were doing: operating
-system, CPU, memory, each radio's settings and dropped samples, the shape of the config (how many systems and
-channels), and recent drops, clipping and clock problems. For each second of the capture it also gives each radio's lost
-samples, how full its write queue got and its slowest write, with what the disk was doing and whether it's an HDD or SSD. It
-has no names, frequencies, paths or addresses.
-
-To play one back, with the systems it was made with:
-
-```bash
-trunk-pro replay ~/TrunkRecorderPro/iq-captures/20261108-140311 --out replayed
-```
-
-A capture ends early, and isn't kept, if recording stops, the radio is retuned, or the disk can't keep
-up. The card says which. Samples the radio lost are kept as gaps and shown in the list, and a capture
-with any isn't a good reference.
-
-## Sending a capture to the public corpus
-
-**Review and send…** on a capture shows what would be published: its waterfall,
-metadata and diagnostics. Nothing leaves your computer until you agree. The recording and its diagnostics then become
-public for anyone to download and decode, including all the radio traffic it holds. **Withdraw…** removes it, but
-copies others made can't be recalled. A send picks up where it stopped if the app restarts.
-
-## Capture rules
-
-For a problem that comes and goes, **Capture automatically when something goes wrong**, on the same card, keeps a recording when it happens, within a daily limit:
-20 captures and 5 GB by default. Changes apply the next time recording starts, and nothing is sent anywhere.
-
-The presets cover the common problems. You can add your own as JSON, under `diagnostics.rules` in the config:
-
-```json
-{
-  "id": "weak-calls",
-  "enabled": true,
-  "on": "call.end",
-  "systems": ["county"],
-  "if": "call.call_length > 3.0 && !call.encrypted && call.clean_voice_pct < 70.0",
-  "repeat": { "count": 3, "within": "5m", "by": "call.freq" },
-  "capture": [{ "tier": "voice" }, { "tier": "control" }],
-  "limit": { "cooldown": "30m" }
-}
-```
-
-| Field | What it does |
-|---|---|
-| `on` | The event it's checked on (below) |
-| `systems` | Only these systems (left out: any) |
-| `if` | A condition in [CEL](https://github.com/google/cel-spec) on what's known of the event (left out: always) |
-| `repeat` | Only after `count` matches `within` a window, counted apart for each value of `by` |
-| `every` | A `schedule` rule: how often (`24h`) |
-| `capture` | What to keep: `tier` is `wideband` (every radio), `control` (the last minute of a control channel) or `voice` (the call's channel). A wideband capture can have `before` and `after` (`5s`); `before` needs memory while recording runs |
-| `limit` | `cooldown`: how long before it can fire again |
-
-| `on` | What a condition can name |
-|---|---|
-| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `start_time`, `stop_time` (Unix s), `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `voice` (`p25`, `dmr`, `fm`, …), `tdma_slot`, `units` (how many radios), `unit_ids`, `recorder`, `source`; `call.not_saved` also `not_saved` (`silent` or `short`), `audio_s`, `frames`, `bad_frames` |
-| `control.lost`, `control.regained` | `control.system`, `site`, `freq_hz` |
-| `source.clipping`, `source.drops`, `source.quiet` | `source.index`, `pct`, `per_s`, `peak_db` (quiet: the last minute's peaks, dBFS) |
-| `note.warning` | `note.system`, `site`, `text` |
-| `tick` (every 10 s, each site) | `site.system`, `name`, `good`, `bad`, `failed_pct`, `messages` |
-| `schedule` | nothing |
-
-A wideband capture a rule made says what set it off (`trp:trigger`: the event's facts, a note's text aside, and
-when, seconds into the capture) and what the recording was doing then (`trp:state`: recorders in use, each DMR / NXDN
-site's channel table): see [the `trp` extension](../sigmf/trp.sigmf-ext.md).
-
-A rule that can't run is refused when it's saved. `budget` beside `rules` sets `capturesPerDay`, `mbPerDay` and
-`ramMb`, the memory held for looking back.
 
 ## Vocoder and frame capture
 

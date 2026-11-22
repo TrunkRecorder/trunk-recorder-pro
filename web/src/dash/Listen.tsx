@@ -342,7 +342,7 @@ function CallList({ s }: { s: ListenState }) {
       <footer className="listen-more">
         {rows.length > 500 && <span className="muted small">Newest 500 </span>}
         {l.moreOlder === false ? (
-          <span className="muted small">All calls from the last 24 h</span>
+          <span className="muted small">No older calls</span>
         ) : (
           <button className="btn ghost" onClick={loadOlder} disabled={l.loadingOlder || !s.connected}>
             {l.loadingOlder ? "Loading…" : "Load older"}

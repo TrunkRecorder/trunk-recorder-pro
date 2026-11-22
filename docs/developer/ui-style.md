@@ -10,8 +10,8 @@ The interface has three kinds of screen, each with its own density:
 
 | Kind | Where | What it's for | Density |
 | --- | --- | --- | --- |
-| **Dashboard** | Overview, Listen, RF, Decode, Radio system, Platform, Plugins | Watching the recorder: figures, charts, status | Dense; figures are the largest type |
-| **Setup** | Setup (its tabs) | Changing settings | Roomy; headings and labels lead |
+| **Dashboard** | Overview, Listen, RF, Decode, Radio system, Platform, Plugins, Interfaces | Watching the recorder: figures, charts, status | Dense; figures are the largest type |
+| **Setup** | Setup (its tabs: Systems, Conventional, Radios, Recording, Data, Plugins) | Changing settings | Roomy; headings and labels lead |
 | **Guide** | The setup guide (`Onboarding.tsx`, `.ob-*`) | One question at a time, for someone new | Large type, line art, one column |
 
 Pick the one a new screen is closest to and follow its rules; don't mix them
@@ -92,12 +92,12 @@ size and weight, so the order holds even at a glance:
 | Level | Token | Size / weight | Colour | Element |
 | --- | --- | --- | --- | --- |
 | Page | (topbar) | 22 px / 600 | `--text` | `h1` in the top bar |
-| Section | `--fs-section` | 22 px / 650, −0.015em | `--text` | `.set-section-head h2` |
-| Card | `--fs-card` | 17 px / 650 | `--text` | `.set-card-title h3`, `.panel-head h2` |
-| Group | `--fs-group` | 14.5 px / 650 | `--text` | `.set-group-head h4` |
-| Field label | `--fs-label` | 13 px / 550 | `--text-2` (text softened toward muted) | `.field-label` |
-| Body, inputs | — | 14 px / 400 | `--text` | |
-| Hint | `--fs-hint` | 12.5 px / 400 | `--muted` | `.field-hint`, group and card sub-lines |
+| Section | `--fs-section` | 24 px / 650, −0.015em | `--text` | `.set-section-head h2` |
+| Card | `--fs-card` | 18 px / 650 | `--text` | `.set-card-title h3`, `.panel-head h2` |
+| Group | `--fs-group` | 16 px / 650 | `--text` | `.set-group-head h4` |
+| Field label | `--fs-label` | 14 px / 550 | `--text-2` (text softened toward muted) | `.field-label` |
+| Body, inputs | — | 15 px / 400 (the dashboard's body is 14 px) | `--text` | |
+| Hint | `--fs-hint` | 13.5 px / 400 | `--muted` | `.field-hint`, group and card sub-lines |
 
 A section's description is 14 px muted, and a card's sub-line is 13 px muted.
 
@@ -174,8 +174,8 @@ radios) use `<Card cardKey n>`, which folds to its head:
   keys like `sys-0`).
 - With one card in a list it starts open; with several, folded. Adding one
   calls `addCard()` so the new card opens and the others keep how they
-  look; removing calls `forgetCard()` so the ones after it keep their
-  state.
+  look; a card's open state is keyed by its `cardKey`, so the ones after a
+  removed one keep theirs.
 - A list of two or more gets `<ExpandAll>` in its section's actions.
 - A folded card keeps its body rendered (`hidden`), so `showTodo()` can
   find a field inside, open the card (`data-card`, `data-collapsed`) and

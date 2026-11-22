@@ -23,7 +23,7 @@ plugins.
 | [docs.rs/trunk-recorder-plugin](https://docs.rs/trunk-recorder-plugin) | The SDK's API reference |
 | [The template's protocol page](https://github.com/TrunkRecorder/trunk-plugin-template/blob/main/docs/protocol.md) | The wire format, for plugins in other languages |
 | [TrunkRecorder/plugins](https://github.com/TrunkRecorder/plugins) | The registry the plugin store installs from |
-| The published plugins ([OpenMHz](https://github.com/TrunkRecorder/trunk-plugin-openmhz), [Broadcastify](https://github.com/TrunkRecorder/trunk-plugin-broadcastify), [Rdio Scanner](https://github.com/TrunkRecorder/trunk-plugin-rdioscanner), [simplestream](https://github.com/TrunkRecorder/trunk-plugin-simplestream), [upload-script](https://github.com/TrunkRecorder/trunk-plugin-upload-script), [MQTT](https://github.com/TrunkRecorder/trunk-plugin-mqtt)) | Complete plugins to learn from |
+| The published plugins ([OpenMHz](https://github.com/TrunkRecorder/trunk-plugin-openmhz), [Broadcastify](https://github.com/TrunkRecorder/trunk-plugin-broadcastify), [Rdio Scanner](https://github.com/TrunkRecorder/trunk-plugin-rdioscanner), [simplestream](https://github.com/TrunkRecorder/trunk-plugin-simplestream), [upload-script](https://github.com/TrunkRecorder/trunk-plugin-upload-script), [MQTT](https://github.com/TrunkRecorder/trunk-plugin-mqtt), [Notifications](https://github.com/TrunkRecorder/trunk-plugin-notify)) | Complete plugins to learn from |
 
 ## Starting from the template
 
@@ -69,9 +69,10 @@ The lifecycle, as the recorder (the "host") sees it:
 2. **Start.** When recording starts, the recorder runs the executable with no arguments, in its
    data folder (`plugin-data/<id>/`) as its working folder (in a process group of its own on Linux
    and macOS), and writes `hello`: the
-   plugin's settings, every system it's on for (short name, kind, the plugin's settings for it,
+   plugin's settings, every system it's on for (its `id` and short name, kind, the plugin's settings for it,
    and, when the system sets again some of the plugin's own settings that it offers, those settings
-   as they are for it: `settings`), the recordings folder, the data folder, and the audio formats calls will carry.
+   as they are for it: `settings`; and its sites, each with its `id`, `name` and the plugin's settings
+   for it: `config`), the recordings folder, the data folder, and the audio formats calls will carry.
 3. **Ready.** The plugin answers `ready` once its settings are good. If they aren't, it sends an
    error `status` saying what to fix and exits with status **78**: the recorder shows the message
    and doesn't restart it until its settings change or recording starts again.
@@ -203,16 +204,17 @@ Add the crate and `schemars` (for the settings form):
 
 ```toml
 [dependencies]
-trunk-recorder-plugin = "0.7.0"
+trunk-recorder-plugin = "0.14.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-SDK 0.7.0 is the one for Trunk Recorder Pro 0.2.10. A plugin built on 0.5.0 runs unchanged unless
+SDK 0.14.0 is the one for Trunk Recorder Pro 0.4.0. A plugin built on 0.5.0 runs unchanged unless
 it subscribes to tone patterns: that topic is `tone_pattern` now (`TonePatternEvent`), a pattern has
 `text`, and KNOX digits are `knox: true` rather than a `KNOX ` prefix. Rebuild on it for buttons, a page
-of its own, settings taken without a restart and the names in events (below). A plugin built on an
+of its own, settings taken without a restart, the names in events, and the ids, per-system and
+per-site settings (below). A plugin built on an
 SDK older than 0.5.0 must be rebuilt: systems are numbered from 0 (conventional ones too), and the
 call record names every field instead of keeping some in `extra`. A plugin implements the `Plugin` trait and calls `run`
 from `main`:
@@ -246,10 +248,10 @@ The main pieces:
 
 | Item | What it does |
 |---|---|
-| `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_update`, `call_end`, `call_concluded`, `unit`, `audio`, `voice`, `status`, `tone_pattern`, `log_line`), `action(a, reply)` (one of its buttons pressed: answer with the `Reply`), `settings(setup)` (new settings while it runs, with `live_settings`), `settings_saved(request, ok, message)` (the answer to `Host::save_settings`) and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages, so return quickly and hand network or disk work to threads of your own |
+| `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_update`, `call_end`, `call_concluded`, `unit`, `audio`, `voice`, `status`, `tone_pattern`, `log_line`, `totals`), `action(a, reply)` (one of its buttons pressed: answer with the `Reply`), `settings(setup)` (new settings while it runs, with `live_settings`), `calls(request, page)` (the answer to `Host::calls`), `settings_saved(request, ok, message)` (the answer to `Host::save_settings`) and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages, so return quickly and hand network or disk work to threads of your own |
 | `manifest!()` | A `Manifest` with the id, version, description, homepage, repository, authors and license from `Cargo.toml`; set `name`, `subscribe` and `audio_formats` |
 | `run::<P>()` | Answers `--describe` (and `--version`), parses `hello` and your settings, calls your methods, and exits with 78 when `start` returns `Err` |
-| `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `kind`, `name`, `fcc` (its FCC licenses by frequency), `fcc_call_sign` and `fcc_name` (the one that names it), `sites` (each `SiteInfo { name }`), and your `SystemConfig` or `None`), `host` (`HostInfo { name, version }`: the recorder's), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |
+| `Setup` | What `start` gets: `config`, `systems` (each with `index`, `short_name`, `id`, `kind`, `name`, `fcc` (its FCC licenses by frequency), `fcc_call_sign` and `fcc_name` (the one that names it), `sites` (each `Site { id, name, config }`: `config` your `SystemConfig` for that site, or `None`), `config` (your `SystemConfig` or `None`), and `settings` (your `Config` as it is for the system: with what it sets again)), `host` (`HostInfo { name, version }`: the recorder's), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |
 | `Host` | The way back, usable from any thread: `info`/`warn`/`error`/`debug`, `status`, `call_result` (and `call_result_took`, with your time on it), `metrics`, `calls` (recorded calls), `save_settings` (its own settings, saved). Never `println!` in a plugin: stdout belongs to the protocol |
 | `Reply` | The answer to a button (`Plugin::action`): `ok(message)` or `fail(message)`, once, from any thread; dropped unsent, it answers that the plugin didn't. The recorder waits 15 s for it |
 | `CallQueue`, `QueueOptions`, `Attempt` | An upload queue on worker threads (2 by default) with retries after 10 s, 1 min, 5 min and 15 min, a warning status while calls wait, `call.result`s and `metrics` sent for you, and calls still waiting at shutdown saved to the data folder (`QueueOptions::saved_in`) and resumed next start. Your closure returns `Attempt::Done`, `Skip`, `Retry` or `Fail`. `CallQueue::start_by` also takes a closure naming each call's lane (the server it goes to): each lane gets workers, retries and an endpoint status of its own |
@@ -258,7 +260,7 @@ The main pieces:
 | `Multipart` | A `multipart/form-data` body for any HTTP client |
 | `testing` | Run a plugin without the recorder (below) |
 
-Four of the six published plugins use `CallQueue` (simplestream, which is live, and MQTT, which has
+Four of the published plugins use `CallQueue` (OpenMHz, Broadcastify, Rdio Scanner and Upload script; simplestream, which is live, and MQTT, which has
 a queue of its own, don't), and the smaller ones are short enough to read in one sitting.
 
 ### Settings for each system

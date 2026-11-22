@@ -21,16 +21,17 @@ Each system has its own, shared by all its sites. It's the **Talkgroups** field 
 - **Clear** removes it.
 
 The talkgroup file isn't part of the config, and isn't kept as a path: Setup keeps a copy in the
-recorder's store, and it stays with the system when you rename it. (A config
-from before 0.2.0 had them inside it; they're moved out into these files the first time it's read.) To change it later, edit your copy and load it
+recorder's store, and it stays with the system when you rename it. A `<shortName>.talkgroups.csv`
+beside the config is read into the store at the first start,
+and the file renamed `.imported` (`.unused` when the store already had talkgroups for that system). To change it later, edit your copy and load it
 again, or **Download**, edit, and load, or edit one talkgroup on its page (below). Changes made while
 recording take effect at once (the log says "Talkgroups updated").
 
 When a file is loaded, chips under the field sum it up: where the names came from (when they came
 more than one way, or some were edited by hand: "212 RadioReference", "3 edited"), how many talkgroups are **ignored** and
-**encrypted**, and warnings for **no header row**, a missing **Mode** or **Description** column
-(Trunk Recorder needs those, Trunk Recorder Pro doesn't), **unknown columns**, and **rows without
-a number**.
+**encrypted**, and warnings for **no header row**, a missing column (`no Mode column`, or `no Mode
+or Description column`; Trunk Recorder needs those, Trunk Recorder Pro doesn't), **unknown
+column(s): …**, and rows without a number (`N no number`).
 
 ### Format
 
@@ -63,6 +64,8 @@ Either way:
 - Fields with a comma in them go in double quotes.
 - Blank lines and lines starting with `#` are skipped, as is a spreadsheet's byte-order mark.
 - A row whose `Decimal` isn't a number is skipped.
+- A talkgroup listed twice takes its later row, in the first one's place.
+- Columns not listed below are kept with the row and written back by **Download**, but aren't used.
 
 ### Columns
 
@@ -75,7 +78,7 @@ Either way:
 | `Tag` | the service type ("Fire Dispatch"): `talkgroup_group_tag` in the call JSON |
 | `Category` (or `Group`) | the group it belongs to: `talkgroup_group` in the call JSON |
 | `Mode` | see [Mode](#mode) |
-| `Priority` | only `-1` matters: it means ignore, as in Trunk Recorder |
+| `Priority` | only a negative priority (Trunk Recorder's `-1`) matters: it means ignore, as in Trunk Recorder. Default 1 |
 | `Ignore` | `x`, `yes`, `y`, `true`, `1` or `ignore`: never record it. Trunk Recorder Pro's own column |
 | `Preferred Site` | multi-site: the name of the site whose copy to keep (its **Site name** in Setup; a site without one goes by the system's short name) |
 | `Preferred NAC` | multi-site: the same as Trunk Recorder writes it (a NAC, or RFSS and site as `RRRRssss`, in decimal) |
@@ -233,30 +236,31 @@ Conventional systems take a unit names file too, on their own card.
 
 Many P25 radios send their programmed name ("E12 CAPT") along with their unit ID while they talk:
 a *talker alias*. Trunk Recorder Pro reads them on P25 voice channels, Phase 1 and Phase 2, in
-Motorola's and Harris's formats, and on NXDN voice channels in Kenwood's format (see
-[NXDN](nxdn.md#talker-aliases)), and learns them as it goes. There is nothing to turn on.
+Motorola's and Harris's formats, on NXDN voice channels in Kenwood's format (see
+[NXDN](nxdn.md#talker-aliases)), and on DMR channels (see [DMR](dmr.md#over-the-air-radio-names)),
+and learns them as it goes. There is nothing to turn on.
 
 - Each new or changed alias is logged: `Unit 1234 is "E12 CAPT" (TG 2207)`.
-- Aliases are kept per system in `<shortName>.units.csv`, in the folder the config file is in,
-  and loaded on every start, so a radio keeps its name between runs.
-- The file is in Trunk Recorder's `unitTagsOTA` format (no header;
-  `unitID,alias,source,timestamp,WACN,SYS,talkgroup`; the newest line for a unit wins). You can
-  copy a Trunk Recorder alias file into place under the system's short name to start with what it
-  had learned.
+- Aliases are kept per system in the recorder's store, and loaded on every start, so a radio keeps
+  its name between runs. **Setup → Data** exports them as a CSV (**Talker aliases**) or deletes them.
+- A Trunk Recorder alias file (`unitTagsOTA`) can't be copied in: an old `<shortName>.units.csv` isn't
+  read, and the aliases are learned again on the air.
 - Encrypted calls are still followed for their aliases, because the alias is usually sent in the
   clear. When a system encrypts that too, the log says so once per talkgroup ("Talkgroup 2207:
   link control is encrypted, so its radios' talker aliases can't be read").
 
-DMR talker aliases, and NXDN ones in any format but Kenwood's, aren't read.
+NXDN aliases in any format but Kenwood's aren't read. DMR aliases are read once all of one has
+arrived, but none has yet been saved from a real capture.
 
 ## Common problems
 
 **"no header row" chip.** The file is in Trunk Recorder's headerless form. It loads fine; the
 columns are read in the fixed order. **Download** saves it with a header row added
-(`Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category`, plus `Priority` when a row has one), and so
-does ignoring a talkgroup from the **Radio system** page.
+(`Decimal,Hex,Mode,Alpha Tag,Description,Tag,Category`, plus `Priority` when a row has one).
+Ignoring a talkgroup from the **Radio system** page saves no file: it writes that talkgroup's row
+in the store.
 
-**"unknown column" chip.** A header isn't one of the names above (check the spelling). The column
+**"unknown column(s)" chip.** A header isn't one of the names above (check the spelling). The column
 is kept but not used.
 
 **Talkgroups recorded that you didn't want.** Turn off **Unlisted talkgroups**, or

@@ -34,7 +34,8 @@ export function decodeAudioFrame(buf) {
  *   rec.on("concluded", (m) => console.log(m.entry));    // one message type
  *
  * State (read it, don't change it): connected, version, config, phase
- * ({ phase, error, ended }), status (EngineStatus), sources, calls (on the
+ * ({ phase, error, ended, restartNeeded }), status (EngineStatus: the run's
+ * now, or the last one's after it stopped; null from Start until the first), sources, calls (on the
  * air now), history (recorded calls, newest first), configVersion, talkgroupRows,
  * capabilities, access ("listen" | "control") and user (the user it signed
  * in as, or null), log (after subscribe(["log"])), aliases, error (also why a
@@ -72,7 +73,7 @@ export class TrunkClient {
     this.config = null;
     /** The version of `config`: a `setConfig` names the one it edits. */
     this.configVersion = 0;
-    this.phase = { phase: "idle", error: null, ended: false };
+    this.phase = { phase: "idle", error: null, ended: false, restartNeeded: false };
     this.status = null;
     this.sources = [];
     this.calls = [];
@@ -348,8 +349,10 @@ export class TrunkClient {
         if (this._topics.length) this.send({ type: "subscribe", topics: this._topics });
         break;
       case "state":
-        this.phase = { phase: m.phase, error: m.error, ended: m.ended };
+        this.phase = { phase: m.phase, error: m.error, ended: m.ended, restartNeeded: m.restartNeeded };
         if (m.phase !== "running") this.calls = [];
+        // A new run: the last one's status is gone (after Stop it stays, as it ended).
+        if (m.phase === "starting") Object.assign(this, { status: null, sources: [] });
         break;
       case "status":
         Object.assign(this, { status: m.status, sources: m.sources, calls: m.calls });

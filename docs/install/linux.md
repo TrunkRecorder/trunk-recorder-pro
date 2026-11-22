@@ -186,64 +186,31 @@ service runs on. The app makes the spool again, and the dashboard says what happ
 
 ## Remote access
 
-By default the interface only listens on `localhost`, so only a browser on the same machine can
-reach it. There are two ways to use it from another computer.
-
-**An SSH tunnel** (recommended). Nothing on the server changes and nothing is exposed to the
-network. From your own computer:
-
-```bash
-ssh -L 8080:localhost:8080 you@recorder-host
-```
-
-Leave that running and open `http://localhost:8080` in your browser.
-
-**Listening on the network.** Start it with `--bind 0.0.0.0`, which accepts connections from any
-address:
-
-```bash
-trunk-pro --no-open --bind 0.0.0.0
-```
-
-For the service, edit `~/.config/systemd/user/trunk-pro.service` so the line reads
+By default the interface only listens on `localhost`. From your own computer, an SSH tunnel needs
+nothing changed on the server: `ssh -L 8080:localhost:8080 you@recorder-host`, then open
+`http://localhost:8080`. To listen on the network instead, for the service edit
+`~/.config/systemd/user/trunk-pro.service` so the line reads
 `ExecStart=/usr/local/bin/trunk-pro serve --no-open --bind 0.0.0.0`, then
-`systemctl --user daemon-reload && systemctl --user restart trunk-pro`. Then browse to
+`systemctl --user daemon-reload && systemctl --user restart trunk-pro`, and browse to
 `http://<machine's address>:8080`.
 
-> **Turn on signing in first.** Until you do, anyone who can reach the port can change your
-> settings, browse folders on the machine, install plugins and stop the recorder. On the server:
->
-> ```bash
-> trunk-pro access add me          # an Admin user; prints their token's secret once: keep it
-> trunk-pro access on
-> systemctl --user restart trunk-pro
-> ```
->
-> then paste the secret on the sign-in page. See [Access](../configuration/server-and-log.md#access).
-> On plain HTTP the secret crosses the network in the clear: fine on a network you trust, but
-> never forward the port from the internet. Turn on [HTTPS](../configuration/server-and-log.md#https)
-> (a certificate from `tailscale cert`, Let's Encrypt or mkcert) for other networks; for access
-> from outside, use the SSH tunnel or a VPN.
-
-While it listens only on `localhost`, Trunk Recorder Pro also refuses requests that arrive with
-any other host name (to block web pages that try to reach it through DNS tricks). A reverse proxy
-in front of it that passes on its own host name is refused unless that origin is listed in
-`server.allowedOrigins`; see [Server and log settings](../configuration/server-and-log.md).
-
-To use a port other than 8080, add `--port 8081` (or set it in the config).
+Turn on signing in first, from the server if there's no browser at hand:
+`trunk-pro access add me` (an Admin; it prints the token's secret once), `trunk-pro access on`,
+then restart the service. Signing in, HTTPS, proxies and the rest are in
+[Remote access and signing in](../guides/remote-access.md).
 
 ## Where things are kept
 
 | What | Where |
 |---|---|
 | Settings (`config.json`) | `~/.config/trunk-pro/` (or `$XDG_CONFIG_HOME/trunk-pro/` if you set it) |
-| Band plans, talker aliases, plugins, statistics | The same folder, beside `config.json` |
+| The store (`trunk-pro.sqlite`: talkgroups, band plans, talker aliases, history), plugins | The same folder, beside `config.json` |
 | Log files (when **To files** is on) | `~/.config/trunk-pro/logs/` |
 | Recordings | `~/TrunkRecorderPro/` (change it in **Setup → Recording → Recordings folder**) |
 
-`trunk-pro --config /path/to/config.json` uses another config file. Band plans, plugins and the
+`trunk-pro --config /path/to/config.json` uses another config file. The store, plugins and the
 rest are then kept beside that file, so two recorders with their own config files never share
-them.
+them. See [Files kept beside the config](../configuration/README.md#files-kept-beside-the-config).
 
 ## M4A files
 

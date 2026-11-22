@@ -167,8 +167,8 @@ pub struct Args {
 /// value (`--quiet capture.cu8` is a flag and a positional). `--k=v` sets
 /// any option, these included (`--start=0`).
 const FLAGS: &[&str] = &[
-    "analog-default", "auto-tune", "bursts", "capture-frames", "diversity", "dmr-trunk", "frames", "full", "hard-fec", "keep-silent", "messages", "no-gain", "no-open",
-    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "repeat", "s16", "separation", "start", "threads",
+    "analog-default", "auto-tune", "bursts", "capture-frames", "diversity", "dmr-trunk", "frames", "full", "hard-fec", "keep-silent", "kinds", "messages", "no-gain", "no-open",
+    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "repeat", "s16", "separation", "start", "threads", "transmissions",
 ];
 
 impl Args {
@@ -237,10 +237,10 @@ usage:
       --start begins recording with the saved settings at once.
       --log-level debug: more in the log (stderr; files and syslog as set up).
   trunk-pro devices [--usrp]
-      List RTL-SDRs, Airspys, bladeRFs and SoapySDR devices (and USRPs with
-      --usrp); shows whether the optional USRP (UHD), Airspy (libairspy),
-      bladeRF (libbladeRF) and SoapySDR
-      drivers are installed, and which SoapySDR modules.
+      List RTL-SDRs, HackRFs, Airspys, HydraSDRs, bladeRFs and SoapySDR
+      devices (and USRPs with --usrp); shows whether the optional USRP (UHD),
+      Airspy (libairspy), HydraSDR (libhydrasdr), bladeRF (libbladeRF) and
+      SoapySDR drivers are installed, and which SoapySDR modules.
   trunk-pro capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
       Record raw IQ, like rtl_sdr.
   trunk-pro replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …

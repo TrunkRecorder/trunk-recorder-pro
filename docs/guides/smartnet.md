@@ -32,8 +32,7 @@ To add one by hand, click **Add a system** on **Setup** → **Systems**, set **T
     fallbacks").
   - **Band plan**: see below.
   - **P25 voice modulation**: how the system's P25 voice channels are modulated. It works as on a
-    P25 system ([Modulation](p25.md#modulation-auto-c4fm-or-cqpsk)); **Auto (both receivers)** is
-    safe. It doesn't apply to the control channel or to analog calls.
+    P25 system ([Modulation](p25.md#modulation-auto-c4fm-or-cqpsk)); **Detect** is safe. It doesn't apply to the control channel or to analog calls.
 
 An 800 MHz system in the config file (frequencies in Hz):
 
@@ -91,8 +90,9 @@ WMATA's UHF system, for example:
 }
 ```
 
-All four are needed: Setup won't start with one missing ("SmartNet band plan 400_custom needs its
-base, spacing and high frequency (high above base) and offset").
+Base, spacing and high are needed, and high must be above base; otherwise Setup and the recorder
+won't start ("SmartNet band plan 400_custom needs bandplanBaseHz, bandplanSpacingHz,
+bandplanOffset and bandplanHighHz"). The offset defaults to 0.
 
 If you don't know the numbers, run **Find my system** on the control channel. While it listens it
 watches the spectrum: each time the control channel grants channel *n*, one carrier comes up

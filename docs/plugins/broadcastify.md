@@ -54,8 +54,6 @@ For the whole recorder (Setup > **Plugins**, or `plugins.broadcastify.settings` 
 | `server` | | `https://api.broadcastify.com/call-upload` | string (URL) | **Upload server.** Leave it as it is, unless Broadcastify tells you to change it. |
 | `talkerAliases` | | `true` | bool | **Send talker aliases.** When the first radio on a call sent its name over the air, send that too. |
 | `skipCertificateCheck` | | `false` | bool | **Skip certificate checks.** Upload even when Broadcastify's certificate has expired. Leave it off unless uploads fail with a certificate error; the log warns while it's on. |
-| `healthReports` | | `true` | bool | **Send health reports.** Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads ([Health reports](#health-reports)). Leave it on: without them Broadcastify can't compare your node with others, so it may get a lower priority or be left out, and can't tell you about problems with it ([Turning them off](#turning-them-off)). (Plugin 0.2.0 and later.) |
-| `healthServer` | | (beside `server`) | string (URL) | **Health report server.** Leave it empty: reports go to `…/call-health` beside the upload server. |
 
 For each system (the system's card, or its `plugins.broadcastify` in `config.json`):
 
@@ -66,7 +64,6 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
 | `talkgroupMode` | | `"all"` | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
 | `talkgroupAllow` | | (none) | list | **Only these.** With `"only"`: upload these and no others. |
 | `talkgroupDeny` | | (none) | list | **Except these.** With `"only"` or `"allBut"`: never upload these. |
-| `sites` | | (none) | list | **Sites of their own.** A site of the system that Broadcastify Calls knows as a system of its own: `site` (its name, as under Sites in Setup), `systemId`, and `apiKey` if not the system's. Its calls go there; the other sites' to the system's. (Plugin 0.1.5 and later.) |
 
 ```json
 {
@@ -83,6 +80,18 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
 
 The plugin won't start if no system has an API key, or if a system has a key but no system ID
 (*Add dcfd's Broadcastify system ID (or clear its API key).*).
+
+A site that Broadcastify Calls knows as a system of its own gets its own **API key** and **System
+ID** in its row under **Plugins** > **Broadcastify Calls** on the system's card (`perSite`, by the
+site's id: `"perSite": { "8": { "apiKey": "…", "systemId": 77 } }`); a site needs both (*Add the
+Broadcastify system ID and API key of dcfd's site south.*). A call goes to every site that heard it
+and has a system of its own there; one only sites without a system of their own heard goes to the
+system's. A site turned off for the plugin (**Sites** chips) is left out. See
+[Settings for each site](../configuration/plugins.md#settings-for-each-site).
+
+A system can also set **Upload server**, **Send talker aliases** and **Skip certificate checks**
+again, in **Broadcastify Calls shared settings** on its card (`override` in its
+`plugins.broadcastify` entry). Each server has its own queue and Health status.
 
 Nor will it start with a talkgroup list entry that isn't a talkgroup, a range or a pattern
 (*dcfd's talkgroups: "10O1" isn't a talkgroup…*). Ranges (`1000-1099`) and the menu are plugin 0.1.7
@@ -103,51 +112,6 @@ audio played back to back, ending when the call was saved. The files on disk kee
 **Encrypted calls are never sent**, and neither are calls on talkgroups your lists leave out.
 Both are marked skipped.
 
-## Health reports
-
-Every 5 minutes, at a random point of its own, each system ID (and each site with a system ID of
-its own) sends Broadcastify a [node health report](../api/node-health.md): how long the recorder
-was decoding the control channel, the control messages decoded and lost, the calls announced and
-why any weren't recorded, the voice frames lost, and its radios' dropped samples and clipping.
-When several nodes upload one system, Broadcastify can take its calls from the one hearing it best,
-and tell a node that's up with no calls from one that's down. Reports go on a thread of their own,
-so uploads never wait on them. While Broadcastify doesn't take them, the plugin says so once and
-stops sending them until recording starts again.
-
-### What a report contains
-
-Counts of what the recorder heard, not scores:
-
-- **For each system or site:** the identity its control channel broadcasts (WACN, System ID, RFSS,
-  site, NAC) and the control channel's frequency; the seconds spent decoding it, the messages
-  decoded and lost, its signal-to-noise ratio and phase error; the calls announced, how many were
-  recorded and why any weren't; the voice frames received and lost.
-- **For each conventional channel:** its frequency and the name you gave it, the time it was heard
-  and open, its levels, and its calls.
-- **For each radio (SDR) those use:** the name you gave it, its kind (`airspy`, `hackrf`, ...),
-  seconds of samples dropped, clipping and frequency error.
-- **About the recorder:** its name and version, how long it has been recording, and how far the
-  computer's clock is from the radio system's.
-- **Who sends it:** the node's system ID and API key, as every upload does. Broadcastify doesn't
-  keep the key with the report.
-
-Nothing about people: no talkgroups, radio IDs, talker aliases or audio.
-
-### Turning them off
-
-Untick **Send health reports** (`healthReports: false`). Uploads carry on as before, but
-Broadcastify relies on these reports to look after your node, and without them:
-
-- **Your node can't be compared with others.** When several nodes upload the same system,
-  Broadcastify chooses whose calls to take by how well each one hears it. A node that doesn't
-  report can't be compared, so it may be given a lower priority or left out.
-- **Broadcastify can't tell you about problems.** It can't warn you of an outage, a lost control
-  channel, rising voice loss or other trends on your node, and it can't tell a node that's quiet
-  from one that's down.
-- **Support can't see how your node has been doing** when you ask for help with it.
-
-We recommend leaving them on.
-
 ## When an upload fails
 
 - **Broadcastify can't be reached, has a server error, or gives an answer the plugin doesn't
@@ -167,7 +131,7 @@ fails**): see
 
 ## Coming from Trunk Recorder
 
-**Import Trunk Recorder config…** brings over:
+**Setup → Systems → Import…** brings over:
 
 | Trunk Recorder | Here |
 |---|---|

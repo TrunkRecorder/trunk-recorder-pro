@@ -41,6 +41,15 @@ test("Setup: a HackRF's editor has its stages and bias-T, and needs no driver", 
   assert.equal([...vga.matchAll(/value="(\d+)"/g)].length, 32);
 });
 
+test("Setup: the browser build offers only the radios it opens (no driver, no HackRF)", () => {
+  const c = defaultConfig();
+  setup(c);
+  const kinds = (html: string) => [...(html.match(/role="radiogroup"[^>]*kind"[^>]*>(.*?)<\/div>/)?.[1] ?? "").matchAll(/role="radio"[^>]*>([^<]+)</g)].map((m) => m[1]);
+  assert.ok(kinds(renderToString(<SourceCard c={c} i={0} />)).includes("HackRF"), "the desktop app");
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] });
+  assert.deepEqual(kinds(renderToString(<SourceCard c={c} i={0} />)), ["RTL-SDR", "Capture file"]);
+});
+
 test("Setup: a USRP's editor offers the wire format", () => {
   const c = defaultConfig();
   c.sources = [SOURCE_KINDS.usrp.fresh()];

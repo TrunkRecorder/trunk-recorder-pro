@@ -174,7 +174,7 @@ an earlier recorder may need a new version. The API guide has the messages; what
 - **A site's identity is one shape** everywhere, and a field not heard yet is left out rather than
   `null`: test with `!= null`.
 
-Since 0.2.0 (still `api` 1), what an interface may notice:
+What an interface may notice:
 
 - **Conventional systems are in `status.systems`** too, after the trunked ones, with `sites: []`
   (and `conventionalOpen`): a table of sites should still give them a row.

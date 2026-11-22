@@ -9,7 +9,7 @@ and heat, installing Trunk Recorder Pro, and running it headless. Once it's inst
 Trunk Recorder Pro is light enough that a Pi is a good home for it. It has been tested on a
 Raspberry Pi Compute Module 5 (the same processor as a Pi 5) recording a P25 system from one
 RTL-SDR: about 5 % of one core with a call being recorded, each extra call adding under a point,
-and 56 MB of memory ([Performance](../performance.md) has the details).
+and 56 MB of memory ([Performance](../developer/performance.md) has the details).
 
 - **Raspberry Pi 5** is the best choice and the one that has been measured.
 - **Raspberry Pi 4** runs the same build. It is slower and hasn't been benchmarked; watch the
@@ -71,7 +71,7 @@ If `uname -m` prints `armv7l`, the OS is 32-bit and Trunk Recorder Pro won't run
 
 Download the **`linux-aarch64`** package on the Pi. Replace `<version>` with the latest version from
 the [releases page](https://github.com/TrunkRecorder/trunk-recorder-pro/releases) (for example
-`0.2.0`):
+`0.4.0`):
 
 ```bash
 curl -LO https://github.com/TrunkRecorder/trunk-recorder-pro/releases/download/v<version>/trunk-pro-<version>-linux-aarch64.tar.gz

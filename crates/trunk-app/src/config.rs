@@ -787,8 +787,9 @@ pub struct KindInfo {
     /// EDACS), not followed by one control channel.
     pub watched: bool,
     /// The site-lock fields its control channel states ([`SiteIdentity`]'s,
-    /// as the config writes them), which a site's `expect` is checked by. (NXDN
-    /// Type-D states none: [`System::site_lock_fields`].)
+    /// as the config writes them), which Setup offers as its site lock. (NXDN
+    /// Type-D states none: [`System::site_lock_fields`]. DMR lists none, though
+    /// a site's `expect` in the config file is still checked.)
     pub site_lock: &'static [&'static str],
 }
 

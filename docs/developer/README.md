@@ -1,8 +1,18 @@
 # Development
 
 How to build Trunk Recorder Pro from source, make a release, and find your way around the code.
-For how the recorder works inside, see [Architecture](architecture.md); for the interface API,
-[api/README.md](api/README.md); for plugins, [Writing a plugin](plugins/writing-plugins.md).
+
+| Page | What it covers |
+|---|---|
+| [Architecture](architecture.md) | How the recorder works inside, from the radio to a saved call ([illustrated version](architecture.html)) |
+| [Testing](testing.md) | The tests, the regression captures and the corpus; the house rules for a change |
+| [Developer tools](tools.md) | The `trunk-pro tool …` commands for measuring and testing the decoders |
+| [Performance](performance.md) | CPU use measured against Trunk Recorder, and earlier verification |
+| [Interface style](ui-style.md) | How the interface looks and is organized |
+| [Hytera XPT](protocols/xpt.md) | Protocol notes and evidence for the XPT decoder |
+
+For the interface API see [api/README.md](../api/README.md); for plugins,
+[Writing a plugin](../plugins/writing-plugins.md).
 
 ## Building
 
@@ -14,18 +24,26 @@ sources go, how a config is read — compiled to WebAssembly from
 versions:
 
 ```bash
+git clone https://github.com/TrunkRecorder/trunk-recorder-pro.git && cd trunk-recorder-pro
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.129 --locked
-(cd web && npm ci && npm run wasm && npm run build)   # the interface → web/dist, embedded in the binary
-cargo build --release                                 # target/release/trunk-pro
-cargo test --release --workspace                      # as CI runs it
-(cd web && npm test)
-(cd web && npm run schema)                            # after changing web/src/protocol.ts: docs/api/protocol.schema.json
-cargo build --profile dist                            # stripped, as released
+(cd web && npm ci && npm run wasm)      # the WebAssembly rules → web/src/web/pkg
+(cd web && npm run build)               # the interface → web/dist, embedded in the binary
+cargo build --release                   # target/release/trunk-pro
+cargo build --profile dist              # stripped, as released
 ```
 
+Build the interface before the binary, which embeds `web/dist` when it is compiled, so rebuild
+the binary after changing the interface. Without `npm run wasm` the interface build stops at
+`Could not resolve "./web/pkg/trunk_web.js"`. `npm run build` type-checks (`tsc`) and then runs
+`vite build`.
+
 Run `npm run wasm` again after changing a rule in `trunk-app`'s config (or
-`trunk-web`): the interface and its tests use what it last built.
+`trunk-web`): the interface and its tests use what it last built. After changing
+`web/src/protocol.ts`, run `npm run schema` (in `web/`) to regenerate
+`docs/api/protocol.schema.json`.
+
+[Testing](testing.md) says how to run the tests.
 
 Release packages: `packaging/package.sh <macos|linux-x86_64|linux-aarch64|windows-x86_64|browser> <version> <binary> <out-dir>`
 (what CI runs; see the top of the script).
@@ -36,7 +54,7 @@ A release is a commit that bumps the version, and a tag on it. With
 everything for the release already pushed to `main`:
 
 1. **`Cargo.toml`**: `[workspace.package] version` (`0.2.0` → `0.2.1`). If any corpus capture has a
-   `next.jsonl`, also run `trunk-pro tool corpus release <version>` ([corpus/README.md](../corpus/README.md)).
+   `next.jsonl`, also run `trunk-pro tool corpus release <version>` ([corpus/README.md](../../corpus/README.md)).
    `trunk-core`, `trunk-app`, `trunk-pro` and `trunk-web` take it from
    there; the plugin SDK (`trunk-recorder-plugin`) has its own version
    (below).
@@ -47,7 +65,10 @@ everything for the release already pushed to `main`:
    top. The release notes are this section, copied as it is, so write it
    for users: what's new, what changed, and anything they must change
    (config keys, say) first, in bold.
-4. Commit as `v<version>`, tag, push both:
+4. **Screenshots**: `(cd web && npm run build) && cargo build --release -p trunk-pro`, then
+   `(cd web && npm run shots)`. It retakes the docs' pictures from the interface as it is now
+   ([Screenshots](#screenshots)); the release build stops if they are older than the interface.
+5. Commit as `v<version>` (with `docs/img/shots`), tag, push both:
 
    ```bash
    git commit -am "v0.2.1"
@@ -85,7 +106,7 @@ built for the old one would break.
 `web/`: `npm run dev` serves the interface with hot reload on :5173, talking to
 a running `trunk-pro` on :8080.
 How the interface looks and is organized (type, tokens, Setup's sections,
-cards and groups, wording) is in [Interface style](developer/ui-style.md);
+cards and groups, wording) is in [Interface style](ui-style.md);
 new screens should follow it.
 
 The browser version runs the engine there too (the same WebAssembly):
@@ -95,16 +116,56 @@ The browser version runs the engine there too (the same WebAssembly):
 (cd web && npm run dev:web)                     # hot reload, engine in the page
 ```
 
+## Screenshots
+
+The pictures in the docs are taken by a script, from the real interface, so they show what is on
+the screen now. `web/scripts/shots.config.mjs` lists them: each shot's name, the page it is of and
+how it is reached. `npm run shots` (in `web/`) runs the release binary on a config of its own,
+plays two corpus captures as its radios (a P25 and a SmartNet system), and takes each screen in
+headless Chrome, in the light and the dark theme. They are written to `docs/img/shots/` as
+`<name>-light.png` and `<name>-dark.png`.
+
+```bash
+(cd web && npm run build) && cargo build --release -p trunk-pro
+target/release/trunk-pro tool corpus fetch --only phase2,smartnet   # once
+(cd web && npm run shots)                      # all of them, about a minute and a half
+(cd web && npm run shots -- --only rf,listen)  # some
+```
+
+It needs Google Chrome or Chromium (`CHROME=/path` to name one). A picture is rewritten only when
+the interface's source changed or it shows something else, so a run with nothing new changes no
+file. `docs/img/shots/shots.lock.json` records the version and a hash of the interface's source
+the pictures were taken of. Folders of the run are shown as `/home/trunk/…`, and the state pill
+says "Recording" where a capture playing would say "Replaying".
+
+A doc shows a shot in both themes:
+
+```html
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/rf-dark.png">
+  <img src="../img/shots/rf-light.png" alt="The RF page">
+</picture>
+```
+
+To add one, add it to `shots.config.mjs`, run `npm run shots -- --only <name>`, and show it in a
+doc. Screens that need a radio plugged in (Find my system scanning, the gain tuner) aren't taken.
+
+On a release tag CI runs `npm run shots:check -- --release` (the `shots` job of `build.yml`), and
+the release waits for it: every shot still renders, every picture a doc shows exists, every shot
+is shown by a doc, none is left over, and the interface hasn't changed since the pictures were
+taken. Pushes and merges don't run it. The shots that play captures are skipped where the corpus
+isn't fetched (the `CORPUS_READY` repository variable turns the fetch on).
+
 ## Code layout
 
 ```
-radio (RTL-SDR, USRP, Airspy, SoapySDR, capture file) ─► IQ
+radio (RTL-SDR, HackRF, USRP, Airspy, HydraSDR, bladeRF, SoapySDR, capture file) ─► IQ
   ─► Channelizer: one shared FFT per radio, a "head" per channel, 1 s of pre-roll history
-      ├─ control channels ─► receivers ─► framer ─► TSBK (P25) / OSW (SmartNet) / CSBK (DMR) / CAC (NXDN)
+      ├─ control channels ─► receivers ─► framer ─► TSBK (P25) / OSW (SmartNet) / EDACS messages / CSBK (DMR) / CAC (NXDN)
       │                                         ─► Message ─► call manager (grants, timeouts)
       ├─ voice channels, opened per grant with pre-roll
       │     ─► receivers ─► framer ─► voice tracker ─► IMBE / AMBE+2 vocoder ─► 8 kHz audio
-      └─ conventional channels: energy in the shared spectrum ─► open with pre-roll ─► FM / P25 / DMR / NXDN voice
+      └─ conventional channels: energy in the shared spectrum ─► open with pre-roll ─► FM / AM / P25 / DMR / NXDN voice
   ─► call ends ─► best copy across sites ─► WAV + Trunk Recorder JSON ─► M4A, plugins
 P25 receiver bank = CQPSK + CQPSK with a T/2 CMA equaliser + C4FM, best of each frame
 ```
@@ -133,9 +194,9 @@ threads and how the pieces connect.
 | `…/trunk/` | Control-channel messages (Trunk Recorder's `p25_parser.cc`), call manager (`monitor_systems.cc`), Phase 1, TDMA and DMR voice tracking, conventional channels, multi-site dedupe, the engine (several radios and systems) |
 | `…/survey.rs` | **Find my system**: band scan, control-channel check, band plan and ppm |
 | `crates/trunk-app` | The app layer shared by desktop and browser: config (`config.rs`, with `migrate.rs` upgrading older ones), the conventional channel CSV (`channels.rs`), file names, and a recording `Session` (status, spectrum, log, calls, files) |
-| `crates/trunk-pro` | The desktop app: `serve` (default; radio threads, a decoding thread per source, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `survey`, `rolloff`, `tool`, `plugin`, `interface` |
-| `…/src/sdr.rs` | RTL-SDR over USB via `rtlsdr-nusb` (pure Rust; no libusb / librtlsdr) |
-| `…/src/radio/` | USRP (UHD's C API), Airspy (libairspy) and SoapySDR, loaded at run time when installed |
+| `crates/trunk-pro` | The desktop app: `serve` (default; radio threads, a decoding thread per source, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `survey`, `rolloff`, `tune`, `tool`, `plugin`, `interface`, `access` |
+| `…/src/sdr.rs` | The radio runtime every driver shares: the `Radio` trait, `run_with`, the `Sink`, retune / gain `Control`, the stuck-stream check |
+| `…/src/radio/` | The drivers: RTL-SDR (`rtlsdr-nusb`) and HackRF (`nusb`), pure Rust with no libusb / librtlsdr; Airspy, HydraSDR, bladeRF, SDRplay, SoapySDR and USRP (UHD's C API), loaded at run time when installed |
 | `…/src/plugins/` | The plugin host, store and command line |
 | `…/src/interfaces/` | The other interfaces: their servers, store and command line |
 | `crates/trunk-recorder-plugin` | The plugin protocol, and a Rust SDK for writing plugins (on crates.io) |
@@ -146,11 +207,11 @@ threads and how the pieces connect.
 ## CPU cost
 
 `perf/gate.py` counts the instructions each stage takes on synthetic IQ, which the binary makes
-with its own synthesizers (`tool p25synth`, `dmrsynth`, `nxdnsynth`):
+with its own synthesizers ([`tool p25synth`, `dmrsynth`, `nxdnsynth`](tools.md#synthetic-captures)):
 
 | Stage | What runs |
 |---|---|
-| `radio-rtl`, `radio-hackrf`, `radio-airspy` | A radio's read path (`tool perf`): its driver's per-block code, the sink, the queue |
+| `radio-rtl`, `radio-hackrf`, `radio-airspy` | A radio's read path ([`tool perf`](tools.md#tool-perf)): its driver's per-block code, the sink, the queue |
 | `p25-conventional`, `dmr-conventional`, `nxdn-trunked` | A `replay` of a call: channelizer, receivers, framing, vocoder, WAV |
 
 It counts instructions rather than time because they don't change with clock speed, turbo, heat or
@@ -173,39 +234,3 @@ perf/gate.py --against /tmp/trunk-pro-before
 Hardware counts vary by about 0.2 % from run to run, so each is the median of three (`--runs`).
 `perf/gate.py count --to FILE --name NAME -- CMD…` counts any one command, for scripts that replay
 real captures.
-
-## Verified
-
-Against the archived TypeScript engine, the C++ prototype and Trunk Recorder,
-on synthetic P25 (with ground truth) and on real air (a CQPSK simulcast site,
-NAC 0x443, from an R820T RTL-SDR):
-
-- **Bit-exact** with the TypeScript decoders on identical input: IMBE / LC / ES
-  / HDU / TDULC decoding (0 mismatches) and vocoder audio (max difference 0).
-- **Same results as the C++ prototype:** identical TSBK sets on real air
-  (1149 / 2354 of 1149 / 2354), identical ground-truth scores, the same calls
-  and durations.
-- **Simulcast, synthetic ground truth** (two transmitters, 40 µs, 0.7 echo):
-  100 % of TSBKs and 0 wrong voice codewords.
-- **Real air vs Trunk Recorder on the same capture:** more control messages
-  decoded (1156 vs ~282) and more audio per call (e.g. TG 102 9.5 s vs 8.1 s).
-- **CPU, live against Trunk Recorder** (same radios, one at a time, 30 min
-  each): on a Raspberry Pi 5 (Linux, P25 on one RTL-SDR) 4–6× less while
-  recording (5.0 % of a core vs 20.3 % with one call, 6.2 % vs 35.6 % with
-  three); on macOS 17–20× less (P25 on a USRP at 8 MSPS 11.7 % vs 201 %,
-  SmartNet on two RTL-SDRs 7.6 % vs 149 %), where Trunk Recorder's thread
-  wake-ups cost far more. Each call adds under 1 point against Trunk
-  Recorder's 8–23. Details, charts and method: [Performance](performance.md).
-- **Phase 2 TDMA, real air** (DCFD's 770 MHz channels): bit-exact with the
-  TypeScript decoder (10,588 AMBE codewords, 3,741 MAC PDUs, vocoder audio
-  max difference 0), the same receiver performance (82–97 % of codewords
-  clean, per channel), 0.85 % of a core per channel; clear calls recorded
-  with every voice frame on air.
-- **USRP B200, live** (through UHD 4.9, DCFD's control channel and voice at
-  858 MHz, 8 MSPS): exactly 8.000 MSPS with 0 samples dropped over 3 min,
-  99.8 % of TSBKs (3183 / 6), clear calls recorded with audio matching their
-  length, 3.6 % of one core.
-- **Browser (WebAssembly, Chrome):** the same calls as the native build on the
-  same capture (identical lengths; one bit-exact, the other within ±2 LSB from
-  floating-point rounding), 7 % of a core in real time, 30 s of air decoded in
-  1.5 s.

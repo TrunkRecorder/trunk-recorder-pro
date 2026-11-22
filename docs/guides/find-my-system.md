@@ -1,4 +1,4 @@
-# Find My System
+# Find my system
 
 Find my system scans the air for trunked control channels, listens to the best one, and sets the
 system up from what it hears. This page explains how the scan works, what it reports, the buttons
@@ -11,14 +11,15 @@ channels, and measures your radio's frequency error (and on an RTL-SDR, the best
 
 ## Where to find it
 
-- On **Setup**, **Systems** tab: the **Find my system** panel at the top. It is open when no
-  systems are set up yet; otherwise press **Show**.
+- On **Setup**, **Systems** tab: the **Find my system** panel, below the list of systems. It is open
+  when no systems are set up yet; otherwise press **Show** (and **Hide** to put it away).
 - In the setup guide's **Find a system** step, which runs the same scan with fewer choices. See
   [Getting started](../getting-started.md#first-launch-the-setup-guide).
 
 A scan needs its radio to itself, to retune it. With a source, recording has to be stopped
-(*Stop recording to scan, or plug in a spare radio…*). A **spare radio** (one plugged in that no
-source uses) scans while the others keep recording: it's listed under **Radio** as *(spare)*.
+(*Recording: stop it, or plug in a spare radio*). A **spare radio** (one plugged in that no
+source uses) scans while the others keep recording: it's listed under **Radio** as *(spare)*, and
+if it has a Bias-T, a **Bias-T** switch there powers an LNA for the scan.
 
 It can also look for a system you know of, to tell which of its sites can be heard where you
 are. See [Which sites can be heard here](#which-sites-can-be-heard-here).
@@ -32,14 +33,14 @@ The panel's options:
   control channel is found. See [Gain](#gain).
 - **Bands to scan**: tick the bands to sweep. See [Bands](#bands).
 
-Press **Scan**. While it sweeps, the panel shows *Scanning 800 MHz around 852.008 MHz* and *step 3
-of 44*. Once it has found a control channel and is listening to it, the panel shows a waterfall of
+Press **Scan**. While it sweeps, the panel shows the band and where it is (*Scanning 800 MHz · 852.008 MHz*) and
+the step (*Step 3/44*). Once it has found a control channel and is listening to it, the panel shows a waterfall of
 what the radio hears, a checklist of what it has learned, and the signals it found. **Stop** ends
 it; **Scan again** starts over; **Close** puts the panel away when it's done.
 
-USRP, Airspy and SoapySDR radios can scan in the desktop app only. A capture file source can't be
-retuned, so it is looked at once, at its center frequency (*Scanned at its center frequency*);
-set the capture's center first.
+In the browser only an RTL-SDR (and a capture file) can scan; every other kind of radio needs the
+desktop app. A capture file source can't be retuned, so it is looked at once, at its center
+frequency (*Scans at its center: 858.3000 MHz*); set the capture's center first.
 
 ## Bands
 
@@ -71,8 +72,8 @@ The radio steps across each band. Each step uses 85 % of the radio's bandwidth (
 off), and steps overlap by 25 kHz, so an RTL-SDR at 2.4 MSPS moves about 2 MHz at a time. At each
 step:
 
-1. **Settle**: the first samples after retuning are thrown away (30 ms on an RTL-SDR, 150 ms on a
-   USRP, 200 ms on an Airspy or SoapySDR device).
+1. **Settle**: the first samples after retuning are thrown away (30 ms on an RTL-SDR, 50 ms on a
+   HackRF, 150 ms on a USRP or bladeRF, 200 ms on an Airspy, HydraSDR or SoapySDR device).
 2. **Look** for 0.35 seconds. For each ~1 kHz slice of the spectrum it takes a low percentile of
    the power over that time, so only carriers that stayed on the whole time stand out. A peak at
    least 4 dB over the local noise floor and 3.5 to 30 kHz wide is a candidate, up to 16 per step.
@@ -90,6 +91,7 @@ What each candidate is called, from what decoded:
 | **SmartNet control channel** | at least 3 good SmartNet control words (OSWs) |
 | **DMR control / rest channel** | DMR bursts whose control blocks say which kind of trunking it is |
 | **NXDN control channel** | an NXDN Type-C control channel: at least 2 good control messages (CAC) |
+| **EDACS control channel** | at least 3 good EDACS control messages; it gets no **Listen** or **Add** |
 | **P25 (voice / data)** | P25 frames, but no control messages: a voice channel or conventional P25 |
 | **DMR (conventional / data)** | DMR bursts with no trunking control blocks |
 | **NXDN (conventional / voice)** | NXDN frames but no control channel |
@@ -121,8 +123,9 @@ While listening, the checklist fills in:
 - **Band plan**: for P25, how many channel tables (IDEN messages) it has heard; the control
   channel broadcasts these, and they turn channel numbers into frequencies. For SmartNet, see
   [SmartNet band plans](#smartnet-band-plans).
-- **Frequency correction**: *heard 1650 Hz high → -1.92 ppm*, with the whole number an RTL-SDR
-  takes. See [Frequency correction](#frequency-correction).
+- **Frequency correction**: how far off the carrier was heard (*Low by 1650 Hz*), the
+  **Correction** in ppm (*-1.92 ppm*) and, on an RTL-SDR, the **Dongle** figure, the whole number
+  it takes. See [Frequency correction](#frequency-correction).
 - **Gain**: *trying settings...*, then the gain it chose (*28.0 dB (best of 7)*), or *no clear
   best; unchanged*.
 - **Alternate control channels** the site announces.
@@ -142,8 +145,8 @@ adds the ones nothing decoded.
 The control channel announces its own frequency, and base stations are locked to GPS or a
 rubidium clock, far better than any SDR's crystal. So the difference between where your radio
 hears the control channel and where it says it is, is your radio's error. The scan measures the
-carrier's offset over at least a second, re-centring its receiver on the carrier (up to three
-times) if it was more than 250 Hz off, and reports the total correction to set: what the radio
+carrier's offset (the figure counts from a second of it), re-centring its receiver on the carrier
+(up to three times) once it has averaged at least 1.5 seconds and finds it more than 250 Hz off, and reports the total correction to set: what the radio
 already had plus what it measured.
 
 For SmartNet the "announced" frequency comes from the band plan it learned. On a VHF/UHF (OBT)
@@ -208,15 +211,14 @@ It sets:
 - a site lock with the identity it announced (NAC, WACN, System ID, RFSS, site), so a control
   channel that turns out to be another system's isn't followed. See [P25](p25.md) and
   [Multi-site](multi-site.md);
-- the voice channels it saw (used to place radios; shown on the system card as *voice 14/16
-  covered*).
+- the voice channels it saw (used to place radios; shown on the system card as *Voice 14/16*).
 
 A new system gets a short name made from its identity. A site added to a system uses that system's
 talkgroup list.
 
 And on the radio that scanned:
 
-- **Frequency correction, ppm** (rounded to a whole number on an RTL-SDR);
+- **Correction, ppm** (rounded to a whole number on an RTL-SDR);
 - on an RTL-SDR, the gain it found, with AGC off;
 - the center frequency (see below).
 
@@ -224,10 +226,11 @@ And on the radio that scanned:
 
 The scan picks a center that keeps the control channel in range and covers as many of the voice
 channels it saw as one radio can (then as many of the other control channels), off the radio's
-center spike and inside its guard band. The banner says *Covers all 16 voice channels seen*, or
-*Covers 11 of 16 voice channels seen; the system spans 4.2 MHz* when one radio can't cover the
-system; then a second radio would catch the rest (see [Radios](radios.md#running-several-radios)).
-With no calls seen yet, it centres on the control channel.
+center spike and inside its guard band. The banner's **Center** figure says where, and **Voice
+covered** says how many of the voice channels seen are inside it (*16/16*). When one radio can't
+cover the system it adds **System spans** (*4.2 MHz*); then a second radio would catch the rest
+(see [Radios](radios.md#running-several-radios)). With no calls seen yet, it says *No calls yet:
+centered on the control channel*.
 
 It won't move the radio if that would leave another system with no source covering its control
 channel. Then the message says *source 1 unchanged (in use) — needs a source at 852.3000 MHz*,
@@ -265,7 +268,7 @@ your location:
   Browsers share a location only with pages on HTTPS or `localhost`, so for an interface opened
   over the network by its address, find it instead.
 - Or find a place: a city ("Arlington, VA"), a ZIP code, or a latitude and longitude.
-- Or move the map so its circle is roughly where you are. The circle is 5 km across: only your
+- Or move the map so its circle is roughly where you are. The circle is 10 km across: only your
   general area is needed. The map comes from trunkrecorder.pro, the systems directory's.
 - **Search radius** sets how far: 10 to 150 km (50 by default). Wide-area systems can
   have towers 50 km or more away.
@@ -305,9 +308,11 @@ those frequencies, not the bands.
 ### Starting a check
 
 - **A system you have**: **Check sites** on its card in Setup → Systems. When the check is done,
-  **Turn off the sites not heard** switches those sites off. They're not removed, so you can turn
-  them back on in the site's settings. **Turn on the sites heard** does the opposite, for sites that
-  are off.
+  **Turn off the N sites not heard** (with the count) switches those sites off. They're not
+  removed, so you can turn them back on in the site's settings. **Turn on the N sites heard** does
+  the opposite, for sites that are off. Sites count as heard when they are **Heard** or
+  **Unconfirmed**, and as not heard when they are **Not heard** or **Another site**; **Not
+  checked** is neither.
 - **A system from the directory**: **Check which I can hear** in its import dialog. When the check
   is done, **Import the sites heard…** opens the import again with only those sites ticked.
 - **A RadioReference sites export** (`trs_sites_NNNN.csv`, from a system's page): Setup →
@@ -336,7 +341,7 @@ frequency's carrier was up.
 
 **Listen to each frequency for** sets how long each tuning is listened to. The default is 5
 seconds, which is enough for a control channel to say who it is. DMR defaults to 1 minute, because
-a site without a control channel may only key up for a call. Listen longer to be surer.
+a site without a control channel may only key up for a call. Listen longer to be surer; the choices run from 2 seconds to 10 minutes.
 
 ### What it says about each site
 
@@ -369,25 +374,8 @@ trunk-pro survey --serial 91 --bands t-band --seconds 120
 trunk-pro survey capture.cu8 --center 858300000 --rate 2400000
 ```
 
-| Flag | Default | Description |
-|---|---|---|
-| `<capture>` | | Look at this capture file once, instead of scanning with a dongle |
-| `--serial S` | first RTL-SDR | The RTL-SDR to use, by serial number |
-| `--rate Hz` | `2400000` | Sample rate (of the dongle, or the capture) |
-| `--bands list` | `800,700,900,uhf,vhf` | Bands to scan, by id: `800`, `700`, `900`, `uhf`, `vhf`, `uhf-fed`, `biz-uhf`, `biz-vhf`, `t-band` |
-| `--gain dB` | | A fixed gain; turns off the gain search |
-| `--no-gain` | | No gain search (the dongle scans on its AGC) |
-| `--ppm N` | `0` | The dongle's correction to start from, whole ppm |
-| `--seconds N` | `30` | How long to listen once a control channel is found |
-| `--center Hz` | | A capture's center frequency (required for a capture) |
-| `--format cu8\|cs16\|cf32` | from the extension | A capture's sample format |
-| `--radio JSON` | | Any radio, written as a source in `config.json` (`'{"type":"bladerf","serial":"","centerHz":0,"rateHz":30000000,…}'`), in place of `--serial` |
-| `--freqs list` | | Scan just these frequencies, MHz (`451.175,452.175`), each probed, instead of the bands |
-| `--type T` | every kind | With `--freqs`: run only this kind's receivers (`p25`, `smartnet`, `edacs`, `dmr`, `nxdn`) |
-| `--listen S` | by `--type` | With `--freqs`: listen to each tuning this many seconds (5; DMR 60; no type 2) |
-
-Without `--gain`, the dongle scans with its AGC on, then the gain search tries fixed gains while
-listening. Values can also be written `--rate=2048000`.
+Every option (the bands, gain, a radio other than an RTL-SDR, `--freqs` to check particular
+frequencies, `--identify`) is in [Command line: survey](../command-line.md#survey).
 
 Progress goes to stderr (`survey: scanning`, `survey: monitoring`, source errors). Stdout gets one
 `{"found": {...}}` line per signal as it's found, with its `freqHz`, `correctedHz`, `band`,

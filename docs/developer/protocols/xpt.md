@@ -1,45 +1,8 @@
-# Hytera XPT (receive only)
+# Hytera XPT: protocol notes
 
-Select **DMR (trunked)**. XPT uses the existing 4800-baud DMR receiver,
-burst framing, FEC, two-slot transport, AMBE+2 decoder and recording pool.
-No transmitter, registration, affiliation or decryption is implemented.
-
-## Configuration
-
-XPT is set up as [Capacity Plus](dmr.md) is: there is no dedicated control
-channel, so list every repeater of the site and give the recorder SDR coverage
-of all of them. A repeater is a physical carrier with two slots; its **LCN
-(repeater number, from 1) is not its logical slot number (LSN)**:
-`LSN = 2 * (LCN - 1) + slot`, where the displayed slot is 1 or 2.
-
-Example site settings within a system with `"type": "dmr"`:
-
-```json
-{
-  "controlChannelsHz": [451000000],
-  "dmrChannelsHz": [451012500],
-  "lcnTableHz": {"1": 451000000, "2": 451012500}
-}
-```
-
-`controlChannelsHz` and `dmrChannelsHz` together are the watched repeaters;
-which one is listed as the control channel doesn't matter. `lcnTableHz` gives
-repeater numbers; a repeater left out is learned when a call setup for it is
-followed by that call's voice on a listed frequency. **Do not enter logical
-slot numbers as repeater numbers.** Nothing is learned from status target
-hints, because private-target hashes are not unique IDs.
-
-Hytera permits different colour codes on the repeaters of one site. Leave
-`colorCode` empty in that case: once XPT is identified, every listed frequency
-is taken as the site's, whatever its code. A `colorCode` that is set still
-filters every carrier. Do not put unrelated systems or different sites in one
-site configuration; co-channel sites with identical colour codes cannot be
-separated by the implemented signalling.
-
-Both slots and several repeaters are decoded at the same time; the recording
-pool and source bandwidth decide how many calls. Calls are opened and
-refreshed from voice LC on their actual carrier and slot, so a target hash, a
-data preamble or an unconfirmed setup is never recorded as a call.
+How the recorder decodes Hytera XPT (receive only), what the decoder's tables rest on, and what is
+still unverified. Setting up an XPT site is in [Trunked DMR](../../guides/dmr.md#hytera-xpt). The
+code is `crates/trunk-core/src/dmr/xpt.rs`.
 
 ## Decoding and tracking
 
@@ -69,15 +32,7 @@ from the control channel's `VoiceParams`, which carry the site's DMR variant.
 FID `0x68` alone does not establish XPT; ordinary Hytera/standard DMR keeps its
 24-bit IDs.
 
-## Diagnostics
-
-The dashboard shows an XPT site as it shows Capacity Plus: the variant, the rest
-channel (the free repeater), and each carrier's slots with their calls. Every
-repeater with a free slot sends status, so the control channel shown is the free
-repeater when its frequency is known, else the one taken first while it keeps
-sending. The message log has the deduplicated status lines above.
-
-For raw control, use the existing tool:
+## Raw control with `tool dmr`
 
 ```sh
 trunk-pro tool dmr site.cu8 --center 451000000 --rate 2400000 --freq 451012500 --bursts
@@ -89,7 +44,7 @@ it: 16-bit IDs, the bytes above them cleared. Hytera CSBK `0x0D`, full LC
 `0x0D`, short LC `0x0C` and data terminator LC `0x30` are in the raw lines; their
 field meanings are unverified and the recorder ignores them. `alias` records
 show the over-the-air radio name as it comes together, whole or partial; see
-[DMR radio-name decoding](dmr.md#over-the-air-radio-names). The tool's voice,
+[DMR radio-name decoding](../../guides/dmr.md#over-the-air-radio-names). The tool's voice,
 its muting of encrypted frames and its aliases come from the recorder's own DMR
 voice decoder.
 

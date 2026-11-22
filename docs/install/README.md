@@ -67,7 +67,7 @@ one slice, one dongle is enough. [Radios](../guides/radios.md) explains how to p
 ### A computer
 
 Trunk Recorder Pro is light. On a Raspberry Pi 5 recording a P25 system from one RTL-SDR it used
-about 5 % of one CPU core and 56 MB of memory (see [Performance](../performance.md) for how that
+about 5 % of one CPU core and 56 MB of memory (see [Performance](../developer/performance.md) for how that
 was measured). Any reasonably recent computer will do; a Raspberry Pi 5 is plenty for a typical
 system.
 
@@ -101,7 +101,7 @@ You need:
 - **Rust 1.99 or newer** (the `rust-version` in `Cargo.toml`), from [rustup](https://rustup.rs).
 - **Node.js 20 or newer** for the web interface (the release builds use Node 22).
 
-Since 0.2.0 the interface runs the recorder's own rules as WebAssembly, so the WebAssembly engine is
+The interface runs the recorder's own rules as WebAssembly, so the WebAssembly engine is
 built first, with the WebAssembly target and `wasm-bindgen-cli` at the version pinned in `Cargo.lock`
 (0.2.129 at the time of writing):
 
