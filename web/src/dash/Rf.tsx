@@ -172,7 +172,9 @@ function TuneGain({ s, k, off }: { s: AppState; k: number; off: "low" | "high" |
           inline
           items={[
             mine.phase === "done"
-              ? { k: mine.applied ? "Kept" : "Best", v: mine.best ? gainSettingText(mine.best) : "no change", level: mine.best && !mine.applied ? "warn" : undefined }
+              ? mine.best
+                ? { k: mine.applied ? "Kept" : "Best", v: gainSettingText(mine.best), level: mine.applied ? undefined : "warn", title: mine.tried.at(-1)?.cmp?.snr ? `SNR ${signed(mine.tried.at(-1)!.cmp!.snr!.diff, 1)} dB` : undefined }
+                : { k: "Best", v: mine.outdated ? "changed since" : "as it is", title: "No gain tried decoded better" }
               : { k: "Tuning", v: mine.phase, level: mine.phase === "failed" ? "bad" : "warn", title: mine.error },
             { k: "Tried", v: mine.tried.length, title: `${kept} kept` },
             { k: "Took", v: dur(mine.elapsedS) },

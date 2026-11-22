@@ -26,14 +26,14 @@ use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
 use crate::config::Source;
-use crate::runtime::{publish, Ctx, EngineCmd};
+use crate::runtime::{publish, Ctx, EngineCmd, Hub};
 use crate::{die, Args};
 
-/// The tuning going on, if one is, and its last report.
+/// The tuning going on, if one is, and its last report (with its radio's label).
 #[derive(Default)]
 pub struct Slot {
     active: Mutex<Option<Active>>,
-    last: Mutex<Option<TuneReport>>,
+    last: Mutex<Option<(String, TuneReport)>>,
 }
 
 struct Active {
@@ -66,17 +66,24 @@ impl Slot {
         }
     }
 
-    /// Setup changed source `src`: a tuning of it stops (the edit wins).
-    pub fn edited(&self, src: &Source) {
+    /// Setup changed source `src`: a tuning of it stops (the edit wins); one
+    /// done is outdated (what it found was about the gain it had), and the browsers are told.
+    pub fn edited(&self, hub: &Hub, src: &Source) {
         let tuned = self.active.lock().unwrap().as_ref().is_some_and(|a| a.label == src.label());
         if tuned {
             self.stop("its settings were changed in Setup");
+            return;
+        }
+        let mut last = self.last.lock().unwrap();
+        if let Some((_, r)) = last.as_mut().filter(|(l, r)| *l == src.label() && !r.outdated) {
+            r.outdated = true;
+            publish(hub, ToClient::Tune(r.clone()));
         }
     }
 
     /// The last report, for a browser that connects.
     pub fn last(&self) -> Option<ToClient> {
-        self.last.lock().unwrap().clone().map(ToClient::Tune)
+        self.last.lock().unwrap().clone().map(|(_, r)| ToClient::Tune(r))
     }
 }
 
@@ -175,19 +182,19 @@ pub fn start(ctx: &Arc<Ctx>, req: TuneRequest) -> Result<Option<ToClient>, Strin
 }
 
 /// Tell the browsers how it's going.
-fn tell(ctx: &Ctx, r: &TuneReport) {
-    *ctx.tune.last.lock().unwrap() = Some(r.clone());
+fn tell(ctx: &Ctx, label: &str, r: &TuneReport) {
+    *ctx.tune.last.lock().unwrap() = Some((label.to_string(), r.clone()));
     publish(&ctx.hub, ToClient::Tune(r.clone()));
 }
 
 fn run(ctx: &Ctx, p: Plan, tried: Option<Point>, mut report: TuneReport, rx: &mpsc::Receiver<(f64, Values)>, stop: &Mutex<Option<String>>) {
     log::info!("{}: tuning the gain from {} ({})", report.radio, report.start, p.plan.about.join("; "));
     let began = Instant::now();
-    tell(ctx, &report);
+    tell(ctx, &p.label, &report);
     let mut feed = Feed { ctx, p: &p, rx, stop, last: None };
     let mut compare = |inc: &Point, cand: &Point, final_check: bool, report: &mut TuneReport| -> Result<Option<Cmp>, Stop> {
         report.now = Some(p.plan.setting(cand));
-        tell(ctx, report);
+        tell(ctx, &p.label, report);
         let (cmp, inc_step, cand_step) = feed.compare(inc, cand).map_err(Stop::Interrupted)?;
         report.tried.push(TuneTry {
             candidate: p.plan.setting(cand),
@@ -200,7 +207,7 @@ fn run(ctx: &Ctx, p: Plan, tried: Option<Point>, mut report: TuneReport, rx: &mp
             final_check,
         });
         (report.now, report.elapsed_s) = (None, began.elapsed().as_secs_f64());
-        tell(ctx, report);
+        tell(ctx, &p.label, report);
         Ok(cmp)
     };
     let result = match &tried {
@@ -248,7 +255,7 @@ fn run(ctx: &Ctx, p: Plan, tried: Option<Point>, mut report: TuneReport, rx: &mp
     }
     // (Unless the recording ending took it already.)
     ctx.tune.active.lock().unwrap().take_if(|a| a.label == p.label);
-    tell(ctx, &report);
+    tell(ctx, &p.label, &report);
 }
 
 /// Back to what the run has (which a Setup edit meanwhile has changed, if so).
@@ -310,6 +317,7 @@ impl Feed<'_> {
         let (mut inc_all, mut cand_all) = (Step::default(), Step::default());
         let mut rounds = vec![];
         let mut slices: Vec<(Step, Step)> = vec![];
+        let snrs = |slices: &[(Step, Step)]| -> Vec<(f64, f64)> { slices.iter().filter_map(|(i, c)| Some((i.snr_of(p.scored.as_deref())?, c.snr_of(p.scored.as_deref())?))).collect() };
         for r in 0..p.req.rounds {
             let (mut inc_slice, mut cand_slice) = (Step::default(), Step::default());
             let order = if r % 2 == 0 { [false, true] } else { [true, false] };
@@ -344,7 +352,7 @@ impl Feed<'_> {
                 }
             }
         }
-        Ok((Cmp::of(&rounds), inc_all, cand_all))
+        Ok((Cmp::of(&rounds).map(|c| c.with_snr(&snrs(&slices))), inc_all, cand_all))
     }
 
     /// Sets `at`, lets it settle, and measures it for a slice. `incumbent`: the
@@ -404,7 +412,8 @@ along its tuner's gains, a HackRF's LNA, then VGA, then amp…). Each candidate 
 compared with the best so far by turns, a --slice of seconds each (after --settle),
 for --rounds rounds, and kept only if it scores better by more than --margin and by
 more than twice the rounds' spread. Systems are scored on control channel decoding
-first, then voice frames lost; a gain that clips is refused. Recording goes on
+first, then voice frames lost; where those tie (a control channel decoded in full),
+a gain that lifts its SNR by more than 2 dB is better; a gain that clips is refused. Recording goes on
 throughout, and nothing is saved: the radio goes back as it was at the end (or on
 Ctrl-C) unless --apply keeps the best.
 
@@ -638,7 +647,11 @@ fn line(t: &TuneTry, margin: f64) -> String {
         (None, Some(why)) => format!("refused: {why}"),
         (None, None) => "refused".into(),
         (Some(c), _) if t.final_check => format!("{:+5.1} ± {:.1}  final check against the start", c.diff, c.se),
-        (Some(c), _) => format!("{:+5.1} ± {:.1}  {}", c.diff, c.se, if c.better(margin) { "better: moving to it" } else { "not clearly better" }),
+        (Some(c), _) => format!("{:+5.1} ± {:.1}{}  {}", c.diff, c.se, snr_text(c), match (c.better(margin), c.by_snr(margin)) {
+            (true, true) => "decodes as well, more SNR: moving to it",
+            (true, false) => "better: moving to it",
+            _ => "not clearly better",
+        }),
     };
     let mut out = format!("  {}  vs {}:  {verdict}", t.candidate, t.against);
     for s in &t.systems {
@@ -659,6 +672,11 @@ fn line(t: &TuneTry, margin: f64) -> String {
     out
 }
 
+/// The SNR tie-break's figures, after a score: " · SNR +6.8 ± 0.3 dB".
+fn snr_text(c: &Cmp) -> String {
+    c.snr.map_or_else(String::new, |s| format!(" · SNR {:+.1} ± {:.1} dB", s.diff, s.se))
+}
+
 /// What it found, and what was done with it.
 fn summary(r: &TuneReport, rounds: usize) -> String {
     let mut out = format!("Summary ({:.0} min, {} settings compared)\n", r.elapsed_s / 60.0, r.tried.iter().filter(|t| !t.final_check).count());
@@ -666,7 +684,7 @@ fn summary(r: &TuneReport, rounds: usize) -> String {
         (Some(b), Some(t)) => {
             out.push_str(&format!("  Recommended: gain {b} (now {}).\n", r.start));
             if let Some(c) = t.cmp {
-                out.push_str(&format!("  With it, measured against the current one by turns ({rounds} rounds): score {:+.1} ± {:.1}\n", c.diff, c.se));
+                out.push_str(&format!("  With it, measured against the current one by turns ({rounds} rounds): score {:+.1} ± {:.1}{}\n", c.diff, c.se, snr_text(&c)));
             }
             for s in &t.systems {
                 let star = if s.scored { "*" } else { " " };

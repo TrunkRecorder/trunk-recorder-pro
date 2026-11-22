@@ -3289,6 +3289,10 @@
             "applied": {
               "type": "boolean"
             },
+            "outdated": {
+              "type": "boolean",
+              "description": "The radio was changed in Setup since: what it found was about the gain it had then."
+            },
             "error": {
               "type": "string"
             },
@@ -4781,6 +4785,22 @@
         },
         "candidate": {
           "type": "number"
+        },
+        "snr": {
+          "type": "object",
+          "properties": {
+            "diff": {
+              "type": "number"
+            },
+            "se": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "diff",
+            "se"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -4790,7 +4810,7 @@
         "candidate"
       ],
       "additionalProperties": false,
-      "description": "How a candidate gain compared with the one it would replace, over the rounds: `diff` (candidate less incumbent, 0–100 points) and its standard error `se`."
+      "description": "How a candidate gain compared with the one it would replace, over the rounds: `diff` (candidate less incumbent, 0–100 points) and its standard error `se`; `snr`, the same of the control channel's SNR (dB), the tie-break where decoding is already full."
     },
     "GainSetting": {
       "type": "array",
