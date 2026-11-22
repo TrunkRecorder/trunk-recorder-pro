@@ -459,6 +459,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         engine: Mutex::new(None),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        folders: Default::default(),
         clock: Default::default(),
         unlocked: Default::default(),
         iq: Default::default(),

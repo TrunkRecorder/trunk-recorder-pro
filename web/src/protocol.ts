@@ -1724,6 +1724,8 @@ export interface MonitorEventBody {
     | "linkDown"
     | "linkUp"
     | "diskLow"
+    | "folderUnwritable"
+    | "folderWritable"
     | "spoolLow"
     | "spoolFull"
     | "spoolRecovered"
@@ -1771,6 +1773,28 @@ export interface MonitorEventBody {
   bad?: boolean;
   /** clockStep: how far the wall clock jumped, ms (positive: forward). */
   byMs?: number;
+  /** folderUnwritable, folderWritable: which folder ("recordings", "spool"); with `why`, `path`. */
+  folder?: string;
+  /** folderUnwritable: what the system said, and what to do. */
+  detail?: string;
+  fix?: string;
+  /** folderWritable: files not written meanwhile. */
+  lost?: number;
+}
+
+/** A folder calls are written to, and whether it takes them: checked at startup and when it changes, then told by every write. */
+export interface FolderRow {
+  /** "recordings", "spool" (while it's on). */
+  name: string;
+  path: string;
+  /** null: not checked yet. */
+  ok: boolean | null;
+  /** While it fails: why in a few words, what the system said, what to do, since (Unix s), and files not written since. */
+  why?: string;
+  detail?: string;
+  fix?: string | null;
+  since?: number;
+  lost?: number;
 }
 
 /** The computer, as last sampled (desktop app). Missing values are listed in `unavailable`. */
@@ -1786,6 +1810,7 @@ export interface PlatformInfo {
   uptimeS: number;
   /** "recordings", "data", and "spool" (the RAM spool, with its `kind`, calls `overflowed` to the disk, times it was `removed` while running, and `missing`: gone and not made again). */
   disks: { name: string; path: string; mount: string; totalBytes: number; freeBytes: number; kind?: string; overflowed?: number; removed?: number; missing?: boolean }[];
+  folders?: FolderRow[];
   /** macOS: whether Spotlight indexes the recordings folder (null: not checked yet, or not macOS). */
   spotlight?: { path: string; state: "indexed" | "excluded" | "unknown"; why: string } | null;
   /** A newer release on GitHub than the one running (checked once a day); null when up to date, not checked yet, or `monitor.checkUpdates` is off. */

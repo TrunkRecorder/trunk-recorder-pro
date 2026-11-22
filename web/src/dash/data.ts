@@ -8,7 +8,7 @@ import { isRecording, can, setView, snapshot, statsQuery, useApp, usePolled, typ
 import { dur, keyPart, num, pct, signed } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
-import type { PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, StorageSettings, SystemStatus } from "../protocol.ts";
+import type { FolderRow, PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, StorageSettings, SystemStatus } from "../protocol.ts";
 
 // ── series names (crates/trunk-app/src/stats) ────────────────────────────────
 
@@ -367,11 +367,28 @@ export function spoolRemovedFix(kind?: string): string {
   return "Something deleted the folder set in ramSpool.dir";
 }
 
+/** What a folder is called in a sentence. */
+export const FOLDER_LABEL: Record<string, string> = { recordings: "the recordings folder", spool: "the RAM spool" };
+
+/** The folder named `name` when it can't be written to (at `path`, if given: the one the settings have now). */
+export function folderFailing(s: AppState, name: string, path?: string): FolderRow | undefined {
+  const f = s.host?.platform.folders?.find((x) => x.name === name);
+  return f && f.ok === false && (path === undefined || f.path === path) ? f : undefined;
+}
+
+/** A failing folder's reason and what to do, as one line (a tooltip, a field's note). */
+export function folderWhy(f: FolderRow): string {
+  return [f.detail, f.fix].filter(Boolean).join(". ");
+}
+
 export function platformHealth(s: AppState): Health {
   const h = s.host;
   if (!h) return { level: "idle", why: "Waiting for the first sample" };
   const v = h.values;
   const hs: Health[] = [];
+  for (const f of h.platform.folders ?? []) {
+    if (f.ok === false) hs.push({ level: "bad", why: `Can't write to ${FOLDER_LABEL[f.name] ?? f.name}: ${f.why}${f.lost ? ` · ${num(f.lost, 0)} files not saved` : ""}` });
+  }
   for (const d of h.platform.disks) {
     const free = (100 * d.freeBytes) / Math.max(1, d.totalBytes);
     if (d.name === "spool") {

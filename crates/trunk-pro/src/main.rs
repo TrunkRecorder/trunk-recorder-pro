@@ -110,6 +110,7 @@ mod iq_capture;
 mod iq_rules;
 mod iq_send;
 mod directory;
+mod folder;
 mod dmrtool;
 mod interfaces;
 mod kept;
@@ -1121,6 +1122,7 @@ fn serve(a: &Args) {
         engine: Mutex::new(None),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        folders: Default::default(),
         clock: Default::default(),
         unlocked: Default::default(),
         iq: Default::default(),
@@ -1129,7 +1131,14 @@ fn serve(a: &Args) {
         cloudflare: Default::default(),
         tls: tls.map(std::sync::OnceLock::from).unwrap_or_default(),
     });
-    monitor::start(ctx.clone());
+    // A folder failing, and taking files again, is an event too ([`folder`]).
+    let weak = Arc::downgrade(&ctx);
+    ctx.folders.on_event(Box::new(move |e| {
+        if let Some(ctx) = weak.upgrade() {
+            ctx.event(e);
+        }
+    }));
+    ctx.plugins.archive.writes_to(ctx.folders.recordings.clone());
     iq_send::resume(&ctx, &iq_capture::root(&ctx.config.lock().unwrap()));
     // What each call kept once its plugins are done, for the history list.
     let weak = Arc::downgrade(&ctx);
@@ -1152,10 +1161,14 @@ fn serve(a: &Args) {
         log::info!("Trunk Recorder Pro {} — open {url}", env!("CARGO_PKG_VERSION"));
         log::info!("Using Config file: {}", config_path.display());
         log::info!("Capture Directory: {}", c.recording.capture_dir);
+        // (Checked here, so why it can't take calls is said next to where it is; the monitor checks it again as it runs.)
+        ctx.folders.recordings.set_path(Path::new(&c.recording.capture_dir));
+        let _ = ctx.folders.recordings.check();
         log::info!("Call store: {}", ctx.db.describe().unwrap_or_else(|| "off (the call files and recent calls only)".into()));
         let dir = if l.dir.is_empty() { config_path.parent().unwrap_or(Path::new(".")).join("logs") } else { config_path.parent().unwrap_or(Path::new(".")).join(&l.dir) };
         log::info!("Log Level: {} · Log to File: {}{} · System log: {}", level.unwrap_or(l.level).as_str(), l.file, if l.file { format!(" ({})", dir.display()) } else { String::new() }, l.syslog);
     }
+    monitor::start(ctx.clone());
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
     if auto {
         if let Err(e) = ctx.begin_recording() {

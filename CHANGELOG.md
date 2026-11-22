@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The recordings folder is checked, and a failure to write says why.** At startup and whenever the folder changes in
+  Setup, the recorder writes a file of its own there and deletes it. After that, every call's files go through the same
+  path, so a folder that stops taking them partway through a run (a drive unplugged, a share gone, a disk full) is
+  caught by the next call. The log says why the first time, in plain words, with what to do: permission denied (who
+  owns the folder, and who the app runs as), blocked by macOS privacy, a read-only disk, a full disk, a file in the way,
+  or a drive that isn't mounted. After that it counts the files not saved, and the first call saved afterwards says the
+  folder works again. The dashboard's computer light turns red, Platform → Disks shows why and how many files weren't
+  saved, the event feed has it, and Setup → Recording shows **Writable** or **Can't write** under the folder (Onboarding
+  too). A folder that vanished isn't made again on the disk beneath it, so a drive that's gone doesn't quietly fill the
+  system disk. A call the RAM spool can't take goes to the recordings folder instead of being lost.
+
 ## [0.4.0] — 2026-11-21
 
 - **Sign-in, optional** (#174). Off by default; off, nothing changes. Users in `server.auth.users`, each **View**

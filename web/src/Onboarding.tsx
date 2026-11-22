@@ -38,6 +38,7 @@ import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
 import { BiasT, CopyButton, FileInput, TextInput } from "./inputs.tsx";
 import { Fig, Figs, Info } from "./charts.tsx";
+import { FolderCheck } from "./FolderCheck.tsx";
 import type { Config, OriginFrom, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
@@ -1383,6 +1384,7 @@ function StorageStep(props: { s: AppState; c: Config; defaultDir: string; onNext
           }}
         />
       )}
+      {!choosing && <FolderCheck name="recordings" path={dir} />}
       <p className="ob-aside">
         Settings file <span className="ob-mono">{props.s.configPath}</span>
       </p>
