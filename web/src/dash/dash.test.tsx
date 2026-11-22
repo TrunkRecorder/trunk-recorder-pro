@@ -7,9 +7,10 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, dashSystems, pageHealth, rangesFor } from "./data.ts";
+import { coverage, dashSystems, pageHealth, rangesFor, type DetailedSite } from "./data.ts";
 import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
+import { DmrSites } from "./Systems.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
@@ -163,6 +164,18 @@ test("Decode: a DMR site's identity on the one identity line: CC, network, site,
   // Before the site detail arrives: the identity and calls, no code.
   const bare = renderToString(<SiteIdentityLine kind="dmr" st={st} dmr={null} calls={0} active={0} />);
   assert.ok(!bare.includes("Sys code") && bare.includes("Network") && bare.includes("Calls"));
+});
+
+test("Decode: a DMR carrier sending control blocks is the rest channel where the site has one (Capacity Plus, XPT), else control", () => {
+  const carrier = { freqHz: 463_375_000, control: true, colorCode: 1, slots: [null, null] };
+  const chip = (variant: string, rest: { lsn: number; freqHz: number | null } | null) => {
+    const dmr = { variant, colorCode: 1, sysCode: null, rest, keyed: false, channels: [], carriers: [carrier] };
+    const html = renderToString(<DmrSites sites={[{ label: "s", dmr } as unknown as DetailedSite]} />);
+    return html.match(/chip ok small">(\w+)</)?.[1];
+  };
+  assert.equal(chip("Hytera XPT", { lsn: 1, freqHz: 463_375_000 }), "rest");
+  assert.equal(chip("DMR Capacity Plus", { lsn: 3, freqHz: null }), "rest");
+  assert.equal(chip("DMR Connect Plus", null), "control");
 });
 
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {

@@ -10,7 +10,8 @@ import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
   ApiAccess,
-  AuthPasskey,
+  OwnPasskey,
+  Session,
   MonitorEvent,
   PlatformInfo,
   RadioResult,
@@ -779,11 +780,9 @@ export function createToken(name: string, access: ApiAccess): Promise<TokenCreat
   return ask<TokenCreated>({ type: "createToken", id: nextId++, name, access });
 }
 
-/** A passkey of the signed-in user's, as the session lists it: never its key. */
-export type OwnPasskey = Pick<AuthPasskey, "id" | "name" | "created">;
+export type { OwnPasskey, Session };
 
 /** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
-export type Session = { auth: boolean; access: ApiAccess | null; user: string | null; proxy?: boolean; passkeys?: boolean; passkeyOrigin?: string; ownPasskeys?: OwnPasskey[] };
 export async function fetchSession(): Promise<Session | null> {
   if (transport.kind !== "desktop") return null;
   try {

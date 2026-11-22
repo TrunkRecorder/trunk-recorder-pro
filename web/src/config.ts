@@ -182,9 +182,11 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
 
 /** The kinds of source with a driver (installed, or built in) and so the desktop app: the recorder reports each in `radios`. */
 export type DriverKind = keyof Radios;
-export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter((k): k is DriverKind => !!(SOURCE_KINDS[k].driver || SOURCE_KINDS[k].native));
+/** A kind of source the desktop app alone opens: a library loaded at run time, or a driver of its own. */
+export const kindNeedsDriver = (k: Source["type"]): k is DriverKind => !!(SOURCE_KINDS[k].driver || SOURCE_KINDS[k].native);
+export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter(kindNeedsDriver);
 /** A source that needs a driver, and so the desktop app. */
-export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => !!(SOURCE_KINDS[x.type].driver || SOURCE_KINDS[x.type].native);
+export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => kindNeedsDriver(x.type);
 /** A source with a bias-T the recorder switches. */
 export const hasBiasT = (x: Source): x is Extract<Source, { biasTee: boolean }> => !!SOURCE_KINDS[x.type].biasT;
 

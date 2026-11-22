@@ -121,7 +121,7 @@ pub struct SiteStatus {
     pub color_code: Option<u8>,
     /// Tier III / Capacity Max: the system identity code from the control channel.
     pub sys_code: Option<SysCode>,
-    /// Capacity Plus: the rest channel (logical slot number, frequency; 0 = not known yet).
+    /// Capacity Plus and XPT: the rest channel (logical slot number, frequency; 0 = not known yet).
     pub rest: Option<(u32, u64)>,
     /// Keyed CRCs (restricted access).
     pub keyed: bool,
@@ -196,7 +196,7 @@ pub struct Site {
     /// Channels learned from a call that came up where it was granted: the
     /// surest evidence, so a rest channel's site status doesn't move them.
     placed_by_call: BTreeSet<u32>,
-    /// Capacity Plus: the rest channel's logical slot number and frequency.
+    /// Capacity Plus and XPT: the rest channel's logical slot number and frequency.
     pub rest: Option<(u32, u64)>,
     /// Keyed CRCs seen (restricted access).
     pub keyed: bool,

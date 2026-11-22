@@ -688,6 +688,27 @@ export interface AuthPasskey {
   key: unknown;
 }
 
+/** A passkey of the signed-in user's, as the session lists it: never its key. */
+export type OwnPasskey = Pick<AuthPasskey, "id" | "name" | "created">;
+
+/** GET /api/session: how the recorder sees this request. */
+export interface Session {
+  /** Signing in is on. */
+  auth: boolean;
+  /** What this request may do; null: sign in first. */
+  access: ApiAccess | null;
+  /** The user it signed in as, by name; null when it didn't (a token of no user, signing in off, not signed in). */
+  user: string | null;
+  /** The proxy in front signed it in (then it's the proxy's to sign out of). */
+  proxy?: boolean;
+  /** Passkeys work here: the built-in interface's port, on a host they work on. */
+  passkeys?: boolean;
+  /** The one origin passkeys work at (from any port: a page elsewhere links there); absent when none. */
+  passkeyOrigin?: string;
+  /** The signed-in user's own passkeys; absent when none, or not signed in as a user. */
+  ownPasskeys?: OwnPasskey[];
+}
+
 /** An access token: its secret's SHA-256 (hex). The secret itself is never kept. */
 export interface AuthToken {
   hash: string;
@@ -888,7 +909,7 @@ export interface DmrSiteStatus {
    *  it splits into the network and site the site's `identity` carries) and which category of
    *  radio may use the site. */
   sysCode: { code: number; model: "Tiny" | "Small" | "Large" | "Huge"; category: "reserved" | "A" | "B" | "A+B" } | null;
-  /** Capacity Plus: the rest channel's logical slot number, and its frequency once known. */
+  /** Capacity Plus and XPT: the rest channel's logical slot number, and its frequency once known. */
   rest: { lsn: number; freqHz: number | null } | null;
   /** Keyed CRCs (restricted access). */
   keyed: boolean;
