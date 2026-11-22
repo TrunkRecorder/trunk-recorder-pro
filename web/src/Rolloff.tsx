@@ -5,7 +5,7 @@
 // each edge — dragged there, or set with the slider — and the channels it
 // would leave out.
 
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { activeSites, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, kindLabel, resolvedCenters, siteNameOf, watchedChannels } from "./config.ts";
 import { isRecording, profileSource, updateConfig, useApp } from "./controller.ts";
 import { decimal, type TextCodec } from "./fieldText.ts";
@@ -36,70 +36,91 @@ function watched(c: Config): { hz: number; label: string }[] {
 /**
  * Source `i`'s guard band, and measuring it. `fresh`: just added, so the
  * measuring is offered (it's optional); `onFreshDone` once taken up or turned down.
+ * `shows`: what draws the guard band beside it, given the one shown now.
+ *
+ * The guard band shown moves as it's typed or stepped in the field, or
+ * dragged on the roll-off plot, before it's kept (#105): the field keeps it
+ * once left, the plot with Use.
  */
-export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
+export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void; shows?: (guardHz: number) => ReactNode }) {
   const { c, i } = props;
   const src = c.sources[i];
   const guard = src.guardHz ?? DEFAULT_GUARD_HZ;
   const [open, setOpen] = useState(false);
+  // Not kept yet: as typed in the field (while it's in use), and as set on the plot.
+  const [typed, setTyped] = useState<number | undefined>();
+  const [picked, setPicked] = useState<number | null>(null);
+  const shown = typed ?? picked ?? guard;
   // Typed in kHz, snapped to the step (shown snapped once left: "7" on the way to 75 stays).
   const khzCodec: TextCodec<number | undefined> = {
     format: (hz) => (hz === undefined ? "" : String(Math.round(hz / 1000))),
     parse: (t) => (decimal.parse(t) === undefined ? undefined : snap(decimal.parse(t)! * 1000, src.rateHz)),
   };
-  const setGuard = (hz: number) =>
+  const setGuard = (hz: number) => {
+    setPicked(null);
     updateConfig((x) => {
       x.sources[i].guardHz = hz;
     });
+  };
   const start = () => {
     setOpen(true);
     props.onFreshDone?.();
   };
+  // A guard band set on the plot and not used goes with it.
+  const close = () => {
+    setOpen(false);
+    setPicked(null);
+  };
 
   return (
-    <div className="field wide">
-      <span className="field-label">
-        Guard band
-        <Info>Unused at each edge, where the radio&apos;s filter rolls off. Default {khz(DEFAULT_GUARD_HZ)}.</Info>
-      </span>
-      <div className="row">
-        <DraftInput
-          type="number"
-          className="guard-input"
-          min={0}
-          max={src.rateHz / 4 / 1000}
-          step={5}
-          codec={khzCodec}
-          value={guard}
-          onChange={(hz) => hz !== undefined && setGuard(hz)}
-          aria-label="Guard band at each edge, kHz"
-        />
-        <span className="muted">kHz at each edge</span>
-        <span className="spacer" />
-        <button className="btn ghost small" onClick={() => (open ? setOpen(false) : start())}>
-          {open ? "Close" : "Profile roll-off…"}
-        </button>
-      </div>
-      {props.fresh && !open && (
-        <div className="banner small">
-          <span>New radio: measure its roll-off?</span>
-          <span className="row">
-            <button className="btn small" onClick={start}>
-              Profile roll-off
-            </button>
-            <button className="btn ghost small" onClick={() => props.onFreshDone?.()}>
-              Skip
-            </button>
-          </span>
+    <>
+      <div className="field wide">
+        <span className="field-label">
+          Guard band
+          <Info>Unused at each edge, where the radio&apos;s filter rolls off. Default {khz(DEFAULT_GUARD_HZ)}.</Info>
+        </span>
+        <div className="row">
+          <DraftInput
+            type="number"
+            className="guard-input"
+            min={0}
+            max={src.rateHz / 4 / 1000}
+            step={5}
+            codec={khzCodec}
+            value={picked ?? guard}
+            onChange={(hz) => hz !== undefined && setGuard(hz)}
+            onDraft={(hz) => setTyped(hz)}
+            aria-label="Guard band at each edge, kHz"
+          />
+          <span className="muted">kHz at each edge</span>
+          <span className="spacer" />
+          <button className="btn ghost small" onClick={() => (open ? close() : start())}>
+            {open ? "Close" : "Profile roll-off…"}
+          </button>
         </div>
-      )}
-      {open && <Profiler c={c} i={i} src={src} guard={guard} onApply={setGuard} />}
-    </div>
+        {props.fresh && !open && (
+          <div className="banner small">
+            <span>New radio: measure its roll-off?</span>
+            <span className="row">
+              <button className="btn small" onClick={start}>
+                Profile roll-off
+              </button>
+              <button className="btn ghost small" onClick={() => props.onFreshDone?.()}>
+                Skip
+              </button>
+            </span>
+          </div>
+        )}
+        {open && <Profiler c={c} i={i} src={src} guard={guard} draft={shown} setDraft={setPicked} onApply={setGuard} />}
+      </div>
+      {props.shows?.(shown)}
+    </>
   );
 }
 
-function Profiler(props: { c: Config; i: number; src: Source; guard: number; onApply: (hz: number) => void }) {
-  const { c, i, src, guard } = props;
+/** Measuring the roll-off; `draft`: the guard band shown on it, not kept until Use. */
+function Profiler(props: { c: Config; i: number; src: Source; guard: number; draft: number; setDraft: (hz: number) => void; onApply: (hz: number) => void }) {
+  const { c, i, src, guard, draft, setDraft } = props;
   const s = useApp();
   const center = resolvedCenters(c)[i];
   const [text, setText] = useState(center ? formatMhz(center) : "");
@@ -108,7 +129,6 @@ function Profiler(props: { c: Config; i: number; src: Source; guard: number; onA
   const profile = s.profile?.source === i ? s.profile : null;
   const result = profile && "suggestedGuardHz" in profile ? profile : null;
   const recording = isRecording(s.phase);
-  const [draft, setDraft] = useState(guard);
   // A new measurement proposes its suggestion.
   useEffect(() => {
     if (result) setDraft(result.suggestedGuardHz);

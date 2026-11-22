@@ -11,6 +11,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   event plugins get on their `unit` topic. Listen-only connections may subscribe. The recorder builds these only while
   someone takes them. (From PR #110 by auggiesoft, which first asked for a unit activity feed.)
 
+- **The guard band moves as it's changed.** In Setup → Radios, stepping or typing the guard band moves the coverage bar
+  and the roll-off plot's edges straight away; it's saved once the field is left, as before (Escape puts it back). The
+  roll-off plot and the field show the same guard band, so a value typed while the plot is open shows there too. (#105)
+
 ## [0.4.1] — 2026-11-22
 
 - **The recordings folder is checked, and a failure to write says why.** At startup and whenever the folder changes in

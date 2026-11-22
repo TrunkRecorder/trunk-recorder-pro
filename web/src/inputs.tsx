@@ -90,15 +90,18 @@ type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "default
 /**
  * A field's text while it's being typed in, and keeping it when it's done:
  * left, Enter (`enter`), or gone with its page. Escape: back as it was.
+ * `onDraft`: the value as typed (or stepped), before it's kept, for what
+ * shows it as it changes; undefined once the field is left.
  */
-function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void) {
+function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void, onDraft?: (v: T | undefined) => void) {
   const [text, setText] = useState<string | null>(null);
   // (The latest of each, for the handlers and the page going away.)
-  const at = useRef({ text: null as string | null, value, codec, onChange });
-  Object.assign(at.current, { value, codec, onChange });
+  const at = useRef({ text: null as string | null, value, codec, onChange, onDraft });
+  Object.assign(at.current, { value, codec, onChange, onDraft });
   const edit = (t: string | null) => {
     at.current.text = t;
     setText(t);
+    at.current.onDraft?.(t === null ? undefined : codec.parse(t));
   };
   const finish = () => {
     const { text, value, codec, onChange } = at.current;
@@ -113,7 +116,7 @@ function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void) {
     type: (t: string) => edit(t),
     blur: () => {
       finish();
-      setText(null);
+      edit(null);
     },
     key: (e: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>, enter: boolean) => {
       if (e.key === "Escape") {
@@ -129,9 +132,9 @@ function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void) {
  * text as typed, read with `codec.parse` and passed on once the field is left
  * or Enter pressed. `sizeToText`: as wide as its text.
  */
-export function DraftInput<T>(props: InputProps & { value: T; codec: TextCodec<T>; onChange: (v: T) => void; sizeToText?: boolean }) {
-  const { value, codec, onChange, onFocus, onBlur, onKeyDown, sizeToText, ...rest } = props;
-  const d = useDraft(value, codec, onChange);
+export function DraftInput<T>(props: InputProps & { value: T; codec: TextCodec<T>; onChange: (v: T) => void; onDraft?: (v: T | undefined) => void; sizeToText?: boolean }) {
+  const { value, codec, onChange, onDraft, onFocus, onBlur, onKeyDown, sizeToText, ...rest } = props;
+  const d = useDraft(value, codec, onChange, onDraft);
   return (
     <input
       {...rest}

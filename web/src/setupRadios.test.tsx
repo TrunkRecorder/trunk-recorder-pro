@@ -50,6 +50,18 @@ test("Setup: the browser build offers only the radios it opens (no driver, no Ha
   assert.deepEqual(kinds(renderToString(<SourceCard c={c} i={0} />)), ["RTL-SDR", "Capture file"]);
 });
 
+test("Setup: a radio's coverage is drawn under its guard band, by the guard band shown", () => {
+  const c = defaultConfig();
+  c.sources = [{ ...SOURCE_KINDS.rtlsdr.fresh(), centerHz: 851_000_000, rateHz: 2_400_000, guardHz: 100_000 }];
+  setup(c);
+  const covers = (html: string) => html.match(/aria-label="(Covers [^"]*)"/)?.[1];
+  const html = renderToString(<SourceCard c={c} i={0} />);
+  assert.equal(covers(html), "Covers 849.900 to 852.100 MHz");
+  assert.ok(html.indexOf('aria-label="Guard band at each edge, kHz"') < html.indexOf('aria-label="Covers'), "under the guard band field");
+  c.sources[0].guardHz = 200_000;
+  assert.equal(covers(renderToString(<SourceCard c={c} i={0} />)), "Covers 850.000 to 852.000 MHz");
+});
+
 test("Setup: a USRP's editor offers the wire format", () => {
   const c = defaultConfig();
   c.sources = [SOURCE_KINDS.usrp.fresh()];
