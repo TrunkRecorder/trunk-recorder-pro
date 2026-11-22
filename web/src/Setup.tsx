@@ -1296,12 +1296,19 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
         <div className="wide">
           <SourceSuggestion c={c} i={i} advice={props.advice ?? null} />
         </div>
-        <GuardBand c={c} i={i} fresh={props.fresh} onFreshDone={props.onFreshDone} />
-        {center ? (
-          <div className="wide">
-            <CoverageBar c={c} center={center} rateHz={src.rateHz} guardHz={src.guardHz} />
-          </div>
-        ) : null}
+        <GuardBand
+          c={c}
+          i={i}
+          fresh={props.fresh}
+          onFreshDone={props.onFreshDone}
+          shows={(guardHz) =>
+            center ? (
+              <div className="wide">
+                <CoverageBar c={c} center={center} rateHz={src.rateHz} guardHz={guardHz} />
+              </div>
+            ) : null
+          }
+        />
       </Group>
       {src.type !== "file" && (
         <Group

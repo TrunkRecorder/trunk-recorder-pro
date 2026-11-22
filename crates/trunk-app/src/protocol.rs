@@ -116,6 +116,10 @@ pub enum ToClient {
     /// its live audio: only to connections listening with `voice`. `chunk` is
     /// the `voice` plugin topic's, as it is.
     Voice { chunk: trunk_recorder_plugin::VoiceChunk },
+    /// Something a radio did on the control channel (registration,
+    /// affiliation, location…): only to connections subscribed to `unit`.
+    /// `event` is the `unit` plugin topic's, as it is.
+    UnitEvent { event: trunk_recorder_plugin::UnitEvent },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     Log { lines: Vec<Value> },
     /// A call stored: its history entry.
@@ -833,6 +837,8 @@ mod tests {
         let everyone = [
             "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "spectrum", "log", "concluded", "callFiles",
             "unitAlias", "mdcUnits", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "probed", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
+            "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "unitEvent", "spectrum", "log", "concluded", "callFiles",
+            "unitAlias", "mdcUnits", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
             "decodeDetail", "monitorEvent", "subscribed", "statsResult", "radioResult", "callsResult", "dataSummary", "iqCaptures", "iqCaptureReview", "iqRuleChecked", "dataDeleted", "dataCompacted", "tokenCreated", "quit",
         ];
         let mut decided: Vec<&str> = control.iter().map(ToClient::kind).chain(everyone).collect();

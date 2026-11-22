@@ -225,6 +225,8 @@ pub struct RadioReport {
 pub struct Clock {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<String>,
+    /// The recorder's clock less a P25 system's SYNC_BCST time, ms: only a
+    /// time the system marks valid (IST clear) counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system_offset_ms: Option<f64>,
 }

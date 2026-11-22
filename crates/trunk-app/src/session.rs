@@ -1239,14 +1239,21 @@ impl Session {
             Event::Message { site, msg: m } => {
                 let system = self.system_of(site);
                 let name = self.system_name(system).to_string();
-                if self.plugin_topics.units {
+                // For plugins taking topic `unit`, and interfaces subscribed to it: the same event.
+                let watched = self.meas.topics.has(UNIT);
+                if self.plugin_topics.units || watched {
                     if let Some(kind) = unit_kind(m.kind) {
                         let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
                         if m.source >= 0 {
                             let unit = m.source as u32;
                             let (tag, alpha_tag) = (self.unit_tag(system, unit), talkgroup.map(|tg| self.alpha_tag(system, tg)).unwrap_or_default());
                             let e = UnitEvent { system, system_id: self.system_id(system).0, short_name: name.clone(), site: self.site_name(Some(site)), site_id: self.site_id(Some(site)), kind: kind.into(), unit, tag, talkgroup, alpha_tag, emergency: m.emergency, time: self.wall(m.time_s) };
-                            out.push(Output::Plugin(HostMessage::Unit(e)));
+                            if watched {
+                                out.push(Output::Topic { topic: UNIT.into(), msg: ToClient::UnitEvent { event: e.clone() } });
+                            }
+                            if self.plugin_topics.units {
+                                out.push(Output::Plugin(HostMessage::Unit(e)));
+                            }
                         }
                     }
                 }
@@ -1552,6 +1559,9 @@ impl Session {
 }
 
 /// The unit events plugins hear about, by their name there.
+/// The topic of what radios do on the control channel (`unitEvent`), for interfaces.
+pub const UNIT: &str = "unit";
+
 fn unit_kind(k: MessageType) -> Option<&'static str> {
     Some(match k {
         MessageType::Registration => "registration",
@@ -1893,6 +1903,37 @@ mod tone_tests {
         s.plugin_topics.voice = false;
         s.set_topics(crate::stats::Topics::new(["voice".to_string()]));
         assert_eq!(live(&mut s), (true, true), "an interface listens with voice");
+    }
+
+    /// A radio's control channel events are built only while plugins take
+    /// topic `unit` or an interface subscribes to it, and go to each that does.
+    #[test]
+    fn unit_events_go_to_whoever_takes_them() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 858000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "systems": [{ "shortName": "dcfd", "type": "p25", "sites": [{ "name": "north", "controlChannelsHz": [857_987_500.0] }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let aff = trunk_core::trunk::Message { kind: MessageType::Affiliation, source: 1234, talkgroup: 101, ..Default::default() };
+        let sent = |s: &mut Session| {
+            let mut out = Vec::new();
+            s.handle(Event::Message { site: 0, msg: aff.clone() }, &mut out);
+            let topic = out.iter().find_map(|o| match o { Output::Topic { topic, msg: ToClient::UnitEvent { event } } => Some((topic.clone(), event.clone())), _ => None });
+            let plugin = out.iter().find_map(|o| match o { Output::Plugin(HostMessage::Unit(e)) => Some(e.clone()), _ => None });
+            (topic, plugin)
+        };
+        let (topic, plugin) = sent(&mut s);
+        assert!(topic.is_none() && plugin.is_none(), "nobody takes them");
+        s.plugin_topics.units = true;
+        let (topic, plugin) = sent(&mut s);
+        assert!(topic.is_none() && plugin.is_some(), "plugins only");
+        s.plugin_topics.units = false;
+        s.set_topics(crate::stats::Topics::new([UNIT.to_string()]));
+        let (topic, plugin) = sent(&mut s);
+        let (topic, e) = topic.expect("to the topic");
+        assert!(plugin.is_none());
+        assert_eq!((topic.as_str(), e.short_name.as_str(), e.site.as_str(), e.kind.as_str(), e.unit, e.talkgroup), (UNIT, "dcfd", "north", "affiliation", 1234, Some(101)));
     }
 }
 #[cfg(test)]

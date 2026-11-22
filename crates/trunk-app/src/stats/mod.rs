@@ -199,7 +199,8 @@ impl NameBook {
 /// What someone is watching (the union of every connected dashboard's
 /// `subscribe`). Costly outputs are only made for these:
 /// `spectrum:<source>` (the waterfall), `log` (every control message as a
-/// line), `rf:<source>` (`rfDetail`), `decode:<shortName>` (`decodeDetail`).
+/// line), `rf:<source>` (`rfDetail`), `decode:<shortName>` (`decodeDetail`),
+/// `unit` (`unitEvent`).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Topics(BTreeSet<String>);
 

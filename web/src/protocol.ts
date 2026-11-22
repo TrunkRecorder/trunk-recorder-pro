@@ -1087,6 +1087,29 @@ export interface VoiceChunk {
   frames: VoiceFrame[];
 }
 
+/** Something a radio did on the control channel: the `unit` plugin topic's event, as it is (topic `unit`). */
+export interface UnitEvent {
+  /** Its system's number this run. */
+  system: number;
+  /** Its system's id: the same across renames and runs. */
+  system_id: number;
+  short_name: string;
+  /** The site whose control channel told it (its name), and its id. */
+  site?: string;
+  site_id?: number;
+  kind: "registration" | "deregistration" | "affiliation" | "acknowledge" | "location" | "data_grant" | "answer_request" | "call_alert" | "emergency_alarm";
+  /** Radio ID, and its name (the units file, its talker alias). */
+  unit: number;
+  tag?: string;
+  /** The talkgroup involved (affiliation, location, answer request, call alert, emergency alarm), and its name. */
+  talkgroup: number | null;
+  alpha_tag?: string;
+  /** The message said it is an emergency (an emergency alarm, a data grant's options). */
+  emergency: boolean;
+  /** Unix seconds. */
+  time: number;
+}
+
 /** Trunk Recorder's call JSON: each call's .json file, and `record` in `concluded` and `hello.history`. */
 export interface CallRecord {
   /** The call's number since the recorder started. */
@@ -1698,7 +1721,7 @@ export interface DirListing {
 //   plg/<id>/{state,ok,skipped,failed,dropped,restarts,held,queued,latency,bytes}
 // Running totals arrive as rates per second; everything else as it is.
 
-/** What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`. */
+/** What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`, `unit`. */
 export type Topic = string;
 
 /** One series from the history: points every `stepS` from `t0`; null where nothing was measured. */
@@ -2401,6 +2424,8 @@ export type FromRecorder =
   | { type: "status"; status: EngineStatus; sources: SourceStatus[]; load: number; calls: CallView[] }
   /** Live voice as vocoder frames, beside its live audio: only while listening with `voice`. */
   | { type: "voice"; chunk: VoiceChunk }
+  /** Topic `unit`: something a radio did on the control channel. */
+  | { type: "unitEvent"; event: UnitEvent }
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
   | { type: "concluded"; entry: CallEntry }

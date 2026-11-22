@@ -2901,6 +2901,23 @@
         },
         {
           "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "unitEvent"
+            },
+            "event": {
+              "$ref": "#/definitions/UnitEvent"
+            }
+          },
+          "required": [
+            "type",
+            "event"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "additionalProperties": false,
           "properties": {
             "source": {
@@ -10104,7 +10121,7 @@
     },
     "Topic": {
       "type": "string",
-      "description": "What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`."
+      "description": "What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`, `unit`."
     },
     "ToRecorder": {
       "anyOf": [
@@ -11394,6 +11411,80 @@
         "clipPct"
       ],
       "additionalProperties": false
+    },
+    "UnitEvent": {
+      "type": "object",
+      "properties": {
+        "system": {
+          "type": "number",
+          "description": "Its system's number this run."
+        },
+        "system_id": {
+          "type": "number",
+          "description": "Its system's id: the same across renames and runs."
+        },
+        "short_name": {
+          "type": "string"
+        },
+        "site": {
+          "type": "string",
+          "description": "The site whose control channel told it (its name), and its id."
+        },
+        "site_id": {
+          "type": "number"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "registration",
+            "deregistration",
+            "affiliation",
+            "acknowledge",
+            "location",
+            "data_grant",
+            "answer_request",
+            "call_alert",
+            "emergency_alarm"
+          ]
+        },
+        "unit": {
+          "type": "number",
+          "description": "Radio ID, and its name (the units file, its talker alias)."
+        },
+        "tag": {
+          "type": "string"
+        },
+        "talkgroup": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "The talkgroup involved (affiliation, location, answer request, call alert, emergency alarm), and its name."
+        },
+        "alpha_tag": {
+          "type": "string"
+        },
+        "emergency": {
+          "type": "boolean",
+          "description": "The message said it is an emergency (an emergency alarm, a data grant's options)."
+        },
+        "time": {
+          "type": "number",
+          "description": "Unix seconds."
+        }
+      },
+      "required": [
+        "system",
+        "system_id",
+        "short_name",
+        "kind",
+        "unit",
+        "talkgroup",
+        "emergency",
+        "time"
+      ],
+      "additionalProperties": false,
+      "description": "Something a radio did on the control channel: the `unit` plugin topic's event, as it is (topic `unit`)."
     },
     "UnitName": {
       "type": "object",
