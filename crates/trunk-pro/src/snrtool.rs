@@ -400,7 +400,7 @@ pub fn run(a: &Args) {
     println!("{} s of {kind} at {:.0} Hz; clean counts (blocks/voice, P25 voice: blocks/signalling/voice) in the header; (n): blocks and signalling decoded that the clean run didn't get", iq.len() as f64 / rate, a.num("freq", 0.0));
     println!("{head}");
     let seeds: Vec<u64> = (0..a.num("trials", 1.0) as u64).map(|k| 0x9e37_79b9_7f4a_7c15 ^ k.wrapping_mul(0x1234_5678_9abc)).collect();
-    let kinds = a.get("kinds").is_some();
+    let kinds = a.flag("kinds");
     if a.flag("repeat") {
         return repeat_rules(&clean[0], &snrs, &seeds, |x| run(x, &variants[0]), |sd, snr| add_noise(&iq, rate, s, snr, &taps, sd));
     }

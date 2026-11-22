@@ -468,12 +468,6 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         cloudflare: Default::default(),
         tls: Default::default(),
     });
-    // The stats thread makes its folder as it starts: wait for that, so a
-    // test that removes `dir` when done does not see it made again after.
-    let t = std::time::Instant::now();
-    while !dir.join("stats").exists() && t.elapsed() < std::time::Duration::from_secs(1) {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
     ctx
 }
 
