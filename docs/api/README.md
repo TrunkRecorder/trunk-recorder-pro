@@ -770,6 +770,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `tokenCreated` | Answers `createToken`, to its sender | `id`, `name`, `secret` (the new user's access token's, shown this once: the config keeps its hash) or `error` (a bad or taken name) |
 | `devices` | On connecting (control access); answers `devices` | `devices`: RTL-SDR dongles plugged in (`busy` when another program has one) |
 | `radios` | On connecting; answers `findRadios` | `radios`: the optional USRP / Airspy / SoapySDR drivers and their devices |
+| `probed` | Answers `probeRadio`, to its sender | `kind`, `address`, then `model` and `rates` (Hz, widest first) of the radio on the network, or `error` (and no rates) when it couldn't be asked |
 | `dir` | Answers `listDir` | a folder: `path`, `parent`, `dirs`, `files` (.json), `home`, `sep`, `error` |
 | `trConfig` | Answers `readTrConfig` | a Trunk Recorder config.json's `text`, the `files` it names, or `error` |
 | `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system |
@@ -811,6 +812,7 @@ too.
 | `channelFile` | `index`, `path` | Link conventional system `index`'s channels to a CSV, reload it (same path), or unlink (`""`). |
 | `devices` | — | List RTL-SDR dongles (→ `devices`). |
 | `findRadios` | — | Look for USRP / Airspy / SoapySDR devices (→ `radios`; takes a few seconds). |
+| `probeRadio` | `kind` (`"spyserver"`), `address` | Ask the radio on the network at `address` what it runs at: connects, reads the server's hello, hangs up, sets nothing (→ `probed`; waits up to 5 s). Setup lists the rates it answers with. |
 | `listDir` | `path` (`""` = home) | List a folder on the recorder's computer (→ `dir`). |
 | `readTrConfig` | `path` | Read a Trunk Recorder config.json and its files, to import (→ `trConfig`). |
 | `surveyStart` | `source`, `radio` (optional: a spare radio no source uses, to survey beside the recording), `bands` (ids from `hello.surveyBands`), `findGain`, `lookFor` (optional: just its sites' frequencies, `freqsHz`, `sites[]`, `type?`, `listenS?`, the sites judged) | Scan for systems with radio `source` (or `radio`), or look for one (not while recording, unless on a spare `radio`). |

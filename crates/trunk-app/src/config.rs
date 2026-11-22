@@ -1,4 +1,4 @@
-//! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys, bladeRFs, SoapySDR devices or capture files), which
+//! The app's configuration: which sources (RTL-SDRs, USRPs, Airspys, bladeRFs, SoapySDR devices, radios on the network or capture files), which
 //! trunked systems (sites) and/or conventional channels, recording rules and the web server. Stored as JSON in the platform
 //! config folder; the browser interface reads and edits it.
 
@@ -150,6 +150,43 @@ pub enum SourceKind {
         #[serde(default)]
         bias_tee: bool,
     },
+    /// An RTL-SDR on another machine, through its `rtl_tcp` server (nothing to
+    /// install). `address`: `host` or `host:port` (the port is 1234 when left
+    /// off). `gain_db`, `agc` and `bias_tee` are an RTL-SDR's, taken by the far
+    /// end: `rtl_tcp` answers nothing, so what a source says it is set to is
+    /// what it asked for.
+    #[serde(rename_all = "camelCase")]
+    Rtltcp {
+        #[serde(default)]
+        address: String,
+        #[serde(default = "rtl_gain")]
+        gain_db: f64,
+        #[serde(default)]
+        agc: bool,
+        #[serde(default)]
+        bias_tee: bool,
+    },
+    /// A receiver another machine publishes with Airspy's `spyserver` (an
+    /// Airspy R2 / Mini / HF+, or an RTL-SDR behind it), over the network
+    /// (nothing to install). `address`: `host` or `host:port` (5555 when left
+    /// off). `iq_format`: how its I/Q travels (8-bit takes the least of the
+    /// link). `gain`: the server's own gain step (an index into the receiver's
+    /// gain table, not dB; held to what the server has). `digital_gain_db`: what
+    /// the server multiplies the stream by before it is quantised for the link
+    /// (it is divided out again here); left out, the reference clients' rule:
+    /// 3 dB per decimation stage, and an Airspy R2's gain steps below its top.
+    /// Its rate is one the server offers: its top rate halved some number of times.
+    #[serde(rename_all = "camelCase")]
+    Spyserver {
+        #[serde(default)]
+        address: String,
+        #[serde(default)]
+        iq_format: SpyserverFormat,
+        #[serde(default = "spyserver_gain")]
+        gain: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        digital_gain_db: Option<u8>,
+    },
     /// Any SDR with a SoapySDR module (SoapySDR installed separately; loaded
     /// at run time). `args`: device arguments, "" = the first found
     /// ("driver=hackrf", "driver=sdrplay,serial=…"). `agc`: the device's AGC;
@@ -239,11 +276,60 @@ fn airspy_stage() -> u8 {
 fn bladerf_gain() -> f64 {
     30.0
 }
+fn spyserver_gain() -> u32 {
+    14
+}
 fn hackrf_lna() -> u16 {
     16
 }
 fn hackrf_vga() -> u16 {
     20
+}
+
+choice! {
+    /// How a SpyServer sends its I/Q ([`SourceKind::Spyserver`]).
+    pub enum SpyserverFormat {
+        /// Unsigned 8-bit: two bytes a sample, the least of the link.
+        #[default]
+        Uint8 = "uint8",
+        /// Signed 16-bit, little-endian: twice the link.
+        Int16 = "int16",
+        /// 32-bit float, little-endian: four times the link.
+        Float32 = "float32",
+    }
+}
+
+/// The port `rtl_tcp` listens on unless it is given `-p`.
+pub const RTL_TCP_PORT: u16 = 1234;
+/// The port `spyserver` listens on out of the box.
+pub const SPYSERVER_PORT: u16 = 5555;
+
+/// A network source's `address` as `host:port`: a port left off is `default_port`.
+/// An IPv6 address is written in brackets (`[fe80::1]` or `[fe80::1]:5555`), as
+/// anywhere else, so that its colons aren't taken for a port's.
+pub fn endpoint(address: &str, default_port: u16) -> String {
+    let a = address.trim();
+    let has_port = match a.rfind(']') {
+        Some(close) => a[close + 1..].starts_with(':'),
+        None => a.contains(':'),
+    };
+    if has_port {
+        a.to_string()
+    } else {
+        format!("{a}:{default_port}")
+    }
+}
+
+/// What is wrong with a network source's `address` (`what`: "rtl_tcp"), or None.
+fn address_problem(address: &str, what: &str) -> Option<String> {
+    let a = address.trim();
+    if a.is_empty() {
+        return Some(format!("enter the {what} server's address (host or host:port)."));
+    }
+    if a.chars().any(char::is_whitespace) || a.contains("://") {
+        return Some(format!("the {what} server's address is a host name or IP address, with a port after a colon if it isn't the usual one — not {a:?}."));
+    }
+    None
 }
 
 choice! {
@@ -331,9 +417,9 @@ impl Source {
     pub fn reaches(&self, center: f64, hz: f64) -> bool {
         self.placing().reaches(center, hz)
     }
-    /// `ppm` as it can be set on it: an RTL-SDR takes whole ppm, the others hundredths.
+    /// `ppm` as it can be set on it: an RTL-SDR (on USB or `rtl_tcp`) takes whole ppm, the others hundredths.
     pub fn settable_ppm(&self, ppm: f64) -> f64 {
-        if matches!(self.kind, SourceKind::Rtlsdr { .. }) {
+        if matches!(self.kind, SourceKind::Rtlsdr { .. } | SourceKind::Rtltcp { .. }) {
             ppm.round()
         } else {
             (ppm * 100.0).round() / 100.0
@@ -352,6 +438,8 @@ impl Source {
             SourceKind::Hydrasdr { .. } => "hydrasdr",
             SourceKind::Bladerf { .. } => "bladerf",
             SourceKind::Hackrf { .. } => "hackrf",
+            SourceKind::Rtltcp { .. } => "rtltcp",
+            SourceKind::Spyserver { .. } => "spyserver",
             SourceKind::Soapy { .. } => "soapy",
             SourceKind::File { .. } => "file",
         }
@@ -379,6 +467,9 @@ impl Source {
                 SourceKind::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
                 SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
                 SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
+                // (One `rtl_tcp` serves one client at a time; a SpyServer's second client can't move its receiver.)
+                SourceKind::Rtltcp { address, .. } => Some((6, endpoint(address, RTL_TCP_PORT).to_lowercase())),
+                SourceKind::Spyserver { address, .. } => Some((7, endpoint(address, SPYSERVER_PORT).to_lowercase())),
                 SourceKind::File { .. } => None,
             }
         };
@@ -402,6 +493,8 @@ impl Source {
             SourceKind::Hydrasdr { serial, .. } => format!("HydraSDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Hackrf { serial, .. } => format!("HackRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            SourceKind::Rtltcp { address, .. } => format!("rtl_tcp {}", endpoint(address, RTL_TCP_PORT)),
+            SourceKind::Spyserver { address, .. } => format!("SpyServer {}", endpoint(address, SPYSERVER_PORT)),
             SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
             SourceKind::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
         }
@@ -2518,7 +2611,7 @@ pub fn default_capture_dir() -> PathBuf {
 
 /// A source's `type` names its kind (the tag of [`Source`]), read in any case
 /// as the other closed choices are (`"RTLSDR"` is `"rtlsdr"`).
-const SOURCE_TYPES: [&str; 8] = ["rtlsdr", "usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "soapy", "file"];
+const SOURCE_TYPES: [&str; 10] = ["rtlsdr", "usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "rtltcp", "spyserver", "soapy", "file"];
 
 fn source_types(v: &mut serde_json::Value) {
     for s in v.get_mut("sources").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
@@ -3105,6 +3198,27 @@ impl Config {
                     let ((lna_max, lna_by), (vga_max, vga_by)) = (crate::gain::HACKRF_LNA, crate::gain::HACKRF_VGA);
                     if *lna_db > lna_max || lna_db % lna_by != 0 || *vga_db > vga_max || vga_db % vga_by != 0 {
                         return Some(format!("{}: a HackRF's LNA gain is 0–{lna_max} dB in {lna_by} dB steps, its VGA gain 0–{vga_max} dB in {vga_by} dB steps.", s.title(i)));
+                    }
+                }
+                SourceKind::Rtltcp { address, gain_db, .. } => {
+                    if let Some(e) = address_problem(address, "rtl_tcp") {
+                        return Some(format!("{}: {e}", s.title(i)));
+                    }
+                    // (An RTL2832U's two ranges. Out of them the server logs a refusal and goes on at its old rate,
+                    // which would read as this one's: so it is refused here.)
+                    if !((225_001.0..=300_000.0).contains(&s.rate_hz) || (900_001.0..=3_200_000.0).contains(&s.rate_hz)) {
+                        return Some(format!("{}: an RTL-SDR runs at 0.225–0.3 or 0.9–3.2 MSPS.", s.title(i)));
+                    }
+                    if !(0.0..=50.0).contains(gain_db) {
+                        return Some(format!("{}: an RTL-SDR's gain is 0–50 dB.", s.title(i)));
+                    }
+                }
+                SourceKind::Spyserver { address, digital_gain_db, .. } => {
+                    if let Some(e) = address_problem(address, "SpyServer") {
+                        return Some(format!("{}: {e}", s.title(i)));
+                    }
+                    if digital_gain_db.is_some_and(|g| g > 60) {
+                        return Some(format!("{}: a SpyServer's digital gain is 0–60 dB.", s.title(i)));
                     }
                 }
                 SourceKind::Hydrasdr { rf_port, bias_tee, .. } => {
@@ -3918,6 +4032,55 @@ mod tests {
         let airspy = |serial: &str| src(serde_json::json!({ "type": "airspy", "serial": serial, "centerHz": 0, "rateHz": 10000000 }));
         assert!(h.may_be(&airspy("")) && h.may_be(&airspy("1a2b3c4d5e6f7081")));
         assert!(!h.may_be(&airspy("735863DC2F650AE3")));
+    }
+
+    /// A radio on the network is named by its address (the port left off is its server's usual one), is
+    /// read in any case of its type, keeps what only it has flat beside the rest, and can't start without
+    /// an address or at a rate its radio doesn't run at.
+    #[test]
+    fn network_sources() {
+        let c = Config::from_json(
+            r#"{ "sources": [
+                { "type": "RTLTCP", "address": " Pi.local ", "centerHz": 0, "rateHz": 2400000, "ppm": 2.4 },
+                { "type": "SpyServer", "address": "[::1]", "centerHz": 0, "rateHz": 2500000, "iqFormat": "Int16" }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(c.sources[0].kind, SourceKind::Rtltcp { address: " Pi.local ".into(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, bias_tee: false });
+        assert_eq!(c.sources[1].kind, SourceKind::Spyserver { address: "[::1]".into(), iq_format: SpyserverFormat::Int16, gain: 14, digital_gain_db: None });
+        assert_eq!((c.sources[0].label(), c.sources[1].label()), ("rtl_tcp Pi.local:1234".to_string(), "SpyServer [::1]:5555".to_string()));
+        assert_eq!((c.sources[0].kind_name(), c.sources[1].kind_name()), ("rtltcp", "spyserver"));
+        assert_eq!(c.sources[0].settable_ppm(2.4), 2.0, "whole ppm, as an RTL-SDR's");
+        let j = serde_json::to_value(&c.sources[1]).unwrap();
+        assert_eq!((&j["type"], &j["iqFormat"], j.get("digitalGainDb")), (&serde_json::json!("spyserver"), &serde_json::json!("int16"), None));
+        assert_eq!((endpoint("host", 1234), endpoint("host:99", 1234), endpoint("[fe80::1]", 5555), endpoint("[fe80::1]:6", 5555)), ("host:1234".into(), "host:99".into(), "[fe80::1]:5555".into(), "[fe80::1]:6".into()));
+        // One address, one radio: with or without its usual port, in any case; another kind's isn't it.
+        let rtl = |address: &str| -> Source { serde_json::from_value(serde_json::json!({ "type": "rtltcp", "address": address, "centerHz": 0, "rateHz": 2400000 })).unwrap() };
+        let spy = |address: &str| -> Source { serde_json::from_value(serde_json::json!({ "type": "spyserver", "address": address, "centerHz": 0, "rateHz": 2500000 })).unwrap() };
+        assert!(rtl("Pi.local").may_be(&rtl("pi.local:1234")) && !rtl("pi.local").may_be(&rtl("pi.local:1235")) && !rtl("pi.local").may_be(&spy("pi.local:1234")));
+        assert!(spy("a").may_be(&spy("A:5555")));
+        let problem = |source: Source| {
+            let mut c: Config = serde_json::from_str(r#"{ "sources": [], "conventional": [{ "channels": [{ "freqHz": 154430000, "mode": "fm" }] }] }"#).unwrap();
+            c.sources.push(source);
+            c.problem()
+        };
+        // (Set where the one channel, 154.43 MHz, is well inside it and clear of its middle.)
+        let at = |mut s: Source, hz: f64| {
+            s.center_hz = if hz < 1e6 { 154_370_000.0 } else { 154e6 };
+            s.rate_hz = hz;
+            s
+        };
+        assert_eq!((problem(at(rtl("pi.local"), 2.4e6)), problem(at(spy("pi.local"), 2.5e6))), (None, None));
+        assert!(problem(at(rtl(""), 2.4e6)).unwrap().contains("enter the rtl_tcp server's address"));
+        assert!(problem(at(spy("  "), 2.5e6)).unwrap().contains("enter the SpyServer server's address"));
+        assert!(problem(at(rtl("http://pi.local"), 2.4e6)).unwrap().contains("host name or IP address"));
+        assert!(problem(at(rtl("pi.local"), 5e6)).unwrap().contains("0.9–3.2 MSPS"), "a rate the RTL2832U can't make would be taken silently");
+        assert_eq!(problem(at(rtl("pi.local"), 0.25e6)), None, "its lower range");
+        let mut deep = spy("pi.local");
+        if let SourceKind::Spyserver { digital_gain_db, .. } = &mut deep.kind {
+            *digital_gain_db = Some(61);
+        }
+        assert!(problem(at(deep, 2.5e6)).unwrap().contains("digital gain is 0–60 dB"));
     }
 
     /// What a run reads only when it starts needs a restart; what applies

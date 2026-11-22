@@ -169,6 +169,22 @@ firmware 2021.03 or newer; an older one is refused when opened, with a message t
 
 A SoapySDR source with `driver=hackrf` still works, for a rad1o or a HackRF behind SoapyRemote.
 
+### Radios on the network: rtl_tcp and SpyServer
+
+An **rtl_tcp** or **SpyServer** source is a radio on another machine, reached over TCP by its address: no driver, no SoapySDR, and
+nothing to find (a network can't be searched), so you type the **Server address** in Setup → Radios.
+
+- **rtl_tcp**: on the machine with the dongle, run `rtl_tcp -a 0.0.0.0` (port 1234; `-p` changes it), and open that port to this
+  machine. In Setup the address is just the host when the server is on port 1234 (`pi.local`), and `host:port` when it isn't
+  (`pi.local:4321`). It serves one client at a time: a dongle another client has open doesn't answer a second, which shows as a source that
+  connects but says nothing.
+- **SpyServer**: on the machine with an Airspy (or an RTL-SDR), run Airspy's `spyserver` (port 5555). Any number of clients can
+  listen, but only the first can tune the receiver and set its gain. If a source is refused as out of reach, another client (SDR#,
+  SDR++) has the receiver on another frequency: close it, or put the source's center inside its window.
+
+A source that loses its server is retried every few seconds and starts again by itself, so a dongle's machine can reboot without
+restarting the recorder. Use a wired link for anything beyond 1 MSPS.
+
 ### SoapySDR
 
 - **Device**: SoapySDR device arguments, such as `driver=sdrplay,serial=...` or `driver=sdrplay,serial=...`.

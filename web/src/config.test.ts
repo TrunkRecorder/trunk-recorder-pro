@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, hasBiasT, highestRate, needsDriver, onNetwork, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -116,8 +116,37 @@ test("SOURCE_KINDS: each kind's new source is that kind, and names its device wh
     assert.equal(k.fresh().type, type);
     if (k.device) assert.equal(deviceId(sourceFor(type, "x1")), "x1", type);
   }
-  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "soapy"]);
+  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "rtltcp", "spyserver", "soapy"]);
   assert.equal(sourceKey(sourceFor("bladerf", "f12ce103")), "bladerf:f12ce103");
+});
+
+test("rtl_tcp and SpyServer: radios on the network, found by their address, in the desktop app only", () => {
+  assert.deepEqual(SOURCE_KINDS.rtltcp.fresh(), { type: "rtltcp", address: "", centerHz: 0, rateHz: 2_400_000, gainDb: 25.4, agc: false, biasTee: false, ppm: 0 });
+  assert.deepEqual(SOURCE_KINDS.spyserver.fresh(), { type: "spyserver", address: "", centerHz: 0, rateHz: 2_500_000, iqFormat: "uint8", gain: 14, ppm: 0 });
+  for (const k of ["rtltcp", "spyserver"] as const) {
+    assert.equal(SOURCE_KINDS[k].driver, undefined, `${k}: nothing to install`);
+    assert.ok(SOURCE_KINDS[k].network && SOURCE_KINDS[k].native, `${k}: built in, and over a socket`);
+    assert.ok(needsDriver(SOURCE_KINDS[k].fresh()), `${k}: the browser can't open a socket`);
+    assert.ok(onNetwork(SOURCE_KINDS[k].fresh()), k);
+  }
+  assert.ok(!onNetwork(SOURCE_KINDS.rtlsdr.fresh()) && !onNetwork(SOURCE_KINDS.hackrf.fresh()));
+  assert.equal(deviceId(sourceFor("spyserver", "10.0.0.5:5555")), "10.0.0.5:5555");
+  assert.equal(sourceKey(sourceFor("rtltcp", "pi.local")), "rtltcp:pi.local");
+  // A SpyServer's rates are what it said when asked (`probed`), by the address as typed; its error leaves none.
+  const sp = { ...SOURCE_KINDS.spyserver.fresh(), address: " pi:5555 " } as Config["sources"][number];
+  assert.equal(foundRadio(null, sp), undefined, "not asked yet");
+  const probes = {
+    "spyserver:pi:5555": { type: "probed" as const, kind: "spyserver", address: "pi:5555", model: "Airspy R2 / Mini", rates: [2_500_000, 1_250_000] },
+    "spyserver:gone:5555": { type: "probed" as const, kind: "spyserver", address: "gone:5555", rates: [], error: "refused" },
+  };
+  assert.deepEqual(foundRadio(null, sp, probes)?.rates, [2_500_000, 1_250_000]);
+  assert.equal(highestRate(foundRadio(null, sp, probes)), 2_500_000, "the rate a source starts at once its server has said");
+  assert.equal(highestRate({ label: "", rates: [1_250_000, 10_000_000, 2_500_000] }), 10_000_000);
+  assert.equal(highestRate(undefined), undefined);
+  assert.equal(ratesText(foundRadio(null, sp, probes)), "2.5 or 1.25");
+  assert.equal(ratesText({ label: "", rates: [2_500_000, 625_000, 312_500, 156_250] }, true), "2.5 or 0.625 or 0.313 or 0.156");
+  assert.equal(foundRadio(null, { ...sp, address: "gone:5555" } as Config["sources"][number], probes), undefined);
+  assert.ok(hasBiasT(SOURCE_KINDS.rtltcp.fresh()) && !hasBiasT(SOURCE_KINDS.spyserver.fresh()), "the dongle's bias-T, not a server's");
 });
 
 test("a new HackRF source: the driver's gain defaults, a native kind with a device list", () => {
@@ -127,7 +156,7 @@ test("a new HackRF source: the driver's gain defaults, a native kind with a devi
   assert.equal(SOURCE_KINDS.hackrf.driver, undefined, "nothing to install");
   assert.equal(sourceKey(sourceFor("hackrf", "0000a1")), "hackrf:0000a1");
   const none = { available: true, detail: "", devices: [] };
-  const radios: Radios = { usrp: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] }, airspy: none, hydrasdr: none, bladerf: none };
+  const radios: Radios = { usrp: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] }, rtltcp: { available: true, detail: "built in", devices: [] }, spyserver: { available: true, detail: "built in", devices: [] }, airspy: none, hydrasdr: none, bladerf: none };
   assert.equal(foundRadio(radios, h)?.serial, "0000a1", "the first, when none is named");
   assert.equal(detectRadios([], radios)[0].kind, "hackrf");
 });
@@ -135,7 +164,7 @@ test("a new HackRF source: the driver's gain defaults, a native kind with a devi
 test("a HydraSDR: found by its driver, started at a rate it runs at, its gain as an Airspy's; imported from gr-osmosdr's hydrasdr", () => {
   const none = { available: true, detail: "", devices: [] };
   const rfone = { serial: "1A2B3C4D5E6F7081", label: "HydraSDR RFOne · SN 1A2B3C4D5E6F7081", model: "RFOne", rates: [10_000_000, 5_000_000, 2_500_000, 1_250_000] };
-  const radios: Radios = { usrp: none, hackrf: none, airspy: none, hydrasdr: { available: true, detail: "libhydrasdr 1.1.4", devices: [rfone] }, bladerf: none };
+  const radios: Radios = { usrp: none, hackrf: none, rtltcp: { available: true, detail: "built in", devices: [] }, spyserver: { available: true, detail: "built in", devices: [] }, airspy: none, hydrasdr: { available: true, detail: "libhydrasdr 1.1.4", devices: [rfone] }, bladerf: none };
   const [found] = detectRadios([], radios);
   assert.equal(found.kind, "hydrasdr");
   assert.equal(found.key, "hydrasdr:1A2B3C4D5E6F7081");
@@ -160,7 +189,7 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
   const busy = { serial: "C", label: "Airspy · SN C" };
   const blade = { serial: "f12ce1037830a1b27f3ceeba1f521413", label: "bladeRF 2.0 · SN f12ce1037830…", model: "bladeRF 2.0", rateRange: [520_834, 61_440_000] as [number, number] };
   const driver = (devices: FoundRadio[] | null) => ({ available: true, detail: "", devices });
-  const radios: Radios = { usrp: driver(null), hackrf: driver([]), airspy: driver([r2, mini, busy]), hydrasdr: driver([]), bladerf: driver([blade]) };
+  const radios: Radios = { usrp: driver(null), hackrf: driver([]), rtltcp: driver([]), spyserver: driver([]), airspy: driver([r2, mini, busy]), hydrasdr: driver([]), bladerf: driver([blade]) };
   const airspy = (serial: string) => ({ ...(SOURCE_KINDS.airspy.fresh() as Extract<Source, { type: "airspy" }>), serial });
   assert.equal(foundRadio(radios, airspy(r2.serial)), r2);
   assert.equal(foundRadio(radios, airspy("")), r2, "the first found");

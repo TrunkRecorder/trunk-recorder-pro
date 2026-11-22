@@ -72,6 +72,8 @@ import {
   newConventional,
   newSiteName,
   needsDriver,
+  probeKey,
+  type Probes,
   newSystem,
   normalizeSite,
   resolvedCenters,
@@ -114,6 +116,8 @@ export interface AppState {
   radios: Radios | null;
   /** Key containers waiting for a password, and which are unlocked. */
   lockable: LockableKeys[];
+  /** What radios on the network said when asked what they run at (a SpyServer's rates), by `probeKey`. */
+  probes: Probes;
   /** A USRP search is running. */
   findingRadios: boolean;
   status: EngineStatus | null;
@@ -235,6 +239,7 @@ let state: AppState = {
   unitNames: {},
   devices: [],
   radios: null,
+  probes: {},
   lockable: [],
   findingRadios: false,
   status: null,
@@ -500,6 +505,9 @@ function take(m: FromRecorder): void {
       break;
     case "radios":
       set({ radios: m.radios, findingRadios: false });
+      break;
+    case "probed":
+      set({ probes: { ...state.probes, [probeKey(m.kind, m.address)]: m } });
       break;
     case "keys":
       set({ lockable: m.sources });
@@ -1571,6 +1579,13 @@ export function findRadios(): void {
   if (!can("drivers")) return;
   set({ findingRadios: true });
   transport.send({ type: "findRadios" });
+}
+
+/** Ask the radio on the network at `address` (a SpyServer) what it runs at; the answer lands in `probes`. */
+export function probeRadio(kind: "spyserver", address: string): void {
+  // (A recorder without the drivers — the browser version — can't open a socket.)
+  if (!can("drivers") || !address.trim()) return;
+  transport.send({ type: "probeRadio", kind, address: address.trim() });
 }
 
 /** Read a Trunk Recorder config.json (or a folder with one) and the files it names; the answer lands in `trConfig`. */

@@ -134,6 +134,9 @@ pub enum ToClient {
     CallSignResult { id: u64, results: Vec<Value>, error: Option<String> },
     SourceProfile(Body),
     Devices { devices: Value },
+    /// Answers `probeRadio`, to its sender: what the radio on the network at `address` runs at (`rates`, Hz, widest
+    /// first, with its `model`), or why it couldn't be asked (`error`).
+    Probed { kind: String, address: String, #[serde(skip_serializing_if = "Option::is_none")] model: Option<String>, rates: Vec<u32>, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
     Dir(Body),
     TrConfig(Body),
     Error { message: String },
@@ -572,6 +575,8 @@ pub enum Command {
     Stop,
     Devices,
     FindRadios,
+    /// Ask the radio on the network (`kind`: "spyserver") at `address` what it runs at: answered with `probed`.
+    ProbeRadio { kind: String, address: String },
     ListDir { #[serde(default)] path: String },
     ReadTrConfig { path: String },
     /// Live audio, optionally of one system and/or talkgroup. `voice`: also
@@ -827,7 +832,7 @@ mod tests {
         }
         let everyone = [
             "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "spectrum", "log", "concluded", "callFiles",
-            "unitAlias", "mdcUnits", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
+            "unitAlias", "mdcUnits", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "probed", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
             "decodeDetail", "monitorEvent", "subscribed", "statsResult", "radioResult", "callsResult", "dataSummary", "iqCaptures", "iqCaptureReview", "iqRuleChecked", "dataDeleted", "dataCompacted", "tokenCreated", "quit",
         ];
         let mut decided: Vec<&str> = control.iter().map(ToClient::kind).chain(everyone).collect();

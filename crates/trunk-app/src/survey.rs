@@ -160,6 +160,18 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.tune_range_hz = (1e6, 6e9);
             sc.settle_s = 0.05;
         }
+        // An RTL-SDR on another machine (its tuner's range). What the link has queued from before a retune arrives
+        // after it, so each step waits longer than a dongle on USB does.
+        SourceKind::Rtltcp { .. } => {
+            sc.tune_range_hz = (24e6, 1766e6);
+            sc.settle_s = 0.5;
+        }
+        // The server's receiver isn't known here (an Airspy R2 / Mini, an HF+, an RTL-SDR): the widest of them; a tune
+        // it refuses shows as a source error. The link's queue as above.
+        SourceKind::Spyserver { .. } => {
+            sc.tune_range_hz = (24e6, 1800e6);
+            sc.settle_s = 0.5;
+        }
         // The device's range isn't known here: the widest any module offers; a
         // tune it refuses shows as a source error.
         SourceKind::Soapy { .. } => {

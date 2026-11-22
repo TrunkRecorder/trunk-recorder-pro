@@ -524,6 +524,8 @@ fn the_servers_messages() {
             { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0, "autoTune": true },
             { "type": "usrp", "args": "", "centerHz": 0, "rateHz": 8000000, "gainDb": 30, "agc": false, "antenna": "RX2", "ppm": 0 },
             { "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "gainMode": "linearity", "gainStep": 12, "lnaStep": 0, "mixerStep": 0, "vgaStep": 0, "agc": false, "biasTee": false, "ppm": 0 },
+            { "type": "rtltcp", "address": "raspberrypi.local", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "biasTee": false, "ppm": 0 },
+            { "type": "spyserver", "address": "192.168.1.20:5555", "centerHz": 0, "rateHz": 2500000, "iqFormat": "int16", "gain": 14, "digitalGainDb": 12, "ppm": 0 },
             { "type": "soapy", "args": "driver=hackrf", "centerHz": 0, "rateHz": 8000000, "agc": false, "gainDb": null, "gains": { "LNA": 16 }, "antenna": "", "settings": "", "ppm": 0 },
             { "type": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true, "format": "cu8" }
         ],
@@ -643,6 +645,8 @@ fn the_servers_messages() {
         ToClient::ConfigSaved { version: 3, error: Some("changed elsewhere".into()) },
         crate::runtime::PhaseInfo { phase: trunk_app::protocol::Phase::Running, error: Some("x".into()), ended: false, restart_needed: true }.message(),
         crate::server::devices(),
+        ToClient::Probed { kind: "spyserver".into(), address: "pi:5555".into(), model: Some("Airspy R2 / Mini".into()), rates: vec![2_500_000, 1_250_000], error: None },
+        ToClient::Probed { kind: "spyserver".into(), address: "pi:5555".into(), model: None, rates: vec![], error: Some("refused".into()) },
         ToClient::Radios { radios: crate::radio::radios_json(false) },
         ctx.plugins.list(&cfg),
         crate::plugins::manage::store_message(&crate::plugins::store::built_in()),

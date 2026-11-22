@@ -2635,6 +2635,40 @@
         },
         {
           "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "probed"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "address": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "rates": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "address",
+            "rates"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
           "additionalProperties": false,
           "properties": {
             "phase": {
@@ -6982,6 +7016,13 @@
           "$ref": "#/definitions/DriverState",
           "description": "Built in: always available."
         },
+        "rtltcp": {
+          "$ref": "#/definitions/DriverState",
+          "description": "Radios on the network, built in: always available (and nothing to list)."
+        },
+        "spyserver": {
+          "$ref": "#/definitions/DriverState"
+        },
         "airspy": {
           "$ref": "#/definitions/DriverState"
         },
@@ -6998,6 +7039,8 @@
       "required": [
         "usrp",
         "hackrf",
+        "rtltcp",
+        "spyserver",
         "airspy",
         "hydrasdr",
         "bladerf"
@@ -8360,6 +8403,111 @@
             },
             "type": {
               "type": "string",
+              "const": "rtltcp"
+            },
+            "address": {
+              "type": "string"
+            },
+            "gainDb": {
+              "type": "number"
+            },
+            "agc": {
+              "type": "boolean"
+            },
+            "biasTee": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "address",
+            "agc",
+            "biasTee",
+            "centerHz",
+            "gainDb",
+            "ppm",
+            "rateHz",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
+            "type": {
+              "type": "string",
+              "const": "spyserver"
+            },
+            "address": {
+              "type": "string"
+            },
+            "iqFormat": {
+              "$ref": "#/definitions/SpyserverFormat"
+            },
+            "gain": {
+              "type": "number"
+            },
+            "digitalGainDb": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "address",
+            "centerHz",
+            "gain",
+            "iqFormat",
+            "ppm",
+            "rateHz",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
+            "type": {
+              "type": "string",
               "const": "soapy"
             },
             "args": {
@@ -8554,6 +8702,15 @@
         "settings"
       ],
       "additionalProperties": false
+    },
+    "SpyserverFormat": {
+      "type": "string",
+      "enum": [
+        "uint8",
+        "int16",
+        "float32"
+      ],
+      "description": "How a SpyServer sends its I/Q: 8-bit unsigned, 16-bit signed or 32-bit float."
     },
     "StorageSettings": {
       "type": "object",
@@ -10125,6 +10282,27 @@
           },
           "required": [
             "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "probeRadio"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "address": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "address"
           ],
           "additionalProperties": false
         },

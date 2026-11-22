@@ -54,10 +54,11 @@ const RTL: &[u32] = &[2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_0
 
 /// The rates offered for a source of kind `kind` (its `type`: "rtlsdr", …),
 /// the usual first. Any other can be typed for a bladeRF, HackRF, SoapySDR
-/// device or capture file; an RTL-SDR, USRP, Airspy or HydraSDR runs at these.
+/// device or capture file; an RTL-SDR (also through `rtl_tcp`), USRP, Airspy,
+/// HydraSDR or SpyServer runs at these.
 pub fn of_kind(kind: &str) -> &'static [u32] {
     match kind {
-        "rtlsdr" => RTL,
+        "rtlsdr" | "rtltcp" => RTL,
         "usrp" => &[2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000],
         // Airspy R2: 10 / 2.5; Mini: 6 / 3 (and 10 with newer firmware).
         "airspy" => &[10_000_000, 6_000_000, 3_000_000, 2_500_000],
@@ -66,6 +67,9 @@ pub fn of_kind(kind: &str) -> &'static [u32] {
         // (Up to 61.44 can be typed; past ~40 MSPS needs USB 3 and a fast CPU.)
         "bladerf" => &[2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000, 25_000_000, 30_720_000],
         "hackrf" => &[8_000_000, 10_000_000, 4_000_000, 2_000_000, 16_000_000, 20_000_000],
+        // A SpyServer offers its receiver's top rate halved (an Airspy R2: 10 / 5 / 2.5 / 1.25; a Mini: 6 / 3 / 1.5;
+        // an RTL-SDR: 2.4 / 1.2); the server says, when it opens, and refuses what it doesn't offer.
+        "spyserver" => &[2_500_000, 3_000_000, 2_400_000, 5_000_000, 6_000_000, 10_000_000, 1_250_000, 1_200_000],
         "soapy" => &[2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000],
         "file" => &[2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_024_000, 8_000_000, 10_000_000],
         _ => &[],
@@ -75,9 +79,9 @@ pub fn of_kind(kind: &str) -> &'static [u32] {
 /// The highest rate a source of kind `kind` runs at dependably: an RTL-SDR
 /// past 2.4 MSPS loses blocks of samples without saying so once a second
 /// dongle streams beside it (measured on Pi, Mac and x86 hosts alike), which
-/// breaks decoding. Advice never goes past it. None: any it offers.
+/// breaks decoding (the same chip behind `rtl_tcp`). Advice never goes past it. None: any it offers.
 pub fn steady_max(kind: &str) -> Option<u32> {
-    (kind == "rtlsdr").then_some(2_400_000)
+    matches!(kind, "rtlsdr" | "rtltcp").then_some(2_400_000)
 }
 
 /// The rates a source of kind `kind` may run at: what its radio said
