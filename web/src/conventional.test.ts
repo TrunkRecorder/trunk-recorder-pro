@@ -64,3 +64,17 @@ test("modes: each says what it can take, as the recorder does, and parseAccess a
   assert.equal(modeInfo("fm").chip("100.0"), "100.0 Hz");
   assert.equal(modeInfo("p25").chip("293"), "NAC 293");
 });
+
+test("gmrsCode: Motorola Talkabout privacy codes", async () => {
+  const { gmrsCode, withGmrsCode } = await import("./rules.ts");
+  assert.equal(gmrsCode("67.0"), 1);
+  assert.equal(gmrsCode("151.4 Hz"), 24);
+  assert.equal(gmrsCode("250.3"), 38);
+  assert.equal(gmrsCode("D023N"), 39);
+  assert.equal(gmrsCode("D047I"), 39, "an alias of D023N");
+  assert.equal(gmrsCode("D754N"), 121);
+  assert.equal(gmrsCode("69.3"), undefined);
+  assert.equal(gmrsCode("D036N"), undefined);
+  assert.equal(withGmrsCode("151.4 Hz"), "151.4 Hz (code 24)");
+  assert.equal(withGmrsCode("D006N"), "D006N");
+});

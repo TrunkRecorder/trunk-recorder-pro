@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **GMRS privacy codes next to tones.** The call list and Setup's "Heard" codes show the FRS/GMRS
+  privacy code with a tone, as Motorola Talkabout numbers them: `151.4 Hz (code 24)`, `D023N (code 39)`.
+  Codes 1–38 (CTCSS) are the same on every brand. Codes 39–121 (DCS) are Motorola's numbers, and other brands number them differently.
+
 - **Interfaces can follow what radios do.** A connection that subscribes to the topic `unit` gets a `unitEvent` each
   time a radio registers, deregisters, affiliates, reports its location, acknowledges, asks for data, answers a call
   alert or sends an emergency alarm. Each carries the system, site, radio and talkgroup with their names: the same

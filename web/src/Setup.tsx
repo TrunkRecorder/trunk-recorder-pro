@@ -104,7 +104,7 @@ import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldTe
 import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
 import { openTodos } from "./todo.ts";
 import { allModes, modeInfo } from "./modes.ts";
-import { parseAccess, sameAccess, type AccessParts } from "./rules.ts";
+import { parseAccess, sameAccess, withGmrsCode, type AccessParts } from "./rules.ts";
 
 /** Each card's key (the controller's `cardKey`), seeded from what its entry is now; `all`: its list. */
 const srcKey = (x: Source, i: number, all: Source[]) => cardKey(x, `src:${i}`, all);
@@ -506,7 +506,7 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
   if (!codes.length) return null;
   // Already recorded by a row of its own (not just by the catch-all).
   const listed = (p: AccessParts) => props.rows.some((r) => sameAccess(mode, { code: r.code ?? "", slot: r.slot, matchTalkgroup: r.matchTalkgroup }, p));
-  const label = (code: string) => (!code ? modeInfo(mode).none : mode === "fm" && /^\d/.test(code) ? `${code} Hz` : code);
+  const label = (code: string) => (!code ? modeInfo(mode).none : mode === "fm" ? withGmrsCode(/^\d/.test(code) ? `${code} Hz` : code) : code);
   const shown = codes.slice(0, SHOWN_CODES);
   return (
     <tr className="heard-row">
