@@ -24,8 +24,8 @@ Radio blocks, each its own thread.
 ## Raspberry Pi 5 (Linux)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="img/cpu-vs-recorders-pi-dark.svg">
-  <img src="img/cpu-vs-recorders-pi-light.svg" alt="CPU load against recorders in use on a Raspberry Pi 5, DCFD on one RTL-SDR: Trunk Recorder rising from 10 % idle to 20 % with one recorder, 28 % with two, 36 % with three and 44 % with four; Pro 4 % idle, 5 % with one, 6 % with two and three.">
+  <source media="(prefers-color-scheme: dark)" srcset="../img/cpu-vs-recorders-pi-dark.svg">
+  <img src="../img/cpu-vs-recorders-pi-light.svg" alt="CPU load against recorders in use on a Raspberry Pi 5, DCFD on one RTL-SDR: Trunk Recorder rising from 10 % idle to 20 % with one recorder, 28 % with two, 36 % with three and 44 % with four; Pro 4 % idle, 5 % with one, 6 % with two and three.">
 </picture>
 
 Median CPU (% of one core, clock fixed at 2.4 GHz) over 5 s samples, the
@@ -68,8 +68,8 @@ Pro, Trunk Recorder, Pro, 15 min each.
 ## Mac mini (macOS)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="img/cpu-vs-recorders-dark.svg">
-  <img src="img/cpu-vs-recorders-light.svg" alt="CPU load against recorders in use on macOS. DCFD on a USRP: Trunk Recorder about 23 % idle, jumping to 221 % with one recorder and 258 % with five; Pro 11 to 12 % throughout. WMATA on two RTL-SDRs: Trunk Recorder rising from 45 % with one recorder to 244 % with nine; Pro 5 to 10 %.">
+  <source media="(prefers-color-scheme: dark)" srcset="../img/cpu-vs-recorders-dark.svg">
+  <img src="../img/cpu-vs-recorders-light.svg" alt="CPU load against recorders in use on macOS. DCFD on a USRP: Trunk Recorder about 23 % idle, jumping to 221 % with one recorder and 258 % with five; Pro 11 to 12 % throughout. WMATA on two RTL-SDRs: Trunk Recorder rising from 45 % with one recorder to 244 % with nine; Pro 5 to 10 %.">
 </picture>
 
 | | DCFD (P25, USRP B200, 8 MSPS) | WMATA (SmartNet, 2 RTL-SDRs, 2.4 MSPS each) |
@@ -283,3 +283,32 @@ recorder against Pro's +0.7).
   threads to contend.
 - Repeat the selector A/B with nothing else running, to rule out the
   production instance's contention.
+
+## Earlier verification
+
+Against the archived TypeScript engine, the C++ prototype and Trunk Recorder,
+on synthetic P25 (with ground truth) and on real air (a CQPSK simulcast site,
+NAC 0x443, from an R820T RTL-SDR):
+
+- **Bit-exact** with the TypeScript decoders on identical input: IMBE / LC / ES
+  / HDU / TDULC decoding (0 mismatches) and vocoder audio (max difference 0).
+- **Same results as the C++ prototype:** identical TSBK sets on real air
+  (1149 / 2354 of 1149 / 2354), identical ground-truth scores, the same calls
+  and durations.
+- **Simulcast, synthetic ground truth** (two transmitters, 40 µs, 0.7 echo):
+  100 % of TSBKs and 0 wrong voice codewords.
+- **Real air vs Trunk Recorder on the same capture:** more control messages
+  decoded (1156 vs ~282) and more audio per call (e.g. TG 102 9.5 s vs 8.1 s).
+- **Phase 2 TDMA, real air** (DCFD's 770 MHz channels): bit-exact with the
+  TypeScript decoder (10,588 AMBE codewords, 3,741 MAC PDUs, vocoder audio
+  max difference 0), the same receiver performance (82–97 % of codewords
+  clean, per channel), 0.85 % of a core per channel; clear calls recorded
+  with every voice frame on air.
+- **USRP B200, live** (through UHD 4.9, DCFD's control channel and voice at
+  858 MHz, 8 MSPS): exactly 8.000 MSPS with 0 samples dropped over 3 min,
+  99.8 % of TSBKs (3183 / 6), clear calls recorded with audio matching their
+  length, 3.6 % of one core.
+- **Browser (WebAssembly, Chrome):** the same calls as the native build on the
+  same capture (identical lengths; one bit-exact, the other within ±2 LSB from
+  floating-point rounding), 7 % of a core in real time, 30 s of air decoded in
+  1.5 s.

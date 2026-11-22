@@ -93,6 +93,24 @@ paths:
         "404": { description: The door is off. }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/export/{table}:
+    get:
+      summary: A table of the store as a CSV file
+      description: "Setup → Data's Export. Control access only: a listen-only connection is refused. Times are local."
+      parameters:
+        - { name: table, in: path, required: true, description: "A table; a trailing `.csv` is accepted.", schema: { type: string, enum: [calls, transmissions, talkgroups, unit-names, talker-aliases, radios, heard-talkgroups, dashboard-history] } }
+        - { name: system, in: query, description: "A system's id (the config's system `id`): only its rows. Empty counts as not given.", schema: { type: integer, minimum: 0 } }
+      responses:
+        "200":
+          description: "The CSV, sent as it is read; saved as `<system's short name or all>-<table>-<date>-<time>.csv`."
+          content:
+            text/csv:
+              schema: { type: string }
+        "400": { description: "`system` is not a system's id; body `{\"error\": \"system must be a system's id\"}`.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "403": { description: "Listen access: `{\"error\": \"exporting needs control access\"}`.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: "The door is off (no body), no such table (`{\"error\": \"no such table\"}`), or no such system in the store (`{\"error\": \"no such system in the store\"}`).", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { description: "The call store is off: `{\"error\": \"the call store is off\"}`.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 components:
   securitySchemes:
     bearer: { type: http, scheme: bearer, description: "An access token's secret (trp_ and 64 hex digits)." }

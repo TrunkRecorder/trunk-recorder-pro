@@ -1,92 +1,67 @@
-# All About Trunk Recorder Pro
+# Trunk Recorder Pro documentation
 
-Trunk Recorder Pro records the calls on trunked and conventional radio systems. It uses one or more
-Software Defined Radios (SDRs) to capture a wide slice of spectrum, follows the system's control
-channel, and records every call it can hear as a WAV file with a Trunk Recorder–compatible JSON file
-beside it. Plugins can then upload those calls to OpenMHz, Broadcastify Calls or Rdio Scanner,
-stream them, or hand them to a script of your own.
+Trunk Recorder Pro records the calls on trunked and conventional radio systems, and is set up and
+watched from a browser. What it supports (systems, radios, platforms) is listed in the
+[README](../README.md).
 
-It is a rewrite of [Trunk Recorder](https://github.com/TrunkRecorder/trunk-recorder) in Rust. All
-of the signal processing and decoding is built in: there is no GNU Radio or OP25 to install. It
-is a single program, a few megabytes in size. You set it up and watch it from a browser
-interface, which it serves itself. The same engine also runs entirely inside a web browser, with
-nothing to install.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/shots/overview-dark.png">
+  <img src="img/shots/overview-light.png" alt="The Overview page while two systems record">
+</picture>
 
-Trunk Recorder Pro supports:
+Each topic has one home. Guides explain how and why, the reference lists every key, flag and
+message, and the developer pages cover the internals. Other pages link to them.
 
-- **P25** trunked systems: Phase 1 (C4FM and CQPSK / simulcast) control channels, with Phase 1 and
-  Phase 2 (TDMA) voice
-- **SmartNet / SmartZone** trunked systems: 800 MHz, 900 MHz and VHF / UHF (OBT) band plans, analog
-  and digital voice
-- **Trunked DMR**: Motorola Capacity Plus (and Linked Capacity Plus), Capacity Max, Connect Plus
-  and ETSI Tier III
-- **NXDN** (NXDN48 and NXDN96): Type-C and Type-D trunking. NXDN has been tested on recordings and
-  synthesized signals, but not yet on a live trunked system.
-- **EDACS** Standard and Networked sites, with analog and ProVoice voice (see
-  [Trunked systems](configuration/systems.md#edacs)). Analog calls tested live on a networked
-  system; ProVoice on synthesized signals.
-- **Conventional channels**: analog FM, P25, DMR and NXDN, on their own or alongside trunked
-  systems. Several users of one frequency can be told apart by CTCSS tone, DCS code, NAC, colour
-  code or RAN.
-- Several systems, and several sites of one system, at the same time. When a call is heard on more
-  than one site, the best copy is kept.
+## New here
 
-Supported platforms: **macOS** 11 or newer (Apple silicon and Intel), **Linux** (x86-64 and
-ARM64, glibc 2.28 or newer, including the **Raspberry Pi** 4 and 5 with a 64-bit OS),
-**Windows** 10 and 11 (64-bit), **Docker** on Linux, and **Chrome or Edge** for the browser
-version.
+1. [Choose how to run it](install/README.md):
+   [macOS](install/macos.md), [Windows](install/windows.md), [Linux](install/linux.md),
+   [Raspberry Pi](install/raspberry-pi.md), [Docker](install/docker.md), or
+   [in the browser](install/browser.md) with nothing to install.
+   [USRP, Airspy and SoapySDR radios](install/other-radios.md) need a driver.
+2. [Getting started](getting-started.md): from a new install to your first recorded call, and how
+   trunking works.
+3. [Coming from Trunk Recorder](migrating-from-trunk-recorder.md): importing your config, and what
+   is different.
+4. [Troubleshooting](troubleshooting.md): when Start is refused, nothing is recorded, or audio is
+   bad.
 
-...and SDRs: RTL-SDR dongles (R820T / R828D / E4000 tuners natively, other older tuners through SoapySDR), Ettus
-USRPs through UHD, HackRF One (natively), Airspy R2 and Mini, and anything else with a SoapySDR module (SDRplay,
-LimeSDR...).
+## Guides
 
-## Install
+### Setting it up
 
-- [Choosing how to run it](install/README.md), and building from source
-- [macOS](install/macos.md)
-- [Windows](install/windows.md)
-- [Linux](install/linux.md)
-- [Raspberry Pi](install/raspberry-pi.md)
-- [Docker](install/docker.md)
-- [In the browser](install/browser.md), with nothing to install
-- [USRP, Airspy and SoapySDR radios](install/other-radios.md)
-
-## Setup
-
-- [Getting started](getting-started.md): from a new install to your first recorded call
-- [Radios](guides/radios.md): center frequency, sample rate, gain, frequency correction, using
-  more than one SDR
-- [Adding a system from the directory](guides/from-the-directory.md): a system other users share, with its
-  sites, licenses and named talkgroups, into your recorder.
-- [Find my system](guides/find-my-system.md): let the recorder scan for control channels and set
-  itself up
+- [Radios](guides/radios.md): center frequency, sample rate, gain, frequency correction, more than
+  one SDR
+- [Adding a system from the directory](guides/from-the-directory.md): a system other users share
+- [Find my system](guides/find-my-system.md): let the recorder scan for control channels
+- [Talkgroups and unit names](guides/talkgroups-and-units.md): the talkgroup file and its format
+- [Several systems and sites](guides/multi-site.md): multi-site calls and site lock
 
 ### Radio systems
 
 - [P25](guides/p25.md)
 - [SmartNet](guides/smartnet.md)
-- [Trunked DMR](guides/dmr.md)
+- [Trunked DMR](guides/dmr.md), with Hytera XPT
 - [NXDN](guides/nxdn.md)
-- [Several systems and sites](guides/multi-site.md)
-- [Talkgroups and unit names](guides/talkgroups-and-units.md)
+- EDACS: [its keys](configuration/systems.md#edacs) (no guide yet)
 - [Conventional channels](guides/conventional.md)
 - [Tones, NACs and colour codes](guides/tones.md): splitting a shared frequency
 
 ### Using it
 
-- [The interface](guides/interface.md): Setup, live listening, events, remote access, signing in
+- [The built-in interface](guides/interface.md): Setup, live listening, events
 - [The dashboard](guides/dashboard.md): what each page and number means
-- [Recordings](guides/recordings.md): where calls go, file names, the call JSON, what is kept
-- [Signals](guides/signals.md): pages, alert tones, DTMF, KNOX and Morse IDs heard in calls, and naming them
-- [Plugins](plugins/README.md): uploading to [OpenMHz](plugins/openmhz.md),
-  [Broadcastify](plugins/broadcastify.md) and [Rdio Scanner](plugins/rdioscanner.md),
+- [Remote access](guides/remote-access.md): reaching it from elsewhere, signing in, passkeys,
+  proxies, HTTPS
+- [Recordings](guides/recordings.md): where calls go, the call JSON, what is kept, M4A
+- [Signals](guides/signals.md): pages, alert tones, DTMF and Morse IDs heard in calls
+- [Captures](guides/captures.md): recording what the radio receives, capture rules, the public
+  corpus
+- [Plugins](plugins/README.md): [OpenMHz](plugins/openmhz.md),
+  [Broadcastify](plugins/broadcastify.md), [Rdio Scanner](plugins/rdioscanner.md),
   [streaming](plugins/simplestream.md), [running a script](plugins/upload-script.md),
-  [publishing to MQTT](plugins/mqtt.md)
-- [Interfaces](interfaces/README.md): pages for people who listen (a player, a scanner wall),
-  each on a port of its own, from the interface store or a folder of your own
-- [Coming from Trunk Recorder](migrating-from-trunk-recorder.md): importing your config, and what
-  is different
-- [Troubleshooting](troubleshooting.md)
+  [MQTT](plugins/mqtt.md)
+- [Interfaces](interfaces/README.md): pages for people who listen, each on a port of its own
 
 ## Reference
 
@@ -95,45 +70,29 @@ LimeSDR...).
   [trunked systems](configuration/systems.md),
   [conventional systems](configuration/conventional.md),
   [recording](configuration/recording.md),
-  [server and log](configuration/server-and-log.md),
+  [the store](configuration/storage.md),
+  [server, log and monitor](configuration/server-and-log.md),
   [plugins](configuration/plugins.md)
 - [Command line](command-line.md)
 
-## For developers
+## Building on it
 
-- [Development](development.md): building from source, making a release, the code layout and how
-  it was verified
-- [Building an interface](api/README.md) and [publishing it](interfaces/publishing.md) in the
-  interface store
-- [Architecture](architecture.md): how it works, from SDR to audio file
-- [Architecture explainer](developer/architecture.html): interactive diagrams of the sample path,
-  DSP chains, trunking, recorders, back-pressure, plugins, data objects, config, clocks,
-  measurements, the browser build and the interface protocol
-  ([text version](developer/architecture.md))
-- [Performance](performance.md): CPU use measured against Trunk Recorder
-- [Building your own interface](api/README.md): the WebSocket API the built-in interface uses
-- [Writing a plugin](plugins/writing-plugins.md)
+- Your own data: [the call JSON](guides/recordings.md#the-call-json), the calls HTTP API
+  ([OpenAPI](api/calls.openapi.yaml)), [the store](configuration/storage.md) and the
+  [SigMF extension](sigmf/trp.sigmf-ext.md) captures are written with
+- [The interface API](api/README.md): the WebSocket protocol the built-in interface uses, for
+  building your own ([for language models](api/llms.txt)), and
+  [publishing an interface](interfaces/publishing.md) in the interface store
+- [Writing a plugin](plugins/writing-plugins.md), and [node health reports](api/node-health.md)
 
-## How Trunking Works
+## Developers
 
-For those not familiar, trunking systems allow a large number of user groups to share a limited
-number of radio frequencies by assigning frequencies to talkgroups (channels) on demand. Most
-user groups actually use the radio very sporadically and don't need a frequency of their own.
-
-Most trunking systems (P25, SmartNet, Capacity Max, NXDN Type-C) set aside one frequency as a
-**control channel** that manages and broadcasts frequency assignments. When someone presses the
-Push to Talk button on their radio, the radio asks the system for a channel. The system assigns
-a voice frequency and broadcasts a **grant** about it on the control channel. This tells the
-radio which frequency to transmit on, and tells the other radios on that talkgroup to listen.
-
-To follow every conversation, Trunk Recorder Pro constantly listens to and decodes the control
-channel. When a grant arrives, it opens a voice channel on that frequency, out of the spectrum the
-SDR is already capturing. It keeps a second of recent spectrum in memory, so the channel starts
-with the air from just *before* the grant and the first syllable isn't lost. Nothing is sent on
-the control channel when a conversation is over, so the recorder ends the call when nothing has
-been heard on it for a few seconds (the call timeout, 3 seconds by default).
-
-Some systems have no control channel. On Capacity Plus and NXDN Type-D, each repeater says on its
-own channel who is talking on it, so the recorder watches every repeater of the site at once.
-Conventional channels have no trunking at all: each user group has its own frequency, and the
-recorder opens a channel whenever a signal appears on one.
+- [Development](developer/README.md): building from source, making a release, the code layout,
+  CPU cost
+- [Architecture](developer/architecture.md): how it works, from SDR to audio file. An
+  [illustrated version](developer/architecture.html) has diagrams, and may lag the text.
+- [Testing](developer/testing.md): the test suites, regression captures and the IQ corpus
+- [Developer tools](developer/tools.md): the `tool` subcommands for measuring and synthesizing
+- [Performance](developer/performance.md): CPU use measured against Trunk Recorder
+- [Interface style](developer/ui-style.md)
+- Protocol notes: [Hytera XPT](developer/protocols/xpt.md)

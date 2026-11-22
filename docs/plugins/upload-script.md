@@ -132,7 +132,7 @@ A failed run keeps the call's files if **Keep when a plugin fails** is on.
 
 ## Coming from Trunk Recorder
 
-**Import Trunk Recorder config…** puts each system's `uploadScript` into that system's **Script**.
+**Setup → Systems → Import…** puts each system's `uploadScript` into that system's **Script**.
 Then:
 
 - Change a relative path (`./encode-upload.sh`) to the script's full path, or the plugin won't

@@ -17,7 +17,7 @@ Node-RED, dashboards) read them unchanged.
 
 1. On **Plugins** > **Install & settings**, find **MQTT** under **Find plugins** and press
    **Install** (or run `trunk-pro plugin install mqtt`). Use version 0.1.7 or later with
-   Trunk Recorder Pro 0.2.0: an older one reports a call's signal, noise and frequency error as 0.
+   Trunk Recorder Pro 0.2.0 or later: an older one reports a call's signal, noise and frequency error as 0.
 2. In **Setup** > **Plugins**, turn **MQTT** on, and fill in **Broker** (`tcp://host:1883`; `ssl://`,
    `ws://` and `wss://` work too) and **Topic**, the base topic for its messages.
 3. Start recording, or if you're recording already, the plugin restarts with the new settings.

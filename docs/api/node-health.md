@@ -241,7 +241,7 @@ call but delivering fewer than another is wrong somewhere.
 | Endpoint | `POST https://api.broadcastify.com/call-health`: beside the upload server's `…/call-upload` |
 | `node` | `{ "systemId": 2898, "apiKey": "…" }`: as uploads send them |
 | Nodes | One report per system ID. A recorder system uploaded as one system ID is one node; a site uploaded as a system ID of its own is a node of its own |
-| Off | Recorders send reports unless their user turns them off; Broadcastify uses them to choose between nodes and to tell their owners about problems |
+| Off | A recorder that sends reports lets its user turn them off; Broadcastify uses them to choose between nodes and to tell their owners about problems. Trunk Recorder Pro's Broadcastify Calls plugin doesn't send them (yet) |
 | Validate | `POST …/call-health?validate=1` checks a report and answers its figures: `200 {"ok":true,"valid":true,"summary":{…}}`, or `400` saying what's wrong. No API key check, nothing stored, no rate limit: for recorder developers to try their reports |
 
 ## In Trunk Recorder Pro

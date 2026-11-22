@@ -10,9 +10,9 @@ This page covers running Trunk Recorder Pro in a Docker container on a Linux hos
 - **Not Docker Desktop on macOS or Windows.** Containers there run inside a virtual machine that
   can't see your USB devices, so the recorder would find no dongles. Use the [macOS](macos.md) or
   [Windows](windows.md) app instead.
-- **RTL-SDRs only.** The image contains `trunk-pro` and a small `ffmpeg`, nothing else: no UHD,
-  libairspy or SoapySDR, so USRP, Airspy and SoapySDR sources (and older RTL-SDRs that need
-  SoapySDR) don't work in it. Use the [Linux](linux.md) package for those.
+- **RTL-SDRs and HackRF Ones only.** The image contains `trunk-pro` and a small `ffmpeg`, nothing
+  else: no UHD, libairspy, libhydrasdr, libbladeRF or SoapySDR, so USRP, Airspy, HydraSDR, bladeRF
+  and SoapySDR sources (and older RTL-SDRs that need SoapySDR) don't work in it. Use the [Linux](linux.md) package for those.
 - **Nothing else may hold the dongles.** Stop any SDR program on the host that has them open. The
   kernel's DVB TV driver is not a problem: Trunk Recorder Pro detaches it itself.
 
@@ -68,7 +68,7 @@ What each part does:
 | `image` | The Docker Hub image. `build: .` lets `docker compose up -d --build` build it from a checkout of the repository instead. |
 | `restart: unless-stopped` | Starts it again after a crash or a reboot of the host, unless you stopped it yourself. |
 | `ports: "8080:8080"` | The interface, on port 8080 of every address of the host. |
-| `./data:/data` | Everything the recorder keeps: settings, band plans, plugins and recordings, in `./data` next to the compose file. |
+| `./data:/data` | Everything the recorder keeps: settings, the store, plugins and recordings, in `./data` next to the compose file. |
 | `/dev/bus/usb:/dev/bus/usb` | The host's USB devices, including ones plugged in after the container starts. |
 | `device_cgroup_rules: "c 189:* rmw"` | Permission to open USB devices (character devices with major number 189). Together with the line above, this lets the container use any dongle without `privileged: true`. |
 | `/etc/localtime` | The host's time zone, so call times and file names are local time. |
@@ -90,7 +90,7 @@ host:
 
 | What | Host | Container |
 |---|---|---|
-| Settings (`config.json`), band plans, plugins, statistics | `./data/config/trunk-pro/` | `/data/config/trunk-pro/` |
+| Settings (`config.json`), the store (`trunk-pro.sqlite`), plugins | `./data/config/trunk-pro/` | `/data/config/trunk-pro/` |
 | Recordings | `./data/TrunkRecorderPro/` | `/data/TrunkRecorderPro/` |
 
 The container runs as root, so the files in `./data` belong to root on the host. Use `sudo` to
@@ -102,34 +102,24 @@ Anything written elsewhere in the container is lost when the container is replac
 
 ## Security
 
-> **Signing in is off until you turn it on.** Until then, anyone who can reach port 8080 can
-> change the settings, install plugins and stop the recorder. Turn it on in Setup → **Recording**
-> → **Access**, or from the host:
->
-> ```bash
-> docker compose exec trunk-pro trunk-pro access add me   # an Admin user; prints their token's secret once
-> docker compose exec trunk-pro trunk-pro access on
-> docker compose restart
-> ```
->
-> See [Access](../configuration/server-and-log.md#access). On plain HTTP a token crosses the
-> network in the clear: publish the port only on a network you trust, or turn on HTTPS (below).
+Signing in is off until you turn it on: until then, anyone who can reach port 8080 can change the
+settings, install plugins and stop the recorder. Turn it on in Setup → **Recording** → **Access**,
+or from the host:
 
-To keep the interface to the host itself, publish it on localhost only:
-
-```yaml
-    ports:
-      - "127.0.0.1:8080:8080"
+```bash
+docker compose exec trunk-pro trunk-pro access add me   # an Admin user; prints their token's secret once
+docker compose exec trunk-pro trunk-pro access on
+docker compose restart
 ```
 
-and reach it from elsewhere through an SSH tunnel (`ssh -L 8080:localhost:8080 you@host`, then
-`http://localhost:8080`), or put it at a name of yours with a `cloudflared` service beside it
-([Cloudflare Tunnel and Access](../configuration/server-and-log.md#cloudflare-tunnel-and-access)). To use another port on the host, change only the left-hand number:
-`"8081:8080"`.
+To keep the interface to the host itself, publish it on localhost only (`"127.0.0.1:8080:8080"`
+under `ports:`) and reach it through an SSH tunnel or a `cloudflared` service beside it. To use
+another port on the host, change only the left-hand number: `"8081:8080"`. Signing in, tunnels
+and proxies are in [Remote access and signing in](../guides/remote-access.md).
 
 ### HTTPS
 
-To serve HTTPS ([HTTPS](../configuration/server-and-log.md#https)), mount the certificate and
+To serve HTTPS ([HTTPS](../guides/remote-access.md#https)), mount the certificate and
 key into the container read-only, and point `server.tls` in `config.json` at them as the container
 sees them:
 

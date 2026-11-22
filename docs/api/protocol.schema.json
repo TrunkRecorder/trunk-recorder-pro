@@ -2091,7 +2091,7 @@
               "type": "null"
             }
           ],
-          "description": "Capacity Plus: the rest channel's logical slot number, and its frequency once known."
+          "description": "Capacity Plus and XPT: the rest channel's logical slot number, and its frequency once known."
         },
         "keyed": {
           "type": "boolean",

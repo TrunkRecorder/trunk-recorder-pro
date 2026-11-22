@@ -1,8 +1,8 @@
-# The web interface
+# The built-in interface
 
 Trunk Recorder Pro is run from your web browser. This page is a tour of the interface: the
-frame around every page, Setup, the Listen page, events, quitting, where the
-history is kept, reaching it from another machine, and the other interfaces it serves. The
+frame around every page, Setup, the Listen page, events, quitting, reaching it from another
+machine, and the other interfaces it serves. The
 measurement pages (Overview, RF, Decode, Radio system, Platform, Plugins) and what their numbers
 mean are on [The dashboard](dashboard.md).
 
@@ -28,6 +28,10 @@ On the left is the list of pages:
 | **Interfaces** | Other interfaces (a player, a scanner wall) for people who listen, each on a port of its own: installing them, their ports and what they may do |
 | **Setup** | Sources, systems, recording, the log, plugins |
 
+A plugin that has a page of its own is listed under **Plugins**. Under the name is the version,
+with a `v<x> available` badge when a newer release is out. Someone signed in as a View user
+sees no **Plugins**, **Interfaces** or **Setup**, and **Platform** needs the app's host access.
+
 Next to a page's name is a light, and hovering over it says why it is that colour:
 
 - **green**: fine
@@ -43,6 +47,9 @@ Across the top are:
   **Starting…**, **Stopping…**, or **Disconnected** when the browser has lost the app.
 - **Start** / **Stop**. If the settings can't start, **Start** is greyed out and hovering over it
   says why (for example "Add a source: a dongle or a capture file.").
+- **Restart** (only while recording, and only when a change needs it): stops and starts again
+  with the settings as they are now. A **Restart to apply** banner says the same.
+- **Sign in** (or who you are signed in as), when signing in is on.
 - **Quit** (see [Quitting](#quitting)).
 
 Banners under the top bar tell you about problems: `Not connected to trunk-pro — retrying…` when
@@ -55,14 +62,21 @@ same recorder.
 
 ## Setup
 
-**Setup** has five tabs; the number on each is how many of that thing you have:
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/setup-systems-dark.png">
+  <img src="../img/shots/setup-systems-light.png" alt="Setup, on its Systems tab">
+</picture>
+
+**Setup** has six tabs (four in the browser version: no Data, no Plugins); the number on each is
+how many of that thing you have:
 
 | Tab | What's there | Details |
 |---|---|---|
-| **Systems** | **Find my system**, your trunked systems, **Add a system**, **Import…** (a Trunk Recorder config, or a [system from the directory](from-the-directory.md)) | [Find my system](find-my-system.md), [P25](p25.md), [SmartNet](smartnet.md), [DMR](dmr.md), [NXDN](nxdn.md) |
+| **Systems** | Your trunked systems, **Import…** (a Trunk Recorder config, or a [system from the directory](from-the-directory.md)) and **Add a system**, then **Find my system** below the list | [Find my system](find-my-system.md), [P25](p25.md), [SmartNet](smartnet.md), [DMR](dmr.md), [NXDN](nxdn.md) |
 | **Conventional** | Conventional systems and their channels | [Conventional](conventional.md) |
 | **Radios** | Your sources (dongles, other radios, capture files), **Add a source**, **Dongle not showing up?** | [Radios](radios.md) |
-| **Recording** | **Recorder** (recordings folder, recorders, pre-roll, voice decoder, RAM spool, start on launch), **Call rules**, **Log**, **M4A audio** | [Recordings](recordings.md) |
+| **Recording** | **Recorder** (recordings folder, RAM spool, recorders, pre-roll, voice decoder, **One copy per multi-site call**, start on launch), **Access** (sign-in, users), **Key containers** (when a key file is locked), **Call rules**, **Advanced** (**M4A audio**, **Log**) | [Recordings](recordings.md) |
+| **Data** | Where the recorder keeps what it keeps: **Store** (SQLite or PostgreSQL), **Writing less** (**Normal** or **Low-write**, the call history indexes, **Write every**), **Radio registry** and **How long** (call and dashboard history, in days); then **Export and delete** (a CSV per table, **Delete**, **Compact DB…**). Desktop only | [The store](../configuration/storage.md) |
 | **Plugins** | Each plugin's settings | [Plugins](../plugins/README.md) |
 
 There's no Save button. Every change is saved to the config file a moment after you make it.
@@ -70,12 +84,17 @@ Most changes take effect the next time you press **Start**. A few apply while re
 talkgroup files (including the **Ignore** button on the Radio system page), the **Log**
 settings, and plugin settings (the plugins restart with them).
 
-If you're coming from Trunk Recorder, **Import Trunk Recorder config…** brings a `config.json`
+If you're coming from Trunk Recorder, **Import…** on Setup → Systems brings a `config.json`
 over; see [Migrating from Trunk Recorder](../migrating-from-trunk-recorder.md). Anything the
-import couldn't finish shows as a to-do list at the top of Setup, with a count on the tab it
-belongs to.
+import couldn't finish shows as a **Finish the import** list at the top of Setup (each item with
+**Show** and **Dismiss**), with a count on the tab it belongs to.
 
 ## Listen
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/listen-dark.png">
+  <img src="../img/shots/listen-light.png" alt="The Listen page">
+</picture>
 
 Listen works like a scanner app (rdio-scanner and its kin): each call plays once it's recorded,
 one after another. On the left is the display and its buttons, on the right the recent calls and
@@ -103,13 +122,11 @@ kept as M4A plays the M4A, else the WAV.
 
 ### Calls
 
-The calls recorded, newest first: the 300 newest on disk when the app started, then each new
-one. Click a call to play it now; the feed goes on after it. **Selected talkgroups only** hides the
-calls you wouldn't hear. **Load older** reads further back through the recordings folder, 200
-calls at a time, as far as 24 hours ago.
-
-Load older reads the day folders of the usual layout (`<system>/<year>/<month>/<day>/`): calls
-saved with a [filename format](recordings.md) of your own aren't found.
+The calls recorded, newest first: the 300 newest in the call store when the app started, then
+each new one. Click a call to play it now; the feed goes on after it. **Selected talkgroups only**
+hides the calls you wouldn't hear. **Load older** reads further back, 200 calls at a time, as far
+as the store keeps calls (`storage.retentionDays`, 120 days by default). In **Low-write** mode, or
+with the store off, only the recent calls are listed.
 
 ### Talkgroups
 
@@ -131,11 +148,13 @@ coloured light. Click one to go to the page about it. These are the events you c
 |---|---|---|
 | `<system>: new talkgroup …` | info | A talkgroup you hadn't heard before. Worth a look on the Radio system page; add it to your talkgroup file if you want a name for it. |
 | `<system>: new radio …` | info | A new radio ID. Only reported once the app has a baseline for the system. |
+| `<system>: <signals> (<text>) on talkgroup …` | info | A signal pattern (a page, a tone) was heard on a talkgroup. Without a named signal it reads `<system>: <text> on talkgroup …`. See [Signals](signals.md). |
 | `<system>: control channel lost · … MHz` | red | The control channel stopped decoding and the recorder is hunting for another. Check the antenna, gain and frequency; see [Troubleshooting](../troubleshooting.md#the-control-channel-isnt-decoding). |
 | `<system>: control channel back` | green | Back to normal. |
 | `<source>: dropping samples` | amber | The computer or USB bus isn't keeping up; calls on that source lose audio. See [Troubleshooting](../troubleshooting.md#dropped-samples). |
 | `<source>: gain too high · …% clipping` | amber | More than 0.5% of samples are at full scale: the gain is too high, or a strong signal is nearby. Lower the gain a few dB. |
-| `<source>: clean again` | green | No more drops or clipping. |
+| `<source>: gain too low · peaks … dBFS` | amber | The source's samples stayed tiny for a minute (their peaks average the dBFS shown): the gain may be too low. Raise it a few dB. |
+| `<source>: clean again` | green | No more drops, clipping or low gain. |
 | `<plugin>: error — …` / `warning — …` / `ok — …` | red / amber / green | A plugin's own status changed. See the Plugins page. |
 | `<target>: not answering` | red | One of the hosts checked (`monitor.checkHosts`) stopped answering. |
 | `<target>: back · down … s` | green | It's back. |
@@ -144,11 +163,14 @@ coloured light. Click one to go to the page about it. These are the events you c
 | `RAM spool …% free — calls soon go to disk` | red | Under 10% free. |
 | `RAM spool full: … calls to the recordings folder` | red | Nothing was lost; those calls went to disk. Make the spool bigger, or find out why uploads are slow. |
 | `RAM spool OK · …% free` | green | Back to normal. |
+| `RAM spool deleted — calls go to the recordings folder` / `RAM spool deleted · made again` | amber / green | The spool's folder was removed while recording. Calls go to the recordings folder until the spool is made again. |
 | `The clock is … behind/ahead of <server>: call times are off by as much` | amber / red | The measured offset is 250 ms or more (red at 5 s). Check the operating system's time service. See [Clock](dashboard.md#clock). |
 | `The operating system says its clock isn't synchronized: …` | amber | The time service (chrony, systemd-timesyncd, ntpd) isn't running or can't reach its servers. |
 | `Calls are being stamped … behind/ahead of <site>'s radio system clock…` | amber / red | No time server answers, and a radio system that vouches for its time says this computer's clock is off. |
 | `Clock jumped … forward` (hover: its time service set it, or the computer slept) / `Clock set back …` | amber | The wall clock jumped by half a second or more. Calls begun from then on are by the new time; a call being recorded keeps the time it began with until it ends. |
 | `Clock right again` | green | Back to normal. |
+
+On a system with more than one site, the control channel events say which: `<system> site <n>: …`.
 
 The app keeps the last 200 events in memory, so a browser that opens later still sees them; they
 are not kept when the app quits. There are no alerts (email, push) yet: events only show in the
@@ -163,73 +185,13 @@ interface.
 
 To start recording again after a restart without touching anything, turn on **Record when the app starts** in Setup → Recording (or start with `--start`).
 
-## Where the history is kept
-
-The dashboard's charts can go back a week, across restarts. The app keeps, in the folder its
-config file is in:
-
-| Folder | What | Kept |
-|---|---|---|
-| `stats/` | Each minute's measurements, one file a day (`YYYY-MM-DD.jsonl`, UTC days). A finished day is gzipped. | 8 days (a week and today); older files are deleted |
-| `radio/` | What each system's talkgroups and radios have done, hour by hour (`<system>.json`), for the Radio system page. Saved every 15 minutes and when the app quits. | a week of hours |
-
-Files are only appended to, never rewritten, which is kind to SD cards. Deleting `stats/` while
-the app is stopped clears the charts' history and nothing else.
-
 ## Remote access
 
 By default the interface only answers on this computer (`127.0.0.1`). To reach it from another
-machine on your network, start with `--bind 0.0.0.0`, or set `server.bind` in the config (see
-[Server and log](../configuration/server-and-log.md)):
-
-```bash
-trunk-pro serve --bind 0.0.0.0 --no-open
-```
-
-Then browse to `http://<that machine's address>:8080`. The other interfaces are reachable the
-same way, each at its own port (`:8081`, …), which the firewall must let through too.
-
-**Signing in is off by default.** Until you turn it on, anyone who can reach the built-in
-interface's port can change the settings, start and stop recording, quit the app, listen, and
-download your recordings. Turn it on with **Sign-in** in Setup → **Recording** → **Access**
-([Access](../configuration/server-and-log.md#access)): then every browser and program signs in as a
-user, with their access token, and gets no more than the user's role allows (View or Admin). An
-interface with listen access is safer to share either way: on its port, the recorder can be
-listened to but not changed. That's what the other interfaces are for — give the people who listen
-a player's address, not the recorder's.
-
-Never open the port to the internet. On plain HTTP a token typed on another computer crosses the
-network in the clear. On your own network or a VPN that's fine; otherwise turn on
-[HTTPS](../configuration/server-and-log.md#https), or put a reverse proxy that adds it in front.
-From outside, use a VPN, the SSH tunnel below, or [Cloudflare Tunnel](../configuration/server-and-log.md#cloudflare-tunnel-and-access), with signing in on.
-
-A safer way, from a machine that can SSH to the recorder, is an SSH tunnel. Leave the recorder
-bound to `127.0.0.1`, then on your machine:
-
-```bash
-ssh -L 8080:localhost:8080 you@recorder.local
-```
-
-and open <http://localhost:8080>. The interface is now reachable only through your SSH login.
-
-### Why a page gets "Refused"
-
-The app checks every request a browser sends, so that some other web page you happen to have open
-can't drive the recorder behind your back:
-
-- A web page from another origin (a page served somewhere else, a page opened from a file, or an
-  interface's page reaching for another port than its own) is refused with
-  `Refused a page from <origin>: add it to server.allowedOrigins in the config to let it use the interface.`
-- While bound to `127.0.0.1`, a request that arrives under any name other than `localhost` (or a
-  loopback address) is refused with `Refused a request for <host>: this server only answers to
-  localhost …`. This blocks DNS rebinding.
-
-To allow a page, add its origin to **Pages served elsewhere** on the Interfaces page
-(`server.allowedOrigins`), one per line, as the browser sends it
-(`http://192.168.1.50:3000`). `null` allows pages opened from a file, and `*` allows any page:
-only on a private network. Programs that aren't browsers (scripts, `curl`) aren't affected by any
-of this. With signing in on, a page on an allowed origin also needs an access token: being listed
-only lets it in the door.
+machine, start with `--bind 0.0.0.0` (or set `server.bind`), or leave it as it is and use an SSH
+tunnel (`ssh -L 8080:localhost:8080 you@recorder.local`). Signing in is off until you turn it on
+in Setup → **Recording** → **Access**. All of this, with HTTPS, passkeys, proxies and Cloudflare
+Tunnel, is in [Remote access and signing in](remote-access.md).
 
 ## Other interfaces
 

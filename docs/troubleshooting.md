@@ -26,7 +26,7 @@ config, one RTL-SDR and no systems, when there's no file). The choices each key 
 in the [config reference](configuration/README.md#general-rules).
 
 A Trunk Recorder `config.json` is a different format. Don't point `--config` at one; bring it over
-with **Import Trunk Recorder config…** instead (see
+with **Import…** instead (see
 [Migrating from Trunk Recorder](migrating-from-trunk-recorder.md)).
 
 The app reads the config when it starts and writes it whenever you change something in the
@@ -72,31 +72,45 @@ SmartScreen may warn the first time: click **More info → Run anyway**.
 
 When the settings can't record, **Start** is greyed out and hovering over it says why. The same
 check runs when recording starts from `--start` or **Record when the app starts**, and
-the log says `Not started: <why>`. The reasons:
+the log says `Not started: <why>`, the first problem found. The reasons:
 
 | Message | What to do |
 |---|---|
 | `Add a source (a dongle or a capture file).` | Setup → Radios → **Add a source** |
 | `Choose the capture file to replay.` | A capture-file source has no file |
-| `Add a system with a control channel, or a conventional channel.` | A trunked system only counts once it's enabled and has a control channel |
+| `<system>: it is set to receive on <source>, which isn't one of the sources — choose its sources again.` | A system's or conventional channel's **Receive on** names a radio that was taken out or renamed |
+| `Source N: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB.` or `Source N: at most 256 USB transfers in flight.` | An RTL-SDR's `bufLen` or `buffers` (Setup's **USB transfer size**) is out of range; `65536` is the usual value |
+| `Source N: a HackRF runs at 1 to 20 MSPS.` or `Source N: a HackRF's LNA gain is 0–40 dB in 8 dB steps, its VGA gain 0–62 dB in 2 dB steps.` | A HackRF's `rateHz`, `lnaDb` or `vgaDb` is out of range |
+| `Source N: a HydraSDR's input is ANT, CABLE1, CABLE2.` or `Source N: the HydraSDR's bias-T is on ANT only, …` | A HydraSDR's `rfPort` is over 2, or its `biasTee` is on with another input |
+| `Source N: the USRP's wire format is sc16, sc12 or sc8 (or empty, to choose).` | A USRP's `wireFormat` |
+| `Add a system with a control channel, or a conventional channel.` | A trunked system only counts once it's enabled and has a control channel; a conventional one once it has an enabled channel |
 | `Every system needs a short name.` | Give it one in Setup |
-| `Two systems are named "x" — each needs a short name of its own …` | Short names are folder names and how plugins tell systems apart, so they must differ (conventional systems included) |
+| `Two systems are named "x" — each needs a short name of its own …` | Short names are folder names and how plugins tell systems apart, so they must differ (conventional systems included, enabled or not) |
 | `Two sites of x are named "y" — each needs a name of its own.` | Site names are unique within their system |
-| `Source N: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB …` or `Source N: at most 256 USB transfers in flight.` | An RTL-SDR's `bufLen` or `buffers` (Setup's **USB transfer size**) is out of range; `65536` is the usual value |
+| `A site of x is named "y", which is another system's short name — one of them needs another name.` | Rename the site or the other system |
+| `x: …` (a signal problem, such as `x: two signals are called y …`) | A system's [signals](guides/signals.md) can't be used: no id, an id used twice, a pattern it doesn't know, a page without its two tones |
 | `Set a center frequency for source N — it couldn't be placed automatically …` | Automatic centring couldn't fit the channels. Set the centre yourself, or add a source. See [Radios](guides/radios.md). |
-| `No control channel of x falls inside any source's bandwidth — move a center frequency or add a source.` | At least one control channel must be inside a source's usable band (its band minus the guard band at each edge) |
-| `x: DMR (or NXDN) frequencies outside every source's bandwidth: … MHz` | Every control and voice frequency of a DMR or NXDN site has to be covered |
-| `x: …` (a band plan problem) | A SmartNet system's band plan is incomplete; see [SmartNet](guides/smartnet.md) |
-| `Conventional channel(s) outside every source's bandwidth: … MHz — move a center frequency or disable them.` | As it says |
-| `Conventional channel … MHz is in both a and b …` | A frequency can belong to only one conventional system |
+| `x: …` (a band plan problem) | A SmartNet system's band plan isn't one it knows, or `400_custom` lacks a number; see [SmartNet](guides/smartnet.md) |
+| `x: DMR frequencies outside every source's bandwidth: … MHz — move a center frequency or add a source.` (or NXDN, EDACS) | Every control and voice frequency of a DMR, NXDN or EDACS site has to be covered |
+| `No control channel of x falls inside any source's bandwidth — move a center frequency or add a source.` | At least one control channel must be inside a source's usable band (its band minus the guard band at each edge: see [Guard band](configuration/sources.md#guard-band-and-usable-bandwidth)) |
+| `x: an EDACS site needs its channel list — each LCN (1–25) and its frequency.` | Fill in the site's `lcnTableHz`; see [EDACS](configuration/systems.md#edacs) |
+| `Conventional channel … MHz is in both a and b — a frequency belongs to one conventional system.` | As it says |
 | `A conventional channel has no frequency yet.` | Fill it in or remove the row |
-| `Conventional channel … MHz: …` | Its tone, NAC, colour code or RAN can't be read; see [Tones](guides/tones.md) |
+| `Conventional channel(s) outside the bandwidth of every source they may be received on: … MHz — move a center frequency or disable them.` | As it says |
+| `Conventional channel … MHz: …` | Its tone, NAC, colour code or RAN can't be read (`151.5 Hz isn't a standard CTCSS tone — 151.4?`); see [Typing a code](guides/tones.md#typing-a-code) |
 | `Conventional channel … MHz: a bandwidth is 4–20 kHz.` | A channel's **Bandwidth kHz** is outside that range |
 | `<system>: AM low cut is 0–600 Hz.` (also `Squelch open delay is 0–500 ms.`, `Squelch hang is 0–1000 ms.`) | A conventional system's demodulation setting is out of range |
-| `File name format: Unknown token: {x}.` (or `<system>'s file name format: …`) | A file name format has a token that isn't one of [the listed ones](configuration/recording.md#file-names), or a `{` with no `}` |
+| `File name format: Unknown token: {x}.` (or `<system>'s file name format: …`, or `A { has no closing }.`) | A file name format has a token that isn't one of [the listed ones](configuration/recording.md#file-names), or a `{` with no `}` |
+| `Conventional channel … MHz is listed with different modes …` (or sources, or bandwidths) | Rows sharing a frequency need the same mode, sources and bandwidth |
+| `Conventional channel … MHz is listed twice without a tone …` (or NAC, or code) | Give each row its own code; one may have none |
+| `Conventional channel … MHz is auto — it has no tone or code to split a frequency by, so it is one row without one.` (or AM) | Remove the other rows or the code, or give the channel a mode |
+| `Conventional channel … MHz has two rows for …` | Two rows ask for the same code (or two DCS codes that are the same signal, such as `D023N` and `D047I`) |
+| `Channel file <file>: …` | A linked channel file can't be read (missing, empty, or no `Frequency` column) |
 
-A linked channel file that can't be read also stops the start, with the file's problem as the
-message.
+Some of the "outside" messages end with `Suggested settings reach it: …` and the sources' settings
+that would (Setup → Radios). An encryption key file that can't be read, or a bad key in it, also
+stops the start, with a message saying which key and what to fix (see
+[Encryption keys](configuration/systems.md#encryption-keys-keys)).
 
 ## My dongle isn't found
 
@@ -250,8 +264,8 @@ More in [Conventional](guides/conventional.md).
 
 ## Dropped samples
 
-The source's light goes red with `Dropping samples: the computer or USB bus can't keep up. Calls on
-it lose audio.`, the RF page shows **Dropped** above zero, and the event feed says
+The source's light goes red with `Dropping samples — CPU or USB can't keep up; calls lose audio`,
+the RF page shows **Dropped** above zero, and the event feed says
 `<source>: dropping samples`. `trunk-pro capture` prints how many it dropped too.
 
 The radio delivers samples at a fixed rate and the driver has only a small buffer: if the app
@@ -288,7 +302,9 @@ themselves. Other USRP messages: `USRP can't run at … MSPS (it offers …); se
 
 ## Clipping or "Peaks at full scale"
 
-The gain is too high, or there's a strong transmitter nearby. Lower the gain a few dB. On the RF
+The source's light says `Gain too high · N% clipping` or `Gain too high · peaks at full scale`
+(and the event feed `Samples at full scale`), or `Gain too low · peaks … dBFS` for the opposite.
+For the first two, the gain is too high, or there's a strong transmitter nearby. Lower the gain a few dB. On the RF
 page, **Headroom** should stay a few dB above zero. More gain isn't better: past a point it
 raises the noise and overloads the radio. See [Radios](guides/radios.md).
 
@@ -344,11 +360,12 @@ systemd-logind`).
 
 ## Spotlight
 
-On macOS, the Platform page may say **Spotlight indexes the recordings folder**. Spotlight reads
+On macOS, the Platform page may say **Spotlight indexes recordings**. Spotlight reads
 every call you save into its index: disk writes for files nobody searches. Apps can't change
 Spotlight's list, so do it yourself: **System Settings → Spotlight → Search Privacy**, click **+**,
 and choose the recordings folder. The app checks again once a day. If it can't tell
-(`Spotlight may be indexing…`), click **I've done it** once you have.
+(**Spotlight may index recordings**), click **I've done it** once you have. See
+[Spotlight on macOS](guides/recordings.md#spotlight-on-macos).
 
 ## A browser or page is "Refused"
 
@@ -359,11 +376,11 @@ Refused a page from http://192.168.1.50:3000: add it to server.allowedOrigins in
 The app only lets its own pages drive it, so other web pages can't. Each interface it serves
 uses the API on its own port: a page on port 8081 is refused on 8080. For a page served by
 something else, add its origin to **Pages served elsewhere** on the Interfaces page. See
-[Remote access](guides/interface.md#remote-access).
+[Why a page gets "Refused"](guides/remote-access.md#why-a-page-gets-refused).
 
 ## Signed out, or locked out
 
-With [signing in](configuration/server-and-log.md#access) on, a browser without a token gets the
+With [signing in](guides/remote-access.md#signing-in) on, a browser without a token gets the
 sign-in page, and a program gets `401` (`Sign in first: an access token as Authorization: Bearer,
 ?token=, or POST /api/login.`).
 
@@ -408,8 +425,11 @@ The **Control channel log** at the bottom of a system's Radio system page is a l
 ## Making a capture
 
 A capture is a recording of the raw radio signal. It lets someone else replay exactly what your
-radio heard, which is the most useful thing you can attach to a decoding problem. Stop recording
-first (the dongle can only be open once), then:
+radio heard, which is the most useful thing you can attach to a decoding problem. The easiest way
+is the **IQ capture** card at the bottom of the **RF** page, which works while recording and can
+send the capture in for you: see [Captures](guides/captures.md).
+
+From the command line, stop recording first (the dongle can only be open once), then:
 
 ```bash
 trunk-pro capture problem.cu8 --freq 858500000 --rate 2400000 --gain 25 --seconds 30
@@ -435,6 +455,6 @@ Include:
 - what you did, what you expected, and what happened;
 - the log around the problem, at `debug` level if you can;
 - your config file. It can hold plugin keys and passwords: remove them first;
-- for a decoding problem, a short capture (see above) and the system's frequencies, or its
-  RadioReference page;
+- for a decoding problem, a short capture (see [Captures](guides/captures.md)) and the system's
+  frequencies, or its RadioReference page;
 - for a dashboard problem, a screenshot.

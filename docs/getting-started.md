@@ -1,4 +1,4 @@
-# Getting Started
+# Getting started
 
 This page walks you through a first run, from looking up your radio system to hearing the first
 recorded call. It assumes Trunk Recorder Pro is already installed; if it isn't, start with
@@ -11,10 +11,24 @@ control channel, measures your radio's frequency error and gain, and fills in th
 ## How trunking works, briefly
 
 A trunked radio system shares a handful of frequencies among many groups of users
-(talkgroups). One frequency, the **control channel**, transmits all the time. It tells the radios
-on the system which talkgroup is about to talk on which voice frequency. Trunk Recorder Pro
-listens to the control channel, and each time it announces a call (a *grant*), it tunes a
-recorder to that voice frequency and records the call.
+(talkgroups), assigning a frequency to a talkgroup only while it talks: most groups use the radio
+now and then, and don't need a frequency of their own.
+
+Most trunked systems (P25, SmartNet, Capacity Max, NXDN Type-C) set aside one frequency, the
+**control channel**, which transmits all the time. When someone presses the Push to Talk button,
+the radio asks the system for a channel; the system assigns a voice frequency and broadcasts a
+*grant* about it on the control channel, which tells the radio where to transmit and the other
+radios on that talkgroup where to listen. Trunk Recorder Pro decodes the control channel, and each
+time a grant arrives it opens a voice channel on that frequency, out of the spectrum the radio is
+already receiving. It keeps a second of recent spectrum in memory, so the call starts with the air
+from just *before* the grant and the first syllable isn't lost. Nothing is sent when a
+conversation is over, so the call ends when nothing has been heard for a few seconds (the call
+timeout, 3 seconds by default).
+
+Some systems have no control channel. On Capacity Plus and NXDN Type-D, each repeater says on its
+own channel who is talking on it, so the recorder watches every repeater of the site at once.
+Conventional channels have no trunking at all: each user group has its own frequency, and the
+recorder opens a channel whenever a signal appears on one.
 
 That means two things have to be right:
 
@@ -28,7 +42,7 @@ Before you start, look the system up on [RadioReference](https://www.radiorefere
 Search for your county, then pick the system you want to record. Take note of:
 
 - **System Type.** Trunk Recorder Pro records P25 (Phase 1 and Phase 2), Motorola SmartNet /
-  SmartZone, trunked DMR (Capacity Plus, Capacity Max, Connect Plus, Tier III) and NXDN. It also
+  SmartZone, trunked DMR (Capacity Plus, Capacity Max, Connect Plus, Tier III), NXDN and EDACS. It also
   records conventional (non-trunked) channels; see [Conventional channels](guides/conventional.md).
 - **The control channels.** On a site's frequency list, control channels are marked in red, or
   with a "c". A site usually has one active control channel and one or more alternates.
@@ -48,8 +62,8 @@ other program that might be using it, such as SDR#, SDR++, GQRX or rtl_tcp. Only
 use a radio at a time.
 
 RTL-SDR dongles work with nothing else installed (on Windows, after the one-time WinUSB driver
-install with Zadig; on Linux, after the udev rule), and so do HackRF Ones. USRP, Airspy and SoapySDR radios need their
-makers' drivers: see [Other radios](install/other-radios.md).
+install with Zadig; on Linux, after the udev rule), and so do HackRF Ones. USRP, Airspy,
+HydraSDR, bladeRF and SoapySDR radios need their makers' drivers: see [Other radios](install/other-radios.md).
 
 To see what Trunk Recorder Pro can find from a terminal:
 
@@ -57,10 +71,16 @@ To see what Trunk Recorder Pro can find from a terminal:
 trunk-pro devices
 ```
 
-It lists the RTL-SDRs (with their serial numbers), Airspys and SoapySDR devices, and whether the
-optional USRP, Airspy and SoapySDR drivers are installed. Add `--usrp` to search for USRPs too.
+It lists the RTL-SDRs (with their serial numbers), HackRFs, Airspys and HydraSDRs, bladeRFs and
+SoapySDR devices, and whether the optional USRP, Airspy, HydraSDR, bladeRF and SoapySDR drivers
+are installed. Add `--usrp` to search for USRPs too.
 
 ## First launch: the setup guide
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="img/shots/setup-guide-dark.png">
+  <img src="img/shots/setup-guide-light.png" alt="The setup guide on a new install">
+</picture>
 
 Start the app (open **Trunk Recorder Pro**, or run `trunk-pro` in a terminal). It opens its
 interface in your browser at `http://localhost:8080`.
@@ -80,15 +100,15 @@ The guide has six steps:
 
 1. **Radios.** It lists every radio it can see (RTL-SDRs, Airspys, USRPs and SoapySDR devices)
    and asks *Which radios should record?* All free ones are ticked. A radio another program is
-   using shows as busy. An Airspy, bladeRF or HackRF card has a **Bias-T** switch: turn it on if an LNA
+   using shows as busy. An Airspy, HydraSDR, bladeRF or HackRF card has a **Bias-T** switch: turn it on if an LNA
    is powered through the antenna cable, and the scan in the next step uses it. If none shows
    up, **Help me find it** walks through the usual fixes for your operating system (USB driver,
    udev rule, TV-tuner driver, other SDR apps).
 2. **Find a system.** *Find a system near you* scans the bands for control channels (pick which
-   bands under **Bands to scan**; the defaults cover most public-safety systems) and takes a
+   bands under **Bands**; the defaults cover most public-safety systems) and takes a
    minute or two. Press **Start scan**. When it finds a P25 or SmartNet control channel it
-   listens to it, ticking off *Hearing it clearly*, *Who it is*, *Radio tuning* (the frequency
-   correction) and *Voice channels*. When enough is known, press **Use this system**. Found
+   listens to it, ticking off *Decoded*, *Identity*, *Licensed to* (only when the FCC lookup is
+   on), *Tuning correction* and *Voice channels*. When enough is known, press **Use this system**. Found
    trunked DMR or NXDN sites are shown as cards to pick instead. If you already know the control
    channel, **I know the control channel** lets you type it in and pick the system type (P25,
    SmartNet, DMR or NXDN).
@@ -111,8 +131,8 @@ The last screen, *You're all set*, sums up what was set up. Press **Start record
 
 ## Setting it up without the guide
 
-Everything the guide does can be done on the **Setup** page, which has five tabs: **Systems**,
-**Conventional**, **Radios**, **Recording** and **Plugins**.
+Everything the guide does can be done on the **Setup** page, which has six tabs: **Systems**,
+**Conventional**, **Radios**, **Recording**, **Data** and **Plugins**.
 
 ### Find my system
 
@@ -128,7 +148,8 @@ If you know the control channels, press **Add a system** on the **Systems** tab 
 
 - **Short name**: the folder its calls go in (letters, digits, `.`, `_` and `-`).
 - **Name**: optional, for display.
-- **Type**: **P25**, **SmartNet / SmartZone**, **DMR (trunked)** or **NXDN (trunked)**.
+- **Type**: **P25**, **SmartNet / SmartZone**, **EDACS (analog / ProVoice)**, **DMR (trunked)** or
+  **NXDN (trunked)**.
 
 Then, on its site under **Sites** (open it):
 
@@ -169,7 +190,7 @@ are narrow, so a few ppm can be the difference between decoding and not.
 
 Find my system measures this for you: the control channel announces its own frequency, and base
 stations are locked to GPS, so how far off your radio hears it is your radio's error. It sets
-**Frequency correction, ppm** (whole numbers on an RTL-SDR). You can also turn on **AutoTune**,
+**Correction, ppm** (whole numbers on an RTL-SDR). You can also turn on **AutoTune**,
 which keeps measuring the error on the control channel while recording and corrects for drift.
 See [ppm and AutoTune](guides/radios.md#frequency-correction-ppm-and-autotune).
 

@@ -128,7 +128,8 @@ card:
 | **Only some** | `"only"` | The talkgroups in **Only these** (`talkgroupAllow`), less any in **Except these** (`talkgroupDeny`) |
 | **All but some** | `"allBut"` | Every talkgroup but those in **Except these** (`talkgroupDeny`) |
 
-A list the choice doesn't use is kept, hidden, for when it's chosen again. With no
+**Only some** needs at least one entry in **Only these**: with none, the plugin won't start. A list
+the choice doesn't use is kept, hidden, for when it's chosen again. With no
 `talkgroupMode`, the plugin takes every talkgroup, whatever the lists say.
 
 ```json
@@ -148,7 +149,7 @@ keys, and a key left out picks everything:
 | `plugins` | | every plugin | array | Plugin ids. One copy of a plugin is `id#2`, `id#3`… |
 | `talkgroups` | | every talkgroup | array | Only these talkgroups: numbers, ranges (`"1000-1099"`) and patterns (`"507*"`, `"12?45"`), as strings or numbers ([Choosing talkgroups](#choosing-talkgroups)) |
 | `exceptTalkgroups` | | none | array | Not these, of those `talkgroups` picks: the same kinds of entry. With `talkgroups` left out, the rule is for every talkgroup but these |
-| `delayS` | | `0` | number | How long, in seconds. `0` is no delay, to let something through that a broader rule delays |
+| `delayS` | | `0` | number | How long, in seconds (Setup asks in minutes). `0` is no delay, to let something through that a broader rule delays |
 
 ```json
 {
@@ -213,18 +214,15 @@ how many calls are waiting for each plugin.
 A change to the delays applies at once, without restarting the plugins, to the calls already
 waiting too: shortening one lets them go sooner.
 
-Changing any other plugin setting, recorder-wide or per system, or `recording.m4a`, restarts the running
-plugins at once with the new settings, even while recording. The OpenMHz, Broadcastify, Rdio Scanner
+A change to a plugin's recorder-wide `settings` alone is sent to the running plugin as it runs, if
+every plugin changed takes its settings that way. Otherwise, and for any other plugin change (its
+entry, a system's settings for it) or `recording.m4a`, the running plugins restart at once with the
+new settings, even while recording. The OpenMHz, Broadcastify, Rdio Scanner
 and upload-script plugins save calls still waiting in `plugin-data/<id>/queue.jsonl`, so a restart
 doesn't lose them.
 
 ## Files
 
-| Where | What |
-|---|---|
-| `plugins/<id>/<id>` (`<id>.exe` on Windows) | The installed executable |
-| `plugin-data/<id>/` | Its own data and working folder |
-| `plugin-hold/` | Finished calls waiting out a [delay](#delays) |
-| `plugin-registry.json` | The plugin store's cached index |
-
-All beside the config file; see [Files kept beside the config](README.md#files-kept-beside-the-config).
+Installed plugins (`plugins/<id>/`), their data (`plugin-data/<id>/`), calls waiting out a
+[delay](#delays) (`plugin-hold/`) and the plugin store's index are kept beside the config file: see
+[Files kept beside the config](README.md#files-kept-beside-the-config).

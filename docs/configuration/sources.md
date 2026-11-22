@@ -56,9 +56,11 @@ in this order:
 2. more of the channels reached: the ones the config lists, and the frequencies each system was heard
    granting in the last week, by their calls (also those no source covered);
 3. fewer radios needed;
-4. no RTL-SDR past 2.56 MSPS, where many machines drop samples, unless that reaches more;
-5. a lower total sample rate, which means less CPU and USB traffic;
-6. the fewest changes.
+4. a lower total sample rate, which means less CPU and USB traffic;
+5. the fewest changes.
+
+The suggestions never put an RTL-SDR past 2.4 MSPS, where many machines drop samples (a rate you set
+by hand stays).
 
 Only a strict improvement is suggested. A capture file's center and rate are the recording's, so they're
 never suggested. Each source's card says what to set, and **Use** takes it. A source is set back to
@@ -90,15 +92,19 @@ little wider.
 ### Frequency correction (`ppm`) and AutoTune
 
 `ppm` corrects the radio's frequency error, in parts per million. A frequency *f* is tuned as
-*f* / (1 + ppm × 10⁻⁶). On an RTL-SDR it must be a whole number; on the other types a fraction is
-fine.
+*f* / (1 + ppm × 10⁻⁶). An RTL-SDR takes whole ppm: a fraction is rounded when the dongle is opened
+(Setup offers only whole numbers). On the other types a fraction is used as it is.
 
 The error is measured all the time, on P25 and SmartNet control channels and on digital calls (P25,
 NXDN) a second or longer, and Setup shows it under the ppm field with a button to set the correction.
 With `autoTune` on, the measured error (the median of the last 20 measurements) is applied by itself:
 new voice channels open at the corrected frequency, and a P25 control channel more than 150 Hz off is
-reopened at it (at most every 200 s). Each source's error is kept for the next run (`tune.json` in
-the data folder), which starts from it until it measures its own.
+reopened at it (at most every 200 s). Each source's error is kept in the store for the next run, which
+starts from it until it measures its own.
+
+While recording, the dashboard's gain alert (on the **RF** page) has a **Tune gain** button that tries
+gains on the air and keeps the best. The trial gains aren't saved to the config. See the
+[radios guide](../guides/radios.md#gain-and-agc) and [`trunk-pro tune`](../command-line.md#tune).
 
 ## `"type": "rtlsdr"`
 
@@ -112,7 +118,7 @@ An RTL-SDR dongle, driven directly over USB (no driver library needed).
 | `rateHz` | ✓ | | number | Sample rate. 2 400 000 is typical; the interface offers 2 048 000, 2 560 000, 3 200 000, 1 920 000 and 1 024 000 too |
 | `gainDb` | | `25.4` | number | Tuner gain, dB. Ignored with `agc`. Most dongles go 0–49.6 |
 | `agc` | | `false` | bool | Use the tuner's AGC instead of `gainDb` |
-| `ppm` | ✓ | | integer | Frequency correction, whole ppm |
+| `ppm` | | `0` | number | Frequency correction, ppm. An RTL-SDR rounds it to a whole number |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 | `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512, at most 16 MiB. `0` = 16 384. **USB transfer size** in Setup |
@@ -186,7 +192,7 @@ An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
 | `type` | ✓ | | string | `"airspy"` |
 | `serial` | | `""` | string | Serial number in hex. `""` = the first found |
 | `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
-| `rateHz` | ✓ | | number | R2: 10 000 000 or 2 500 000. Mini: 6 000 000 or 3 000 000 |
+| `rateHz` | ✓ | | number | R2: 10 000 000 or 2 500 000. Mini: 6 000 000 or 3 000 000 (10 000 000 with newer firmware). Setup offers what the radio reports |
 | `gainMode` | | `"linearity"` | string | `"linearity"` (best near transmitters), `"sensitivity"` (best for weak signals) or `"manual"` (each stage set separately). Any other value is refused |
 | `gainStep` | | `14` | integer | Linearity or sensitivity step, 0–21 |
 | `lnaStep` | | `10` | integer | Manual mode: LNA step, 0–14 |

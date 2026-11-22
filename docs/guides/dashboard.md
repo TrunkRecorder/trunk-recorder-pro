@@ -4,18 +4,25 @@ The dashboard pages show how the recorder is doing: whether each system's contro
 decoding as usual, how well the radios hear the air, how clean the voice is, what the system is
 doing, and whether the computer and plugins are keeping up. This page goes through each one and
 what its numbers mean. For the frame around them, Setup and the Listen page, see
-[The web interface](interface.md).
+[The built-in interface](interface.md).
 
 Most numbers come with a small chart of the last 10 minutes, and many pages have an **Over time**
-section with a **Span** of **1 h**, **24 h** or **7 days**. The history survives restarts (see
-[Where the history is kept](interface.md#where-the-history-is-kept)). While stopped, the pages
-show past data where they can.
+section with a **Span** of **1 h**, **24 h**, **7 days**, **30 days**, **90 days** or **1 year**.
+The longer spans are offered as far as the store keeps history: a year by default
+(`storage.statsDays`; 0 keeps all), and 7 days when there is no store. The history survives
+restarts (see [The store](../configuration/storage.md)). While
+stopped, the pages show past data where they can.
 
 Several numbers are compared with **the usual**: that series' average over the last 24 hours.
 The shaded band on a chart is its usual range, and an arrow shows how far today is above or below
 it. This is how the dashboard tells "the system is quiet tonight" from "reception got worse".
 
 ## Overview
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/overview-dark.png">
+  <img src="../img/shots/overview-light.png" alt="The Overview page while recording">
+</picture>
 
 While recording, the top row is today's big numbers ("today" is since local midnight, across
 restarts):
@@ -29,6 +36,9 @@ restarts):
 | **Missed, 24 h** | Calls not recorded because no recorder was free or no source covered the frequency. Click to see the Radio system page. |
 | **Decoding load** | How much of one CPU core decoding takes. Over 100% means it's using more than one core, which is fine on a multi-core computer. |
 
+While stopped, the top row says **Not recording** (with **Start** and **Setup** buttons), and each
+system card shows **Last 24 h** instead of live numbers.
+
 Below that is a card for each system. Click its name to go to its Decode page.
 
 - **Control channel** (trunked systems): control messages decoded a second, against the usual;
@@ -38,6 +48,8 @@ Below that is a card for each system. Click its name to go to its Decode page.
   decoded over the last 10 minutes; under 2% is clean), and **new TGs** (first heard in the last
   24 hours).
 - Chips for the talkgroups on the air; click one for its page.
+- A conventional system's card shows **Calls since start**, with the last 24 hours, the number of
+  channels and how many are **Open** (a signal on them now).
 - **Voice lost per frequency · 24 h**: one cell per voice channel, darker where more voice was
   lost. A dark cell or two at one end often means a source's band edge.
 
@@ -46,6 +58,11 @@ line (CPU, memory, disk, RAM spool, internet), a **Plugins** line (sent, failed,
 plugin that's on), and **Lately**, the event feed (see [Events](interface.md#events)).
 
 ## RF
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/rf-dark.png">
+  <img src="../img/shots/rf-light.png" alt="The RF page: each source with its spectrum and waterfall">
+</picture>
 
 How well each radio hears the air. While stopped, it lists your sources' settings.
 
@@ -62,6 +79,18 @@ Each source then has a card:
 | **Headroom**, dB | How far the strongest signals are below full scale (the point where the radio clips). Under the meter: the share of samples clipping, if any. |
 | **Frequency error**, ppm | How far off the radio's frequency is, measured against the control channels (the towers' frequencies are very accurate). With AutoTune on it's corrected as it's measured; otherwise it says **AutoTune** off. It needs a control channel to measure. Steady: set the source's ppm. Drifting: temperature. See [Radios](radios.md). |
 | **Dropped**, samples/s | Samples the driver lost because the computer or the USB bus didn't keep up. Anything but zero is red: calls on that source lose audio. |
+
+Under **Frequency error** is **Clock vs PC**, the radio's sample clock against this computer's,
+in ppm. A source that none of the systems or channels use shows an **Unused** chip with
+**Probably removable**.
+
+While recording, editors also get a **Tune gain** button on a source (it stands out when the
+gain looks too low or too high). It tries gains on the air, scores each by how well the systems
+decode, and keeps the best. While it runs, the card shows **Tuning**, how long it has taken, how
+many gains it **Tried** and the one it is **Trying**; **Stop** puts the radio back as it was.
+Afterwards it shows what it **Kept** (or the **Best** one, if it wasn't applied), how many it
+**Tried** and how long it **Took**. The same thing runs from the command line: see
+[`trunk-pro tune`](../command-line.md#tune).
 
 Under the card: the gain as set, the sample rate actually delivered against the one asked for,
 and the source's errors, if any (a USB error, a dongle that went away).
@@ -82,7 +111,15 @@ Click a source's name for its own page, which adds:
 - **Over time**: noise floor and peaks, frequency error (measured and corrected), dropped samples,
   clipping.
 
+On the desktop app, editors also see an **IQ capture** card at the bottom of the page; see
+[Recordings](recordings.md).
+
 ## Decode
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/decode-dark.png">
+  <img src="../img/shots/decode-light.png" alt="The Decode page: a card per system">
+</picture>
 
 How well signals turn into messages and voice. A card per system:
 
@@ -116,21 +153,28 @@ Click a system's name for its own page, which adds:
 
 ## Radio system
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/radio-system-dark.png">
+  <img src="../img/shots/radio-system-light.png" alt="The Radio system page of a P25 system">
+</picture>
+
 The system as heard. With several systems it first shows a card each (talkgroups and radios in
 24 hours, new talkgroups, talkgroups not in its file, the busiest talkgroups, what's on the air);
-clicking a system's card goes to it. The **Span** is 24 hours or 7 days.
+clicking a system's card goes to it. A system's own page has a **Span** of 24 hours or 7 days.
 
 | Number | What it is |
 |---|---|
 | **Calls**, **Airtime** | In the span, with the average call length |
-| **Talkgroups heard** | With how many are in your talkgroup file |
-| **Radios heard** | With how many in the last hour |
-| **New talkgroups** | First heard in the last 24 hours (`learning (first hour)` while it builds a baseline) |
-| **Unknown** | Heard in 24 hours but not in the talkgroup file |
+| **Talkgroups heard** | In the span, with how many in all time (**All time**) |
+| **Radios heard** | In the span, with how many in the last hour (**Last hour**) |
+| **New in 24 h** | Talkgroups first heard in the last 24 hours (`learning (first hour)` while it builds a baseline) |
+| **Not in file** | Talkgroups heard in 24 hours but not in the talkgroup file |
 
 **Call outcomes** splits the calls by what became of them: **Recorded**, **Followed
-only**, **Ignored**, **Encrypted**, **Not in file**, **No recorder** and **Out of band**. The
-last two are calls you missed; see the reasons table under [Active calls](#active-calls).
+only**, **Ignored**, **Encrypted**, **Not in file**, **No recorder**, **Out of band** and **No
+channel table** (granted on a channel that was never turned into a frequency). **No recorder**
+and **Out of band** are calls you missed; see the reasons table under
+[Active calls](#active-calls).
 
 **Out of band** lists the frequencies those calls were granted on, in the span: how many calls,
 by hour, when the last was, and the nearest source with how far past the edge of its usable
@@ -139,16 +183,22 @@ rate, or add a source. It shows when there are some; **Out of band** in **Call o
 
 Below the numbers: **Active calls** (see below), **Call outcomes** and **Call lengths**,
 **Busiest … by hour**, **Who talks on what** (talkgroups and the busiest radios, linked by how
-often each radio talks on each), the **Talkgroups** table, the **Radios** table, and at the
-bottom the **Control channel log**.
+often each radio talks on each), the **Talkgroups** table, the **Radios** table, the
+**Control channel log**, and last the **Tones** card (see [Signals](signals.md#the-tones-card)).
 
 The **Talkgroups** table can show **All**, **New**, **Unknown**, **Ignored** or **Encrypted** (more
 than half their calls encrypted), sorted by **Airtime**, **Calls**, **Latest** or **Newest**. The
-**Ignore** button stops recording a talkgroup by marking it Ignore in the system's talkgroup file;
-it takes effect at once, even while recording. Click it again (**Ignored ✕**) to record it again.
+**Ignore** button (trunked systems only, for people who may edit) stops recording a talkgroup by
+marking it Ignore in the system's talkgroups; it takes effect at once, even while recording. Click
+it again (**Ignored ✕**) to record it again.
 
-Click a talkgroup or a radio anywhere for its own page: its last 7 days, who talks on it (or what
-it talks on), what's affiliated with it, and its latest transmissions.
+Click a talkgroup or a radio anywhere for its own page. A talkgroup's page has **NOT IN FILE** and
+**IGNORED** badges, **Calls, 7 days**, **Airtime, 7 days**, **Encrypted** and **Affiliated now**,
+then **Last 7 days**, **Who talks here**, **Encryption heard** (cipher and key ID, when
+encrypted calls were heard), its **Calls** (with **Play** and **Load older**) and **Affiliated
+with it**. A radio's page has a **DEREGISTERED** badge when it deregistered, with who it talks
+with, its latest transmissions, calls and affiliations. Names are edited there; see
+[Editing a talkgroup](talkgroups-and-units.md#editing-a-talkgroup).
 
 ### Active calls
 
@@ -158,8 +208,8 @@ the Radio system page).
 
 | Column | What it shows |
 |---|---|
-| **Talkgroup** | Its number and name (click it for the talkgroup's page), `EMERG` for an emergency call, what it's patched with, `· <site>` for a call heard on another site of the system, and `also on …` when the same call is on other sites (the best copy is saved) |
-| **Freq, MHz** | The voice channel, with `s0`/`s1` for a TDMA slot, `FM` (and its tone) for analog, `NXDN48`/`NXDN96` and the RAN for NXDN |
+| **Talkgroup** | Its number and name (click it for the talkgroup's page), `EMERG` for an emergency call, what it's patched with, `· <site>` for a call heard on another site of the system, `also on …` when the same call is on other sites (the best copy is saved), and `air <n>` on a conventional channel when the air named talkgroup `<n>` but the channel's row files it under another number |
+| **Freq, MHz** | The voice channel, with `s0`/`s1` for a TDMA slot, `FM` or `AM` (and the FM tone) for analog, `NXDN48`/`NXDN96` and the RAN for NXDN |
 | **Source** | The radio talking now: its name or talker alias when known, else its unit ID. Click it for the radio's page. |
 | **Time** | How long the call has gone on |
 | **State** | `recording`, `recording · encrypted`, or why it isn't being recorded |
@@ -230,6 +280,11 @@ A service shows as down after 3 failures in a row, or 5 minutes without a succes
 
 ## Platform
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/platform-dark.png">
+  <img src="../img/shots/platform-light.png" alt="The Platform page">
+</picture>
+
 The computer the recorder runs on, recording or not:
 
 | Number | What it is |
@@ -244,9 +299,35 @@ The computer the recorder runs on, recording or not:
 **App data** disk and the **RAM spool** if it's on, with free space, calls that overflowed from
 the spool, and **Room for** at last week's daily average (and **Per day**). **Network** lists each
 connection: the hosts checked (`monitor.checkHosts`, none by default), with their history minute by
-minute, and each service a plugin reports, with how it answers. Its settings (hosts to check, how
-often, the time server) are under the list. **This computer** shows the system, cores, uptime and
-anything the platform can't measure.
+minute, and each service a plugin reports, with how it answers. Its settings are under the list:
+the **Checks** switch (off: no hosts and no time server are asked), the hosts to check, how often,
+the time server, and **Check for updates** (asks GitHub once a day; a newer release shows beside
+the version in the sidebar). **This computer** shows the system, cores, uptime and anything the
+platform can't measure.
+
+When the app has a store, the page has two tabs, **Computer** (the above) and **Storage**.
+
+### Storage
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/platform-storage-dark.png">
+  <img src="../img/shots/platform-storage-light.png" alt="The Storage tab of the Platform page">
+</picture>
+
+What the store takes, and what it writes to disk (see
+[The store](../configuration/storage.md)):
+
+| Number | What it is |
+|---|---|
+| **Store** | The store's size on disk (SQLite and its write-ahead log, or PostgreSQL) |
+| **Tables** | Their size and how many there are |
+| **Indexes** | Their size, as a share of the tables |
+| **Write-ahead log** | Its size, and the free space inside the store (SQLite) |
+| **Written** | What the store writes to disk (commits, checkpoints and its daily backup), per day. It is what wears an SD card or eMMC. |
+
+**Growth** has a **Span** and two charts, **Size over time** and **Written to disk**. **Tables and
+indexes** lists each with its size, and what each index is for. **Radio registry** shows how full
+the registry is against its limits. The settings are in Setup → Data.
 
 ### Clock
 

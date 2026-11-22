@@ -61,7 +61,7 @@ trunk-pro                  # opens http://localhost:8080
 Run from Terminal, the log is printed in the window, and Ctrl-C stops it (calls in progress are
 saved first). `trunk-pro --no-open` starts it without opening a browser, `--start` begins recording
 at once, and `--bind 0.0.0.0` makes the interface reachable from other machines (only on a network you
-trust, with [signing in](../configuration/server-and-log.md#access) on). [Command line](../command-line.md) lists every
+trust, with [signing in](../guides/remote-access.md#signing-in) on). [Command line](../command-line.md) lists every
 option.
 
 ## Where things are kept
@@ -69,7 +69,7 @@ option.
 | What | Where |
 |---|---|
 | Settings (`config.json`) | `~/Library/Application Support/trunk-pro/` |
-| Band plans, talker aliases, plugins, statistics | The same folder, beside `config.json` |
+| The store (`trunk-pro.sqlite`: talkgroups, band plans, talker aliases, history), plugins | The same folder, beside `config.json` ([what each file is](../configuration/README.md#files-kept-beside-the-config)) |
 | Log files (when **To files** is on in **Setup → Recording → Log**) | `logs/` in the same folder |
 | Recordings | `~/TrunkRecorderPro/` (change it in **Setup → Recording → Recordings folder**) |
 
