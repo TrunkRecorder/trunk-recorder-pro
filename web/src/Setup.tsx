@@ -96,6 +96,7 @@ import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from ".
 import { TalkgroupsField, UnitNamesField } from "./TalkgroupsField.tsx";
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "./NameFields.tsx";
 import { ManageData, RemoveSystem } from "./DataTools.tsx";
+import { FolderCheck } from "./FolderCheck.tsx";
 import { AccessSection } from "./Access.tsx";
 import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
@@ -3407,7 +3408,7 @@ export function Setup() {
                 </p>
               ) : (
                 <>
-                  <Field label="Recordings folder" wide>
+                  <Field label="Recordings folder" wide hint={<FolderCheck name="recordings" path={c.recording.captureDir} />}>
                     <TextInput className="mono" value={c.recording.captureDir} onChange={(v) => updateConfig((x) => void (x.recording.captureDir = v))} />
                   </Field>
                   <Toggle

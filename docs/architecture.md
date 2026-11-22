@@ -760,6 +760,22 @@ changes what is recorded.
   again (`Spool::revive`), with a `spoolRemoved` event and the row's
   `removed` / `missing`.
   Turned off, the spool is emptied into the recordings folder and removed.
+- **Folders** (`folder.rs`). Every file of a call goes into the recordings
+  folder (or the spool) through its `Folder`: `write`, `prepare` (an
+  encoder's output) and `move_in` (out of the spool). Each is also checked
+  with a file of its own (`probe`: written, synced, deleted) at startup and
+  when its path changes (`apply_config`, on a thread of its own, since a
+  network share can hang); after that the calls' own writes are the check,
+  and the first one that works says it's back. Checks and writes
+  report to the same state, so the first failure is logged once with why (an
+  io::Error turned into permission and who owns the folder, macOS privacy,
+  read-only, full, not a folder, a drive not mounted) and becomes a
+  `folderUnwritable` event; the files not written are counted (logged at most
+  once a minute); and `folderWritable` is sent when it takes files again. The
+  folder is made only when it's never been there at that path: a drive that
+  goes isn't replaced by a folder on the disk beneath. A call the spool can't
+  take goes to the recordings folder. `host.platform.folders` carries the
+  state (the dashboard's light, Setup's field).
 - **Store** (`trunk-pro/src/store.rs`, shared with the interfaces' store:
   `plugins/store.rs`, `interfaces/store.rs`).
   - Packages are listed in the registry `index.json` (fetched, cached in

@@ -2297,6 +2297,51 @@
       },
       "description": "A system's FCC licenses by frequency (Hz on the 6.25 kHz raster, as a string). Optional, for reference; plugins are told them."
     },
+    "FolderRow": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "\"recordings\", \"spool\" (while it's on)."
+        },
+        "path": {
+          "type": "string"
+        },
+        "ok": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "null: not checked yet."
+        },
+        "why": {
+          "type": "string",
+          "description": "While it fails: why in a few words, what the system said, what to do, since (Unix s), and files not written since."
+        },
+        "detail": {
+          "type": "string"
+        },
+        "fix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "since": {
+          "type": "number"
+        },
+        "lost": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "name",
+        "path",
+        "ok"
+      ],
+      "additionalProperties": false,
+      "description": "A folder calls are written to, and whether it takes them: checked at startup and when it changes, then told by every write."
+    },
     "FoundRadio": {
       "type": "object",
       "properties": {
@@ -3975,6 +4020,8 @@
                 "linkDown",
                 "linkUp",
                 "diskLow",
+                "folderUnwritable",
+                "folderWritable",
                 "spoolLow",
                 "spoolFull",
                 "spoolRecovered",
@@ -4090,6 +4137,21 @@
             "byMs": {
               "type": "number",
               "description": "clockStep: how far the wall clock jumped, ms (positive: forward)."
+            },
+            "folder": {
+              "type": "string",
+              "description": "folderUnwritable, folderWritable: which folder (\"recordings\", \"spool\"); with `why`, `path`."
+            },
+            "detail": {
+              "type": "string",
+              "description": "folderUnwritable: what the system said, and what to do."
+            },
+            "fix": {
+              "type": "string"
+            },
+            "lost": {
+              "type": "number",
+              "description": "folderWritable: files not written meanwhile."
             },
             "type": {
               "type": "string",
@@ -5841,6 +5903,12 @@
             "additionalProperties": false
           },
           "description": "\"recordings\", \"data\", and \"spool\" (the RAM spool, with its `kind`, calls `overflowed` to the disk, times it was `removed` while running, and `missing`: gone and not made again)."
+        },
+        "folders": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/FolderRow"
+          }
         },
         "spotlight": {
           "anyOf": [

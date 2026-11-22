@@ -7,7 +7,7 @@ import { can, mayEdit, pluginOn, radioQuery, statsSince, setView, snapshot, star
 import { Card, Fig, Figs, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { change, connections, connectionsSummary, gainFix, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, scoped, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { FOLDER_LABEL, change, connections, connectionsSummary, gainFix, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, scoped, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -245,6 +245,10 @@ export function eventText(e: MonitorEvent): string {
       return `${e.target}: back · down ${e.downS ? `${Math.round(e.downS)} s` : "briefly"}`;
     case "diskLow":
       return `Disk ${e.path}: ${e.freePct}% free`;
+    case "folderUnwritable":
+      return `Can't write to ${FOLDER_LABEL[e.folder ?? ""] ?? e.folder}: ${e.why}`;
+    case "folderWritable":
+      return `Can write to ${FOLDER_LABEL[e.folder ?? ""] ?? e.folder} again${e.lost ? ` · ${e.lost} files not saved` : ""}`;
     case "spoolLow":
       return `RAM spool ${e.freePct}% free — ${e.critical ? "calls soon go to disk" : "uploads behind"}`;
     case "spoolFull":
@@ -269,6 +273,10 @@ function eventTip(e: MonitorEvent): string | undefined {
   switch (e.kind) {
     case "spoolRemoved":
       return spoolRemovedFix(e.spool);
+    case "folderUnwritable":
+      return [e.detail, e.fix].filter(Boolean).join(". ");
+    case "folderWritable":
+      return e.path;
     case "clockStep":
       return (e.byMs ?? 0) > 0 ? "Its time service set it, or the computer slept" : undefined;
     case "sourceClipping":

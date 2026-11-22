@@ -281,6 +281,14 @@ pub struct Platform {
 }
 
 impl Platform {
+    /// The folder watched as `name` is at `path` now (the config changed).
+    pub fn watch(&mut self, name: &str, path: &Path) {
+        if let Some(w) = self.watched.iter_mut().find(|w| w.name == name && w.path != path) {
+            w.path = path.to_path_buf();
+            self.last_slow = None;
+        }
+    }
+
     pub fn new(watched: Vec<Watched>, probes: Arc<Probes>, clock: Arc<crate::clock::Clock>) -> Platform {
         let mut sys = System::new();
         sys.refresh_cpu_usage();

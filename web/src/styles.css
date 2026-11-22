@@ -1535,6 +1535,10 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .steps li::before { content: counter(step); display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 700; }
 .spotlight-note .row { gap: 6px 12px; flex-wrap: wrap; }
 .disk .figs { margin-top: 6px; }
+.folder-check { display: inline-flex; gap: 4px; align-items: baseline; font-size: 13px; }
+.folder-check.ok { color: var(--ok); }
+.folder-check.bad, .folder-problem .bad { color: var(--bad); font-weight: 600; }
+.folder-problem { margin: 6px 0; }
 .fig-info { display: inline-flex; align-items: center; gap: 2px; }
 /* The guide's figures: large, centred under the step's title. */
 .ob .figs { gap: 10px 36px; }

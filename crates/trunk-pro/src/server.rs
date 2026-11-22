@@ -1302,6 +1302,10 @@ pub(crate) fn apply_config(ctx: &Ctx, old: &crate::config::Config, new: &crate::
     if old.keys != new.keys || old.systems != new.systems || old.conventional != new.conventional {
         crate::unlock::config_changed(ctx, new);
     }
+    // A new recordings folder: checked at once (made, if it isn't there), and said if it can't take calls.
+    if old.recording.capture_dir != new.recording.capture_dir {
+        ctx.folders.recordings.follow(std::path::Path::new(&new.recording.capture_dir));
+    }
     // Their delays apply at once, to what's waiting too (no restart).
     ctx.plugins.set_delays(new);
     // Sharing switched on or off (or what it uses changed, like licenses): at once too.
