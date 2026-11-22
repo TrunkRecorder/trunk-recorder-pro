@@ -83,7 +83,7 @@ import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } fr
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
-import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconPuzzle, IconTower } from "./Onboarding.tsx";
+import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconLock, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, StorageSettings, System } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
@@ -3232,6 +3232,7 @@ const TABS: { id: SetupTab; label: string; icon: () => React.ReactNode }[] = [
   { id: "conventional", label: "Conventional", icon: IconAntenna },
   { id: "radios", label: "Radios", icon: IconDongle },
   { id: "recording", label: "Recording", icon: IconFolder },
+  { id: "access", label: "Access", icon: IconLock },
   { id: "data", label: "Data", icon: IconDatabase },
   { id: "plugins", label: "Plugins", icon: IconPuzzle },
 ];
@@ -3245,12 +3246,13 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
     conventional: props.c.conventional.reduce((n, v) => n + v.channels.length, 0),
     radios: props.c.sources.length,
     recording: null,
+    access: null,
     data: null,
     plugins: s.plugins ? s.plugins.plugins.length : null,
   };
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
-      {TABS.filter((t) => (t.id !== "plugins" || can("plugins")) && (t.id !== "data" || !web)).map((t) => {
+      {TABS.filter((t) => (t.id !== "plugins" || can("plugins")) && (t.id !== "access" || can("service")) && (t.id !== "data" || !web)).map((t) => {
         const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
@@ -3462,7 +3464,7 @@ export function Setup() {
           </section>
         </Section>
       )}
-      {tab === "recording" && can("service") && <AccessSection c={c} />}
+      {tab === "access" && can("service") && <AccessSection c={c} />}
       {tab === "recording" && can("keys") && s.lockable.length > 0 && (
         <Section
           title="Key containers"

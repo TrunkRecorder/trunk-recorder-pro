@@ -1,4 +1,4 @@
-// Setup → Recording → Access (desktop app): signing in (server.auth). Off,
+// Setup → Access (desktop app): signing in (server.auth). Off,
 // whoever reaches a port gets its access; on, a browser signs in as a user,
 // with their access token's secret or a passkey of theirs, and gets what the
 // user's role allows: View (listen) or Admin (control). Turned on in an order
