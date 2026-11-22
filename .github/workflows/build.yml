@@ -123,7 +123,9 @@ jobs:
   # and the docs and docs/img/shots agree. A release also needs them retaken since
   # the interface last changed. The screens of a running recorder play corpus
   # captures, so they're checked once those are published (CORPUS_READY, as corpus.yml).
+  # Releases only: the pictures are retaken as a release step, so between releases they lag.
   shots:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: web
     runs-on: ubuntu-latest
     steps:
@@ -144,7 +146,7 @@ jobs:
           restore-keys: corpus-
       - if: vars.CORPUS_READY == 'true'
         run: target/release/trunk-pro tool corpus fetch --only phase2,smartnet
-      - run: npm run shots:check -- ${{ startsWith(github.ref, 'refs/tags/v') && '--release' || '' }}
+      - run: npm run shots:check -- --release
         working-directory: web
         env: { CHROME: /usr/bin/google-chrome }
 

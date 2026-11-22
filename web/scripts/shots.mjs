@@ -7,9 +7,9 @@
 //   target/release/trunk-pro tool corpus fetch --only phase2,smartnet    (once)
 //   npm run shots                     retake them all (a picture that didn't change isn't rewritten)
 //   npm run shots -- --only rf,listen
-//   npm run shots:check               CI: every shot still renders (into a temporary folder), every picture
+//   npm run shots:check               every shot still renders (into a temporary folder), every picture
 //                                     the docs show is there, and none is left over
-//   npm run shots:check -- --release  …and the interface hasn't changed since they were taken (shots.lock.json)
+//   npm run shots:check -- --release  …and (CI, on a release tag) the interface hasn't changed since they were taken (shots.lock.json)
 //
 // --out <dir> writes there instead; --theme light|dark takes one; --keep keeps
 // the temporary folders. TRUNK_PRO: the binary (default ../target/release/trunk-pro);

@@ -150,11 +150,11 @@ A doc shows a shot in both themes:
 To add one, add it to `shots.config.mjs`, run `npm run shots -- --only <name>`, and show it in a
 doc. Screens that need a radio plugged in (Find my system scanning, the gain tuner) aren't taken.
 
-CI runs `npm run shots:check` on every push (the `shots` job of `build.yml`): every shot still
-renders, every picture a doc shows exists, every shot is shown by a doc, and none is left over.
-The shots that play captures are skipped where the corpus isn't fetched (the `CORPUS_READY`
-repository variable turns the fetch on). On a release tag it adds `--release`, which fails when
-the interface changed since the pictures were taken, and the release waits for it.
+On a release tag CI runs `npm run shots:check -- --release` (the `shots` job of `build.yml`), and
+the release waits for it: every shot still renders, every picture a doc shows exists, every shot
+is shown by a doc, none is left over, and the interface hasn't changed since the pictures were
+taken. Pushes and merges don't run it. The shots that play captures are skipped where the corpus
+isn't fetched (the `CORPUS_READY` repository variable turns the fetch on).
 
 ## Code layout
 
