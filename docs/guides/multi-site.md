@@ -3,20 +3,19 @@
 This page explains how Trunk Recorder Pro records several trunked systems at once, or several
 sites of one system: how they share your radios, how a site lock keeps each one on the right
 control channel, and how a call heard on more than one site is saved once. Every key is listed
-in the [trunked systems reference](../configuration/systems.md#multi-site).
+in the [trunked systems reference](../configuration/systems.md).
 
 ## Several systems
 
-One recorder can follow any number of trunked systems, in any mix of P25, SmartNet, DMR and
-NXDN, along with conventional channels. Each gets its own card under **Setup** → **Systems**,
+One recorder can follow any number of trunked systems, in any mix of P25, SmartNet, EDACS, DMR
+and NXDN, along with conventional channels. Each gets its own card under **Setup** → **Systems**,
 with its own:
 
-- **Short name**: its recordings folder, and the name its talker aliases (`<shortName>.units.csv`)
-  are kept under. Two systems can't share one ("Two systems are named "…" — each needs its own
+- **Short name**: its recordings folder, and how plugins know it. Two systems can't share one ("Two systems are named "…" — each needs its own
   short name").
 - talkgroup file and unit names;
 - **Sites**: each a control channel to follow, with its modulation and site lock;
-- **Plugins**: its own plugin settings and plugin delays;
+- **Plugins**: its own plugin settings (those its plugins let a system set) and plugin delays;
 - **Recording**: its own call rules and what it keeps, where they differ from the **Recording** tab's.
 
 **Record** on the card switches a system off without removing it.
@@ -30,11 +29,14 @@ source carries its control channel and how many of its voice channels are covere
 
 ## Several sites of one system
 
-A large P25 or SmartNet system has several *sites*, each with its own control channel and voice
+A large P25, SmartNet or EDACS system has several *sites*, each with its own control channel and voice
 channels, covering a different area. To record more than one, add each as a site of the same
 system: on its card, under **Sites**, **Add site**, then give the new site its control channels and
-lock it to its site. The system's talkgroup file, unit names, call rules and plugin settings apply
-to every site.
+lock it to its site. The system's talkgroup file, unit names and call rules apply to every site.
+So do a plugin's settings, except those the plugin lets a site set again (an uploader's account
+for that site): each site has a row on the system's plugin settings, and **Sites** on a plugin's
+card in Setup → Plugins turns the plugin off for one. A call's JSON `sites` lists every site it
+was recorded on, the saved copy's first. See [Plugins](../plugins/README.md).
 
 Each site is a folded card with its name, a **Record** switch, its control channels and the chips
 saying whether a source covers them. Open it for its modulation, its protocol's channel fields and
@@ -47,7 +49,7 @@ channel announces its neighbouring sites, and the recorder offers them in two pl
 - in **Find my system**, under **Neighbouring sites** in its checklist, each with an **Add**
   button;
 - while recording, in the **Neighbouring sites** panel in a system's detail on the **Decode** page
-  ("announced, not recorded"), each with an **Add** button. The new site records from the next
+  (**Not recorded**), each with an **Add** button. The new site records from the next
   Start, if a source covers it.
 
 A site added this way becomes a site of its system (a new system, if it isn't set up), with its
@@ -67,21 +69,18 @@ Without one, a site follows whatever it decodes on the frequencies you gave it, 
 when a neighbouring site, or another system, is on or near one of them.
 
 It's under **Site lock** at the bottom of each site's card. Fill in only what you need; an empty
-field matches anything. Which fields there are depends on what the protocol announces:
-
-| Type | Fields |
-|---|---|
-| P25 | **NAC**, **WACN**, **System ID** (hex), **RFSS**, **Site** (decimal) |
-| SmartNet | **System ID** (hex), **Site** (decimal; announced by some VHF/UHF systems) |
-| NXDN Type-C | **System ID** (hex), **Site** (decimal) |
-| DMR, NXDN Type-D | none: colour code and RAN keep their sites apart |
+field matches anything. Which fields there are depends on what the protocol announces (P25 has
+all five: NAC, WACN, System ID, RFSS and Site; SmartNet, NXDN Type-C and EDACS fewer; DMR and NXDN
+Type-D none in Setup, where colour code and RAN keep their sites apart). Each protocol's fields
+are listed in [Site lock](../configuration/systems.md#site-lock-expect).
 
 What happens:
 
 - A control channel that announces something different isn't followed. Its grants are ignored,
   the recorder moves on to the next control channel in the system's list, and the log says why
   ("Control channel 857.98750 MHz is not this system: NAC 2A3 (expected 293)"). The **Decode**
-  page marks the site red with the same reason.
+  page marks the site red with the same reason ("Another system's control channel: NAC 2A3
+  (expected 293)").
 - Grants wait until every locked field has been heard. The site number comes in a broadcast every
   few seconds, so the first grants after starting may be held. A call still going is granted again.
 - **Clear the lock** removes it.
@@ -130,17 +129,21 @@ repeated or muted. A tie goes to the one with fewer corrected bit errors, then t
 started first. If the best copy isn't kept (shorter than its site's **Shortest call, s**, say), the
 next best is tried.
 
-**Preferring a site.** To keep a talkgroup's calls from a particular site when it's heard well
+**Preferring a site.** To prefer a site for every talkgroup whose row names none, or that has no
+row (say one site's antenna is better), choose it in **Preferred site** on the system's card
+(`preferredSite`, by the site's name). Its copy is kept as long as it has at least 90% of the
+best copy's clean audio, as below. A talkgroup's own Preferred Site or Preferred NAC comes first.
+To keep a talkgroup's calls from a particular site when it's heard well
 there, add a **Preferred Site** column to the talkgroup file with that site's name. Trunk
 Recorder's **Preferred NAC** column also works: the site's NAC, or its RFSS and site as `RRRRssss`
 (RFSS 1 site 23 is `10023`), in decimal. The preferred site's copy is kept as long as it has at
 least 90% of the best copy's clean audio; below that, the best copy wins anyway.
 
 **On the dashboard.** An active call heard on other sites shows **also on …** under its talkgroup
-on a system's page under **Radio system** (hover: "The same call on other sites of its system; the best copy is saved"). Live listening plays one copy
-at a time and stays with it until it goes quiet.
+on a system's page under **Radio system** (hover: "The same call on other sites of its system; the best copy is saved"). Live listening plays one site
+at a time for each talkgroup and stays with it until it goes quiet, however the sites divide the talkgroup into calls.
 
-**Turning it off.** **Save a call heard on several sites once** on the **Recording** tab
+**Turning it off.** **One copy per multi-site call** on the **Recording** tab
 (`recording.dropDuplicateCalls`, on by default). Off, every site's copy is saved in the system's
 folder, each with its `site` in its call JSON.
 
@@ -161,11 +164,7 @@ control channels announce, so list together:
 ```
 
 Importing a Trunk Recorder config makes the systems with `multiSite` on and one
-`multiSiteSystemName` one system, with a site each. A config from an older version, whose systems
-were each one site, is rewritten on load: those with the same site group, or site locks naming one
-system, become one system, each a site named as it was (the old file is kept as
-`config.json.before-sites`). Systems that were joined only from the air stay apart until you
-**Make them one system**.
+`multiSiteSystemName` one system, with a site each.
 
 ## Common problems
 
@@ -173,11 +172,11 @@ system, become one system, each a site named as it was (the old file is kept as
 Check which field the message names; if you edited the config by hand, check decimal versus hex.
 
 **The same call is saved twice.** The two sites aren't sites of one system (set up apart: **Make
-them one system**, or move one under **Sites**), or **Save a call heard on several sites once** is
+them one system**, or move one under **Sites**), or **One copy per multi-site call** is
 off. Or the grants came more than 3 seconds apart.
 
 **Calls from one site never get kept.** Its copies decode less cleanly than another site's. Add a
 **Preferred Site** for the talkgroups you want from it, or improve its reception.
 
 **A neighbouring site was added but records nothing.** No source covers its control channel. Its
-site card shows **no control channel inside a source**.
+site card shows **CC → none**.

@@ -13,7 +13,7 @@
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, systemWithChannel } from "./config.ts";
+import { adjacentIdentity, deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, sourceTitle, roaming, siteAddress, systemWithChannel } from "./config.ts";
 import {
   can,
   addDmrSite,
@@ -35,6 +35,7 @@ import {
   updateConfig,
   useApp,
   type SurveyTarget,
+  holdsRadios,
 } from "./controller.ts";
 import { findExisting, openImport, toFind } from "./directoryImport.tsx";
 import { defaultListenS, lookedFreqs, type LookingFor } from "./lookFor.ts";
@@ -42,6 +43,7 @@ import type { Config, FccLicense, FccLicenses, SiteIdentity, Source, SurveyCandi
 import type { LicenseLookup } from "./controller.ts";
 import { IdentifyBar, LicenseCell, licensesOn } from "./Identify.tsx";
 import { BiasT } from "./inputs.tsx";
+import { Fig, Figs, Info } from "./charts.tsx";
 import { Waterfall } from "./Waterfall.tsx";
 
 const hex = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
@@ -254,12 +256,17 @@ const mhzList = (l: number[]) => l.map((f) => formatMhz(f)).join(", ");
 /** What the SmartNet band plan search has found so far. */
 function SmartnetPlan(props: { s: NonNullable<SurveyMonitor["smartnet"]> }) {
   const { s } = props;
-  const found = `${s.points.length} of ${s.channels.length} granted channel${s.channels.length === 1 ? "" : "s"} located`;
+  const found = <Fig v={`${s.points.length}/${s.channels.length}`} u="channels located" title="Granted channels located" />;
   if (!s.bandplan) {
     return (
       <>
-        learning — {found}
-        {s.ccChan !== null ? ` (this is channel ${s.ccChan})` : ""}
+        learning · {found}
+        {s.ccChan !== null && (
+          <>
+            {" · CC "}
+            <Fig v={s.ccChan} title="This control channel's channel number" />
+          </>
+        )}
       </>
     );
   }
@@ -271,7 +278,7 @@ function SmartnetPlan(props: { s: NonNullable<SurveyMonitor["smartnet"]> }) {
           ? `${b.bandplan}: channel ${b.bandplanOffset} = ${formatMhz(b.bandplanBaseHz ?? 0)} MHz, ${(b.bandplanSpacingHz ?? 0) / 1000} kHz steps`
           : b.bandplan}
       </span>{" "}
-      ({found})
+      · {found}
     </>
   );
 }
@@ -319,35 +326,46 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     props.onDone();
   };
   const neighbour = (a: SurveyMonitor["adjacent"][number]) => {
-    const name = addSite([a.freqHz], { wacn: id.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site });
-    setNotice(`Added ${name} (site ${a.rfss}-${a.site}, control channel ${formatMhz(a.freqHz)} MHz). It needs a source that covers it.`);
+    const name = addSite([a.freqHz], adjacentIdentity(a));
+    setNotice(`Added ${name} (site ${siteAddress(adjacentIdentity(a))}, control channel ${formatMhz(a.freqHz)} MHz). It needs a source that covers it.`);
   };
   return (
     <div className="stack">
       <ul className="checklist">
         <Check state={m.good >= 10 ? "ok" : "wait"} label="Control channel">
           {total ? (
-            <>
-              decoding {pct} % of {total} messages{air !== null ? ` (${air} % coverage)` : ""}{m.modulation ? ` · ${m.modulation}` : ""}
-              {m.snrDb !== null ? ` · ${m.snrDb.toFixed(0)} dB SNR` : ""}
-            </>
+            <Figs
+              inline
+              items={[
+                { k: "Decoded", v: pct, u: "%", level: pct < 50 ? "warn" : undefined, title: `Of ${total} messages` },
+                { k: "Messages", v: total },
+                air !== null && { k: "Coverage", v: air, u: "%" },
+                !!m.modulation && { k: "Mod", v: m.modulation },
+                m.snrDb !== null && { k: "SNR", v: m.snrDb.toFixed(0), u: "dB" },
+              ]}
+            />
           ) : (
             "waiting for messages…"
           )}
         </Check>
         {m.smartnet ? (
           <Check state={id.sysId != null ? "ok" : "wait"} label="System">
-            {id.sysId != null ? <span className="mono">SmartNet · System ID {hex(id.sysId)}</span> : "SmartNet — waiting for the system ID broadcast…"}
+            {id.sysId != null ? <Figs inline items={[{ k: "SmartNet System ID", v: hex(id.sysId) }]} /> : "SmartNet · waiting for its System ID…"}
           </Check>
         ) : (
         <Check state={id.wacn != null && id.sysId != null ? "ok" : "wait"} label="System">
           {id.wacn != null || id.sysId != null || id.nac != null ? (
-            <span className="mono">
-              WACN {hex(id.wacn)} · SysID {hex(id.sysId)} · NAC {hex(id.nac)}
-              {id.rfss != null && id.site != null ? ` · RFSS ${id.rfss} site ${id.site}` : ""}
-            </span>
+            <Figs
+              inline
+              items={[
+                { k: "WACN", v: hex(id.wacn) },
+                { k: "SysID", v: hex(id.sysId) },
+                { k: "NAC", v: hex(id.nac) },
+                id.rfss != null && id.site != null && { k: "Site", v: `${id.rfss}-${id.site}`, title: `RFSS ${id.rfss} site ${id.site}` },
+              ]}
+            />
           ) : (
-            "waiting for the network status broadcast…"
+            "waiting for the network status…"
           )}
         </Check>
         )}
@@ -357,19 +375,19 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
           </Check>
         ) : (
           <Check state={m.idens > 0 ? "ok" : "wait"} label="Band plan">
-            {m.idens > 0 ? `${m.idens} channel table${m.idens === 1 ? "" : "s"} (IDEN) heard` : "waiting for the channel tables…"}
+            {m.idens > 0 ? <Fig v={m.idens} u={m.idens === 1 ? "channel table (IDEN)" : "channel tables (IDEN)"} /> : "waiting for the channel tables…"}
           </Check>
         )}
         <Check state={m.ppm !== null ? "ok" : "wait"} label="Frequency correction">
           {m.ppm !== null && m.advertisedHz !== null && m.offsetHz !== null ? (
-            <>
-              heard {Math.abs(m.offsetHz).toFixed(0)} Hz {m.offsetHz < 0 ? "low" : "high"} →{" "}
-              <b className="mono">
-                {m.ppm > 0 ? "+" : ""}
-                {m.ppm.toFixed(2)} ppm
-              </b>
-              {rtl ? ` (dongle: ${Math.round(m.ppm)})` : ""}
-            </>
+            <Figs
+              inline
+              items={[
+                { k: m.offsetHz < 0 ? "Low by" : "High by", v: Math.abs(m.offsetHz).toFixed(0), u: "Hz" },
+                { k: "Correction", v: `${m.ppm > 0 ? "+" : ""}${m.ppm.toFixed(2)}`, u: "ppm" },
+                rtl && { k: "Dongle", v: Math.round(m.ppm), u: "ppm" },
+              ]}
+            />
           ) : m.advertisedHz === null ? (
             "waiting for its frequency…"
           ) : (
@@ -378,25 +396,35 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         </Check>
         {m.gain.state !== "off" && (
           <Check state={m.gain.state === "done" ? "ok" : "wait"} label="Gain">
-            {m.gain.state === "done"
-              ? m.gain.bestDb !== null
-                ? `${formatGain(m.gain.bestDb)} dB (best of ${gainSteps})`
-                : "no clear best; unchanged"
-              : m.gain.state === "running"
-                ? `trying settings… (${gainSteps} done)`
-                : "once decoding is steady"}
+            {m.gain.state === "done" ? (
+              m.gain.bestDb !== null ? (
+                <>
+                  <Fig v={formatGain(m.gain.bestDb)} u="dB" /> <span className="muted">best of {gainSteps}</span>
+                </>
+              ) : (
+                "no clear best; unchanged"
+              )
+            ) : m.gain.state === "running" ? (
+              <>
+                trying… <Fig v={gainSteps} u="done" />
+              </>
+            ) : (
+              "once decoding is steady"
+            )}
           </Check>
         )}
         {sought && (
           <Check state={mine ? "ok" : "info"} label="The system you're looking for">
             {mine ? (
               <>
-                this control channel is on its licenses (<span className="mono">{mine.callSign}</span>)
+                <span className="chip ok">On its licenses</span> <span className="mono">{mine.callSign}</span>
               </>
             ) : m.advertisedHz === null ? (
-              "waiting for this control channel's frequency, to check it against its licenses…"
+              "waiting for this control channel's frequency…"
             ) : (
-              "this control channel isn't on its licenses: another system. Listen to a signal marked as its own, if the scan found one."
+              <>
+                <span className="chip warn">Another system</span> <Info>This control channel isn't on its licenses. Listen to a signal marked as its own, if the scan found one.</Info>
+              </>
             )}
           </Check>
         )}
@@ -422,10 +450,11 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
               {m.adjacent.map((a) => {
                 const have = systemWithChannel(c, a.freqHz);
                 return (
-                  <span key={`${a.rfss}-${a.site}`} className="chip">
+                  <span key={siteAddress(adjacentIdentity(a))} className="chip">
                     <span className="mono">
-                      site {a.rfss}-{a.site} · {formatMhz(a.freqHz)}
+                      {siteAddress(adjacentIdentity(a))} · {formatMhz(a.freqHz)}
                     </span>
+                    {roaming(id, adjacentIdentity(a)) !== "intra-system" && <span className="badge">{roaming(id, adjacentIdentity(a))}</span>}
                     {soughtOn(sought, a.freqHz) && <Sought l={soughtOn(sought, a.freqHz)!} />}
                     {have ? (
                       <span>· in {have.shortName}</span>
@@ -445,8 +474,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         <Check state="info" label="Voice channels in use">
           {m.voice.length ? (
             <>
-              {m.voice.length} seen
-              {m.voice.some((v) => v.tdma) ? " (Phase 2 TDMA among them)" : ""}:{" "}
+              <Fig v={m.voice.length} u="seen" /> {m.voice.some((v) => v.tdma) && <span className="chip" title="Phase 2 TDMA among them">TDMA</span>}{" "}
               <span className="mono small">
                 {m.voice
                   .slice(0, 24)
@@ -464,64 +492,52 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
         <div className="banner">
           <div className="stack">
             <div>
-              <b>Ready to record.</b> This{" "}
+              <b>Ready to record</b>
+              {" · "}
               {target === "new"
-                ? "adds a system with"
+                ? "a new system"
                 : replacing
-                  ? `sets ${targetSys && targetSys.sites.length > 1 ? `${targetSys.shortName}'s site ${siteNameOf(targetSys, targetSys.sites[target.site as number])}` : (targetSys?.shortName ?? "the system")}'s`
-                  : `adds a site to ${targetSys?.shortName ?? "the system"} with`}{" "}
-              control channel
-              {sug.controlChannels.length === 1 ? "" : "s"} <span className="mono">{mhzList(sug.controlChannels)}</span> MHz
-              {sug.identity.site != null && (
-                <>
-                  , locked to site{" "}
-                  <span className="mono">
-                    {sug.identity.rfss ?? "?"}-{sug.identity.site}
-                  </span>
-                </>
-              )}
-              {src && src.type !== "file" && (
-                <>
-                  {sug.ppmApply !== null && (
-                    <>
-                      , source {props.source + 1}'s correction to{" "}
-                      <span className="mono">
-                        {sug.ppmApply > 0 ? "+" : ""}
-                        {sug.ppmApply}
-                      </span>{" "}
-                      ppm
-                    </>
-                  )}
-                  {rtl && sug.gainDb !== null && <>, gain to {formatGain(sug.gainDb)} dB</>}
-                  , and its center to <span className="mono">{formatMhz(sug.centerHz, 4)}</span> MHz
-                </>
-              )}
-              .
+                  ? `updates ${targetSys && targetSys.sites.length > 1 ? `${targetSys.shortName}'s site ${siteNameOf(targetSys, targetSys.sites[target.site as number])}` : (targetSys?.shortName ?? "the system")}`
+                  : `a new site of ${targetSys?.shortName ?? "the system"}`}
             </div>
-            {src && src.type !== "file" && (
-              <div className="small muted">
-                {sug.voiceTotal === 0
-                  ? "No calls yet; centered on the control channel."
-                  : sug.voiceCovered < sug.voiceTotal
-                    ? `Covers ${sug.voiceCovered} of ${sug.voiceTotal} voice channels seen; the system spans ${(sug.spanHz / 1e6).toFixed(1)} MHz.`
-                    : `Covers all ${sug.voiceTotal} voice channels seen.`}
-              </div>
-            )}
+            <Figs
+              items={[
+                { k: sug.controlChannels.length === 1 ? "Control channel" : "Control channels", v: mhzList(sug.controlChannels), u: "MHz" },
+                sug.identity.site != null && { k: "Site lock", v: `${sug.identity.rfss ?? "?"}-${sug.identity.site}` },
+                !!src && src.type !== "file" && sug.ppmApply !== null && { k: `Source ${props.source + 1} correction`, v: `${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply}`, u: "ppm" },
+                !!src && src.type !== "file" && rtl && sug.gainDb !== null && { k: "Gain", v: formatGain(sug.gainDb), u: "dB" },
+                !!src && src.type !== "file" && { k: "Center", v: formatMhz(sug.centerHz, 4), u: "MHz" },
+                !!src &&
+                  src.type !== "file" &&
+                  sug.voiceTotal > 0 && {
+                    k: "Voice covered",
+                    v: `${sug.voiceCovered}/${sug.voiceTotal}`,
+                    level: sug.voiceCovered < sug.voiceTotal ? "warn" : undefined,
+                    title: "Voice channels seen inside the source's band",
+                  },
+                !!src && src.type !== "file" && sug.voiceTotal > 0 && sug.voiceCovered < sug.voiceTotal && { k: "System spans", v: (sug.spanHz / 1e6).toFixed(1), u: "MHz" },
+              ]}
+            />
+            {src && src.type !== "file" && sug.voiceTotal === 0 && <div className="small muted">No calls yet: centered on the control channel</div>}
             {!m.ready && <div className="small muted">Still measuring…</div>}
             <div className="row">
               {c.systems.length > 0 && (
                 <select value={encode(target)} onChange={(e) => setTarget(decode(e.target.value))} aria-label="Add as, or replace">
                   <option value="new">as a new system</option>
-                  {c.systems.map((x, k) => (
-                    <Fragment key={k}>
-                      {x.type === (sug.type === "smartnet" ? "smartnet" : "p25") && <option value={`${k}:new`}>as a site of {x.shortName}</option>}
-                      {x.sites.map((y, j) => (
-                        <option key={j} value={`${k}:${j}`}>
-                          replacing {x.sites.length > 1 ? `${x.shortName}'s site ${siteNameOf(x, y)}` : x.shortName}
-                        </option>
-                      ))}
-                    </Fragment>
-                  ))}
+                  {/* (Only systems of the kind found: a site isn't replaced by another kind's.) */}
+                  {c.systems.map(
+                    (x, k) =>
+                      x.type === sug.type && (
+                        <Fragment key={k}>
+                          <option value={`${k}:new`}>as a site of {x.shortName}</option>
+                          {x.sites.map((y, j) => (
+                            <option key={j} value={`${k}:${j}`}>
+                              replacing {x.sites.length > 1 ? `${x.shortName}'s site ${siteNameOf(x, y)}` : x.shortName}
+                            </option>
+                          ))}
+                        </Fragment>
+                      ),
+                  )}
                 </select>
               )}
               <button className="btn primary" onClick={apply}>
@@ -552,7 +568,7 @@ export function SurveyPanel(props: { c: Config }) {
   const s = useApp();
   const { c } = props;
   const sv = s.survey;
-  const recording = s.phase !== "idle";
+  const recording = holdsRadios(s.phase);
   const [open, setOpen] = useState(() => c.systems.length === 0);
   const [picked, setPicked] = useState<string[] | null>(null);
   const [findGain, setFindGain] = useState(true);
@@ -622,7 +638,13 @@ export function SurveyPanel(props: { c: Config }) {
       {shown && (
         <div className="stack">
           <p className="muted small">
-            {lookingFor ? `Listens to its ${freqs} frequenc${freqs === 1 ? "y" : "ies"}, a band of the radio at a time.` : "Scans for P25, SmartNet, EDACS, DMR and NXDN control channels and sets up the system."}
+            {lookingFor ? (
+              <>
+                Listens to its <Fig v={freqs} u={freqs === 1 ? "frequency" : "frequencies"} />, a band at a time
+              </>
+            ) : (
+              "Finds P25, SmartNet, EDACS, DMR and NXDN control channels"
+            )}
           </p>
           {(c.sources.length > 1 || spares.length > 0 || src?.type === "rtlsdr" || !!lookingFor) && (
           <div className="grid2">
@@ -632,7 +654,7 @@ export function SurveyPanel(props: { c: Config }) {
                 <select value={radioKey} onChange={(e) => setRadioPick(e.target.value)}>
                   {c.sources.map((x, i) => (
                     <option key={i} value={i} disabled={recording}>
-                      Source {i + 1} ({SOURCE_KINDS[x.type].label}){recording ? " — recording" : ""}
+                      {sourceTitle(c, i)} ({SOURCE_KINDS[x.type].label}){recording ? " — recording" : ""}
                     </option>
                   ))}
                   {spares.map((x) => (
@@ -641,7 +663,7 @@ export function SurveyPanel(props: { c: Config }) {
                     </option>
                   ))}
                 </select>
-                {spare && <span className="field-hint">No source uses it: it scans while the others record.</span>}
+                {spare && <span className="field-hint">Spare: scans while the others record</span>}
               </label>
             )}
             {lookingFor && (
@@ -654,7 +676,7 @@ export function SurveyPanel(props: { c: Config }) {
                     </option>
                   ))}
                 </select>
-                <span className="field-hint">{lookingFor.type === "dmr" ? "A DMR site may be quiet between calls: the longer, the surer." : "A control channel says who it is within seconds."}</span>
+                <span className="field-hint">{lookingFor.type === "dmr" ? "Quiet DMR sites need longer" : "Control channels answer within seconds"}</span>
               </label>
             )}
             {spare && (
@@ -682,7 +704,7 @@ export function SurveyPanel(props: { c: Config }) {
           </div>
           )}
           {src?.type === "file" ? (
-            <p className="muted small">Scanned at its center frequency ({src.centerHz ? `${formatMhz(src.centerHz, 4)} MHz` : "set it below"}).</p>
+            <p className="muted small">Scans at its center: {src.centerHz ? <Fig v={formatMhz(src.centerHz, 4)} u="MHz" /> : "set it below"}</p>
           ) : !lookingFor && (
             <fieldset className="bands">
               <legend className="field-label">Bands to scan</legend>
@@ -709,13 +731,18 @@ export function SurveyPanel(props: { c: Config }) {
             >
               Scan
             </button>
-            {recording && !spare && <span className="muted small">Stop recording to scan, or plug in a spare radio (one no source uses) to scan with meanwhile.</span>}
+            {recording && !spare && <span className="muted small">Recording: stop it, or plug in a spare radio</span>}
           </div>
         </div>
       )}
       {sv.stage !== "idle" && (
         <div className="stack">
-          {sv.radio && <p className="small muted">On {sv.radio}, a spare radio{recording ? ", beside the recording" : ""}.</p>}
+          {sv.radio && (
+            <p className="small muted">
+              Spare radio <b>{sv.radio}</b>
+              {recording ? " · beside the recording" : ""}
+            </p>
+          )}
           {sv.error && <div className="banner bad small">{sv.error}</div>}
           {sv.stage === "scanning" && sv.progress && (
             <div className="stack">
@@ -723,21 +750,24 @@ export function SurveyPanel(props: { c: Config }) {
                 <span>
                   {sv.lookFor ? (
                     <>
-                      Listening to{" "}
-                      <b>
-                        {sv.lookFor.probed} of {sv.lookFor.freqs}
-                      </b>{" "}
-                      frequencies, {sv.lookFor.listenS} s each, around <span className="mono">{formatMhz(sv.progress.centerHz, 3)}</span> MHz
+                      <Figs
+                        inline
+                        items={[
+                          { k: "Frequencies", v: `${sv.lookFor.probed}/${sv.lookFor.freqs}` },
+                          { k: "Each", v: sv.lookFor.listenS, u: "s" },
+                          { k: "Around", v: formatMhz(sv.progress.centerHz, 3), u: "MHz" },
+                        ]}
+                      />
                     </>
                   ) : (
                     <>
-                      Scanning <b>{bandLabel(sv.progress.band)}</b> around <span className="mono">{formatMhz(sv.progress.centerHz, 3)}</span> MHz
+                      Scanning <b>{bandLabel(sv.progress.band)}</b> · <Fig v={formatMhz(sv.progress.centerHz, 3)} u="MHz" />
                     </>
                   )}
                 </span>
                 <span className="spacer" />
                 <span className="muted">
-                  step {sv.progress.hop} of {sv.progress.hops}
+                  Step <Fig v={`${sv.progress.hop}/${sv.progress.hops}`} />
                 </span>
               </div>
               <progress className="survey-progress" value={sv.progress.hop - 1} max={sv.progress.hops} />
@@ -760,8 +790,7 @@ export function SurveyPanel(props: { c: Config }) {
           {(sv.candidates.length > 0 || !sv.monitor) && (
             <details className="help" open={!sv.monitor && !sv.sites?.length}>
               <summary>
-                Signals found ({sv.candidates.filter(isControl).length} control channel
-                {sv.candidates.filter(isControl).length === 1 ? "" : "s"})
+                Signals found <Fig v={sv.candidates.filter(isControl).length} u={sv.candidates.filter(isControl).length === 1 ? "control channel" : "control channels"} />
               </summary>
               <Candidates c={c} list={sv.candidates} listening={sv.monitor?.freqHz ?? null} onListen={surveyListen} licenses={s.surveyLicenses} sought={sought} />
             </details>
@@ -837,9 +866,13 @@ export function SiteChecks(props: { l: LookingFor; sites: SurveySite[]; done: bo
       </div>
       {props.done && (
         <div className="row">
-          <span className="small muted">
-            {plural(keep.length)} of {l.sites.length} heard here{drop.length ? `, ${drop.length} not` : ""}.
-          </span>
+          <Figs
+            inline
+            items={[
+              { k: "Heard here", v: `${keep.length}/${l.sites.length}`, u: "sites" },
+              drop.length > 0 && { k: "Not heard", v: drop.length, level: "warn" },
+            ]}
+          />
           <span className="spacer" />
           {l.bundle && (
             <button className="btn primary small" disabled={!keep.length} onClick={() => openImport(l.bundle!, keep.map((x) => x.index))}>
@@ -875,8 +908,10 @@ function LookingForBanner(props: { l: LookingFor; c: Config }) {
     return (
       <div className="banner">
         <span>
-          Checking which of <b>{l.name}</b>'s {n} site{n === 1 ? "" : "s"} can be heard here: each one's {l.type === "dmr" ? "frequencies" : "control channels"} listened to.{" "}
-          {l.system ? "Its sites not heard can be turned off." : "The ones heard can be imported."}
+          Checking <b>{l.name}</b>: which of its <Fig v={n} u={n === 1 ? "site" : "sites"} /> are heard here{" "}
+          <Info>
+            Each one's {l.type === "dmr" ? "frequencies" : "control channels"} listened to. {l.system ? "Its sites not heard can be turned off." : "The ones heard can be imported."}
+          </Info>
         </span>
         <span className="row">
           <button className="btn ghost small" onClick={() => lookFor(null)}>
@@ -894,12 +929,21 @@ function LookingForBanner(props: { l: LookingFor; c: Config }) {
     <div className="banner">
       {sys ? (
         <span>
-          <b>{sys.shortName}</b> is {l.name} (<span className="mono">{call}</span>).{" "}
-          {sys.share ? "It's shared with the directory once it has decoded a while." : "No one has shared it yet: share it, and it's on the directory's map for others."}
+          <b>{sys.shortName}</b> is {l.name} · <span className="mono">{call}</span>{" "}
+          {sys.share ? (
+            <span className="chip ok" title="Shared with the directory once it has decoded a while">
+              Sharing
+            </span>
+          ) : (
+            <>
+              <span className="chip">Not shared yet</span> <Info>Share it, and it's on the directory's map for others.</Info>
+            </>
+          )}
         </span>
       ) : (
         <span>
-          Looking for <b>{l.name}</b> (<span className="mono">{call}</span>): {n} licensed frequenc{n === 1 ? "y" : "ies"}. Signals found on them are marked as its own.{" "}
+          Looking for <b>{l.name}</b> <span className="mono">{call}</span> · <Fig v={n} u={n === 1 ? "licensed frequency" : "licensed frequencies"} />{" "}
+          <Info>Signals found on them are marked as its own.</Info>{" "}
           {b.source.url && (
             <a href={b.source.url} target="_blank" rel="noreferrer">
               In the directory

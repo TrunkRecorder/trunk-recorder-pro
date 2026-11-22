@@ -3,12 +3,12 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
-import { can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
-import { keyPart, num, pct } from "../fmt.ts";
+import { activeSystems, autoTuneOn, configIndex, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
+import { isRecording, can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
+import { dur, keyPart, num, pct, signed } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
-import type { PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, StorageSettings, SystemStatus } from "../protocol.ts";
+import type { FolderRow, PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, StorageSettings, SystemStatus } from "../protocol.ts";
 
 // ── series names (crates/trunk-app/src/stats) ────────────────────────────────
 
@@ -16,9 +16,39 @@ export const K = {
   sys: (short: string, k: string) => `sys/${keyPart(short)}/${k}`,
   /** A site's control channel series (the recorder's SiteConfig::stats_key). */
   cc: (site: DashSite, k: string) => `${site.key}/cc/${k}`,
+  /** A conventional frequency's series key (the recorder's metrics::channel_key). */
+  ch: (short: string, hz: number) => `sys/${keyPart(short)}/ch/${Math.round(hz)}`,
   src: (label: string, k: string) => `src/${keyPart(label)}/${k}`,
   plg: (id: string, k: string) => `plg/${keyPart(id)}/${k}`,
 };
+
+/** Series `name` under each of `scopes` (a system's, a site's: `[site.key]`). */
+export const scoped = (scopes: string[], name: string) => scopes.map((k) => `${k}/${name}`);
+
+/** The vocoders a site's or channel's frames are counted by (`voice/<codec>/…`). */
+export const CODECS = ["imbe", "ambe"];
+
+/** Voice series `name` (`frames`, `bad`, `errors`) of every codec under `scopes`. */
+export const voiceKeys = (scopes: string[], name: string) => CODECS.flatMap((c) => scoped(scopes, `voice/${c}/${name}`));
+
+/** [`recentAvg`] of `keys`, added up (null: none of them has any). */
+export function recentSum(keys: string[], sinceS: number): number | null {
+  const v = keys.map((k) => recentAvg(k, sinceS)).filter((x): x is number => x !== null);
+  return v.length ? v.reduce((a, b) => a + b, 0) : null;
+}
+
+/** History series `keys` added up step by step (each step null where none of them has a value). */
+export function sumSeries(hist: Record<string, SeriesData> | null | undefined, keys: string[]): SeriesData | undefined {
+  const all = keys.map((k) => hist?.[k]).filter((x): x is SeriesData => !!x);
+  if (!all.length) return undefined;
+  const [a] = all;
+  const same = all.filter((x) => x.t0 === a.t0 && x.stepS === a.stepS);
+  const v = a.v.map((_, i) => {
+    const xs = same.map((x) => x.v[i]).filter((x): x is number => x !== null);
+    return xs.length ? xs.reduce((p, q) => p + q, 0) : null;
+  });
+  return { ...a, v, lo: v.map(() => null), hi: v.map(() => null) };
+}
 
 /** A value now, from the latest stats / host message. */
 export function val(s: AppState, key: string): number | null {
@@ -53,6 +83,9 @@ export interface DashSystem {
   status: SystemStatus | null;
   /** Its sites being recorded (a conventional system: none). */
   sites: DashSite[];
+  /** Where its copies of calls are counted (`<key>/calls/…`, `<key>/voice/…`): each site's key,
+   * or (conventional) each channel's. A system's figures are their sum ([`scoped`]). */
+  scopes: string[];
 }
 
 /** One site of a dashboard system. */
@@ -76,12 +109,13 @@ export function dashSystems(s: AppState): DashSystem[] {
       const name = siteNameOf(x, site);
       return { name, key: siteKey(x.shortName, name), status: status?.sites.find((y) => y.name === name) ?? null };
     });
-    return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites };
+    return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites, scopes: sites.map((y) => y.key) };
   });
   for (const c of s.config.conventional) {
     if (c.enabled === false || !c.channels.some((ch) => ch.enabled)) continue;
     const status = s.status?.systems.find((y) => y.shortName === c.shortName) ?? null;
-    out.push({ name: c.shortName, kind: "conventional", status, sites: [] });
+    const scopes = [...new Set(c.channels.filter((ch) => ch.enabled).map((ch) => K.ch(c.shortName, ch.freqHz)))];
+    out.push({ name: c.shortName, kind: "conventional", status, sites: [], scopes });
   }
   return out;
 }
@@ -99,7 +133,7 @@ export function runningSites(systems: SystemStatus[]): RunningSite[] {
 
 export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", conventional: "Conventional" };
 
-export const running = (s: AppState) => s.phase === "running" || s.phase === "starting";
+export const running = (s: AppState) => isRecording(s.phase);
 
 // ── history ──────────────────────────────────────────────────────────────────
 
@@ -235,27 +269,22 @@ export function systemHealth(s: AppState, x: DashSystem, usual: Record<string, U
 /** A site's control channel, judged against its own usual rate. */
 export function siteHealth(s: AppState, site: DashSite, usualRate?: Usual | null): Health {
   const st = site.status;
-  if (!st) return { level: "bad", why: "No control channel open — is one inside a source's band?" };
-  if (st.mismatch) return { level: "bad", why: `The control channel is another system's: ${st.mismatch}` };
+  if (!st) return { level: "bad", why: "No control channel — is one in a source's band?" };
+  if (st.mismatch) return { level: "bad", why: `Another system's control channel: ${st.mismatch}` };
   const locked = val(s, K.cc(site, "locked"));
   const rate = recentAvg(K.cc(site, "good"), 30);
   const bad = recentAvg(K.cc(site, "bad"), 60) ?? 0;
   const good = recentAvg(K.cc(site, "good"), 60) ?? 0;
   const badPct = good + bad > 0 ? (100 * bad) / (good + bad) : 0;
-  if (locked === 0) return { level: "bad", why: "Not decoding its control channel — hunting for another. Check the antenna, the gain, and that the frequency is right." };
+  if (locked === 0) return { level: "bad", why: "Control channel lost, hunting — check antenna, gain, frequency" };
   if (rate === null) return { level: "ok", why: "Starting…" };
   if (usualRate && usualRate.avg > 5 && rate < usualRate.avg * 0.6)
-    return { level: "warn", why: `Decoding ${num(rate)} msg/s, ${Math.round((1 - rate / usualRate.avg) * 100)}% under its usual ${num(usualRate.avg)}. Fewer messages with more lost ones points at reception, not traffic.` };
-  if (badPct > 30) return { level: "bad", why: `${Math.round(badPct)}% of control messages lost — the signal is weak or distorted here.` };
-  if (badPct > 10) return { level: "warn", why: `${Math.round(badPct)}% of control messages lost. A few percent is normal; more suggests multipath or a marginal signal.` };
+    return { level: "warn", why: `${num(rate)} msg/s, ${Math.round((1 - rate / usualRate.avg) * 100)}% under usual (${num(usualRate.avg)}) — reception, if more are lost` };
+  if (badPct > 30) return { level: "bad", why: `${Math.round(badPct)}% control lost — weak or distorted signal` };
+  if (badPct > 10) return { level: "warn", why: `${Math.round(badPct)}% control lost — multipath or marginal signal` };
   return OK(`${num(rate)} msg/s, ${Math.round(100 - badPct)}% decoded`);
 }
 
-/** A source: drops, clipping, frequency error, sample rate. */
-/** A running source's guardHz, from the config (undefined = the default): its usable band is usableHalfWidth(rate, guard) each side. */
-export function sourceGuard(s: AppState, src: SourceStatus): number | undefined {
-  return s.config?.sources[src.index]?.guardHz;
-}
 
 /**
  * Where `hz` falls among the sources: the one it's deepest in, `depth` how
@@ -267,7 +296,7 @@ export function sourceGuard(s: AppState, src: SourceStatus): number | undefined 
 export function coverage(s: AppState, hz: number): { src: SourceStatus; depth: number; beyondHz: number } | null {
   let best: { src: SourceStatus; d: number; beyondHz: number } | null = null;
   for (const src of s.sources) {
-    const half = usableHalfWidth(src.rateHz, sourceGuard(s, src));
+    const half = usableHalfWidth(src.rateHz, src.settings.guardHz);
     const off = Math.abs(hz - src.centerHz);
     const d = 1 - off / half;
     if (!best || d > best.d) best = { src, d, beyondHz: Math.max(0, off - half) };
@@ -275,20 +304,55 @@ export function coverage(s: AppState, hz: number): { src: SourceStatus; depth: n
   return best && { src: best.src, depth: Math.max(0, best.d), beyondHz: best.beyondHz };
 }
 
-export function sourceHealth(s: AppState, src: SourceStatus, autoTune: boolean): Health {
+/** What a source nothing needs says (SourceStatus.unused): its light's word, and the why behind it. */
+export const UNUSED_SOURCE = "Unused — probably removable";
+export const UNUSED_SOURCE_WHY = "The other sources reach every channel the config lists, and no call has used this one. You can probably remove it.";
+
+/**
+ * A source's gain by its samples: too high (clipping over 0.5%, or peaks at
+ * full scale) or too low (the recorder's `quiet`: a minute of peaks a few ADC
+ * steps tall, stats/meter.rs, said as that minute's average, as it decides),
+ * and the why, pointing at the fix; null: fine. Low but tuned (gainTuned): fine,
+ * since no gain decoded better.
+ */
+export function gainOff(s: AppState, src: SourceStatus): { dir: "low" | "high"; why: string } | null {
+  const clip = recentAvg(K.src(src.label, "clipPct"), 10) ?? 0;
+  const peak = val(s, K.src(src.label, "peak"));
+  const off = (dir: "low" | "high", measured: string) => ({ dir, why: `Gain too ${dir} · ${measured}${gainFix(s, dir, "")}` });
+  if (clip > 0.5) return off("high", `${num(clip, 1)}% clipping`);
+  if (peak !== null && peak > -1) return off("high", "peaks at full scale");
+  if (val(s, K.src(src.label, "quiet")) && !gainTuned(s, src)) {
+    const avg = recentAvg(K.src(src.label, "peak"), 60) ?? peak;
+    return off("low", `peaks ${avg === null ? "—" : num(avg, 0)} dBFS`);
+  }
+  return null;
+}
+
+/** The tuner has judged source `src`'s gain as it is: its tuning done, no gain tried better, and the radio not changed since. */
+export function gainTuned(s: AppState, src: SourceStatus): boolean {
+  const t = s.tune;
+  return !!t && !!s.config && t.phase === "done" && !t.best && !t.outdated && t.tried.length > 0 && t.source === configIndex(s.sources, s.config, src);
+}
+
+/** What to do about a gain that's too `dir`, after " — ": nothing for who can't change it (a View user). `where`: where the tuner is, said from elsewhere. */
+export function gainFix(s: AppState, dir: "low" | "high", where: string): string {
+  if (s.access !== "control") return "";
+  return ` — ${s.capabilities.includes("tuneGain") ? `Tune gain${where}` : `${dir === "low" ? "raise" : "lower"} it in Setup`}`;
+}
+
+/** A source: drops, gain (gainOff), frequency error, sample rate; nothing wrong but nothing for it to do. */
+export function sourceHealth(s: AppState, src: SourceStatus): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (src.ended) return { level: "idle", why: "Ended" };
   const drops = recentAvg(K.src(src.label, "dropped"), 10) ?? 0;
-  const clip = recentAvg(K.src(src.label, "clipPct"), 10) ?? 0;
-  const peak = val(s, K.src(src.label, "peak"));
-  if (drops > 0) return { level: "bad", why: "Dropping samples: the computer or USB bus can't keep up. Calls on it lose audio." };
+  if (drops > 0) return { level: "bad", why: "Dropping samples — CPU or USB can't keep up; calls lose audio" };
   if (src.lastError && src.lastErrorS && Date.now() / 1000 - src.lastErrorS < 60) return { level: "bad", why: src.lastError };
-  if (clip > 0.5) return { level: "warn", why: `${num(clip, 1)}% of samples at full scale: the gain is too high (or a strong signal nearby). Lower it a few dB.` };
-  if (peak !== null && peak > -1) return { level: "warn", why: "Peaks reach full scale: little headroom left. Lower the gain a little." };
-  if (src.errorPpm != null && !autoTune && Math.abs(src.errorPpm - (src.tunePpm ?? 0)) > 2)
-    return { level: "warn", why: `Its frequency is off by ${num(src.errorPpm, 1)} ppm. Set the source's ppm, or turn on AutoTune.` };
-  if (src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05) return { level: "warn", why: `Delivering ${num(src.rateMeasured / 1e6, 2)} MS/s of ${num(src.rateHz / 1e6, 2)}.` };
-  return OK("Clean");
+  const gain = gainOff(s, src);
+  if (gain) return { level: "warn", why: gain.why };
+  if (src.errorPpm != null && !autoTuneOn(src.settings) && Math.abs(src.errorPpm - (src.tunePpm ?? 0)) > 2)
+    return { level: "warn", why: `${signed(src.errorPpm, 1)} ppm off — set ppm${src.ppmApply != null ? ` to ${src.ppmApply}` : ""} or turn on AutoTune` };
+  if (src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05) return { level: "warn", why: `Delivering ${num(src.rateMeasured / 1e6, 2)} of ${num(src.rateHz / 1e6, 2)} MS/s` };
+  return OK(src.unused ? UNUSED_SOURCE : "Clean");
 }
 
 export function pluginHealth(p: PluginInfo, on: boolean): Health {
@@ -314,11 +378,28 @@ export function spoolRemovedFix(kind?: string): string {
   return "Something deleted the folder set in ramSpool.dir";
 }
 
+/** What a folder is called in a sentence. */
+export const FOLDER_LABEL: Record<string, string> = { recordings: "the recordings folder", spool: "the RAM spool" };
+
+/** The folder named `name` when it can't be written to (at `path`, if given: the one the settings have now). */
+export function folderFailing(s: AppState, name: string, path?: string): FolderRow | undefined {
+  const f = s.host?.platform.folders?.find((x) => x.name === name);
+  return f && f.ok === false && (path === undefined || f.path === path) ? f : undefined;
+}
+
+/** A failing folder's reason and what to do, as one line (a tooltip, a field's note). */
+export function folderWhy(f: FolderRow): string {
+  return [f.detail, f.fix].filter(Boolean).join(". ");
+}
+
 export function platformHealth(s: AppState): Health {
   const h = s.host;
   if (!h) return { level: "idle", why: "Waiting for the first sample" };
   const v = h.values;
   const hs: Health[] = [];
+  for (const f of h.platform.folders ?? []) {
+    if (f.ok === false) hs.push({ level: "bad", why: `Can't write to ${FOLDER_LABEL[f.name] ?? f.name}: ${f.why}${f.lost ? ` · ${num(f.lost, 0)} files not saved` : ""}` });
+  }
   for (const d of h.platform.disks) {
     const free = (100 * d.freeBytes) / Math.max(1, d.totalBytes);
     if (d.name === "spool") {
@@ -338,7 +419,7 @@ export function platformHealth(s: AppState): Health {
   else if ((v["plat/memLevel"] ?? 0) >= 1 || (v["plat/memPsi"] ?? 0) > 10 || (v["plat/mem"] ?? 0) > 90) hs.push({ level: "warn", why: "Memory is under pressure" });
   if ((v["plat/cpu"] ?? 0) > 90) hs.push({ level: "warn", why: `CPU at ${pct(v["plat/cpu"])}: decoding may fall behind` });
   if ((v["plat/piThrottled"] ?? 0) > 0) hs.push({ level: "warn", why: "The Pi is throttled (under-voltage or heat)" });
-  if (v["net/up"] !== undefined && v["net/up"] < 1) hs.push({ level: v["net/up"] === 0 ? "bad" : "warn", why: v["net/up"] === 0 ? "The internet isn't answering" : "Some connectivity checks fail" });
+  if (v["net/up"] !== undefined && v["net/up"] < 1) hs.push({ level: v["net/up"] === 0 ? "bad" : "warn", why: v["net/up"] === 0 ? "No host checked answers (monitor.checkHosts)" : "Some hosts checked don't answer (monitor.checkHosts)" });
   if ((v["plat/temp"] ?? 0) > 80) hs.push({ level: "warn", why: `Running hot: ${num(v["plat/temp"], 0)} °C` });
   // (The recorder decides what's wrong with the clock: the events go by the same.)
   const clock = h.platform.clock?.problem;
@@ -348,11 +429,7 @@ export function platformHealth(s: AppState): Health {
 
 export function rfHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  const auto = (i: number) => {
-    const c = s.config?.sources[i];
-    return !!c && "autoTune" in c && !!c.autoTune;
-  };
-  return worstOf(s.sources.map((x, i) => ({ x, i })), ({ x }) => x.label, ({ x, i }) => sourceHealth(s, x, auto(i)));
+  return worstOf(s.sources, (x) => x.label, (x) => sourceHealth(s, x));
 }
 
 export function decodeHealth(s: AppState): Health {
@@ -367,18 +444,73 @@ export function pluginsHealth(s: AppState): Health {
   return ons.length ? worstOf(ons, (p) => p.manifest?.name ?? p.id, (p) => pluginHealth(p, true)) : { level: "idle", why: "No plugins on" };
 }
 
+/** A plugin's endpoint state, as a light. */
+export const ENDPOINT_LEVEL = { up: "ok", degraded: "warn", down: "bad", unknown: "idle" } as const;
+
+/** Something the recorder reaches: a host it checks (monitor.checkHosts), or a service a plugin that's on talks to. */
+export interface Connection {
+  name: string;
+  /** The plugin that says how it answers; none: a host checked. */
+  plugin?: string;
+  level: Level;
+  /** How it answers now, in words. */
+  state: string;
+  /** A check's connect time, or how long a plugin's send takes, ms. */
+  ms: number | null;
+  lastOk: number | null;
+  /** A check's tries that failed, "2 of 40". */
+  failed?: string;
+}
+
+/**
+ * What the recorder reaches, as one list: the hosts it checks, then the
+ * services the plugins report. The plugins' are what's really used, and cost
+ * no traffic of their own; their warnings are the plugins' (Plugins), so they
+ * don't turn the computer's light.
+ */
+export function connections(s: AppState): Connection[] {
+  const now = Date.now() / 1000;
+  const rows: Connection[] = (s.host?.platform.probes ?? []).map((x) => ({
+    name: x.target,
+    level: x.ok === null ? "idle" : x.ok ? "ok" : "bad",
+    state: x.ok === null ? "not tried yet" : x.ok ? "answers" : `down${x.downSince ? ` for ${dur(now - x.downSince)}` : ""}`,
+    ms: x.rttMs,
+    lastOk: x.lastOk,
+    failed: `${x.fails} of ${x.tries}`,
+  }));
+  for (const p of s.plugins?.plugins ?? []) {
+    if (!s.config?.plugins?.[p.id]?.enabled || p.runtime.state === "off") continue;
+    for (const e of p.runtime.metrics?.endpoints ?? []) {
+      const state = e.state === "unknown" ? "nothing sent yet" : e.state === "up" ? "answers" : `${e.state}${e.lastError ? `: ${e.lastError}` : ""}`;
+      rows.push({ name: e.name, plugin: p.manifest?.name ?? p.id, level: ENDPOINT_LEVEL[e.state], state, ms: e.latencyMs ?? null, lastOk: e.lastOk ?? null });
+    }
+  }
+  return rows;
+}
+
+/** The connections together: all answer, some, none; null while none has been tried. */
+export function connectionsSummary(rows: Connection[]): { value: "Up" | "Partly" | "Down"; level: Level; why: string } | null {
+  const known = rows.filter((r) => r.level !== "idle");
+  if (!known.length) return null;
+  const trouble = known.filter((r) => r.level !== "ok");
+  const failing = (r: Connection) => `${r.name} ${r.level === "bad" ? "isn't answering" : "is having trouble"}`;
+  if (known.every((r) => r.level === "bad")) return { value: "Down", level: "bad", why: known.length === 1 ? failing(known[0]) : "Nothing answers" };
+  if (trouble.length) return { value: "Partly", level: "warn", why: `${failing(trouble[0])}${trouble.length > 1 ? `, and ${trouble.length - 1} more` : ""}` };
+  return { value: "Up", level: "ok", why: known.length === 1 ? `${known[0].name} answers` : `all ${known.length} answer` };
+}
+
 /** A system's Radio system page, at its frequencies out of band: `radio/<system>/outOfBand`. */
 export const OUT_OF_BAND = "outOfBand";
 
 /** A system's calls lost for want of a recorder or a source, last few minutes: which of the two. */
 export function systemRadioHealth(s: AppState, x: DashSystem): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  const busy = (recentAvg(K.sys(x.name, "why/no_recorder"), 300) ?? 0) > 0;
-  const outside = (recentAvg(K.sys(x.name, "why/no_source"), 300) ?? 0) > 0;
+  const busy = (recentSum(scoped(x.scopes, "calls/why/noRecorder"), 300) ?? 0) > 0;
+  const outside = (recentSum(scoped(x.scopes, "calls/why/noSource"), 300) ?? 0) > 0;
   const at: Place = ["radio", x.name, OUT_OF_BAND];
-  if (busy && outside) return { level: "warn", why: "Calls are being missed: no free recorder for some, others outside every source's band", at };
-  if (busy) return { level: "warn", why: "Calls are being missed: no free recorder. Add recorders, or a source" };
-  if (outside) return { level: "warn", why: "Calls are being missed: their frequencies are outside every source's band (Out of band)", at };
+  if (busy && outside) return { level: "warn", why: "Missing calls: no free recorder, and outside every source's band", at };
+  if (busy) return { level: "warn", why: "Missing calls: no free recorder — add recorders" };
+  if (outside) return { level: "warn", why: "Missing calls: outside every source's band", at };
   return OK("Recording what it hears");
 }
 

@@ -30,7 +30,7 @@ function surveyed(): ToRecorder[] {
   transport.onConnection(true);
   const greeting: FromRecorder[] = [
     { type: "config", config: defaultConfig(), version: 1 },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: [] },
+    { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: [] },
     {
       type: "survey", stage: "done", source: 0, bands: ["800"], message: "", error: null, progress: null, monitor: null, suggest: null,
       candidates: [
@@ -64,7 +64,7 @@ test("Identify: the location fields say why, what is sent where, and that it wor
   assert.ok(html.includes("150 km"));
   // A place by name, ZIP code or coordinates; and the map, its circle saying only a general area is needed.
   assert.ok(html.includes("Find a place") && html.includes("ZIP code"));
-  assert.ok(html.includes("location-map") && html.includes("only your general area is needed"));
+  assert.ok(html.includes("location-map") && html.includes("your general area"));
 });
 
 test("Identify: the survey's signals are looked up (not the weak unknown one), and show in its table", async () => {

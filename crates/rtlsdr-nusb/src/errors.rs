@@ -18,7 +18,7 @@ pub enum Error {
     },
     /// No matching RTL-SDR device was found.
     DeviceNotFound,
-    /// The connected tuner is not an R820T/R828D-family device.
+    /// The connected tuner is not an R820T/R828D-family device or an E4000.
     UnsupportedTuner,
     /// The tuner PLL failed to lock after a retry.
     PllUnlocked,
@@ -138,7 +138,7 @@ impl fmt::Display for Error {
                 write!(f, "invalid configuration for {field}: {reason}")
             }
             Self::DeviceNotFound => f.write_str("no matching RTL-SDR device found"),
-            Self::UnsupportedTuner => f.write_str("unsupported tuner (R820T/R828D required)"),
+            Self::UnsupportedTuner => f.write_str("unsupported tuner (R820T/R828D/E4000 required)"),
             Self::PllUnlocked => f.write_str("tuner PLL did not lock"),
             Self::ConfigurationUnknown => {
                 f.write_str("configuration is unknown; reapply a complete configuration or reopen")

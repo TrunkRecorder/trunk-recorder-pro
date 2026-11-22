@@ -21,7 +21,7 @@ does, and sends the same thing.
 - **An M4A encoder.** OpenMHz takes M4A, not WAV. macOS has one built in. On Linux and Windows,
   install [ffmpeg](https://ffmpeg.org) (on Debian and Raspberry Pi OS: `sudo apt install ffmpeg`).
   Without one, the plugin won't start, and says
-  *OpenMHz needs calls as M4A, and there's no M4A encoder on this computer.* See
+  *No M4A encoder: install ffmpeg, then Start again.* See
   [M4A audio](README.md#m4a-audio).
 
 ## Setting it up
@@ -98,7 +98,6 @@ For each system (the system's card, or its `plugins.openmhz` in `config.json`):
 | `talkgroupMode` | | `"all"` | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
 | `talkgroupAllow` | | (none) | list | **Only these.** With `"only"`: upload these and no others. |
 | `talkgroupDeny` | | (none) | list | **Except these.** With `"only"` or `"allBut"`: never upload these. |
-| `sites` | | (none) | list | **Sites of their own.** A site of the system that is a system of its own on OpenMHz: `site` (its name, as under Sites in Setup), `apiKey`, and `systemName` if not the site's name. Its calls go there; the other sites' to the system's. (Plugin 0.1.5 and later.) |
 
 ```json
 {
@@ -114,8 +113,18 @@ For each system (the system's card, or its `plugins.openmhz` in `config.json`):
 ```
 
 The plugin won't start without at least one system with an API key
-(*Add your OpenMHz API key to the systems you want to upload.*), or with a talkgroup list entry
+(*No system has an API key: add one on its card in Setup*), or with a talkgroup list entry
 that isn't a talkgroup, a range or a pattern.
+
+A site that is a system of its own on OpenMHz gets its own **API key** and **Name on OpenMHz**
+in its row under **Plugins** > **OpenMHz** on the system's card (`perSite`, by the site's id:
+`"perSite": { "8": { "apiKey": "…", "systemName": "…" } }`). A call goes to every site that heard
+it and has a system of its own there; one only sites without a system of their own heard goes to
+the system's. A site turned off for the plugin (**Sites** chips) is left out. See
+[Settings for each site](../configuration/plugins.md#settings-for-each-site).
+
+A system can also set **Upload server** again, in **OpenMHz shared settings** on its card
+(`override` in its `plugins.openmhz` entry). Each server has its own queue and Health status.
 
 ## What it sends
 
@@ -133,7 +142,7 @@ Nothing else, and nowhere else.
 
 ## When an upload fails
 
-The plugin keeps a queue and works it off on two threads, so a slow upload doesn't hold up the
+The plugin keeps a queue and works it off on four threads for each server, so a slow upload doesn't hold up the
 next call.
 
 - **OpenMHz can't be reached, or has a server error.** The call is tried again after 10 seconds,
@@ -155,7 +164,7 @@ fails**): see
 
 ## Coming from Trunk Recorder
 
-**Import Trunk Recorder config…** brings your OpenMHz settings over:
+**Setup → Systems → Import…** brings your OpenMHz settings over:
 
 | Trunk Recorder | Here |
 |---|---|

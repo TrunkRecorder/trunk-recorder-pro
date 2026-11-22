@@ -1,4 +1,4 @@
-// Where you are, roughly, on a map: a small circle (5 km across) stays in the
+// Where you are, roughly, on a map: a small circle (10 km across) stays in the
 // middle while you move the map under it. Its centre is the location the
 // license lookup uses: it needs only your general area, which the circle shows.
 // The map (MapLibre, loaded only when this opens) is the systems directory's:
@@ -80,7 +80,7 @@ export function LocationMap(props: { base: string; at: [number, number] | null; 
     if (Math.abs(c.lat - props.at[0]) > 1e-3 || Math.abs(c.lng - props.at[1]) > 1e-3) m.easeTo({ center: [props.at[1], props.at[0]], zoom: Math.max(m.getZoom(), 9) });
   }, [props.at?.[0], props.at?.[1]]);
 
-  if (failed) return <p className="muted small">The map isn't available right now: use your location, or type a place or coordinates.</p>;
+  if (failed) return <p className="muted small">Map unavailable: use your location or find a place</p>;
   return (
     <div className="location-map" role="region" aria-label="Map: move it so the circle is around where you are">
       <div ref={el} className="location-map-canvas" />

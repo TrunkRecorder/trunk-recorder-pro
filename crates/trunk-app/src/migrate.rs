@@ -4,9 +4,10 @@
 //! kept as `audioArchive` and `compressWav` (before v0.2.4), a
 //! conventional channel's `tone` (before v0.2.6), each
 //! site a system of its own (before v0.1.15; see
-//! research/multi-site-systems.md), and talkgroups kept as files beside
+//! research/multi-site-systems.md), talkgroups kept as files beside
 //! the config and the `files` store (before the store, v0.2.12:
-//! [`talkgroup_files_into_store`], [`storage`]). Everything that reads an older config,
+//! [`files_into_store`], [`storage`]), and unit names kept in the config
+//! (`unitNames.csv`, before v0.3.1: [`unit_names`]). Everything that reads an older config,
 //! or the files kept under a former system's name, goes through here; the
 //! web's side is web/src/migrate.ts. To drop the upgrade, delete both (and
 //! their tests) and the few lines the compiler then points at.
@@ -38,13 +39,58 @@ pub fn config(v: &mut serde_json::Value) -> Vec<String> {
     notes.extend(storage(v));
     notes.extend(sites(v));
     notes.extend(talkgroups(v));
+    notes.extend(unit_names(v));
     notes
 }
 
+/// The systems (trunked, upgraded as [`sites`] says, and conventional) of an
+/// older config (`v`) that held a file's text where `text` finds it, by
+/// short name (an empty one left out).
+fn texts_of(v: &serde_json::Value, text: fn(&serde_json::Value) -> Option<&str>) -> std::collections::BTreeMap<String, String> {
+    let mut v = v.clone();
+    sites(&mut v);
+    let systems = ["systems", "conventional"].into_iter().flat_map(|l| v.get(l).and_then(serde_json::Value::as_array).cloned().unwrap_or_default());
+    systems
+        .filter_map(|s| Some((s.get("shortName")?.as_str()?.to_string(), text(&s)?.to_string())).filter(|(_, t)| !t.trim().is_empty()))
+        .collect()
+}
+
+/// Unit names were kept in the config (`unitNames.csv` and the file's
+/// `name`, before v0.3.1); they are the store's rows now
+/// ([`crate::config::SystemNames`]). Their copies leave the config here
+/// ([`move_files_out`] wrote them beside it first; [`files_into_store`]
+/// takes them in). Returns which moved, to tell.
+fn unit_names(v: &mut serde_json::Value) -> Vec<String> {
+    let moved: Vec<String> = unit_names_of(v).into_keys().collect();
+    for list in ["systems", "conventional"] {
+        for sys in v.get_mut(list).and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
+            if let Some(u) = sys.get_mut("unitNames").and_then(serde_json::Value::as_object_mut) {
+                u.remove("csv");
+                u.remove("name");
+            }
+        }
+    }
+    if moved.is_empty() {
+        return vec![];
+    }
+    vec![format!("Unit names are kept in the store now: moved {}'s out of the config.", moved.join("'s, "))]
+}
+
+/// The unit names files an older config (`v`) holds, by short name.
+pub fn unit_names_of(v: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
+    texts_of(v, |s| s.get("unitNames")?.get("csv")?.as_str())
+}
+
+/// Where [`move_files_out`] writes system `short_name`'s unit names from an
+/// older config, beside it (`dir`), for [`files_into_store`].
+pub fn unit_names_path(dir: &Path, short_name: &str) -> PathBuf {
+    dir.join(format!("{short_name}.unit-names.csv"))
+}
+
 /// Talkgroup files were kept in the config (`talkgroupsCsv`, before
-/// v0.1.16); they are files of their own now ([`TalkgroupLists`]). Their
-/// copies leave the config here; [`talkgroups_of`] gives them to the
-/// platform to keep (the desktop app: [`move_talkgroups`]). Returns which
+/// v0.1.16); they are the store's rows now ([`crate::config::SystemNames`]).
+/// Their copies leave the config here; [`talkgroups_of`] gives them to the
+/// platform to keep (the desktop app: [`move_files_out`]). Returns which
 /// moved, to tell.
 fn talkgroups(v: &mut serde_json::Value) -> Vec<String> {
     let moved: Vec<String> = talkgroups_of(v).into_keys().collect();
@@ -64,33 +110,39 @@ fn talkgroups(v: &mut serde_json::Value) -> Vec<String> {
 /// systems' short names once it is upgraded (systems it joins into one keep
 /// the first's file, as [`sites`] says).
 pub fn talkgroups_of(v: &serde_json::Value) -> std::collections::BTreeMap<String, String> {
-    let mut v = v.clone();
-    sites(&mut v);
-    let systems = v.get("systems").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
-    systems
-        .iter()
-        .filter_map(|s| {
-            let csv = s.get("talkgroupsCsv")?.as_str()?.to_string();
-            Some((s.get("shortName")?.as_str()?.to_string(), csv)).filter(|(_, csv)| !csv.trim().is_empty())
-        })
-        .collect()
+    texts_of(v, |s| s.get("talkgroupsCsv")?.as_str())
 }
 
-/// Before a config (at `path`) is read ([`Config::load`]): an older config's
-/// talkgroup files written beside it ([`crate::config::talkgroups_path`]) —
+/// Before a config (at `path`) is read ([`Config::load`]): the files an
+/// older config holds written beside it — its talkgroup files
+/// ([`crate::config::talkgroups_path`]) and unit names ([`unit_names_path`]),
 /// those not there already. Reading the config then leaves them out of it.
-pub fn move_talkgroups(path: &Path) -> std::io::Result<()> {
+pub fn move_files_out(path: &Path) -> std::io::Result<()> {
     let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Ok(()) };
     let dir = path.parent().unwrap_or(Path::new("."));
-    for (short, csv) in talkgroups_of(&v) {
-        let to = crate::config::talkgroups_path(dir, &short);
+    let files = talkgroups_of(&v).into_iter().map(|(s, csv)| (crate::config::talkgroups_path(dir, &s), csv)).chain(unit_names_of(&v).into_iter().map(|(s, csv)| (unit_names_path(dir, &s), csv)));
+    for (to, csv) in files {
         if !to.exists() {
             crate::config::write_atomic(&to, csv)?;
         }
     }
     Ok(())
 }
+
+/// A list of a system's names an older version kept as a file beside the
+/// config: what it is called, where it is, and how it is read.
+pub struct OldFiles<R> {
+    pub what: &'static str,
+    pub path: fn(&Path, &str) -> PathBuf,
+    pub read: fn(&str) -> Vec<R>,
+}
+
+/// Talkgroup files beside the config (before the store, v0.2.12).
+pub const TALKGROUP_FILES: OldFiles<trunk_core::trunk::TalkgroupRow> = OldFiles { what: "talkgroups", path: crate::config::talkgroups_path, read: trunk_core::trunk::parse_rows };
+
+/// Unit names an older config held, written beside it ([`move_files_out`]; before v0.3.1).
+pub const UNIT_NAME_FILES: OldFiles<trunk_core::trunk::UnitNameRow> = OldFiles { what: "unit names", path: unit_names_path, read: |t| trunk_core::trunk::read_unit_names(t).unit_names };
 
 /// Before the store (v0.2.12), `storage.backend` could be `files`: the
 /// store is a database always now, so that's the default (SQLite), and the
@@ -105,39 +157,43 @@ fn storage(v: &mut serde_json::Value) -> Vec<String> {
     vec!["storage.backend \"files\" is gone: what the recorder keeps is in its store (SQLite, beside the config) now.".into()]
 }
 
-/// Before the store (v0.2.12), a system's talkgroups were a file beside
-/// the config, `<short name>.talkgroups.csv` (and [`move_talkgroups`] still
-/// moves an older config's out to there first, so that saving the config
-/// without them loses nothing). Each such file of `cfg`'s systems is read
-/// into the store, here: handed to `keep` (Ok: the store has them now), then
-/// renamed `<short name>.talkgroups.csv.imported`. A system the store
-/// already has talkgroups for (`stored`) keeps them: its file is renamed
+/// Before the store, a system's talkgroups were a file beside the config,
+/// `<short name>.talkgroups.csv`; before v0.3.1 its unit names were in the
+/// config ([`move_files_out`] writes those, and an older config's talkgroup
+/// files, out beside it first, so that saving the config without them loses
+/// nothing). Each such file (`files` says which kind) of `cfg`'s systems is
+/// read into the store, here: handed to `keep` (Ok: the store has them now;
+/// the origin is the file's), then renamed `….csv.imported`. A system the
+/// store already has some for (`stored`) keeps them: its file is renamed
 /// `….unused`. A file that can't be kept is left, to try at the next start.
 /// Returns what was done, to tell.
 ///
 /// Temporary, as the rest of this module: to drop it, delete this, the
-/// call in trunk-pro's `main.rs` (marked) and the test.
-pub fn talkgroup_files_into_store(path: &Path, cfg: &Config, stored: &dyn Fn(&str) -> bool, keep: &mut dyn FnMut(&str, Vec<trunk_core::trunk::TalkgroupRow>) -> Result<(), String>) -> Vec<String> {
+/// call in trunk-pro's `main.rs` (marked) and the tests.
+pub fn files_into_store<R: trunk_core::trunk::NameRow>(path: &Path, cfg: &Config, files: &OldFiles<R>, stored: &dyn Fn(&str) -> bool, keep: &mut dyn FnMut(&str, Vec<R>) -> Result<(), String>) -> Vec<String> {
     let dir = path.parent().unwrap_or(Path::new("."));
     let names = cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name));
+    let what = files.what;
     let mut notes = Vec::new();
     for name in names {
-        let file = crate::config::talkgroups_path(dir, name);
+        let file = (files.path)(dir, name);
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
         let set_aside = |to: &str| std::fs::rename(&file, file.with_extension(format!("csv.{to}")));
         if stored(name) {
             let _ = set_aside("unused");
-            notes.push(format!("{}: {name} already has talkgroups in the store; the file is kept as {}.unused", file.display(), file.display()));
+            notes.push(format!("{}: {name} already has {what} in the store; the file is kept as {}.unused", file.display(), file.display()));
             continue;
         }
-        let rows = trunk_core::trunk::parse_rows(&text);
+        let at = std::fs::metadata(&file).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
+        let origin = trunk_core::trunk::Origin { kind: trunk_core::trunk::OriginKind::File, name: file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), at };
+        let rows = trunk_core::trunk::replace_rows(&[], (files.read)(&text), Some(&origin));
         let n = rows.len();
         match keep(name, rows) {
             Ok(()) => {
                 let _ = set_aside("imported");
-                notes.push(format!("{}: {n} talkgroups of {name} moved into the store (the file is kept as {}.imported)", file.display(), file.display()));
+                notes.push(format!("{}: {n} {what} of {name} moved into the store (the file is kept as {}.imported)", file.display(), file.display()));
             }
-            Err(e) => notes.push(format!("{}: {name}'s talkgroups couldn't be moved into the store ({e}); tried again at the next start", file.display())),
+            Err(e) => notes.push(format!("{}: {name}'s {what} couldn't be moved into the store ({e}); tried again at the next start", file.display())),
         }
     }
     notes
@@ -390,7 +446,7 @@ mod tests {
             std::fs::write(crate::config::talkgroups_path(&dir, n), csv).unwrap();
         }
         let mut kept: BTreeMap<String, usize> = BTreeMap::new();
-        let notes = talkgroup_files_into_store(&path, &cfg, &|n| n == "b", &mut |n, rows| {
+        let notes = files_into_store(&path, &cfg, &TALKGROUP_FILES, &|n| n == "b", &mut |n, rows| {
             if n == "c" {
                 return Err("refused".into());
             }
@@ -403,6 +459,33 @@ mod tests {
         assert!(exists("a.talkgroups.csv.imported") && !exists("a.talkgroups.csv"));
         assert!(exists("b.talkgroups.csv.unused"), "the store's own kept");
         assert!(exists("c.talkgroups.csv"), "left, to try again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An older config's unit names (trunked and conventional) move beside
+    /// it and leave the config; then into the store, each from its file.
+    #[test]
+    fn unit_names_move_out_of_the_config_into_the_store() {
+        let dir = std::env::temp_dir().join(format!("trp-unit-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{ "systems": [{ "shortName": "a", "sites": [{ "controlChannelsHz": [1] }], "unitNames": { "csv": "1234,Engine 12\n", "name": "a.csv", "mode": "ota" } }],
+            "conventional": [{ "shortName": "c", "unitNames": { "csv": "/^7(\\d{3})$/,Medic $1\n" } }] }"#).unwrap();
+        move_files_out(&path).unwrap();
+        let c = Config::load(&path).unwrap();
+        assert_eq!(c.systems[0].unit_names.mode, crate::config::UnitNamesMode::Ota, "the mode stays");
+        assert!(!serde_json::to_string(&c).unwrap().contains("Engine 12") && c.notes.iter().any(|n| n.contains("Unit names are kept in the store")), "{:?}", c.notes);
+        let mut kept: BTreeMap<String, Vec<trunk_core::trunk::UnitNameRow>> = BTreeMap::new();
+        let notes = files_into_store(&path, &c, &UNIT_NAME_FILES, &|_| false, &mut |n, rows| {
+            kept.insert(n.to_string(), rows);
+            Ok(())
+        });
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert_eq!(kept["a"][0].name, "Engine 12");
+        assert_eq!(kept["c"][0].unit, "/^7(\\d{3})$/");
+        assert_eq!(kept["a"][0].origin.as_ref().map(|o| (o.kind, o.name.as_str())), Some((trunk_core::trunk::OriginKind::File, "a.unit-names.csv")));
+        assert!(dir.join("a.unit-names.csv.imported").exists() && !dir.join("a.unit-names.csv").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -432,7 +515,7 @@ mod tests {
             { "shortName": "c", "sites": [{ "controlChannelsHz": [3] }], "talkgroupsCsv": "3,c" },
             { "shortName": "d", "sites": [{ "controlChannelsHz": [4] }], "talkgroupsCsv": "" } ] }"#).unwrap();
         std::fs::write(crate::config::talkgroups_path(&dir, "c"), "kept").unwrap();
-        move_talkgroups(&path).unwrap();
+        move_files_out(&path).unwrap();
         let read = |n: &str| std::fs::read_to_string(crate::config::talkgroups_path(&dir, n)).ok();
         assert_eq!((read("a"), read("b"), read("c"), read("d")), (Some("1,a".into()), None, Some("kept".into()), None));
         let c = Config::from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();

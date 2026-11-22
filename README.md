@@ -9,7 +9,7 @@ It is a rewrite of [Trunk Recorder](https://github.com/TrunkRecorder/trunk-recor
 no GNU Radio or OP25 dependency. It is a single program of a few megabytes, with a browser
 interface built in, and runs on macOS, Linux (including the Raspberry Pi), Windows and Docker.
 The same engine also runs in the browser with nothing to install. On a Raspberry Pi 5 it uses
-4–6× less CPU than Trunk Recorder on the same system ([Performance](docs/performance.md)).
+4–6× less CPU than Trunk Recorder on the same system ([Performance](docs/developer/performance.md)).
 
 **It records:**
 
@@ -22,11 +22,11 @@ The same engine also runs in the browser with nothing to install. On a Raspberry
 - **EDACS**: Standard and Networked sites, analog and ProVoice voice. Analog calls tested live on
   a three-site networked system; ProVoice on synthesized signals.
 - **Conventional channels**: analog FM and AM (airband), P25, DMR and NXDN, split by CTCSS / DCS tone, NAC, colour
-  code or RAN
+  code or RAN; or `auto`, whichever of them turns up
 - Several systems and several sites at once; a call heard on more than one site is saved once,
   from the best copy
 
-**With:** RTL-SDR dongles and HackRF Ones (nothing else to install), Ettus USRPs, Airspy R2 / Mini, and anything
+**With:** RTL-SDR dongles and HackRF Ones (nothing else to install), Ettus USRPs, Airspy R2 / Mini, HydraSDR RFOne, and anything
 with a SoapySDR module (SDRplay, LimeSDR…).
 
 ## Install
@@ -43,7 +43,7 @@ Download the package for your system from the
 | Docker (Linux hosts) | [`robotastic/trunk-recorder-pro`](https://hub.docker.com/r/robotastic/trunk-recorder-pro) | [Run in Docker](docs/install/docker.md) |
 | Chrome or Edge | `trunk-pro-<version>-browser.zip`, or [trunkrecorder.pro/app](https://trunkrecorder.pro/app/) | [Run in the browser](docs/install/browser.md) |
 
-USRP, Airspy, bladeRF and SoapySDR radios need their makers' drivers: see
+USRP, Airspy, HydraSDR, bladeRF and SoapySDR radios need their makers' drivers: see
 [Other radios](docs/install/other-radios.md).
 
 ## Quick start
@@ -73,26 +73,12 @@ research a system on RadioReference and set gain and frequency correction.
 | **Plugins** | [Using plugins](docs/plugins/README.md) · [OpenMHz](docs/plugins/openmhz.md) · [Broadcastify](docs/plugins/broadcastify.md) · [Rdio Scanner](docs/plugins/rdioscanner.md) · [simplestream](docs/plugins/simplestream.md) · [Upload script](docs/plugins/upload-script.md) |
 | **Reference** | [Configuration](docs/configuration/README.md) · [Command line](docs/command-line.md) |
 | **Coming from Trunk Recorder** | [Importing your config, and what's different](docs/migrating-from-trunk-recorder.md) |
-| **Developers** | [Development](docs/development.md) (building, releasing, code layout) · [Architecture](docs/architecture.md) · [Interface API](docs/api/README.md) · [Writing a plugin](docs/plugins/writing-plugins.md) · [Performance](docs/performance.md) |
+| **Developers** | [Development](docs/developer/README.md) (building, releasing, code layout) · [Architecture](docs/developer/architecture.md) · [Testing](docs/developer/testing.md) · [Interface API](docs/api/README.md) · [Writing a plugin](docs/plugins/writing-plugins.md) · [Performance](docs/developer/performance.md) |
 
 ## Building from source
 
-Rust 1.99+, Node 20+, the WebAssembly target and `wasm-bindgen-cli` at the version in
-`Cargo.lock` (0.2.129). The interface runs the recorder's own config rules as WebAssembly, so that
-is built first: `npm run wasm` makes `web/src/web/pkg`, which isn't in the repository.
-
-```bash
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.129 --locked
-(cd web && npm ci && npm run wasm)      # the WebAssembly rules -> web/src/web/pkg
-(cd web && npm run build)               # the interface -> web/dist, embedded in the binary
-cargo build --release                   # target/release/trunk-pro
-```
-
-Build the interface before the binary, which embeds it when compiled. Without `npm run wasm` the
-interface build stops at `Could not resolve "./web/pkg/trunk_web.js"`.
-[Building from source](docs/install/README.md#building-from-source) has more detail;
-[Development](docs/development.md) covers the browser build, packaging and making a release.
+Rust 1.99+, Node 22+, the WebAssembly target and `wasm-bindgen-cli`; the interface is built
+before the binary. [Building](docs/developer/README.md#building) has the steps.
 
 ## Help
 

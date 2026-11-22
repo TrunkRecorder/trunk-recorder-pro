@@ -26,9 +26,9 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::runtime::{publish, Hub};
+use crate::toolkit::sha256_hex;
 
 /// What an archive may unpack to, in all.
 const MAX_UNPACKED: u64 = 1 << 30;
@@ -275,10 +275,6 @@ pub fn download(url: &str, sha256: &str, limit: u64, what: &str) -> Result<Vec<u
     Ok(data)
 }
 
-pub fn sha256_hex(b: &[u8]) -> String {
-    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
-}
-
 /// Is version `a` newer than `b`? Semver: a prerelease is older than its release.
 pub fn newer(a: &str, b: &str) -> bool {
     /// (major, minor, patch) and the prerelease.
@@ -348,18 +344,7 @@ impl Release {
     pub fn of(repository: &str, tag: Option<&str>, made_with: &str) -> Result<Release, String> {
         let (owner, repo, url_tag) = parse_github(repository)?;
         let tag = tag.map(str::trim).filter(|t| !t.is_empty()).map(String::from).or(url_tag);
-        let api = match &tag {
-            Some(t) => format!("https://api.github.com/repos/{owner}/{repo}/releases/tags/{t}"),
-            None => format!("https://api.github.com/repos/{owner}/{repo}/releases/latest"),
-        };
-        let rel: Value = serde_json::from_slice(&get(&api, 4 << 20, Duration::from_secs(20)).map_err(|e| {
-            if e.contains("404") {
-                format!("{owner}/{repo} has no {} release", tag.as_deref().unwrap_or("published"))
-            } else {
-                e
-            }
-        })?)
-        .map_err(|e| format!("GitHub's answer isn't readable ({e})"))?;
+        let rel = release_json(&owner, &repo, tag.as_deref())?;
         let tag = rel["tag_name"].as_str().unwrap_or_default().to_string();
         let files: BTreeMap<String, String> = rel["assets"]
             .as_array()
@@ -389,6 +374,26 @@ impl Release {
             return Err(format!("{name} doesn't match the release's SHA256SUMS"));
         }
         Ok(data)
+    }
+}
+
+/// GitHub's description of release `tag` (or the latest) of `owner/repo`.
+fn release_json(owner: &str, repo: &str, tag: Option<&str>) -> Result<Value, String> {
+    let api = match tag {
+        Some(t) => format!("https://api.github.com/repos/{owner}/{repo}/releases/tags/{t}"),
+        None => format!("https://api.github.com/repos/{owner}/{repo}/releases/latest"),
+    };
+    let body = get(&api, 4 << 20, Duration::from_secs(20)).map_err(|e| if e.contains("404") { format!("{owner}/{repo} has no {} release", tag.unwrap_or("published")) } else { e })?;
+    serde_json::from_slice(&body).map_err(|e| format!("GitHub's answer isn't readable ({e})"))
+}
+
+/// The latest release of `repository`: its tag and its page.
+pub fn latest_release(repository: &str) -> Result<(String, String), String> {
+    let (owner, repo, _) = parse_github(repository)?;
+    let rel = release_json(&owner, &repo, None)?;
+    match (rel["tag_name"].as_str(), rel["html_url"].as_str()) {
+        (Some(tag), Some(url)) => Ok((tag.to_string(), url.to_string())),
+        _ => Err(format!("{owner}/{repo}'s latest release has no tag")),
     }
 }
 

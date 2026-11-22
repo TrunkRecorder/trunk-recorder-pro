@@ -1,5 +1,6 @@
 //! Scripted transport shared by protocol, lifecycle, and receive tests.
 use crate::{
+    TunerKind,
     errors::Result,
     protocol::{InRequest, OutRequest},
     usb::{BulkInBackend, BulkInCompletion, ControlBackend, Transport},
@@ -38,6 +39,86 @@ pub(crate) struct FakeState {
     pub(crate) bulk_in_count: AtomicUsize,
     pub(crate) cancel_count: AtomicUsize,
     pub(crate) events: Mutex<Vec<FakeEvent>>,
+    /// The tuner at `tuner_address` (none if no tuner kind lives there):
+    /// its registers as written, and the register its next read starts at.
+    pub(crate) tuner_registers: Mutex<std::collections::HashMap<u8, u8>>,
+    pub(crate) tuner_pointer: AtomicU8,
+    /// I2C writes to an address with no tuner fail as WebUSB on Windows
+    /// reports a NAK: "disconnected".
+    pub(crate) disconnect_absent_i2c: AtomicBool,
+}
+impl FakeState {
+    /// The kind of tuner answering at `tuner_address`, if any.
+    fn tuner(&self) -> Option<TunerKind> {
+        let address = self.tuner_address.load(Ordering::SeqCst);
+        [TunerKind::R820T, TunerKind::R828D, TunerKind::E4000].into_iter().find(|k| k.address() == address)
+    }
+    /// An I2C write to the tuner: its register pointer set, or a register written.
+    fn tuner_write(&self, request: &OutRequest) {
+        if request.index != 0x610 || self.tuner().is_none_or(|k| u16::from(k.address()) != request.value) {
+            return;
+        }
+        match request.data[..] {
+            [reg] => self.tuner_pointer.store(reg, Ordering::SeqCst),
+            [reg, value] => {
+                self.tuner_registers.lock().unwrap().insert(reg, value);
+            }
+            _ => {}
+        }
+    }
+    /// `length` bytes from the tuner at `address` (zeros where none answers):
+    /// its registers as written from the pointer on, but for what the chip
+    /// itself sets — the ID register, the PLL's lock (`pll_locked`), an R82xx's
+    /// VCO fine-tune bits — and an R82xx's bits reversed on the wire.
+    fn tuner_read(&self, address: u16, length: u16) -> Vec<u8> {
+        let Some(kind) = self.tuner().filter(|k| u16::from(k.address()) == address) else {
+            return vec![0; usize::from(length)];
+        };
+        let locked = self.pll_locked.load(Ordering::SeqCst);
+        let pointer = self.tuner_pointer.load(Ordering::SeqCst);
+        let registers = self.tuner_registers.lock().unwrap();
+        (0..length)
+            .map(|i| {
+                let reg = pointer.wrapping_add(i as u8);
+                let value = registers.get(&reg).copied().unwrap_or(0);
+                match kind {
+                    TunerKind::E4000 => match reg {
+                        0x02 => 0x40,
+                        0x07 => (value & !1) | u8::from(locked),
+                        _ => value,
+                    },
+                    _ => match reg {
+                        0 => 0x96,
+                        2 => if locked { 0x40 } else { 0 },
+                        4 => if kind == TunerKind::R820T { 0x20 } else { 0x10 },
+                        _ => value,
+                    }
+                    .reverse_bits(),
+                }
+            })
+            .collect()
+    }
+    /// A control write's outcome (the same awaited or waited for), and its
+    /// effect on the registers the fake keeps.
+    fn complete_out(&self, request: &OutRequest, call: usize) -> Result<()> {
+        if self.disconnect_absent_i2c.load(Ordering::SeqCst) && request.index == 0x610 && request.value != u16::from(self.tuner_address.load(Ordering::SeqCst)) {
+            return Err(nusb::transfer::TransferError::Disconnected.into());
+        }
+        let stall_at = self.stall_control_out_at.load(Ordering::SeqCst);
+        if self.fail_control_out.load(Ordering::SeqCst) || self.fail_control_out_at.load(Ordering::SeqCst) == call {
+            return Err(nusb::transfer::TransferError::Fault.into());
+        }
+        if stall_at != 0 && call >= stall_at && self.stall_control_out_times.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+            return Err(nusb::transfer::TransferError::Stall.into());
+        }
+        self.tuner_write(request);
+        if (request.index == 0x210 || request.index == 0x110)
+            && let Some(value) = request.data.first()
+        {
+            self.sys_registers.lock().unwrap().insert(request.value, *value);
+        }
+        Ok(())
+    }
 }
 impl Default for FakeState {
     fn default() -> Self {
@@ -62,6 +143,9 @@ impl Default for FakeState {
             bulk_in_count: Default::default(),
             cancel_count: Default::default(),
             events: Default::default(),
+            tuner_registers: Default::default(),
+            tuner_pointer: Default::default(),
+            disconnect_absent_i2c: Default::default(),
         }
     }
 }
@@ -128,32 +212,7 @@ impl std::future::IntoFuture for FakeTransportOut {
                 }
             })
             .await;
-            let stall_at = self.state.stall_control_out_at.load(Ordering::SeqCst);
-            if self.state.fail_control_out.load(Ordering::SeqCst)
-                || self.state.fail_control_out_at.load(Ordering::SeqCst) == call
-            {
-                Err(nusb::transfer::TransferError::Fault.into())
-            } else if stall_at != 0
-                && call >= stall_at
-                && self
-                    .state
-                    .stall_control_out_times
-                    .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-                    .is_ok()
-            {
-                Err(nusb::transfer::TransferError::Stall.into())
-            } else {
-                if (self.request.index == 0x210 || self.request.index == 0x110)
-                    && let Some(value) = self.request.data.first()
-                {
-                    self.state
-                        .sys_registers
-                        .lock()
-                        .unwrap()
-                        .insert(self.request.value, *value);
-                }
-                Ok(())
-            }
+            self.state.complete_out(&self.request, call)
         })
     }
 }
@@ -172,13 +231,7 @@ impl MaybeFuture for FakeTransportOut {
             .expect("control request lock")
             .push(self.request.clone());
         let call = self.state.control_out_count.fetch_add(1, Ordering::SeqCst) + 1;
-        if self.state.fail_control_out.load(Ordering::SeqCst)
-            || self.state.fail_control_out_at.load(Ordering::SeqCst) == call
-        {
-            Err(nusb::transfer::TransferError::Fault.into())
-        } else {
-            Ok(())
-        }
+        self.state.complete_out(&self.request, call)
     }
 }
 
@@ -323,23 +376,7 @@ impl FakeTransportIn {
             return response;
         }
         if self.request.index == 0x600 {
-            if self.request.value != u16::from(self.state.tuner_address.load(Ordering::SeqCst)) {
-                return Ok(vec![0; usize::from(self.request.length)]);
-            }
-            let mut data = vec![0; usize::from(self.request.length)];
-            data[0] = 0x69;
-            if data.len() >= 3 && self.state.pll_locked.load(Ordering::SeqCst) {
-                data[2] = 0x40u8.reverse_bits();
-            }
-            if data.len() >= 5 {
-                data[4] = (if self.request.value == 0x34 {
-                    0x20u8
-                } else {
-                    0x10u8
-                })
-                .reverse_bits();
-            }
-            return Ok(data);
+            return Ok(self.state.tuner_read(self.request.value, self.request.length));
         }
         if self.request.index == 0x200 || self.request.index == 0x100 {
             return Ok(vec![

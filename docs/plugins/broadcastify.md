@@ -64,7 +64,6 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
 | `talkgroupMode` | | `"all"` | `"all"`, `"only"` or `"allBut"` | **Talkgroups.** Every talkgroup, only some, or all but some. See [Choosing talkgroups](../configuration/plugins.md#choosing-talkgroups). |
 | `talkgroupAllow` | | (none) | list | **Only these.** With `"only"`: upload these and no others. |
 | `talkgroupDeny` | | (none) | list | **Except these.** With `"only"` or `"allBut"`: never upload these. |
-| `sites` | | (none) | list | **Sites of their own.** A site of the system that Broadcastify Calls knows as a system of its own: `site` (its name, as under Sites in Setup), `systemId`, and `apiKey` if not the system's. Its calls go there; the other sites' to the system's. (Plugin 0.1.5 and later.) |
 
 ```json
 {
@@ -81,6 +80,18 @@ For each system (the system's card, or its `plugins.broadcastify` in `config.jso
 
 The plugin won't start if no system has an API key, or if a system has a key but no system ID
 (*Add dcfd's Broadcastify system ID (or clear its API key).*).
+
+A site that Broadcastify Calls knows as a system of its own gets its own **API key** and **System
+ID** in its row under **Plugins** > **Broadcastify Calls** on the system's card (`perSite`, by the
+site's id: `"perSite": { "8": { "apiKey": "…", "systemId": 77 } }`); a site needs both (*Add the
+Broadcastify system ID and API key of dcfd's site south.*). A call goes to every site that heard it
+and has a system of its own there; one only sites without a system of their own heard goes to the
+system's. A site turned off for the plugin (**Sites** chips) is left out. See
+[Settings for each site](../configuration/plugins.md#settings-for-each-site).
+
+A system can also set **Upload server**, **Send talker aliases** and **Skip certificate checks**
+again, in **Broadcastify Calls shared settings** on its card (`override` in its
+`plugins.broadcastify` entry). Each server has its own queue and Health status.
 
 Nor will it start with a talkgroup list entry that isn't a talkgroup, a range or a pattern
 (*dcfd's talkgroups: "10O1" isn't a talkgroup…*). Ranges (`1000-1099`) and the menu are plugin 0.1.7
@@ -120,7 +131,7 @@ fails**): see
 
 ## Coming from Trunk Recorder
 
-**Import Trunk Recorder config…** brings over:
+**Setup → Systems → Import…** brings over:
 
 | Trunk Recorder | Here |
 |---|---|

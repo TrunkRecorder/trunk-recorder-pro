@@ -2,14 +2,14 @@
 //! create_call_json) so existing tooling reads it, and TR's file base name.
 
 
-pub use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SrcEntry, ToneEntry, TonePattern};
+pub use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SiteRef, SrcEntry, ToneEntry, TonePattern};
 
 use super::calls::{Call, Voice};
 use crate::dsp::inband::signal::{matching, Signal};
 use crate::dsp::inband::{self, ToneSeg};
 use crate::dsp::inband::subaudible::Tone;
 use super::frames::FrameErrors;
-use super::frames::{frames_jsonl, VoiceFrame};
+use super::frames::VoiceFrame;
 use super::multisite::Held;
 use super::recorded::Recorded;
 use super::sdr::{call_sdr, SdrInfo, SdrMode};
@@ -20,8 +20,13 @@ pub struct ConcludeInfo<'a> {
     pub short_name: &'a str,
     /// Its system's kind ([`super::Protocol::kind`], or "conventional").
     pub system_type: &'a str,
-    /// Its site's name (empty: a conventional system's call, which has none).
+    /// Its system's id ([`CallRecord::system_id`]).
+    pub system_id: super::SystemId,
+    /// Its site's name and id (empty, 0: a conventional system's call, which has none).
     pub site: &'a str,
+    pub site_id: super::SiteId,
+    /// Every site it was recorded on, `site` first ([`CallRecord::sites`]).
+    pub sites: &'a [(super::SiteId, String)],
     /// Wall-clock epoch ms at sample-clock time 0.
     pub epoch_ms_at_zero: f64,
     pub audio_seconds: f64,
@@ -31,9 +36,8 @@ pub struct ConcludeInfo<'a> {
     pub patterns: &'a [inband::pattern::Pattern],
     /// The system's signals, which name its tones' patterns.
     pub signals: &'a [Signal],
-    /// Written as `recorder_num`: the recorder pool slot of a trunked call;
-    /// for a conventional call, the index of the channel (frequency) it came on.
-    pub recorder_num: u32,
+    /// Where it was recorded: written as `recorder_num` and `source_num`.
+    pub on: RecordedOn,
     pub end_s: f64,
     /// The system's talker aliases (each source's `tag_ota`).
     pub units: Option<&'a UnitAliases>,
@@ -45,6 +49,9 @@ pub struct ConcludeInfo<'a> {
     pub reception: Reception,
     /// When the first of its copies began (multi-site; None: its own start).
     pub first_s: Option<f64>,
+    /// What its call is known by: its conversation's id, the first copy's
+    /// (multi-site; None: its own). Its `call_num`.
+    pub call_num: Option<super::CallId>,
 }
 
 /// How strong a call came in: its channel's power while it carried the call,
@@ -102,13 +109,18 @@ impl TxFlags {
     }
 }
 
-/// Where in a call's audio each transmission starts (sample index), and
-/// which were encrypted, and of those which decrypted.
+/// One transmission of a call: where in its audio it starts (sample
+/// index), and whether it was encrypted, and if so decrypted.
+#[derive(Clone, Copy, Debug)]
+struct Tx {
+    start: usize,
+    flags: TxFlags,
+}
+
+/// A call's transmissions ([`Tx`]), in order.
 #[derive(Clone, Debug, Default)]
 pub struct Transmissions {
-    pub starts: Vec<usize>,
-    /// Per start.
-    flags: Vec<TxFlags>,
+    txs: Vec<Tx>,
     /// Announced before the next transmission's audio came.
     next: TxFlags,
     last_s: Option<f64>,
@@ -119,9 +131,8 @@ pub struct Transmissions {
 impl Transmissions {
     /// Audio is about to be appended at `at` (the call's sample count), at time `t_s`.
     pub fn note(&mut self, at: usize, t_s: f64) {
-        if self.last_s.is_none_or(|l| t_s - l > TRANSMISSION_GAP_S) && self.starts.last() != Some(&at) {
-            self.starts.push(at);
-            self.flags.push(std::mem::take(&mut self.next));
+        if self.last_s.is_none_or(|l| t_s - l > TRANSMISSION_GAP_S) && self.txs.last().is_none_or(|x| x.start != at) {
+            self.txs.push(Tx { start: at, flags: std::mem::take(&mut self.next) });
         }
         self.last_s = Some(t_s);
         if self.marks.last().is_none_or(|&(_, a)| a != at) {
@@ -142,8 +153,8 @@ impl Transmissions {
 
     /// The flags of the transmission going on at `t_s`, or (none is) the next one's.
     fn at(&mut self, t_s: f64) -> &mut TxFlags {
-        match self.flags.last_mut() {
-            Some(f) if self.last_s.is_some_and(|l| t_s - l <= TRANSMISSION_GAP_S) => f,
+        match self.txs.last_mut() {
+            Some(x) if self.last_s.is_some_and(|l| t_s - l <= TRANSMISSION_GAP_S) => &mut x.flags,
             _ => &mut self.next,
         }
     }
@@ -162,7 +173,7 @@ impl Transmissions {
 
     /// The transmission going on now is left out: encrypted, not decrypted.
     pub fn current_dropped(&self) -> bool {
-        self.flags.last().copied().unwrap_or(self.next).dropped()
+        self.txs.last().map_or(self.next, |x| x.flags).dropped()
     }
 
     /// The parts of a call's `len` samples of audio to keep: every
@@ -171,16 +182,17 @@ impl Transmissions {
     /// that weren't decrypted (what a vocoder makes of them before the
     /// cipher is known is noise). None: all of it.
     pub fn kept(&self, len: usize, min_s: f64, rate: u32) -> Option<Vec<std::ops::Range<usize>>> {
-        if (min_s <= 0.0 && !self.flags.iter().any(|f| f.dropped())) || self.starts.is_empty() {
+        if (min_s <= 0.0 && !self.txs.iter().any(|x| x.flags.dropped())) || self.txs.is_empty() {
             return None;
         }
         let min = (min_s.max(0.0) * rate as f64) as usize;
-        // (Audio before the first mark is the first transmission's too.)
-        let mut bounds: Vec<usize> = self.starts.iter().copied().filter(|&s| s > 0 && s < len).collect();
-        bounds.insert(0, 0);
-        bounds.push(len);
-        let dropped = |at: usize| self.starts.iter().position(|&s| s == at).is_some_and(|i| self.flags[i].dropped());
-        Some(bounds.windows(2).filter(|w| w[1] - w[0] >= min && !dropped(w[0])).map(|w| w[0]..w[1]).collect())
+        // Each transmission runs to the next one's start (audio before the first, if any, is kept as it is).
+        let mut txs: Vec<Tx> = self.txs.iter().copied().filter(|x| x.start < len).collect();
+        if txs.first().is_none_or(|x| x.start > 0) {
+            txs.insert(0, Tx { start: 0, flags: TxFlags::default() });
+        }
+        let ends = txs.iter().skip(1).map(|x| x.start).chain([len]);
+        Some(txs.iter().zip(ends).filter(|(x, end)| end - x.start >= min && !x.flags.dropped()).map(|(x, end)| x.start..end).collect())
     }
 }
 
@@ -194,7 +206,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
     let secs = info.audio_seconds;
     let talker = call.sources.iter().map(|s| s.src).find(|&s| s != 0).unwrap_or(0);
     let record = CallRecord {
-        call_num: call.id as u64,
+        call_num: info.call_num.unwrap_or(call.id) as u64,
         transmission_id: format!("{}-{}-{talker}-{}", info.short_name, call.talkgroup, ms(info.first_s.unwrap_or(call.start_s))),
         freq: call.freq_hz,
         freq_error: info.freq_error_hz as i64,
@@ -202,8 +214,8 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         noise: info.reception.noise_db(),
         snr: info.reception.snr_db(),
         clean_voice_pct: info.errors.clean_share().map(|c| c * 100.0),
-        source_num: 0,
-        recorder_num: info.recorder_num as i64,
+        source_num: info.on.source as i64,
+        recorder_num: info.on.recorder as i64,
         tdma_slot: call.voice.slot().unwrap_or(0) as i64,
         phase2_tdma: call.voice.tdma(),
         start_time: start_ms.div_euclid(1000),
@@ -245,9 +257,12 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
         system_type: info.system_type.to_string(),
         voice_mode: call.voice.mode_name().to_string(),
         short_name: info.short_name.to_string(),
+        system_id: info.system_id.0,
         site: info.site.to_string(),
+        site_id: info.site_id.0,
+        sites: info.sites.iter().map(|(id, name)| SiteRef { id: id.0, name: name.clone() }).collect(),
         // Only when patched with another, as Trunk Recorder writes it.
-        patched_talkgroups: if call.patched_talkgroups.len() > 1 { call.patched_talkgroups.clone() } else { Vec::new() },
+        patched_talkgroups: if super::patches::patched(call.patched_talkgroups.len()) { call.patched_talkgroups.clone() } else { Vec::new() },
         freq_list: vec![FreqEntry {
             freq: call.freq_hz,
             time: start_ms.div_euclid(1000),
@@ -273,7 +288,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
                 duplex: s.flags.duplex,
                 mode: s.flags.packet,
                 priority: s.flags.priority as i64,
-                signal_system: String::new(),
+                signal_system: s.signal.map_or("", |k| k.name()).into(),
                 tag: UnitTags::name(info.unit_tags, info.units, s.src).unwrap_or_default(),
                 tag_ota: info.units.and_then(|u| u.get(s.src)).unwrap_or("").to_string(),
                 lat: s.position.map(|p| p.0),
@@ -363,7 +378,7 @@ mod tests {
     fn tones_are_written_with_their_sender() {
         use super::super::calls::CallSource;
         use crate::dsp::inband::{Origin, ToneKind};
-        let src = |src, audio_pos| CallSource { src, time_s: 0.0, audio_pos, flags: Default::default(), position: None };
+        let src = |src, audio_pos| CallSource { src, time_s: 0.0, audio_pos, ..Default::default() };
         let sources = [src(7, Some(0)), src(9, Some(16000)), src(11, None)];
         let t = ToneSeg { kind: ToneKind::Dtmf('#'), start: 20000, len: 800, level: Some(127), origin: Origin::Frame };
         let e = tone_entry(&t, &sources);
@@ -394,7 +409,7 @@ mod tests {
                 t += 0.18;
             }
         }
-        assert_eq!(tx.starts, [0, 8000, 9600]);
+        assert_eq!(tx.txs.iter().map(|x| x.start).collect::<Vec<_>>(), [0, 8000, 9600]);
         assert_eq!(tx.kept(audio.len(), 0.5, 8000), Some(vec![0..8000, 9600..25600]));
         assert_eq!(tx.kept(audio.len(), 0.0, 8000), None);
         // The last one turns out encrypted: only it goes.
@@ -428,23 +443,28 @@ mod tests {
         let info = ConcludeInfo {
             short_name: "s",
             system_type: "p25",
+            system_id: Default::default(),
             site: "",
+            site_id: Default::default(),
+            sites: &[],
             epoch_ms_at_zero: 0.0,
             audio_seconds: 1.0,
             errors: &errors,
             tones: &[],
             patterns: &[],
             signals: &[],
-            recorder_num: 0,
+            on: RecordedOn { recorder: 0, source: 2 },
             end_s: 1.0,
             units: None,
             unit_tags: None,
             freq_error_hz: 0,
             reception: Reception::default(),
             first_s: None,
+            call_num: None,
         };
         let json = call_record(&call, &info).0.to_json();
         assert!(json.contains("\"src\":7,") && json.matches("\"lat\"").count() == 1, "{json}");
+        assert!(json.contains("\"source_num\":2,"), "the radio it was heard on: {json}");
         // What it was and what the air carried: its system's kind, its voice, its NAC (P25 only).
         call.nac = Some(0x293);
         let r = call_record(&call, &info).0;
@@ -462,6 +482,16 @@ mod tests {
         assert!(json.contains("\"src\":7,\"time\":0,\"pos\":0,\"emergency\":0,\"encrypted\":0,\"duplex\":0,\"mode\":0,\"priority\":0,"), "{json}");
         assert!(json.contains("\"src\":8,\"time\":0,\"pos\":0,\"emergency\":1,\"encrypted\":0,\"duplex\":0,\"mode\":0,\"priority\":7,"), "{json}");
         assert!(json.contains("\"tag_ota\":\"\",\"lat\":30.052900,\"lon\":-83.175650}]"), "{json}");
+        // An analog radio's ID: the signalling it came in, by Trunk Recorder's decoders' names.
+        use crate::dsp::inband::units::{Kind, UnitId};
+        let mut tx = Transmissions::default();
+        let mdc = UnitId { kind: Kind::Mdc1200, unit: 0x1c13, emergency: false };
+        assert!(CallManager::note_units(&mut call, &mut tx, &[mdc], 1.0));
+        assert!(!CallManager::note_units(&mut call, &mut tx, &[mdc], 1.1), "the same again");
+        CallManager::note_units(&mut call, &mut tx, &[UnitId { kind: Kind::FleetSync, unit: 1_011_270, emergency: false }], 2.0);
+        let r = call_record(&call, &info).0;
+        let signals: Vec<_> = r.src_list.iter().map(|s| (s.src, s.signal_system.as_str())).collect();
+        assert_eq!(signals, [(7, ""), (8, ""), (7187, "MDC1200"), (1_011_270, "FLEETSYNC")]);
     }
 }
 
@@ -471,9 +501,6 @@ mod tests {
 pub struct SaveRules {
     /// Keep calls with no decoded audio (encrypted, lost).
     pub keep_silent: bool,
-    /// Keep encrypted calls (Trunk Recorder's recordEncrypted): with no
-    /// audio, for what they say — who, when — even when silent calls aren't kept.
-    pub keep_encrypted: bool,
     /// Drop calls with less audio than this, s (Trunk Recorder's minDuration).
     pub min_call_s: f64,
     /// Leave out transmissions shorter than this, s (minTransmissionDuration).
@@ -488,7 +515,7 @@ pub struct SaveRules {
 
 impl Default for SaveRules {
     fn default() -> Self {
-        SaveRules { keep_silent: false, keep_encrypted: false, min_call_s: 0.0, min_transmission_s: 0.0, normalize: true, digital_gain_db: 0.0, analog_gain_db: 0.0 }
+        SaveRules { keep_silent: false, min_call_s: 0.0, min_transmission_s: 0.0, normalize: true, digital_gain_db: 0.0, analog_gain_db: 0.0 }
     }
 }
 
@@ -511,7 +538,7 @@ pub struct Concluded {
 }
 
 /// A call's frame capture: an `.sdr` file ([`super::sdr`]), or JSON lines
-/// ([`super::frames::frames_jsonl`]) for NXDN, which `.sdr` has no layout for.
+/// ([`VoiceFrame::to_jsonl`]) for NXDN, which `.sdr` has no layout for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Capture {
     /// The file's extension: `sdr` or `frames.jsonl`.
@@ -522,11 +549,19 @@ pub struct Capture {
 /// What saving a call needs from its system.
 pub struct SaveContext<'a> {
     pub rules: SaveRules,
+    /// An encrypted call is kept though silent: its system records them
+    /// ([`super::CallConfig::record_encrypted`], the one setting for both).
+    pub keep_encrypted: bool,
     pub short_name: &'a str,
     /// Its system's kind ([`super::Protocol::kind`], or "conventional").
     pub system_type: &'a str,
-    /// The site's name (empty: conventional).
+    /// Its system's id.
+    pub system_id: super::SystemId,
+    /// The site's name and id (empty, 0: conventional).
     pub site: &'a str,
+    pub site_id: super::SiteId,
+    /// Every site it was recorded on, `site` first ([`ConcludeInfo::sites`]).
+    pub sites: &'a [(super::SiteId, String)],
     /// Wall clock (Unix ms) at the engine's time 0.
     pub epoch_ms_at_zero: f64,
     /// Its radios' talker aliases, and its unit names file.
@@ -540,6 +575,8 @@ pub struct SaveContext<'a> {
     pub signals: &'a [Signal],
     /// When the first of its copies began (multi-site; None: its own start).
     pub first_s: Option<f64>,
+    /// Its call's id, as the world knows it ([`ConcludeInfo::call_num`]).
+    pub call_num: Option<super::CallId>,
 }
 
 /// The frames as an `.sdr` file when the call's mode has a layout there, else JSON lines.
@@ -550,7 +587,7 @@ fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: 
         Voice::P25Tdma { .. } => Some(SdrMode::P25Tdma),
         Voice::P25 | Voice::Fm | Voice::Am => Some(SdrMode::P25Fdma),
     };
-    let (first, last) = (call.sources.first().map_or(0, |s| s.src), call.sources.last().map_or(0, |s| s.src));
+    let (first, last) = (call.sources.first().map_or(0, |s| s.src), call.talker().map_or(0, |s| s.src));
     let info = SdrInfo {
         start_us: ((cx.epoch_ms_at_zero + call.start_s * 1000.0) * 1000.0).round().max(0.0) as u64,
         duration_ms: (audio_len as f64 * 1000.0 / mbe::SAMPLE_RATE as f64).round() as u32,
@@ -577,25 +614,49 @@ fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: 
     };
     match mode.and_then(|m| call_sdr(m, frames, &info)) {
         Some(bytes) => Capture { ext: "sdr", bytes },
-        None => Capture { ext: "frames.jsonl", bytes: frames_jsonl(frames).into_bytes() },
+        None => Capture { ext: "frames.jsonl", bytes: VoiceFrame::to_jsonl(frames).into_bytes() },
     }
+}
+
+/// Where a call was recorded: its recorder (the call JSON's `recorder_num`:
+/// a trunked call's slot in the recorder pool, a conventional call's channel)
+/// and the source it was heard on (`source_num`: its position in `sources`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecordedOn {
+    pub recorder: u32,
+    pub source: usize,
+}
+
+/// A recorded call that wasn't saved ([`save_call`]), and what it had.
+#[derive(Clone, Debug)]
+pub struct Unsaved {
+    pub call: Call,
+    /// "silent" (no audio kept) or "short" (less than its system's minimum).
+    pub why: &'static str,
+    /// Seconds of audio, its voice frames and how many were bad: what was left once short and encrypted transmissions were.
+    pub audio_s: f64,
+    pub frames: u64,
+    pub bad_frames: u64,
+    pub on: RecordedOn,
+    pub reception: Reception,
 }
 
 /// A finished call made ready to save: transmissions shorter than its
 /// rules allow left out, its loudness and level set, Trunk Recorder's call
-/// JSON written. `Err(call)` when it isn't kept (silent, or shorter than
-/// its system's minimum).
-pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
+/// JSON written. `Err` when it isn't kept (silent, or shorter than its
+/// system's minimum).
+pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
     let rules = &cx.rules;
     // Short transmissions and encrypted ones left out (an encrypted one's
     // "audio" is a few frames vocoded before the cipher was known: noise).
     h.trim(rules.min_transmission_s);
     let freq_error_hz = h.rec.freq_error_hz();
-    let Held { call, rec, recorder_num } = h;
+    let Held { call, rec, on } = h;
     let Recorded { mut audio, frames, inband, reception, .. } = rec;
     let short = (audio.len() as f64) < rules.min_call_s * mbe::SAMPLE_RATE as f64 && !audio.is_empty();
-    if (audio.is_empty() && !(rules.keep_silent || call.encrypted && rules.keep_encrypted)) || short {
-        return Err(call);
+    if (audio.is_empty() && !(rules.keep_silent || call.encrypted && cx.keep_encrypted)) || short {
+        let bad_frames = frames.errors.intervals.iter().map(|i| i.bad_frames as u64).sum();
+        return Err(Unsaved { why: if short { "short" } else { "silent" }, audio_s: audio.len() as f64 / mbe::SAMPLE_RATE as f64, frames: frames.count() as u64, bad_frames, on, reception, call });
     }
     let gain_db = if call.voice.analog() { rules.analog_gain_db } else { rules.digital_gain_db } as f64;
     if rules.normalize {
@@ -608,20 +669,24 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Call> {
         &ConcludeInfo {
             short_name: cx.short_name,
             system_type: cx.system_type,
+            system_id: cx.system_id,
             site: cx.site,
+            site_id: cx.site_id,
+            sites: cx.sites,
             epoch_ms_at_zero: cx.epoch_ms_at_zero,
             audio_seconds: audio.len() as f64 / mbe::SAMPLE_RATE as f64,
             errors: &frames.errors,
             tones: inband.segs(),
             patterns: inband.patterns(),
             signals: cx.signals,
-            recorder_num,
+            on,
             end_s: call.last_audio_s,
             units: cx.units,
             unit_tags: cx.unit_tags,
             reception,
             freq_error_hz: freq_error_hz.map_or(0, |e| e.round() as i32),
             first_s: cx.first_s,
+            call_num: cx.call_num,
         },
     );
     let frames = frames.captured.filter(|f| !audio.is_empty() && !f.is_empty()).map(|f| capture(&call, &f, audio.len(), freq_error_hz, &reception, cx));

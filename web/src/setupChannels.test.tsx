@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, normalizeSystem } from "./config.ts";
 import { transport } from "./controller.ts";
-import type { Channel } from "./protocol.ts";
+import type { Channel, Config } from "./protocol.ts";
 import { ConventionalPanel, SystemCard } from "./Setup.tsx";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
@@ -29,7 +29,7 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
       ],
     }),
   );
-  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service"] }] as const) {
+  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service"] }] as const) {
     transport.onMessage(m as never);
   }
   const html = renderToString(<ConventionalPanel c={c} k={0} />);
@@ -48,14 +48,14 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
   assert.ok(html.includes('class="match-chip k-code bad"') && html.includes('class="rule-edit"'));
   assert.equal(html.match(/class="rule-edit"/g)?.length, 1, "the others' editors stay shut");
   assert.ok(html.includes('class="match-chip k-tg"') && html.includes('class="match-chip k-slot"') && html.includes('class="match-chip k-code"'));
-  assert.match(text(html), /Each row records tone \/ DCS NAC \/ colour code slot talkgroup everything else/);
+  assert.match(text(html), /Records tone \/ DCS NAC \/ colour code slot talkgroup everything else/);
   assert.match(text(html), /CSV format .* Match TG p25, dmr, nxdn: only transmissions naming this talkgroup/);
   // Names beside the alpha tag: shown under it, edited in the row's editor, the system's own offered.
   const meta = [...html.matchAll(/class="row-meta small"[^>]*>(.*?)<\/button>/g)].map((m) => text(m[1]).trim());
   assert.deepEqual(meta, ["Law Dispatch · Police"]);
   assert.equal(html.match(/title="Its codes, and its description, tag and category"/g)?.length, 7, "every row has an Edit");
   const editor = html.slice(html.indexOf('class="rule-edit"'));
-  assert.match(text(editor), /Records .* Names Description Tag Category/);
+  assert.match(text(editor), /Records .* Names .*Description Tag Category/);
   const tagList = editor.match(/list="([^"]+-tag)"/)?.[1];
   assert.ok(tagList && html.includes(`<datalist id="${tagList}"><option value="Law Dispatch"></option></datalist>`), "the system's tags offered");
 });
@@ -78,9 +78,9 @@ test("Setup's channels: a digital row can correct its source's AutoTune; an anal
   assert.deepEqual(labels, ["AutoTune"], "the P25 row's, not the FM row's");
   const editors = html.split('class="rule-edit"').slice(1);
   assert.equal(editors.length, 2);
-  assert.match(text(editors[0]), /AutoTune Correct the source from its calls/);
+  assert.match(text(editors[0]), /AutoTune .*Tune the source/);
   assert.match(editors[0], /type="checkbox" checked=""/);
-  assert.doesNotMatch(text(editors[1]), /Correct the source/);
+  assert.doesNotMatch(text(editors[1]), /Tune the source/);
   assert.match(text(html), /AutoTune p25, dmr, nxdn: true lets its calls correct/);
 });
 
@@ -100,7 +100,7 @@ test("Setup's signals: a disclosure on the system's card, a row each with its ki
   transport.onMessage({ type: "config", config: c, version: 1 } as never);
   const html = renderToString(<ConventionalPanel c={c} k={0} />);
   const signals = html.slice(html.indexOf(">", html.indexOf('id="need-convsignals-town"')) + 1);
-  assert.match(text(signals), /^ ?Signals — 3/);
+  assert.match(text(signals), /^ ?Signals 3/);
   const lines = [...signals.matchAll(/<tr>(.*?)<\/tr>/g)].slice(1, 4).map((m) => text(m[1]).trim());
   assert.match(lines[0], /^COUNTY_A County A page Two-tone page 788\.5 → 879 Hz 1001 ▶ Edit Remove$/);
   assert.match(lines[1], /^ALERT Beep 1000 Hz any/, "a beep isn't a long tone");
@@ -123,4 +123,23 @@ test("a system with several sites: Conversations suggested off, in its own Recor
   transport.onMessage({ type: "config", config: c, version: 2 } as never);
   assert.doesNotMatch(text(renderToString(<SystemCard c={c} i={0} />)), /suggested/);
   assert.doesNotMatch(text(renderToString(<ConventionalPanel c={c} k={0} />)), /Conversations/, "conventional channels: not theirs");
+});
+
+test("a system kept on a source: Setup offers the radios by name, and says the one it's received on — the recorder's choice, pins and all", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string) => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 }) as Config["sources"][number];
+  c.sources = [rtl("1"), { ...rtl("2"), name: "Whip" }];
+  c.systems = [{ ...normalizeSystem({ shortName: "dc", type: "p25", controlChannelsHz: [851_012_500] } as never), receiveOn: ["RTL-SDR SN 2"] }];
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const card = renderToString(<SystemCard c={c} i={0} />);
+  // Both radios reach it; it's kept on SN 2 (named Whip: still pinned by its label), so that's the one.
+  assert.match(text(card), /CC → 2/);
+  assert.match(text(card), /Receive on Source 1 · RTL-SDR SN 1 Source 2 \(Whip\) · RTL-SDR SN 2 Only those ticked/);
+  assert.match(card, /<input type="checkbox" checked=""\/><span class="small">Source 2 \(Whip\) · RTL-SDR SN 2/);
+  // SN 2 taken out: still named (to untick), and not received anywhere else.
+  const gone = { ...c, sources: [rtl("1")] };
+  transport.onMessage({ type: "config", config: gone, version: 2 } as never);
+  const page = text(renderToString(<SystemCard c={gone} i={0} />));
+  assert.match(page, /RTL-SDR SN 2 \(not a source now\)/);
+  assert.doesNotMatch(page, /CC → \d/);
 });

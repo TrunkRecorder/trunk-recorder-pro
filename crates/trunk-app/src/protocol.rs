@@ -9,12 +9,14 @@
 //! [`Body`] (an object, without its `type`).
 //!
 //! What a connection may hear and send by its access (listen or control) is
-//! decided here too: [`ToClient::audience`], [`Command::listen_may_send`].
+//! decided here too: [`ToClient::audience`], [`Command::needs`].
 
+use trunk_core::trunk::Origin;
 use serde::{Deserialize, Serialize};
 pub use crate::calls::{CallsPage, CallsQuery, StoredCall};
 use serde_json::{Map, Value};
 
+use crate::config::ApiAccess;
 use crate::Config;
 
 /// A message's body, put together as JSON: an object, without its `type`.
@@ -30,6 +32,18 @@ pub fn body(v: Value) -> Body {
         }
         _ => Body::new(),
     }
+}
+
+/// Where a recording run is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Phase {
+    #[default]
+    Idle,
+    Starting,
+    Running,
+    /// Its sources are closed; the calls in flight are being saved.
+    Stopping,
 }
 
 /// A message to an interface (protocol.ts's `FromRecorder`).
@@ -52,6 +66,11 @@ pub enum ToClient {
         survey_bands: Value,
         /// What this recorder can do beyond recording: an interface shows only what works.
         capabilities: Vec<Capability>,
+        /// What this connection may do (its port's access, and its user's when signing in is on).
+        access: ApiAccess,
+        /// The user it signed in as, by name.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
     },
     /// The latest calls, newest first: on connecting (then `concluded` for each new one).
     History {
@@ -63,11 +82,16 @@ pub enum ToClient {
     /// A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV):
     /// one for each system with some, on connecting (then `unitAlias` for each new one).
     Units { system: String, csv: String },
+    /// A system's radios whose IDs came in MDC1200 (the radio registry's):
+    /// one for each system with some, on connecting (then each call's
+    /// `srcList` says it). Their IDs are shown in hex.
+    MdcUnits { system: String, units: Vec<u32> },
     /// Which key containers are unlocked.
     Keys { sources: Value },
     Radios { radios: Value },
-    /// The recording's phase.
-    State { phase: &'static str, error: Option<String>, ended: bool },
+    /// The recording's phase; `restart_needed`: the config was edited, since
+    /// Start, in what a run reads only when it starts ([`crate::config::Config::needs_restart`]).
+    State { phase: Phase, error: Option<String>, ended: bool, restart_needed: bool },
     /// The config, and its version: the number an edit of it is sent with.
     Config { config: Box<Config>, version: u64 },
     /// Answers setConfig: the config's version now; `error` when the edit
@@ -78,9 +102,20 @@ pub enum ToClient {
     /// each on connecting, and again whenever a system's are set.
     Talkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
     /// One talkgroup of system `system` edited ([`Command::SetTalkgroup`]):
-    /// each interface makes the same edit to its copy (`talkgroupsEdit`).
-    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit },
+    /// each interface makes the same edit to its copy (`talkgroupsEdit`),
+    /// with the origin it was given.
+    TalkgroupEdited { system: String, talkgroup: u32, edit: TalkgroupEdit, origin: Origin },
+    /// A system's own names for its radios, in their order (none: it has
+    /// none): one for each on connecting, and again whenever a system's are set.
+    UnitNames { system: String, unit_names: Vec<trunk_core::trunk::UnitNameRow> },
+    /// Radio `unit` of system `system` named `name` ([`Command::SetUnitName`]):
+    /// each interface makes the same edit to its copy (`unitNamesEdit`).
+    UnitNameEdited { system: String, unit: u32, name: String, origin: Origin },
     Status { status: Value, sources: Vec<Value>, load: f64, calls: Vec<Value> },
+    /// Live voice as vocoder frames ([`crate::session::voice_chunk`]), beside
+    /// its live audio: only to connections listening with `voice`. `chunk` is
+    /// the `voice` plugin topic's, as it is.
+    Voice { chunk: trunk_recorder_plugin::VoiceChunk },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
     Log { lines: Vec<Value> },
     /// A call stored: its history entry.
@@ -91,6 +126,8 @@ pub enum ToClient {
     Heard { heard: Value },
     Survey(Body),
     SurveySpectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
+    /// A radio's gain being tuned ([`Command::TuneGain`]), each time it moves; on connecting, the last.
+    Tune(crate::tune::TuneReport),
     /// Answers `licenseQuery`, to its sender: the API's `results`, or why there are none.
     LicenseResult { id: u64, results: Vec<Value>, error: Option<String> },
     /// Answers `callSignQuery`, to its sender: each active call sign's holder, or why there are none.
@@ -129,7 +166,248 @@ pub enum ToClient {
         #[serde(flatten)]
         page: CallsPage,
     },
+    /// Answers `dataSummary`: what the store keeps of each system it has,
+    /// the config's and those gone from it (or why it can't say).
+    DataSummary { id: u64, systems: Vec<DataSystem>, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `iqCaptures`, `iqCaptureStart` and `iqCaptureDelete`: the
+    /// captures on disk, newest first, in `root`; the one being made;
+    /// whether the radios are running; why the last request or capture failed.
+    IqCaptures {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        active: Option<IqCaptureActive>,
+        /// Captures asked for that wait on the air.
+        waiting: Vec<IqCaptureWaiting>,
+        captures: Vec<IqCapture>,
+        root: String,
+        recording: bool,
+        /// The rules shipped, each off until the config has it.
+        presets: Vec<crate::config::CaptureRule>,
+        /// There's a corpus service to send captures to.
+        can_send: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `iqCaptureReview`: what capture `name` would publish.
+    IqCaptureReview {
+        id: u64,
+        name: String,
+        metadata: Value,
+        diagnostics: Value,
+        waterfalls: Vec<IqWaterfall>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `iqRuleCheck`: why the rule can't run, if so.
+    IqRuleChecked {
+        id: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Answers `deleteData`: how much went (or why not all of it did).
+    DataDeleted { id: u64, deleted: DataCounts, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `compactData`: the store's size, bytes, before and after (or why it couldn't).
+    DataCompacted { id: u64, before_bytes: i64, after_bytes: i64, #[serde(skip_serializing_if = "Option::is_none")] error: Option<String> },
+    /// Answers `createToken`, to that connection alone: the new user's access
+    /// token's secret, shown this once (the config keeps only its hash), or why not.
+    TokenCreated {
+        id: u64,
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        secret: Option<Secret>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     Quit,
+}
+
+/// An access token's secret, on its way to whoever made it: written out as
+/// it is, but never by `Debug` (so not in a log line or a panic).
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(s: String) -> Secret {
+        Secret(s)
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(…)")
+    }
+}
+
+/// A table of the store's, as Setup → Data exports it (a CSV file each:
+/// `GET /api/v1/export/{table}`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray, strum::IntoStaticStr, strum::EnumString)]
+#[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
+pub enum DataTable {
+    /// The call index: a row a call.
+    Calls,
+    /// Each radio's transmissions in each call.
+    Transmissions,
+    /// The talkgroups each system was given (its talkgroup file).
+    Talkgroups,
+    /// The names each system was given for its radios (its unit names file).
+    UnitNames,
+    /// Talker aliases heard over the air.
+    TalkerAliases,
+    /// The radio registry's radios: every radio heard.
+    Radios,
+    /// The radio registry's talkgroups: every talkgroup heard.
+    HeardTalkgroups,
+    /// The dashboard's history, by the hour.
+    DashboardHistory,
+}
+
+impl DataTable {
+    pub const ALL: &'static [DataTable] = <Self as strum::VariantArray>::VARIANTS;
+
+    /// Its name, as the route and the file name have it.
+    pub fn name(self) -> &'static str {
+        self.into()
+    }
+}
+
+/// A kind of the store's data, as Setup → Data deletes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, strum::VariantArray)]
+#[serde(rename_all = "camelCase")]
+pub enum DataKind {
+    /// The call index and each call's transmissions (the recordings stay).
+    Calls,
+    Talkgroups,
+    /// Each system's own names for its radios.
+    UnitNames,
+    TalkerAliases,
+    /// The radio registry: the radios, talkgroups, pairs and frequencies heard.
+    Registry,
+    DashboardHistory,
+}
+
+impl DataKind {
+    pub const ALL: &'static [DataKind] = <Self as strum::VariantArray>::VARIANTS;
+}
+
+/// How many of each the store has (`dataSummary`) or deleted (`dataDeleted`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataCounts {
+    pub calls: i64,
+    pub talkgroups: i64,
+    pub unit_names: i64,
+    pub talker_aliases: i64,
+    /// The radio registry's radios and talkgroups.
+    pub radios: i64,
+    pub heard_talkgroups: i64,
+    /// The dashboard's series.
+    pub history_series: i64,
+}
+
+/// A recording of what the radios received (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCapture {
+    /// Its folder's name.
+    pub name: String,
+    pub path: String,
+    /// `wideband`, `control` or `voice`.
+    pub tier: String,
+    /// `bug` (made by hand, showing a problem), `healthy` (made by hand, working well) or `rule`.
+    pub purpose: String,
+    /// The rule that made it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub rule: String,
+    pub seconds: u32,
+    pub radios: u32,
+    pub bytes: u64,
+    pub note: String,
+    /// Samples the radios lost during it.
+    pub lost_samples: u64,
+    /// Control channel messages decoded and failed, and calls ended, while it was made.
+    pub messages_good: u64,
+    pub messages_bad: u64,
+    pub calls: u64,
+    /// How sending it to the corpus stands, if it has been.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send: Option<IqCaptureSend>,
+}
+
+/// How the sending of a capture to the corpus stands (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureSend {
+    /// `sending`, `sent` or `failed`.
+    pub state: String,
+    pub receipt: String,
+    pub id: String,
+    pub done_bytes: u64,
+    pub total_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// A radio's power by frequency over time, as levels 0–255, in hex (`iqCaptureReview`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqWaterfall {
+    pub width: u32,
+    pub height: u32,
+    pub levels: String,
+}
+
+/// What a capture asked for by hand records (`iqCaptureStart`).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum CaptureWhat {
+    /// Everything every radio receives.
+    #[default]
+    Radios,
+    /// One site's control channel (its `index` in the status), from now on.
+    Control { site: u16 },
+    /// The voice channel of the next call on system `system` (a short name), or on its talkgroup `talkgroup`.
+    Call { system: String, #[serde(default)] talkgroup: Option<u32> },
+}
+
+/// A capture asked for by hand that's waiting on the air (`iqCaptures`): a
+/// control channel recording for `seconds`, or the next call.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureWaiting {
+    pub key: u64,
+    /// What it's of, in words.
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u32>,
+    pub elapsed_s: f64,
+}
+
+/// A capture being made (`iqCaptures`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IqCaptureActive {
+    pub name: String,
+    pub seconds: u32,
+    pub elapsed_s: f64,
+}
+
+/// A system the store keeps data of (`dataSummary`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataSystem {
+    /// Its id (the config's `id`).
+    pub id: u32,
+    pub short_name: String,
+    /// It's in the config (else it was removed and its data stayed).
+    pub in_config: bool,
+    #[serde(flatten)]
+    pub counts: DataCounts,
 }
 
 /// Something a recorder can do beyond recording (`hello.capabilities`). The
@@ -159,6 +437,8 @@ pub enum Capability {
     /// The dashboard's history further back than a week (`statsQuery`'s
     /// `30d`, `90d`, `1y`), as far as `storage.statsDays` keeps: the store.
     History,
+    /// Tuning a radio's gain while recording: `tuneGain`.
+    TuneGain,
 }
 
 impl Capability {
@@ -186,7 +466,7 @@ impl ToClient {
     pub fn audience(&self) -> Audience {
         use ToClient::*;
         match self {
-            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } => Audience::Control,
+            Plugins(_) | PluginRuntime { .. } | Interfaces(_) | Store { .. } | InstallProgress { .. } | Keys { .. } | Tune(_) => Audience::Control,
             _ => Audience::Everyone,
         }
     }
@@ -276,7 +556,14 @@ pub enum Command {
     /// System `system`'s talkgroups, in their order (none: it has none). A
     /// talkgroup file is read into them, and written from them, by the
     /// recorder's own code (the page's `talkgroupsFromCsv` / `talkgroupsToCsv`).
-    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow> },
+    /// `from`: where they came from, the origin of the rows that change
+    /// (`at` is the recorder's); none: the rows keep their own (moved).
+    SetTalkgroups { system: String, talkgroups: Vec<trunk_core::trunk::TalkgroupRow>, #[serde(default)] from: Option<Origin> },
+    /// System `system`'s own names for its radios, as [`Command::SetTalkgroups`].
+    SetUnitNames { system: String, unit_names: Vec<trunk_core::trunk::UnitNameRow>, #[serde(default)] from: Option<Origin> },
+    /// Radio `unit` of system `system` named `name` (blank: its own name
+    /// taken out). Answered to every interface with `unitNameEdited`.
+    SetUnitName { system: String, unit: u32, name: String },
     /// One talkgroup of system `system`: only the cells `edit` sets change
     /// (a row added when there's none). Answered to every interface with
     /// `talkgroupEdited`.
@@ -287,7 +574,20 @@ pub enum Command {
     FindRadios,
     ListDir { #[serde(default)] path: String },
     ReadTrConfig { path: String },
-    Listen { on: bool, #[serde(default)] system: Option<String>, #[serde(default)] talkgroup: Option<u32> },
+    /// Live audio, optionally of one system and/or talkgroup. `voice`: also
+    /// digital calls' vocoder frames ([`ToClient::Voice`]); `audio: false`:
+    /// those alone, without the PCM.
+    Listen {
+        on: bool,
+        #[serde(default)]
+        system: Option<String>,
+        #[serde(default)]
+        talkgroup: Option<u32>,
+        #[serde(default)]
+        voice: bool,
+        #[serde(default = "crate::config::yes")]
+        audio: bool,
+    },
     UnlockKeys { source: String, password: String },
     LockKeys { source: String },
     ChannelFile { index: usize, path: String },
@@ -295,6 +595,12 @@ pub enum Command {
     SurveyListen { freq_hz: f64 },
     SurveyRescan,
     SurveyStop,
+    /// Tune a radio's gain by what its systems decode, while recording
+    /// ([`crate::tune`]): each candidate is set on the radio as a trial, not
+    /// saved; at the end it goes back, or, with `apply`, the best is saved.
+    TuneGain(crate::tune::TuneRequest),
+    /// Stop tuning: the radio goes back as it was.
+    TuneStop,
     /// Who is licensed on `signals` within `radius_m` of the location the
     /// user gave (sent to trunkrecorder.pro): answered with `licenseResult`.
     LicenseQuery { id: u64, lat: f64, lon: f64, radius_m: f64, signals: Vec<crate::licenses::Signal> },
@@ -326,6 +632,37 @@ pub enum Command {
     /// object it's on, as edited): answered with `pluginActionResult` `id`
     /// once the plugin says how it went.
     PluginAction { id: u64, plugin: String, action: String, #[serde(default)] value: Value },
+    /// The radios' captures on disk: answered with `iqCaptures` `id`.
+    IqCaptures { id: u64 },
+    /// Record `what` (every radio, by default) to files, nothing sent
+    /// anywhere: for `seconds` (the next call: as long as it is), showing a
+    /// problem (`problem`) or a recording working well. Answered with `iqCaptures` `id`.
+    IqCaptureStart { id: u64, seconds: u32, #[serde(default)] note: String, #[serde(default)] what: CaptureWhat, #[serde(default)] problem: bool },
+    /// Give up a capture asked for that's still waiting or running (`key`, as `iqCaptures` lists it): answered with `iqCaptures` `id`.
+    IqCaptureCancel { id: u64, key: u64 },
+    /// What capture `name` would publish: answered with `iqCaptureReview` `id`.
+    IqCaptureReview { id: u64, name: String },
+    /// Send capture `name`, reviewed, to the public corpus: answered with `iqCaptures` `id`.
+    IqCaptureSend { id: u64, name: String },
+    /// Withdraw capture `name` from the corpus: answered with `iqCaptures` `id`.
+    IqCaptureWithdraw { id: u64, name: String },
+    /// Whether capture rule `rule` could run: answered with `iqRuleChecked` `id`.
+    IqRuleCheck { id: u64, rule: Value },
+    /// Delete capture `name`: answered with `iqCaptures` `id`.
+    IqCaptureDelete { id: u64, name: String },
+    /// What the store keeps of each system: answered with `dataSummary` `id`.
+    DataSummary { id: u64 },
+    /// Delete `kinds` of system `system`'s data (its id; none: every
+    /// system's) from the store, and from what the recorder holds of it:
+    /// answered with `dataDeleted` `id`.
+    DeleteData { id: u64, kinds: Vec<DataKind>, #[serde(default)] system: Option<u32> },
+    /// Give the space deleted data left in the store back to the disk:
+    /// answered with `dataCompacted` `id`.
+    CompactData { id: u64 },
+    /// A new user `name` with `access` and an access token, put in the
+    /// config (the token's secret's hash): answered with `tokenCreated` `id`,
+    /// the secret in it.
+    CreateToken { id: u64, name: String, access: ApiAccess },
     Quit,
 }
 
@@ -345,9 +682,15 @@ impl Command {
         serde_json::from_value(v).map_err(|e| format!("Bad \"{ty}\" command: {e}"))
     }
 
-    /// What a listen-only connection may send: looking, never changing.
-    pub fn listen_may_send(&self) -> bool {
-        matches!(self, Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::CallsQuery { .. } | Command::Listen { .. })
+    /// The access it takes to send it (a connection may when its access is
+    /// at least this): listen for looking, control for everything else, so a
+    /// new command needs control until it's listed here. (A role per system
+    /// would widen this: `SetTalkgroup(s)` and `SetUnitName(s)` carry theirs.)
+    pub fn needs(&self) -> ApiAccess {
+        match self {
+            Command::Subscribe { .. } | Command::StatsQuery(_) | Command::RadioQuery(_) | Command::CallsQuery { .. } | Command::Listen { .. } => ApiAccess::Listen,
+            _ => ApiAccess::Control,
+        }
     }
 }
 
@@ -406,6 +749,8 @@ mod tests {
     fn a_message_is_its_type_and_its_fields() {
         let m = ToClient::UnitAlias { system: "dcfd".into(), unit: 7, alias: "E1".into() };
         assert_eq!(m.to_json(), r#"{"type":"unitAlias","system":"dcfd","unit":7,"alias":"E1"}"#);
+        let m = ToClient::MdcUnits { system: "conv".into(), units: vec![1795, 7187] };
+        assert_eq!(m.to_json(), r#"{"type":"mdcUnits","system":"conv","units":[1795,7187]}"#);
         assert_eq!(ToClient::Quit.to_json(), r#"{"type":"quit"}"#);
         let s = ToClient::Spectrum { source: 1, center_hz: 2.0, rate_hz: 3.0, bins: vec![] };
         assert_eq!(s.to_json(), r#"{"type":"spectrum","source":1,"centerHz":2.0,"rateHz":3.0,"bins":[]}"#);
@@ -416,21 +761,80 @@ mod tests {
         assert_eq!(ToClient::Keys { sources: Value::Null }.audience(), Audience::Control);
     }
 
+    /// A new token's secret is in its answer, and nowhere `Debug` reaches.
+    #[test]
+    fn a_secret_is_sent_but_never_shown() {
+        let m = ToClient::TokenCreated { id: 1, name: "wall".into(), secret: Some(Secret::new("trp_0123abcd".into())), error: None };
+        assert_eq!(m.to_json(), r#"{"type":"tokenCreated","id":1,"name":"wall","secret":"trp_0123abcd"}"#);
+        assert!(!format!("{m:?}").contains("0123abcd"), "{m:?}");
+    }
+
     #[test]
     fn commands_are_read_strictly_and_listen_may_only_look() {
         let c = Command::parse(r#"{"type":"listen","on":true,"system":"dcfd"}"#).unwrap();
-        assert!(matches!(&c, Command::Listen { on: true, system: Some(s), talkgroup: None } if s == "dcfd") && c.listen_may_send());
+        assert!(matches!(&c, Command::Listen { on: true, system: Some(s), talkgroup: None, voice: false, audio: true } if s == "dcfd") && c.needs() == ApiAccess::Listen);
+        let c = Command::parse(r#"{"type":"listen","on":true,"voice":true,"audio":false}"#).unwrap();
+        assert!(matches!(&c, Command::Listen { on: true, system: None, voice: true, audio: false, .. }) && c.needs() == ApiAccess::Listen);
         assert!(matches!(Command::parse(r#"{"type":"install","kind":"plugin","repository":"a/b"}"#), Ok(Command::Install { kind: StoreKind::Plugin, what: Install::Release { tag: None, .. } })));
         assert!(matches!(Command::parse(r#"{"type":"install","kind":"interface","id":"trunkamp"}"#), Ok(Command::Install { kind: StoreKind::Interface, what: Install::Listed { .. } })));
         let e = Command::parse(r#"{"type":"channelFile","index":0}"#).err().unwrap();
         assert!(e.contains("channelFile") && e.contains("path"), "{e}");
         assert!(Command::parse(r#"{"type":"nope"}"#).is_err());
         let c = Command::parse(r#"{"type":"setConfig","config":{},"version":1}"#).unwrap();
-        assert!(!c.listen_may_send() && c.kind() == "setConfig");
+        assert!(c.needs() == ApiAccess::Control && c.kind() == "setConfig");
+        let c = Command::parse(r#"{"type":"createToken","id":1,"name":"wall","access":"listen"}"#).unwrap();
+        assert!(matches!(&c, Command::CreateToken { access: ApiAccess::Listen, .. }) && c.needs() == ApiAccess::Control, "making a listen user still takes control");
         let q = match Command::parse(r#"{"type":"statsQuery","id":3,"series":["a"],"range":"10m"}"#).unwrap() {
             Command::StatsQuery(q) => q,
             _ => panic!(),
         };
         assert_eq!(q.span(1000), (400, 1000));
+    }
+
+    #[test]
+    fn a_capture_says_what_it_is_of() {
+        let what = |j: &str| match Command::parse(j).unwrap() {
+            Command::IqCaptureStart { what, problem, .. } => (what, problem),
+            _ => panic!(),
+        };
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":60}"#), (CaptureWhat::Radios, false), "every radio, as it always was");
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":30,"problem":true,"what":{"kind":"control","site":2}}"#), (CaptureWhat::Control { site: 2 }, true));
+        assert_eq!(what(r#"{"type":"iqCaptureStart","id":1,"seconds":0,"what":{"kind":"call","system":"dcfd","talkgroup":101}}"#).0, CaptureWhat::Call { system: "dcfd".into(), talkgroup: Some(101) });
+        assert_eq!(Command::parse(r#"{"type":"iqCaptureCancel","id":1,"key":3}"#).unwrap().needs(), ApiAccess::Control);
+    }
+
+    /// Who hears each message, decided for every one: control access alone
+    /// for plugin and interface management and key containers; everyone else
+    /// (a View user too) the rest, each reviewed for what it carries (the
+    /// config goes out as only what a View user's pages show: `trunk-pro`'s
+    /// `listen_config`;
+    /// answers to commands go to whoever sent them, and those that need
+    /// control are refused to the rest). A message that's new fails this test
+    /// until it's decided here.
+    #[test]
+    fn every_message_has_a_decided_audience() {
+        let control = [
+            ToClient::Plugins(Body::new()),
+            ToClient::PluginRuntime { id: "x".into(), runtime: Value::Null },
+            ToClient::Interfaces(Body::new()),
+            ToClient::Store { kind: StoreKind::Plugin, list: Body::new() },
+            ToClient::InstallProgress { kind: StoreKind::Plugin, key: "x".into(), id: "x".into(), stage: "done", message: None },
+            ToClient::Keys { sources: Value::Null },
+            ToClient::Tune(Default::default()),
+        ];
+        for m in &control {
+            assert_eq!(m.audience(), Audience::Control, "{}", m.kind());
+        }
+        let everyone = [
+            "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "spectrum", "log", "concluded", "callFiles",
+            "unitAlias", "mdcUnits", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
+            "decodeDetail", "monitorEvent", "subscribed", "statsResult", "radioResult", "callsResult", "dataSummary", "iqCaptures", "iqCaptureReview", "iqRuleChecked", "dataDeleted", "dataCompacted", "tokenCreated", "quit",
+        ];
+        let mut decided: Vec<&str> = control.iter().map(ToClient::kind).chain(everyone).collect();
+        decided.sort();
+        let mut all = ToClient::TYPES.to_vec();
+        all.sort();
+        assert_eq!(decided, all, "every message, once: a new one needs deciding here");
+        assert_eq!((ToClient::notice("x").audience(), ToClient::Quit.audience()), (Audience::Everyone, Audience::Everyone));
     }
 }

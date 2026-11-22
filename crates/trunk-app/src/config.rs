@@ -10,10 +10,12 @@ use trunk_core::dsp::inband::pattern::PatternKind;
 use trunk_core::dsp::AnalogTuning;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
-    check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, IdField, Identity, SaveRules, SourceConfig,
+    check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, Identity, SaveRules, SourceConfig,
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
-pub use trunk_core::trunk::{usable_half_width, DEFAULT_GUARD_HZ};
+pub use trunk_core::trunk::{usable_half_width, SiteId, SystemId, DEFAULT_GUARD_HZ};
+use crate::place::{advise, coverage, place_sources, receiver, Advice, Choices, Coverage, Group, Placing, Targets, Weighted};
+use trunk_core::trunk::Pins;
 
 /// A source: the radio or capture it reads ([`SourceKind`]), where and how fast.
 /// Stored flat — `{"type": "rtlsdr", "serial": "…", "centerHz": …}` — the
@@ -35,6 +37,9 @@ pub struct Source {
     /// Left unused at each edge of the band, Hz (the anti-alias roll-off).
     #[serde(default = "guard_default")]
     pub guard_hz: f64,
+    /// A name for it, shown beside its number ("Whip", "Multicoupler"); empty: none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 /// What a [`Source`] reads, and the settings only that kind has.
@@ -77,32 +82,38 @@ pub enum SourceKind {
         wire_format: String,
     },
     /// An Airspy R2 / Mini through libairspy (installed separately; loaded
-    /// at run time). `serial` hex, "" = the first. Gain: a 0..21 step of
-    /// libairspy's linearity or sensitivity tables, or (`gain_mode` "manual")
-    /// its three stages; `agc` hands the LNA and mixer stages to the Airspy's AGC.
+    /// at run time). `serial` hex, "" = the first.
     #[serde(rename_all = "camelCase")]
     Airspy {
         #[serde(default)]
         serial: String,
-        #[serde(default)]
-        gain_mode: AirspyGain,
-        #[serde(default = "airspy_gain")]
-        gain_step: u8,
-        /// Manual: LNA 0..14, mixer 0..15, VGA (IF) 0..15.
-        #[serde(default = "airspy_stage")]
-        lna_step: u8,
-        #[serde(default = "airspy_stage")]
-        mixer_step: u8,
-        #[serde(default = "airspy_stage")]
-        vga_step: u8,
-        #[serde(default)]
-        agc: bool,
+        #[serde(flatten)]
+        gains: AirspyGains,
         #[serde(default)]
         bias_tee: bool,
         /// 12-bit samples packed on the USB (a quarter less of the bus: an
         /// Airspy at 10 MS/s nearly fills a USB 2.0 bus by itself).
         #[serde(default = "yes")]
         packing: bool,
+    },
+    /// A HydraSDR RFOne through libhydrasdr (installed separately; loaded at
+    /// run time). Its tuner and gain stages are an Airspy R2's, so its gain is
+    /// an Airspy's. `rf_port`: which input, 0 ANT (the one with the bias-T),
+    /// 1 CABLE1, 2 CABLE2.
+    #[serde(rename_all = "camelCase")]
+    Hydrasdr {
+        #[serde(default)]
+        serial: String,
+        #[serde(flatten)]
+        gains: AirspyGains,
+        /// On the ANT input only.
+        #[serde(default)]
+        bias_tee: bool,
+        /// 12-bit samples packed on the USB.
+        #[serde(default = "yes")]
+        packing: bool,
+        #[serde(default)]
+        rf_port: u8,
     },
     /// A bladeRF (2.0 micro xA4 / xA9, or the original x40 / x115) through
     /// libbladeRF 2.x (installed separately; loaded at run time). `serial`
@@ -183,6 +194,36 @@ choice! {
     }
 }
 
+/// An Airspy's gain (a HydraSDR's too: the same tuner and tables): a 0..21
+/// step of libairspy's linearity or sensitivity table, or (`gain_mode`
+/// "manual") its three stages; `agc` hands the LNA and mixer stages to its AGC.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AirspyGains {
+    #[serde(default)]
+    pub gain_mode: AirspyGain,
+    #[serde(default = "airspy_gain")]
+    pub gain_step: u8,
+    /// Manual: LNA 0..14, mixer 0..15, VGA (IF) 0..15.
+    #[serde(default = "airspy_stage")]
+    pub lna_step: u8,
+    #[serde(default = "airspy_stage")]
+    pub mixer_step: u8,
+    #[serde(default = "airspy_stage")]
+    pub vga_step: u8,
+    #[serde(default)]
+    pub agc: bool,
+}
+
+impl Default for AirspyGains {
+    fn default() -> Self {
+        AirspyGains { gain_mode: AirspyGain::default(), gain_step: airspy_gain(), lna_step: airspy_stage(), mixer_step: airspy_stage(), vga_step: airspy_stage(), agc: false }
+    }
+}
+
+/// A HydraSDR RFOne's inputs, by `rf_port`: the bias-T is on the first, ANT.
+pub const HYDRASDR_INPUTS: [&str; 3] = ["ANT", "CABLE1", "CABLE2"];
+
 fn guard_default() -> f64 {
     DEFAULT_GUARD_HZ
 }
@@ -242,10 +283,88 @@ impl SampleFormat {
     }
 }
 
+/// A frequency the config lists, and the source it is received on ([`Config::receivers`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Receiving {
+    /// Its system's short name.
+    pub system: String,
+    pub hz: f64,
+    /// Its source's position; None: none it may be received on reaches it.
+    pub source: Option<usize>,
+}
+
+/// What each system was heard on, by short name: each frequency and how many
+/// calls it carried (out of band too), as the radio registry counts them
+/// ([`Config::targets_with`]).
+pub type Heard = BTreeMap<String, Vec<Weighted>>;
+
+/// Where a source goes ([`Config::placement`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    /// Its centre, Hz (0: nothing to place it by).
+    pub center_hz: f64,
+    /// The frequencies the config lists that it is the first to reach.
+    pub listed: usize,
+}
+
 impl Source {
     /// How far from its centre a channel may be, Hz.
     pub fn usable_half_width(&self) -> f64 {
         usable_half_width(self.rate_hz, self.guard_hz)
+    }
+    /// What it's called, at `index` in `sources`: "Source 2", or "Source 2
+    /// (Whip)" with a `name` — counted from 1, as Setup shows it. Every
+    /// message and the interface (`configSources`) name a source so.
+    pub fn title(&self, index: usize) -> String {
+        match self.name.trim() {
+            "" => format!("Source {}", index + 1),
+            name => format!("Source {} ({name})", index + 1),
+        }
+    }
+    /// It as the radio takes it: without what only names it (`name`, which
+    /// changes nothing it records). A running radio, a restart and AutoTune's
+    /// file go by this; its identity is [`Source::label`], which a name doesn't change.
+    pub fn radio(&self) -> Source {
+        Source { name: String::new(), ..self.clone() }
+    }
+    /// Whether tuned to `center` it reaches `hz`.
+    pub fn reaches(&self, center: f64, hz: f64) -> bool {
+        self.placing().reaches(center, hz)
+    }
+    /// `ppm` as it can be set on it: an RTL-SDR takes whole ppm, the others hundredths.
+    pub fn settable_ppm(&self, ppm: f64) -> f64 {
+        if matches!(self.kind, SourceKind::Rtlsdr { .. }) {
+            ppm.round()
+        } else {
+            (ppm * 100.0).round() / 100.0
+        }
+    }
+    /// It to place: its centre stays when set.
+    pub fn placing(&self) -> Placing {
+        Placing { rate_hz: self.rate_hz, guard_hz: self.guard_hz, fixed_hz: (self.center_hz > 0.0).then_some(self.center_hz), band: None }
+    }
+    /// Its `type` ("rtlsdr", "airspy", …), as the config names it.
+    pub fn kind_name(&self) -> &'static str {
+        match self.kind {
+            SourceKind::Rtlsdr { .. } => "rtlsdr",
+            SourceKind::Usrp { .. } => "usrp",
+            SourceKind::Airspy { .. } => "airspy",
+            SourceKind::Hydrasdr { .. } => "hydrasdr",
+            SourceKind::Bladerf { .. } => "bladerf",
+            SourceKind::Hackrf { .. } => "hackrf",
+            SourceKind::Soapy { .. } => "soapy",
+            SourceKind::File { .. } => "file",
+        }
+    }
+    /// What advice may change about it ([`place::advise`]): a centre typed
+    /// in, and the rates it may run at (`found`: what its radio said). A
+    /// capture file's are the recording's: neither.
+    pub fn choices(&self, found: Option<&crate::rates::Rates>) -> Choices {
+        if matches!(self.kind, SourceKind::File { .. }) {
+            return Choices::default();
+        }
+        let kind = self.kind_name();
+        Choices { movable: true, rates: crate::rates::offered(kind, found), steady_max: crate::rates::steady_max(kind) }
     }
     /// Whether the two may open the same radio (one program at a time can):
     /// of a kind and naming one device, or either "the first found". (A
@@ -255,7 +374,8 @@ impl Source {
             match &s.kind {
                 SourceKind::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
                 SourceKind::Usrp { args, .. } => Some((1, args.trim().to_string())),
-                SourceKind::Airspy { serial, .. } => Some((2, serial.trim().to_lowercase())),
+                // (libairspy opens an RFOne as "the first" when it comes first.)
+                SourceKind::Airspy { serial, .. } | SourceKind::Hydrasdr { serial, .. } => Some((2, serial.trim().to_lowercase())),
                 SourceKind::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
                 SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
                 SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
@@ -279,6 +399,7 @@ impl Source {
                 format!("USRP {}", if which.is_empty() { "(first)".to_string() } else { which.join(",") })
             }
             SourceKind::Airspy { serial, .. } => format!("Airspy {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
+            SourceKind::Hydrasdr { serial, .. } => format!("HydraSDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Hackrf { serial, .. } => format!("HackRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
@@ -297,8 +418,12 @@ impl Source {
 ///   "sites": [ { "controlChannelsHz": [851012500] },
 ///              { "name": "dcfd-south", "controlChannelsHz": [852337500], "expect": { "rfss": 1, "site": 2 } } ] }
 /// ```
-fn no_id(v: &u32) -> bool {
-    *v == 0
+fn no_site_id(v: &SiteId) -> bool {
+    v.0 == 0
+}
+
+fn no_id(v: &SystemId) -> bool {
+    v.0 == 0
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -307,11 +432,15 @@ pub struct System {
     /// Its number, the same across renames: what the store keeps its calls,
     /// talkgroups and registry by ([`Config::assign_system_ids`]). Never reused.
     #[serde(skip_serializing_if = "no_id")]
-    pub id: u32,
+    pub id: SystemId,
     pub short_name: String,
     /// What people call it ("County Public Safety"); the short name is its folder.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub name: String,
+    /// The sources its channels may be received on, by label ("RTL-SDR SN 200",
+    /// [`Source::label`]: the radio, wherever it is in `sources`); empty: any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receive_on: Vec<String>,
     /// Its FCC licenses by frequency: see [`FccLicenses`].
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub fcc: FccLicenses,
@@ -326,7 +455,7 @@ pub struct System {
     #[serde(rename = "type")]
     pub kind: SystemKind,
     pub enabled: bool,
-    /// Its own names for its radios (Trunk Recorder's unitTagsFile, kept here as text): see [`UnitNames`].
+    /// Which names its radios go by ([`UnitNames`]; the names are kept beside the config: [`SystemNames`]).
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
     /// Its own recording rules; what's left out is as in [`Config::recording`].
@@ -354,6 +483,10 @@ pub struct System {
     /// The tone signals it sends (pages, alerts, digit strings, Morse IDs): see [`SignalDef`].
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<SignalDef>,
+    /// Multi-site: the site (by its name) whose copy of a call is kept for
+    /// the talkgroups whose file row names none (Preferred Site, Preferred NAC).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub preferred_site: String,
     /// Where it is recorded from: one site, or several of one system.
     pub sites: Vec<Site>,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
@@ -480,6 +613,10 @@ fn signals_problem(system: &str, defs: &[SignalDef]) -> Option<String> {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Site {
+    /// Its number, the same across renames and runs, never another site's
+    /// (any system's): what plugins know it by ([`Config::assign_system_ids`]).
+    #[serde(skip_serializing_if = "no_site_id")]
+    pub id: SiteId,
     /// Its name, unique in its system (empty: the system's short name). The
     /// talkgroup file's Preferred Site names it; calls and plugins say it.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -541,6 +678,10 @@ pub struct Site {
 fn is_zero(v: &f64) -> bool {
     *v == 0.0
 }
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 fn is_zero_u16(v: &u16) -> bool {
     *v == 0
 }
@@ -632,6 +773,36 @@ choice! {
         Nxdn = "nxdn",
         /// EDACS Standard or Networked (analog and ProVoice voice).
         Edacs = "edacs",
+    }
+}
+
+/// What a kind of system is, beside its name: one table, which the
+/// interface's `web/src/systemKinds.gen.ts` is written from (the test
+/// `the_webs_system_kinds_are_these` keeps it so).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KindInfo {
+    /// As people write it ("SmartNet").
+    pub label: &'static str,
+    /// Its sites are watched whole, every frequency at once (DMR, NXDN,
+    /// EDACS), not followed by one control channel.
+    pub watched: bool,
+    /// The site-lock fields its control channel states ([`SiteIdentity`]'s,
+    /// as the config writes them), which Setup offers as its site lock. (NXDN
+    /// Type-D states none: [`System::site_lock_fields`]. DMR lists none, though
+    /// a site's `expect` in the config file is still checked.)
+    pub site_lock: &'static [&'static str],
+}
+
+impl SystemKind {
+    pub fn info(self) -> KindInfo {
+        match self {
+            SystemKind::P25 => KindInfo { label: "P25", watched: false, site_lock: &["nac", "wacn", "sysId", "rfss", "site"] },
+            SystemKind::Smartnet => KindInfo { label: "SmartNet", watched: false, site_lock: &["sysId", "site"] },
+            // (Sites told apart by colour code, which a site field of its own holds.)
+            SystemKind::Dmr => KindInfo { label: "DMR", watched: true, site_lock: &[] },
+            SystemKind::Nxdn => KindInfo { label: "NXDN", watched: true, site_lock: &["sysId", "site"] },
+            SystemKind::Edacs => KindInfo { label: "EDACS", watched: true, site_lock: &["site"] },
+        }
     }
 }
 
@@ -769,6 +940,12 @@ impl System {
         self.kind == SystemKind::Edacs
     }
 
+    /// The site-lock fields its control channels state ([`KindInfo::site_lock`]):
+    /// its kind's, but none for NXDN Type-D (its repeaters are told apart by RAN).
+    pub fn site_lock_fields(&self) -> &'static [&'static str] {
+        if self.is_nxdn() && self.nxdn_type == NxdnType::TypeD { &[] } else { self.kind.info().site_lock }
+    }
+
     /// Recording it: enabled, with a site that is.
     pub fn active(&self) -> bool {
         self.enabled && self.sites.iter().any(Site::active)
@@ -873,11 +1050,12 @@ impl Site {
 impl Default for System {
     fn default() -> Self {
         System {
-            id: 0,
+            id: SystemId::default(),
             other: BTreeMap::new(),
             keys: String::new(),
             short_name: "sys1".into(),
             name: String::new(),
+            receive_on: Vec::new(),
             share: false,
             directory: None,
             fcc: BTreeMap::new(),
@@ -890,6 +1068,7 @@ impl Default for System {
             plugins: BTreeMap::new(),
             plugin_delays: vec![],
             signals: vec![],
+            preferred_site: String::new(),
             sites: vec![],
         }
     }
@@ -898,6 +1077,7 @@ impl Default for System {
 impl Default for Site {
     fn default() -> Self {
         Site {
+            id: SiteId::default(),
             name: String::new(),
             directory_id: String::new(),
             enabled: true,
@@ -922,47 +1102,10 @@ impl Default for Site {
     }
 }
 
-/// A P25 site's identity. NAC, WACN and System ID are shown in hex.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", default)]
-pub struct SiteIdentity {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub nac: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wacn: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sys_id: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rfss: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub site: Option<u32>,
-}
-
-/// What a control channel says of itself, as the config writes a site's
-/// identity: the one shape status, the survey and the config share.
-impl From<&Identity> for SiteIdentity {
-    fn from(id: &Identity) -> Self {
-        SiteIdentity {
-            nac: id.get(IdField::Nac).map(|v| v as u16),
-            wacn: id.get(IdField::Wacn),
-            sys_id: id.get(IdField::SysId),
-            rfss: id.get(IdField::Rfss),
-            site: id.get(IdField::Site),
-        }
-    }
-}
-
-impl SiteIdentity {
-    pub(crate) fn engine(&self) -> Identity {
-        let mut id = Identity::default();
-        id.set_opt(IdField::Nac, self.nac.map(u32::from));
-        id.set_opt(IdField::Wacn, self.wacn);
-        id.set_opt(IdField::SysId, self.sys_id);
-        id.set_opt(IdField::Rfss, self.rfss);
-        id.set_opt(IdField::Site, self.site);
-        id
-    }
-}
+/// A site's identity: what a site expects (`expect`), and what a control channel said of
+/// itself in status and the survey. NAC, WACN and System ID are shown in hex. (The plugin
+/// SDK's: plugins are told it too.)
+pub use trunk_core::trunk::identity::SiteIdentity;
 
 /// A conventional system (Trunk Recorder's `conventional`, `conventionalP25`
 /// and `conventionalDMR` systems): channels of one frequency each, found by
@@ -983,7 +1126,7 @@ impl SiteIdentity {
 pub struct Conventional {
     /// Its number, as a trunked system's ([`System::id`]): numbered together.
     #[serde(skip_serializing_if = "no_id")]
-    pub id: u32,
+    pub id: SystemId,
     /// Folder and record name of its calls (Trunk Recorder's shortName).
     pub short_name: String,
     /// What people call it ("County Fire"); the short name is its folder.
@@ -1023,7 +1166,7 @@ pub struct Conventional {
     /// Their own recording rules; what's left out is as in [`Config::recording`].
     #[serde(skip_serializing_if = "RecordingOverride::is_empty")]
     pub recording: RecordingOverride,
-    /// Names for the radios heard on them.
+    /// Which names the radios heard on them go by (as [`System::unit_names`]).
     #[serde(skip_serializing_if = "UnitNames::is_empty")]
     pub unit_names: UnitNames,
     /// The encryption keys its P25 channels decrypt with (as [`System::keys`]).
@@ -1035,18 +1178,13 @@ pub struct Conventional {
     pub other: BTreeMap<String, serde_json::Value>,
 }
 
-/// Names for a system's radios: Trunk Recorder's unitTagsFile (headerless
-/// `unit,name` lines; a unit between slashes is a regular expression) and
-/// unitTagsMode: "user" (these first, then the talker aliases heard),
-/// "ota" (the aliases first), "user_only" or "none".
+/// Which names a system's radios go by — Trunk Recorder's unitTagsMode:
+/// "user" (its own names first, then the talker aliases heard), "ota" (the
+/// aliases first), "user_only" or "none". Its own names (Trunk Recorder's
+/// unitTagsFile) are kept beside the config ([`SystemNames::unit_names`]).
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct UnitNames {
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub csv: String,
-    /// The file it came from.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub name: String,
     #[serde(skip_serializing_if = "is_default")]
     pub mode: UnitNamesMode,
 }
@@ -1055,15 +1193,12 @@ impl UnitNames {
     pub fn is_empty(&self) -> bool {
         *self == UnitNames::default()
     }
-    fn engine(&self) -> UnitTags {
-        UnitTags::parse_csv(&self.csv, self.mode.engine()).0
-    }
 }
 
 impl Default for Conventional {
     fn default() -> Self {
         Conventional {
-            id: 0,
+            id: SystemId::default(),
             other: BTreeMap::new(),
             keys: String::new(),
             short_name: "conv".into(),
@@ -1150,8 +1285,9 @@ impl Demod {
 
     /// Channel `c`'s tuning: the mode's (and frequency's) defaults, with these and its bandwidth.
     fn tuning(&self, c: &Channel) -> AnalogTuning {
-        let mut t = if c.mode == ChannelMode::Am { AnalogTuning::am(c.freq_hz) } else { AnalogTuning::default() };
-        if let Some(khz) = c.bandwidth_khz {
+        let mut t = if c.mode == ConvMode::Am { AnalogTuning::am(c.freq_hz) } else { AnalogTuning::default() };
+        // (Its analog receiver's: an auto channel opens as wide as it.)
+        if let Some(khz) = c.bandwidth_khz.filter(|_| c.mode.has_analog_receiver()) {
             t.half_bw_hz = khz * 500.0;
         }
         if self.fm_deemphasis == Some(false) {
@@ -1173,43 +1309,12 @@ impl Demod {
     }
 }
 
-choice! {
-    pub enum ChannelMode {
-        /// Analog FM (narrowband unless its bandwidth says wide).
-        #[default]
-        Fm = "fm",
-        /// Analog AM (airband).
-        Am = "am",
-        /// P25 Phase 1.
-        P25 = "p25",
-        /// DMR (both slots).
-        Dmr = "dmr",
-        /// NXDN at 4800 bps (6.25 kHz).
-        Nxdn48 = "nxdn48",
-        /// NXDN at 9600 bps (12.5 kHz).
-        Nxdn96 = "nxdn96",
-    }
-}
-
-impl ChannelMode {
-    pub fn conv(self) -> ConvMode {
-        match self {
-            ChannelMode::Fm => ConvMode::Fm,
-            ChannelMode::Am => ConvMode::Am,
-            ChannelMode::P25 => ConvMode::P25,
-            ChannelMode::Dmr => ConvMode::Dmr,
-            ChannelMode::Nxdn48 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N48),
-            ChannelMode::Nxdn96 => ConvMode::Nxdn(trunk_core::nxdn::Rate::N96),
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
     pub freq_hz: f64,
     #[serde(default)]
-    pub mode: ChannelMode,
+    pub mode: ConvMode,
     /// Short name (Trunk Recorder's alpha tag).
     #[serde(default)]
     pub name: String,
@@ -1248,6 +1353,10 @@ pub struct Channel {
     pub bandwidth_khz: Option<f64>,
     #[serde(default = "yes")]
     pub enabled: bool,
+    /// The sources it may be received on, by label (as [`System::receive_on`]);
+    /// empty: any. Rows sharing a frequency share them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub receive_on: Vec<String>,
     /// Its calls' carrier offsets score its source's AutoTune (digital rows;
     /// a repeater output to trust, not radios on simplex). Off by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1259,7 +1368,8 @@ fn usrp_gain() -> f64 {
     40.0
 }
 
-fn yes() -> bool {
+/// `true`, as a serde default.
+pub(crate) fn yes() -> bool {
     true
 }
 
@@ -1287,7 +1397,7 @@ pub fn keep_p25_numbers(channels: &mut [Channel]) -> usize {
     for i in 0..channels.len() {
         let c = &channels[i];
         let shared = channels.iter().filter(|o| (o.freq_hz - c.freq_hz).abs() < 1.0).count() > 1;
-        if c.mode == ChannelMode::P25 && shared && c.talkgroup.is_none() {
+        if c.mode == ConvMode::P25 && shared && c.talkgroup.is_none() {
             channels[i].talkgroup = Some(defaults[i]);
             n += 1;
         }
@@ -1296,25 +1406,37 @@ pub fn keep_p25_numbers(channels: &mut [Channel]) -> usize {
 }
 
 impl Channel {
-    pub fn conv_mode(&self) -> ConvMode {
-        self.mode.conv()
-    }
-
-    /// FM or AM.
-    pub fn analog(&self) -> bool {
-        matches!(self.mode, ChannelMode::Fm | ChannelMode::Am)
+    /// A row on `freq_hz` in `mode`, recording anything it hears, named nothing.
+    pub fn new(freq_hz: f64, mode: ConvMode) -> Channel {
+        Channel {
+            freq_hz,
+            mode,
+            name: String::new(),
+            talkgroup: None,
+            code: String::new(),
+            slot: None,
+            match_talkgroup: None,
+            description: String::new(),
+            tag: String::new(),
+            group: String::new(),
+            squelch_db: None,
+            bandwidth_khz: None,
+            enabled: true,
+            receive_on: Vec::new(),
+            auto_tune: false,
+        }
     }
 
     /// What it records (code, slot and talkgroup), read for its mode.
     pub fn parsed_access(&self) -> Result<Option<Access>, String> {
-        Access::join(self.conv_mode(), &self.code, self.slot, self.match_talkgroup)
+        Access::join(self.mode, &self.code, self.slot, self.match_talkgroup)
     }
 
     /// `code`, `slot` and `matchTalkgroup` from one string as people write
     /// it (`CC1 TS2 TG201`, `NAC 293 TG 1`, `151.4`): the old `tone`, a
     /// RadioReference paste. Left as it is if it doesn't read.
     pub fn set_access(&mut self, text: &str) -> Result<(), String> {
-        let (code, slot, tg) = Access::parse(self.conv_mode(), text)?.map_or((String::new(), None, None), Access::parts);
+        let (code, slot, tg) = Access::parse(self.mode, text)?.map_or((String::new(), None, None), Access::parts);
         (self.code, self.slot, self.match_talkgroup) = (code, slot, tg);
         Ok(())
     }
@@ -1324,12 +1446,12 @@ impl Channel {
         let named = !(self.name.is_empty() && self.description.is_empty() && self.tag.is_empty() && self.group.is_empty());
         ConvChannel {
             freq_hz: self.freq_hz,
-            mode: self.conv_mode(),
+            mode: self.mode,
             talkgroup: self.talkgroup,
             default_talkgroup,
             info: named.then(|| Talkgroup {
                 number: tg,
-                mode: if self.analog() { "A".into() } else { "D".into() },
+                mode: self.mode.talkgroup_mode().into(),
                 alpha_tag: self.name.clone(),
                 description: self.description.clone(),
                 tag: self.tag.clone(),
@@ -1344,6 +1466,7 @@ impl Channel {
             access: self.parsed_access().ok().flatten(),
             system: 0,
             analog: Demod::default().tuning(self),
+            pins: Default::default(),
         }
     }
 }
@@ -1507,6 +1630,14 @@ pub struct PluginSetup {
     /// Give it calls decrypted with the recorder's keys (their audio and files). Off: none are.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub share_decrypted: bool,
+    /// The systems it's turned off for: nothing about them is sent to it (one that takes
+    /// every system's figures, `totals`, can't be: [`trunk_recorder_plugin::Manifest::per_system`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub systems_off: Vec<SystemId>,
+    /// The sites it's turned off for (as `systems_off`, by [`SiteId`]): their
+    /// unit events and status aren't sent, nor a recorded call only they heard.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites_off: Vec<SiteId>,
 }
 
 /// Plugins wait this long for some calls: those its fields pick, each left
@@ -1592,7 +1723,6 @@ impl Recording {
     fn save_rules(&self) -> SaveRules {
         SaveRules {
             keep_silent: self.keep_silent_calls,
-            keep_encrypted: self.record_encrypted,
             min_call_s: self.min_call_s.max(0.0),
             min_transmission_s: self.min_transmission_s.max(0.0),
             normalize: self.normalize_audio,
@@ -1636,6 +1766,18 @@ pub struct Server {
     /// empty for https://trunkrecorder.pro; another for testing one.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub trp_api: String,
+    /// Who may use the API, on every interface's port: off unless enabled.
+    #[serde(skip_serializing_if = "is_default")]
+    pub auth: Auth,
+    /// Serve HTTPS, on every interface's port: off (plain HTTP) unless set.
+    /// Read as the app starts; a renewed certificate is picked up without a restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls: Option<Tls>,
+    /// The name this computer is reached by over HTTPS (`radio.tail1234.ts.net`, the one its
+    /// certificate is for): the URLs the recorder logs and opens, and where passkeys work
+    /// besides `localhost` (browsers allow them on no IP address). Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hostname: String,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1644,11 +1786,310 @@ pub struct Server {
 
 impl Default for Server {
     fn default() -> Self {
-        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), other: BTreeMap::new() }
+        Server { bind: "127.0.0.1".into(), port: 8080, auto_start: false, allowed_origins: vec![], interfaces: BTreeMap::new(), trp_api: String::new(), auth: Auth::default(), tls: None, hostname: String::new(), other: BTreeMap::new() }
+    }
+}
+
+/// HTTPS: a certificate (its chain, leaf first) and its private key, PEM
+/// files, each absolute, `~/…` or relative to the config file's folder
+/// (`tailscale cert`'s, Let's Encrypt's `fullchain.pem` and `privkey.pem`, mkcert's).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Tls {
+    pub cert: String,
+    pub key: String,
+    /// Tell browsers to come back over HTTPS alone, for a year
+    /// (`Strict-Transport-Security`): every port of this host name, other
+    /// programs' plain HTTP on it too, so off unless set.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hsts: bool,
+}
+
+impl Tls {
+    /// Where its certificate and key are, for the config at `config_path`.
+    pub fn paths(&self, config_path: &Path) -> (PathBuf, PathBuf) {
+        let at = |f: &str| {
+            let f = f.trim();
+            match f.strip_prefix("~/") {
+                Some(rest) => home().join(rest),
+                None if Path::new(f).is_absolute() => PathBuf::from(f),
+                None => config_path.parent().unwrap_or(Path::new(".")).join(f),
+            }
+        };
+        (at(&self.cert), at(&self.key))
+    }
+}
+
+/// Signing in to the API: the people and programs who may, each with a role
+/// and what they sign in with (an access token, passkeys). Enabled, a request
+/// gets the lower of its port's access and its user's role (`anonymous`
+/// without one; none: it must sign in); off, its port's alone.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Auth {
+    pub enabled: bool,
+    /// What a request without a user may do (control would be the same as off).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anonymous: Option<ApiAccess>,
+    /// Who may sign in, by name.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub users: BTreeMap<String, AuthUser>,
+    /// Signed in by a reverse proxy in front, which says who in a header: off unless set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<AuthProxy>,
+}
+
+/// A reverse proxy that signs people in itself (Authelia, Authentik,
+/// oauth2-proxy, `tailscale serve`) and says who in `header`: believed from
+/// the addresses in `from` alone. Or Cloudflare Access (`cloudflare`): who
+/// its signed token says, wherever the request comes from (the signature is
+/// the proof; `from` and `header` aren't used). The name it gives is the
+/// recorder's user of that name (or the one `users` maps it to), with their
+/// role; a name that's no user here gets `other` (none: not signed in).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AuthProxy {
+    /// The proxy's addresses: IPs or CIDR blocks ("127.0.0.1", "10.0.0.0/8", "fd7a:115c:a1e0::/48").
+    pub from: Vec<String>,
+    pub header: String,
+    /// Cloudflare Access in front: its token (`Cf-Access-Jwt-Assertion`), checked, says who.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloudflare: Option<AuthCloudflare>,
+    /// The proxy's names for recorder users, where they differ ("luke@example.com": "luke").
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub users: BTreeMap<String, String>,
+    /// What a name that's no user here may do (control is refused).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub other: Option<ApiAccess>,
+}
+
+impl Default for AuthProxy {
+    fn default() -> Self {
+        AuthProxy { from: vec![], header: "Remote-User".into(), cloudflare: None, users: BTreeMap::new(), other: None }
+    }
+}
+
+/// Cloudflare Access's application in front: its team (the name, or
+/// `https://<team>.cloudflareaccess.com`), whose keys sign its tokens, and the
+/// application's Audience (AUD) tag, which its tokens are for.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AuthCloudflare {
+    pub team: String,
+    pub aud: String,
+}
+
+impl AuthCloudflare {
+    /// The team's URL, its tokens' issuer (`https://<team>.cloudflareaccess.com`), if `team` is a team name (or that URL).
+    pub fn issuer(&self) -> Option<String> {
+        let t = self.team.trim().to_ascii_lowercase();
+        let t = t.trim_end_matches('/');
+        let name = match t.strip_prefix("https://") {
+            Some(host) => host.strip_suffix(".cloudflareaccess.com")?,
+            None => t,
+        };
+        // (A DNS label: letters, digits and hyphens, not at either end.)
+        let label = !name.is_empty() && name.len() <= 63 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') && !name.starts_with('-') && !name.ends_with('-');
+        label.then(|| format!("https://{name}.cloudflareaccess.com"))
+    }
+
+    /// Why it can't be so, if it can't: a team that's no team name, or no Audience tag.
+    fn problem(&self) -> Option<String> {
+        if self.issuer().is_none() {
+            return Some(format!("Cloudflare's team \"{}\" isn't a team name (the part before .cloudflareaccess.com, or that URL).", self.team.trim()));
+        }
+        if self.aud.trim().is_empty() || self.aud.trim().chars().any(char::is_whitespace) {
+            return Some("Cloudflare needs the application's Audience (AUD) tag: its tokens are checked for it.".into());
+        }
+        None
+    }
+}
+
+impl AuthProxy {
+    /// Whether `ip` is one of the proxy's addresses (an IPv4 address as IPv6, `::ffff:a.b.c.d`, as itself).
+    pub fn trusts(&self, ip: std::net::IpAddr) -> bool {
+        self.from.iter().filter_map(|n| net(n).ok()).any(|(base, bits)| in_net(ip.to_canonical(), base, bits))
+    }
+
+    /// Why it can't be so, if it can't: Cloudflare's set as it can't be; else no addresses, one that isn't or a
+    /// block of every address (`0.0.0.0/0`, `::/0`), a header that's no header name; or control for anyone.
+    /// (One that can't be so, written into the config by hand, signs nobody in.)
+    pub fn problem(&self) -> Option<String> {
+        if self.other == Some(ApiAccess::Control) {
+            return Some("Control access for whoever the proxy lets in is the same as signing in turned off: give others listen access or none.".into());
+        }
+        if let Some(cf) = &self.cloudflare {
+            return cf.problem();
+        }
+        if self.from.is_empty() {
+            return Some("The proxy needs its addresses (proxy from): the header is believed from them alone.".into());
+        }
+        if let Some(e) = self.from.iter().find_map(|n| net(n).err()) {
+            return Some(format!("The proxy's addresses: {e}"));
+        }
+        // (Every address: anyone who sends the header is whoever it names.)
+        if let Some(n) = self.from.iter().find(|n| net(n).is_ok_and(|(_, bits)| bits == 0)) {
+            return Some(format!("The proxy's addresses: \"{}\" is every address, so anyone could say who they are: the same as signing in turned off.", n.trim()));
+        }
+        // (RFC 9110's token characters.)
+        if self.header.is_empty() || !self.header.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)) {
+            return Some(format!("The proxy's header \"{}\" isn't a header name (Remote-User, X-Forwarded-User…).", self.header));
+        }
+        None
+    }
+}
+
+/// An address or CIDR block ("10.0.0.0/8", "::1"): its address and how many bits of it count, or why it isn't one.
+fn net(s: &str) -> Result<(std::net::IpAddr, u8), String> {
+    let s = s.trim();
+    let (ip, bits) = match s.split_once('/') {
+        Some((ip, bits)) => (ip, Some(bits)),
+        None => (s, None),
+    };
+    let ip = ip.parse::<std::net::IpAddr>().map_err(|_| format!("\"{s}\" isn't an IP address or CIDR block (\"127.0.0.1\", \"10.0.0.0/8\", \"fd7a:115c:a1e0::/48\")."))?.to_canonical();
+    let max = if ip.is_ipv4() { 32 } else { 128 };
+    match bits {
+        None => Ok((ip, max)),
+        Some(b) => b.parse::<u8>().ok().filter(|b| *b <= max).map(|b| (ip, b)).ok_or_else(|| format!("\"{s}\": a block's bits are 0 to {max}.")),
+    }
+}
+
+/// Whether `ip` is in the block of `base`'s first `bits` bits.
+fn in_net(ip: std::net::IpAddr, base: std::net::IpAddr, bits: u8) -> bool {
+    use std::net::IpAddr::{V4, V6};
+    let keep = |width: u32| if bits == 0 { 0 } else { u128::MAX << (width - bits as u32) };
+    match (ip, base) {
+        (V4(a), V4(b)) => (u32::from(a) as u128 ^ u32::from(b) as u128) & keep(32) & u32::MAX as u128 == 0,
+        (V6(a), V6(b)) => (u128::from(a) ^ u128::from(b)) & keep(128) == 0,
+        _ => false,
+    }
+}
+
+/// Someone (or a program) who may sign in: what they may do, and what they
+/// sign in with. With neither a token nor a passkey they can't sign in (yet).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthUser {
+    pub access: ApiAccess,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<AuthToken>,
+    /// Their passkeys, each a device (or password manager) of theirs: added
+    /// by them, signed in, from a browser.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub passkeys: Vec<AuthPasskey>,
+}
+
+/// An access token: its secret's SHA-256 (hex), never the secret.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthToken {
+    pub hash: String,
+    /// When it was made, Unix s.
+    #[serde(default)]
+    pub created: i64,
+}
+
+/// A passkey: what it's called, when it was added, its credential id
+/// (base64url) and `key`, WebAuthn's record of it (webauthn-rs's `Passkey`,
+/// as it serializes: its public key, counter and flags; nothing secret), which
+/// the recorder alone reads, as it was added (its count of sign-ins since is
+/// kept beside the config, not here: signing in changes no config).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthPasskey {
+    pub name: String,
+    /// When it was added, Unix s.
+    #[serde(default)]
+    pub created: i64,
+    pub id: String,
+    pub key: serde_json::Value,
+}
+
+impl AuthUser {
+    /// Whether they have anything to sign in with: a token or a passkey.
+    pub fn can_sign_in(&self) -> bool {
+        self.token.is_some() || !self.passkeys.is_empty()
+    }
+}
+
+impl Auth {
+    /// Why it can't be so, if it can't: a proxy set as it can't be (on or
+    /// off); enabled, someone must still be able to turn it off again (a
+    /// control user who can sign in, or whom the proxy can name), and
+    /// anonymous control is off. (Locked out all the same, the proxy gone
+    /// wrong: `trunk-pro access off` on the recorder's computer.)
+    pub fn problem(&self) -> Option<String> {
+        if let Some(why) = self.proxy.as_ref().and_then(AuthProxy::problem) {
+            return Some(why);
+        }
+        if !self.enabled {
+            return None;
+        }
+        if self.anonymous == Some(ApiAccess::Control) {
+            return Some("Anonymous control access is the same as signing in turned off: give anonymous listen access or none.".into());
+        }
+        if !self.users.values().any(|u| u.access == ApiAccess::Control && (u.can_sign_in() || self.proxy.is_some())) {
+            return Some("Signing in needs a user with control access and an access token (or a passkey, or a proxy that signs them in) first, or nobody could turn it off again.".into());
+        }
+        None
+    }
+
+    /// Who the proxy's name `asserted` is here, and what they may do: the
+    /// user it's mapped to (`proxy.users`), else the user of that name, with
+    /// their role; else, by its own name, `proxy.other`'s. None: no proxy, or
+    /// nothing for them.
+    pub fn proxied(&self, asserted: &str) -> Option<(String, ApiAccess)> {
+        let p = self.proxy.as_ref()?;
+        let name = p.users.get(asserted).map_or(asserted, String::as_str);
+        match self.users.get(name) {
+            Some(u) => Some((name.to_string(), u.access)),
+            None => Some((asserted.to_string(), p.other?)),
+        }
     }
 }
 
 impl Server {
+    /// "https" with `tls` set, else "http": its interfaces' URLs.
+    pub fn scheme(&self) -> &'static str {
+        if self.tls.is_some() { "https" } else { "http" }
+    }
+
+    /// `hostname` as a host name is compared (trimmed, lowercase, no final dot, no port), if set.
+    pub fn host(&self) -> Option<String> {
+        let (name, _) = self.hostname_parts();
+        let h = name.trim_end_matches('.').to_ascii_lowercase();
+        (!h.is_empty()).then_some(h)
+    }
+
+    /// The port written in `hostname` ("radio.example.com:8443": where the
+    /// dashboard is reached, a proxy's port in front), if one is.
+    pub fn host_port(&self) -> Option<u16> {
+        self.hostname_parts().1
+    }
+
+    fn hostname_parts(&self) -> (&str, Option<u16>) {
+        let h = self.hostname.trim();
+        match h.rsplit_once(':') {
+            Some((name, port)) => match port.parse::<u16>() {
+                Ok(p) if p > 0 => (name, Some(p)),
+                _ => (name, None),
+            },
+            None => (h, None),
+        }
+    }
+
+    /// The host name of the URLs its ports are at, when it listens on `bind`:
+    /// `hostname`, else localhost for all addresses or the loopback one, else
+    /// the address.
+    pub fn url_host(&self, bind: &str) -> String {
+        match bind.trim().parse::<std::net::IpAddr>() {
+            _ if self.host().is_some() => self.host().unwrap_or_default(),
+            Ok(ip) if ip.is_unspecified() || ip.is_loopback() => "localhost".into(),
+            Ok(std::net::IpAddr::V6(ip)) => format!("[{ip}]"),
+            _ => bind.trim().to_string(),
+        }
+    }
+
     /// The trunkrecorder.pro API's base URL (no trailing slash).
     pub fn trp_api_base(&self) -> &str {
         let t = self.trp_api.trim().trim_end_matches('/');
@@ -1749,6 +2190,8 @@ pub const RTL_DEFAULT_GAIN_DB: f64 = 25.4;
 pub struct CallSystem<'a> {
     /// The number its calls carry (`Call::system`).
     pub index: u16,
+    /// Its number in the config: what's kept of it goes by.
+    pub id: SystemId,
     pub short_name: &'a str,
     /// "p25", "smartnet", "dmr", "nxdn", "edacs" or "conventional".
     pub kind: &'static str,
@@ -1797,8 +2240,11 @@ pub struct Config {
     pub conventional: Vec<Conventional>,
     /// The next system id to give ([`Config::assign_system_ids`]): above every
     /// one given, so a removed system's id is never given again.
-    #[serde(skip_serializing_if = "no_id")]
+    #[serde(skip_serializing_if = "is_zero_u32")]
     pub next_system_id: u32,
+    /// The next site id to give, as [`Config::next_system_id`] (any system's sites).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub next_site_id: u32,
     pub recording: Recording,
     pub server: Server,
     /// The plugins, by id: on or off, and their settings for the whole recorder.
@@ -1817,6 +2263,9 @@ pub struct Config {
     pub storage: StorageSettings,
     /// The dashboard's watch on the computer (desktop app).
     pub monitor: MonitorSettings,
+    /// Rules that record what the radios receive when something happens (desktop app).
+    #[serde(skip_serializing_if = "Diagnostics::is_empty")]
+    pub diagnostics: Diagnostics,
     /// Keys this version doesn't know (a newer version's, a hand edit's):
     /// kept, and saved back as they were.
     #[serde(flatten)]
@@ -1892,10 +2341,11 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             other: BTreeMap::new(),
-            sources: vec![Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }],
+            sources: vec![Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() }],
             systems: vec![],
             conventional: vec![],
             next_system_id: 0,
+            next_site_id: 0,
             recording: Recording::default(),
             server: Server::default(),
             plugins: BTreeMap::new(),
@@ -1903,6 +2353,7 @@ impl Default for Config {
             keys: BTreeMap::new(),
             log: LogSettings::default(),
             storage: StorageSettings::default(),
+            diagnostics: Diagnostics::default(),
             monitor: MonitorSettings::default(),
             notes: vec![],
             numbered: false,
@@ -1945,6 +2396,14 @@ pub struct StorageSettings {
     /// system (on the Pi's eMMC, a call a second: 1.6 GB a day with it, 0.8
     /// without; `db::tests::day_write_budget`).
     pub radio_index: bool,
+    /// Radios the radio registry keeps a system: past it, the least
+    /// recently heard go (talkgroups a quarter as many, 5,000 at least).
+    /// It's held in memory: about 2 kB a radio. 0: no cap (`registry_days`
+    /// alone bounds it).
+    pub registry_radios: u32,
+    /// Days a talkgroup, radio or pair the registry hasn't heard is kept;
+    /// 0 keeps it however old.
+    pub registry_days: u32,
     /// Index each call by its talkgroup, for a talkgroup's call list (the
     /// same, asking by `talkgroup`); off, a talkgroup's list is its recent
     /// calls. About a third as costly as the radio index.
@@ -1958,7 +2417,7 @@ impl StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true }
+        StorageSettings { backend: StorageBackend::Sqlite, low_write: false, url: String::new(), retention_days: 120, commit_seconds: 300, stats_days: 365, radio_index: true, talkgroup_index: true, registry_radios: 20_000, registry_days: 365 }
     }
 }
 
@@ -1975,24 +2434,44 @@ pub enum StorageBackend {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct MonitorSettings {
-    /// Where to check the internet answers (`host:port`, a TCP connect every
-    /// 15 s): the uplink's history. Empty: no checks.
-    pub probe_hosts: Vec<String>,
-    /// Off: neither the internet checks nor the time server are asked,
-    /// whatever's set (the dashboard's Network switch). Applies at once.
+    /// Hosts to check the network reaches (`host:port`, a TCP connect every
+    /// `check_every_s`): the connection's history. Empty (the default): none,
+    /// and the dashboard goes by the services the plugins report. Applies at once.
+    pub check_hosts: Vec<String>,
+    /// How often each of `check_hosts` is tried, s (5 at least).
+    pub check_every_s: u64,
+    /// Off: neither `check_hosts` nor the time server are asked, whatever's
+    /// set (the dashboard's Network switch). Applies at once.
     pub network_checks: bool,
     /// The time server asked how far off the clock is (SNTP, every 15
     /// minutes; a name or address, port 123 unless given). It only measures:
     /// the operating system's time service keeps the clock. Empty: not asked.
+    /// Applies at once.
     pub time_server: String,
     /// The clock off by this much or more, ms: a warning, and calls marked
     /// `clock_off` (a problem at 5 s, or 4 times this). Applies at once.
     pub clock_warn_ms: f64,
+    /// Ask GitHub once a day for the app's latest release: the dashboard
+    /// says when there's a newer one. Applies at once.
+    pub check_updates: bool,
 }
 
 impl Default for MonitorSettings {
     fn default() -> Self {
-        MonitorSettings { probe_hosts: vec!["1.1.1.1:443".into(), "dns.google:443".into()], network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0 }
+        MonitorSettings { check_hosts: Vec::new(), check_every_s: 15, network_checks: true, time_server: "pool.ntp.org".into(), clock_warn_ms: 250.0, check_updates: true }
+    }
+}
+
+impl MonitorSettings {
+    /// The hosts to check now and how often: none while the checks are off.
+    pub fn checks(&self) -> (Vec<String>, std::time::Duration) {
+        let hosts = if self.network_checks { self.check_hosts.iter().map(|h| h.trim().to_string()).filter(|h| !h.is_empty()).collect() } else { Vec::new() };
+        (hosts, std::time::Duration::from_secs(self.check_every_s.max(5)))
+    }
+
+    /// The time server to ask now: none while the checks are off.
+    pub fn time_server(&self) -> Option<String> {
+        Some(self.time_server.trim().to_string()).filter(|s| self.network_checks && !s.is_empty())
     }
 }
 
@@ -2039,7 +2518,7 @@ pub fn default_capture_dir() -> PathBuf {
 
 /// A source's `type` names its kind (the tag of [`Source`]), read in any case
 /// as the other closed choices are (`"RTLSDR"` is `"rtlsdr"`).
-const SOURCE_TYPES: [&str; 7] = ["rtlsdr", "usrp", "airspy", "bladerf", "hackrf", "soapy", "file"];
+const SOURCE_TYPES: [&str; 8] = ["rtlsdr", "usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "soapy", "file"];
 
 fn source_types(v: &mut serde_json::Value) {
     for s in v.get_mut("sources").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
@@ -2100,9 +2579,9 @@ impl Config {
     /// defaults when there's no file yet. A file that isn't a config is an
     /// error, not the defaults (which would be saved over it).
     pub fn load(path: &Path) -> Result<Config, String> {
-        // An older config's talkgroup files are written beside it first: whoever
-        // reads it (the desktop app, its command lines) then saves it without them.
-        crate::migrate::move_talkgroups(path).map_err(|e| format!("{}: couldn't move its talkgroup files out of it ({e})", path.display()))?;
+        // An older config's talkgroup files and unit names are written beside it first:
+        // whoever reads it (the desktop app, its command lines) then saves it without them.
+        crate::migrate::move_files_out(path).map_err(|e| format!("{}: couldn't move its talkgroup files or unit names out of it ({e})", path.display()))?;
         let mut c: Config = match std::fs::read_to_string(path) {
             Ok(s) => Config::from_json(&s).map_err(|e| format!("{}: not a config this version reads ({e})", path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
@@ -2131,14 +2610,36 @@ impl Config {
 
     /// Give every system (trunked and conventional) without an id the next
     /// one, and a second with the same id one of its own; [`Config::next_system_id`]
-    /// stays above them all, so an id is never given twice.
-    /// Whether any was given one.
+    /// stays above them all, so an id is never given twice. Sites the same,
+    /// from [`Config::next_site_id`]. Whether any was given one.
     pub fn assign_system_ids(&mut self) -> bool {
-        let given = self.systems.iter().map(|s| s.id).chain(self.conventional.iter().map(|c| c.id)).max().unwrap_or(0);
+        let sites = self.assign_site_ids();
+        self.assign_ids_of_systems() || sites
+    }
+
+    fn assign_site_ids(&mut self) -> bool {
+        let given = self.systems.iter().flat_map(|s| &s.sites).map(|s| s.id.0).max().unwrap_or(0);
+        let mut next = self.next_site_id.max(given + 1);
+        let mut seen = std::collections::HashSet::new();
+        let mut any = false;
+        for id in self.systems.iter_mut().flat_map(|s| &mut s.sites).map(|s| &mut s.id.0) {
+            if *id == 0 || !seen.insert(*id) {
+                *id = next;
+                seen.insert(next);
+                next += 1;
+                any = true;
+            }
+        }
+        self.next_site_id = next;
+        any
+    }
+
+    fn assign_ids_of_systems(&mut self) -> bool {
+        let given = self.systems.iter().map(|s| s.id.0).chain(self.conventional.iter().map(|c| c.id.0)).max().unwrap_or(0);
         let mut next = self.next_system_id.max(given + 1);
         let mut seen = std::collections::HashSet::new();
         let mut given = false;
-        for id in self.systems.iter_mut().map(|s| &mut s.id).chain(self.conventional.iter_mut().map(|c| &mut c.id)) {
+        for id in self.systems.iter_mut().map(|s| &mut s.id.0).chain(self.conventional.iter_mut().map(|c| &mut c.id.0)) {
             if *id == 0 || !seen.insert(*id) {
                 *id = next;
                 seen.insert(next);
@@ -2150,8 +2651,14 @@ impl Config {
         given
     }
 
+    /// The id of the system (trunked or conventional) named `short_name` now:
+    /// how a name given from outside (the interface, a plugin) is resolved.
+    pub fn id_of(&self, short_name: &str) -> Option<SystemId> {
+        self.system_ids().find(|(_, n)| *n == short_name).map(|(id, _)| id)
+    }
+
     /// Each system's id and short name (trunked, then conventional).
-    pub fn system_ids(&self) -> impl Iterator<Item = (u32, &str)> {
+    pub fn system_ids(&self) -> impl Iterator<Item = (SystemId, &str)> {
         self.systems.iter().map(|s| (s.id, s.short_name.as_str())).chain(self.conventional.iter().map(|c| (c.id, c.short_name.as_str())))
     }
 
@@ -2183,7 +2690,7 @@ impl Config {
 
     /// Some system that records names encryption keys.
     pub fn has_keys(&self) -> bool {
-        self.active_systems().any(|s| !s.keys.trim().is_empty()) || self.conventional.iter().any(|c| c.enabled && !c.keys.trim().is_empty())
+        self.key_users().next().is_some()
     }
 
     /// Read the key sources the systems name, each once: its keys and the
@@ -2214,7 +2721,7 @@ impl Config {
     /// (A system that records, the key source it names), for each that names one.
     fn key_users(&self) -> impl Iterator<Item = (&String, &str)> {
         let trunked = self.active_systems().map(|s| (&s.short_name, s.keys.trim()));
-        trunked.chain(self.conventional.iter().filter(|c| c.enabled).map(|c| (&c.short_name, c.keys.trim()))).filter(|(_, k)| !k.is_empty())
+        trunked.chain(self.active_conventional().map(|c| (&c.short_name, c.keys.trim()))).filter(|(_, k)| !k.is_empty())
     }
 
     /// The key sources the systems name that are unlocked from the interface (a
@@ -2317,6 +2824,7 @@ impl Config {
                 e.system = first + k;
                 e.squelch_db = Some(e.squelch_db.unwrap_or(v.squelch_db));
                 e.analog = v.demod.tuning(c);
+                e.pins = self.pins(&c.receive_on);
                 out.push(e);
             }
         }
@@ -2325,14 +2833,14 @@ impl Config {
 
     /// What conventional rows name talkgroups known before a call is heard
     /// ([`ConvChannel::names_ahead`]), by system short name: the dashboard's
-    /// names for them, ahead of the talkgroup file's, as a call's are. (A
+    /// names for them, ahead of the system's talkgroups', as a call's are. (A
     /// number that comes from the air is named by the calls that carry it.)
-    pub fn row_talkgroups(&self) -> HashMap<String, Talkgroups> {
-        let names: Vec<&str> = self.active_systems().map(|s| s.short_name.as_str()).chain(self.active_conventional().map(|v| v.short_name.as_str())).collect();
-        let mut out: HashMap<String, Talkgroups> = HashMap::new();
+    pub fn row_talkgroups(&self) -> HashMap<SystemId, Talkgroups> {
+        let ids: Vec<SystemId> = self.call_systems().iter().map(|s| s.id).collect();
+        let mut out: HashMap<SystemId, Talkgroups> = HashMap::new();
         for c in self.engine_channels() {
-            if let (Some(t), Some(name)) = (c.names_ahead(), names.get(c.system)) {
-                out.entry(name.to_string()).or_default().entry(t.number).or_insert_with(|| t.clone());
+            if let (Some(t), Some(id)) = (c.names_ahead(), ids.get(c.system)) {
+                out.entry(*id).or_default().entry(t.number).or_insert_with(|| t.clone());
             }
         }
         out
@@ -2361,46 +2869,177 @@ impl Config {
         self.active_sites().nth(site as usize)
     }
 
-    /// Each source's centre: as set, or (0 = auto) placed over what the
-    /// sources before it don't cover yet — every system (control and known
-    /// voice channels) and the conventional channels if they fit together,
-    /// else the control and conventional channels, else the first uncovered
-    /// system, else its control channels alone.
+    /// Each source's centre: as set, or (0 = auto) where [`place_sources`]
+    /// puts it — over a site's control channels (or a conventional system's
+    /// channels) not reached yet, then the most channels still out of reach,
+    /// else alongside the others; 0 when there's nothing to place it by.
     pub fn resolved_centers(&self) -> Vec<f64> {
-        // Groups to cover: (all its channels, the ones it can't do without).
-        let mut groups: Vec<(Vec<f64>, Vec<f64>)> = self
-            .active_sites()
-            .map(|(sys, s)| {
-                // A DMR / NXDN site's watched frequencies are all needed.
-                let watched = s.watched_channels(sys);
-                let need: Vec<f64> = s.control_channels_hz.iter().chain(&watched).copied().collect();
-                (need.iter().chain(&s.voice_channels_hz).copied().collect(), need)
+        self.placement().into_iter().map(|p| p.center_hz).collect()
+    }
+
+    /// Each source's centre ([`Config::resolved_centers`]) and how many of
+    /// the frequencies the config lists it is the first to reach (where the
+    /// engine opens them): 0 for one nothing listed needs.
+    pub fn placement(&self) -> Vec<Placed> {
+        let (centers, cov) = self.placed();
+        centers.iter().zip(cov.listed).map(|(c, listed)| Placed { center_hz: c.unwrap_or(0.0), listed }).collect()
+    }
+
+    /// Each source's centre as Start places it ([`place_sources`]; None:
+    /// nothing to place it by), and what they receive of [`Config::targets`]
+    /// ([`coverage`]).
+    pub fn placed(&self) -> (Vec<Option<f64>>, Coverage) {
+        let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
+        let t = self.targets();
+        let centers = place_sources(&sources, &t);
+        let cov = coverage(&sources, &centers, &t);
+        (centers, cov)
+    }
+
+    /// Better centres and rates for the sources than they have, if there are
+    /// ([`place::advise`], for [`Config::targets_with`] what's `heard`):
+    /// `found` is what each source's radio said it runs at (None, or
+    /// missing: not known).
+    pub fn advice(&self, found: &[Option<crate::rates::Rates>], heard: &Heard) -> Option<Advice> {
+        let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
+        let choices: Vec<Choices> = self.sources.iter().enumerate().map(|(k, s)| s.choices(found.get(k).and_then(Option::as_ref))).collect();
+        advise(&sources, &choices, &self.targets_with(heard))
+    }
+
+    /// What the sources' advice ([`Config::advice`], by the config alone)
+    /// sets to reach what Start found missed, to follow its message: "" when
+    /// the advice doesn't reach more of what's needed. As Apply all takes it:
+    /// a source on auto in the advice is set to auto.
+    fn advice_fix(&self) -> String {
+        let Some(a) = self.advice(&[], &Heard::new()).filter(|a| a.after.unmet < a.before.unmet) else { return String::new() };
+        let what: Vec<String> = a
+            .sources
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.changed)
+            .map(|(k, x)| {
+                let src = &self.sources[k];
+                let mut set = Vec::new();
+                if x.released && src.center_hz > 0.0 {
+                    set.push("on auto".to_string());
+                } else if let Some(c) = x.center_hz.filter(|c| src.center_hz > 0.0 && (c - src.center_hz).abs() >= 1000.0) {
+                    set.push(format!("{:.4} MHz", c / 1e6));
+                }
+                if (x.rate_hz - src.rate_hz).abs() >= 1.0 {
+                    set.push(format!("{} MSPS", x.rate_hz / 1e6));
+                }
+                format!("{} {}", src.title(k), set.join(" at "))
             })
             .collect();
+        format!(" Suggested settings reach it: {} (Setup → Radios).", what.join("; "))
+    }
+
+    /// [`Config::targets`], and what each trunked system was heard on: a
+    /// group of its own (needing nothing, on the system's sources), each
+    /// frequency weighed by its calls — those no source covered too — so a
+    /// voice channel granted on the air counts though the config doesn't
+    /// list it, and a busy one more than a quiet one.
+    pub fn targets_with(&self, heard: &Heard) -> Targets {
+        let mut t = self.targets();
+        for sys in self.active_systems() {
+            if let Some(chans) = heard.get(&sys.short_name).filter(|c| !c.is_empty()) {
+                t.groups.push(Group { channels: chans.clone(), pins: self.pins(&sys.receive_on), ..Default::default() });
+            }
+        }
+        t
+    }
+
+    /// What the radios are placed to reach, and what Start needs reached:
+    /// each active site's control (and watched) channels and its voice
+    /// channels — one control channel needed (a DMR, NXDN or EDACS site:
+    /// every frequency it watches) — then each conventional system's
+    /// channels, every one needed (a group for each set of sources its rows
+    /// may be received on). Each on its sources. The sites' groups come
+    /// first, in [`Config::active_sites`]' order.
+    pub fn targets(&self) -> Targets {
+        let group = |need: Vec<f64>, all: bool, more: &[f64], receive_on: &[String]| Group {
+            channels: need.iter().chain(more).map(|&hz| Weighted { hz, weight: 1.0 }).collect(),
+            need,
+            all,
+            pins: self.pins(receive_on),
+        };
+        let mut groups: Vec<Group> = self
+            .active_sites()
+            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.kind.info().watched, &s.voice_channels_hz, &sys.receive_on))
+            .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
-            let conv: Vec<f64> = v.channels.iter().filter(|c| c.enabled).map(|c| c.freq_hz).filter(|&f| f > 0.0).collect();
-            if !conv.is_empty() {
-                groups.push((conv.clone(), conv));
+            let rows: Vec<&Channel> = v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0).collect();
+            let mut ons: Vec<&Vec<String>> = rows.iter().map(|c| &c.receive_on).collect();
+            ons.sort();
+            ons.dedup();
+            for on in ons {
+                groups.push(group(rows.iter().filter(|c| &c.receive_on == on).map(|c| c.freq_hz).collect(), true, &[], on));
             }
         }
-        let mut centers: Vec<f64> = self.sources.iter().map(|s| s.center_hz).collect();
-        let covered = |centers: &[f64], f: f64| self.sources.iter().zip(centers).any(|(s, &c)| c > 0.0 && (f - c).abs() <= s.usable_half_width());
-        for i in 0..self.sources.len() {
-            if centers[i] > 0.0 {
-                continue;
-            }
-            let open: Vec<&(Vec<f64>, Vec<f64>)> = groups.iter().filter(|(_, need)| !need.iter().any(|&f| covered(&centers, f))).collect();
-            let Some(first) = open.first() else { break };
-            let (rate, guard) = (self.sources[i].rate_hz, self.sources[i].guard_hz);
-            let all: Vec<f64> = open.iter().flat_map(|g| g.0.iter().copied()).collect();
-            let needed: Vec<f64> = open.iter().flat_map(|g| g.1.iter().copied()).collect();
-            centers[i] = auto_center(&all, rate, guard)
-                .or_else(|| auto_center(&needed, rate, guard))
-                .or_else(|| auto_center(&first.0, rate, guard))
-                .or_else(|| auto_center(&first.1, rate, guard))
-                .unwrap_or(0.0);
+        Targets { groups }
+    }
+
+    /// The sources labelled `receive_on`, by position ([`System::receive_on`]): any when empty.
+    pub fn pins(&self, receive_on: &[String]) -> Pins {
+        if receive_on.is_empty() {
+            return Pins::any();
         }
-        centers
+        Pins::only(self.sources.iter().enumerate().filter(|(_, s)| receive_on.contains(&s.label())).map(|(i, _)| i).collect())
+    }
+
+    /// The source each frequency the config lists is received on, as the
+    /// engine will choose it ([`place::receiver`], with the centres Start
+    /// places): a site's control, watched and voice channels by its system,
+    /// a conventional system's channels by it.
+    pub fn receivers(&self) -> Vec<Receiving> {
+        let rx = self.receiving(&self.resolved_centers());
+        let on = |system: &str, receive_on: &[String], hz: f64| Receiving { system: system.to_string(), hz, source: rx(receive_on, hz) };
+        let trunked = self.active_sites().flat_map(|(sys, s)| s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).chain(s.voice_channels_hz.iter().copied()).map(move |hz| (sys, hz))).map(|(sys, hz)| on(&sys.short_name, &sys.receive_on, hz));
+        let conv = self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).map(move |c| (v, c))).map(|(v, c)| on(&v.short_name, &c.receive_on, c.freq_hz));
+        trunked.chain(conv).collect()
+    }
+
+    /// Which source a frequency of something kept on `receive_on` is received
+    /// on, the sources tuned to `centers` ([`place::receiver`]).
+    fn receiving(&self, centers: &[f64]) -> impl Fn(&[String], f64) -> Option<usize> + '_ {
+        let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
+        let placed: Vec<Option<f64>> = centers.iter().map(|&c| (c > 0.0).then_some(c)).collect();
+        move |receive_on, hz| receiver(&sources, &placed, &self.pins(receive_on), hz)
+    }
+
+    /// What a run reads only when it starts: its sources as the radios take
+    /// them ([`Source::radio`]), the systems and conventional systems without
+    /// what applies while recording (plugins and their delays, sharing and
+    /// its directory link, FCC call signs — the recorder learns them as it
+    /// hears them — a channel file's status), and the recording rules.
+    fn at_start(&self) -> serde_json::Value {
+        let mut c = self.clone();
+        for s in &mut c.systems {
+            (s.plugins, s.plugin_delays, s.share, s.directory, s.fcc) = Default::default();
+            for x in &mut s.sites {
+                x.directory_id.clear();
+            }
+        }
+        for v in &mut c.conventional {
+            (v.plugins, v.plugin_delays, v.fcc, v.channel_file_status) = Default::default();
+        }
+        serde_json::json!({ "sources": c.sources.iter().map(Source::radio).collect::<Vec<_>>(), "systems": c.systems, "conventional": c.conventional, "recording": c.recording })
+    }
+
+    /// Whether this config, edited since `run` (the one recording started
+    /// with, and what its radios have taken since: a gain set live), waits
+    /// for the next Start. The desktop recorder's server and the browser
+    /// build's worker both say so ([`crate::protocol::ToClient::State`]).
+    pub fn needs_restart(&self, run: &Config) -> bool {
+        self.at_start() != run.at_start()
+    }
+
+    /// Where source `i` of this config is among `others`: the same radio, by
+    /// its label (the nth of that label, for two "first found"), wherever it is.
+    pub fn same_radio(&self, i: usize, others: &[Source]) -> Option<usize> {
+        let label = self.sources.get(i)?.label();
+        let nth = self.sources[..i].iter().filter(|s| s.label() == label).count();
+        others.iter().enumerate().filter(|(_, s)| s.label() == label).nth(nth).map(|(k, _)| k)
     }
 
     /// A short name is a system's identity — its folder, its band plan and
@@ -2423,6 +3062,10 @@ impl Config {
             if let Some(site) = sys.sites.iter().find(|x| !seen.insert(sys.site_name(x))) {
                 return Some(format!("Two sites of {} are named \"{}\" — each needs a name of its own.", sys.short_name, sys.site_name(site)));
             }
+            // Nor another system's short name: what was kept under a site's name is still read as its system's (migrate::old_names).
+            if let Some(n) = sys.sites.iter().map(|x| sys.site_name(x)).find(|n| *n != sys.short_name && names.contains(n)) {
+                return Some(format!("A site of {} is named \"{n}\", which is another system's short name — one of them needs another name.", sys.short_name));
+            }
         }
         None
     }
@@ -2435,26 +3078,45 @@ impl Config {
         if self.sources.iter().any(|s| matches!(&s.kind, SourceKind::File { path, .. } if path.trim().is_empty())) {
             return Some("Choose the capture file to replay.".into());
         }
+        let pinned = self
+            .active_systems()
+            .map(|s| (s.short_name.clone(), &s.receive_on))
+            .chain(self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).map(|c| (format!("{} {:.5} MHz", v.short_name, c.freq_hz / 1e6), &c.receive_on))));
+        let labels: Vec<String> = self.sources.iter().map(Source::label).collect();
+        for (name, on) in pinned {
+            if let Some(gone) = on.iter().find(|l| !labels.contains(l)) {
+                return Some(format!("{name}: it is set to receive on {gone}, which isn't one of the sources — choose its sources again."));
+            }
+        }
         for (i, s) in self.sources.iter().enumerate() {
             match &s.kind {
                 SourceKind::Rtlsdr { buf_len, buffers, .. } => {
                     if buf_len % 512 != 0 || *buf_len > 16 << 20 {
-                        return Some(format!("Source {}: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB.", i + 1));
+                        return Some(format!("{}: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB.", s.title(i)));
                     }
                     if *buffers > 256 {
-                        return Some(format!("Source {}: at most 256 USB transfers in flight.", i + 1));
+                        return Some(format!("{}: at most 256 USB transfers in flight.", s.title(i)));
                     }
                 }
                 SourceKind::Hackrf { lna_db, vga_db, .. } => {
                     if !(1e6..=20e6).contains(&s.rate_hz) {
-                        return Some(format!("Source {}: a HackRF runs at 1 to 20 MSPS.", i + 1));
+                        return Some(format!("{}: a HackRF runs at 1 to 20 MSPS.", s.title(i)));
                     }
-                    if *lna_db > 40 || lna_db % 8 != 0 || *vga_db > 62 || vga_db % 2 != 0 {
-                        return Some(format!("Source {}: a HackRF's LNA gain is 0–40 dB in 8 dB steps, its VGA gain 0–62 dB in 2 dB steps.", i + 1));
+                    let ((lna_max, lna_by), (vga_max, vga_by)) = (crate::gain::HACKRF_LNA, crate::gain::HACKRF_VGA);
+                    if *lna_db > lna_max || lna_db % lna_by != 0 || *vga_db > vga_max || vga_db % vga_by != 0 {
+                        return Some(format!("{}: a HackRF's LNA gain is 0–{lna_max} dB in {lna_by} dB steps, its VGA gain 0–{vga_max} dB in {vga_by} dB steps.", s.title(i)));
+                    }
+                }
+                SourceKind::Hydrasdr { rf_port, bias_tee, .. } => {
+                    let Some(input) = HYDRASDR_INPUTS.get(*rf_port as usize) else {
+                        return Some(format!("{}: a HydraSDR's input is {}.", s.title(i), HYDRASDR_INPUTS.join(", ")));
+                    };
+                    if *bias_tee && *rf_port != 0 {
+                        return Some(format!("{}: the HydraSDR's bias-T is on {} only, not {input}: turn the bias-T off, or use {0}.", s.title(i), HYDRASDR_INPUTS[0]));
                     }
                 }
                 SourceKind::Usrp { wire_format, .. } if !["", "sc16", "sc12", "sc8"].contains(&wire_format.trim()) => {
-                    return Some(format!("Source {}: the USRP's wire format is sc16, sc12 or sc8 (or empty, to choose).", i + 1));
+                    return Some(format!("{}: the USRP's wire format is sc16, sc12 or sc8 (or empty, to choose).", s.title(i)));
                 }
                 _ => {}
             }
@@ -2470,15 +3132,16 @@ impl Config {
         if let Some(p) = signals.filter_map(|(n, d)| signals_problem(n, d)).next() {
             return Some(p);
         }
-        let centers = self.resolved_centers();
-        if let Some(i) = centers.iter().position(|&c| c <= 0.0) {
+        let (centers, cov) = self.placed();
+        if let Some(i) = centers.iter().position(|c| c.is_none()) {
             return Some(format!(
                 "Set a center frequency for source {} — it couldn't be placed automatically (nothing left for it to cover, or the channels don't fit one source).",
                 i + 1
             ));
         }
-        let inside = |f: f64| self.sources.iter().zip(&centers).any(|(s, &c)| (f - c).abs() <= s.usable_half_width());
-        for (sys, s) in self.active_sites() {
+        // (What's missed is the coverage's: the sites' groups first, in order.)
+        for ((sys, s), g) in self.active_sites().zip(&cov.groups) {
+            let sources = if sys.receive_on.is_empty() { "every source's bandwidth" } else { "the bandwidth of the sources it receives on" };
             // "dcfd", or "dcfd (site south)" for a site with its own name.
             let key = trunk_core::trunk::SiteKey { system: &sys.short_name, site: sys.site_name(s) };
             let name = key.own_name().map_or_else(|| sys.short_name.clone(), |n| format!("{} (site {n})", sys.short_name));
@@ -2487,15 +3150,15 @@ impl Config {
                     return Some(format!("{name}: {e}"));
                 }
             }
-            if sys.is_dmr() || sys.is_nxdn() || sys.is_edacs() {
-                let out: Vec<String> = s.control_channels_hz.iter().chain(&s.watched_channels(sys)).filter(|&&f| !inside(f)).map(|f| format!("{:.5}", f / 1e6)).collect();
+            if sys.kind.info().watched {
+                let out: Vec<String> = g.need_missed.iter().map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
                     let what = if sys.is_dmr() { "DMR" } else if sys.is_nxdn() { "NXDN" } else { "EDACS" };
-                    return Some(format!("{name}: {what} frequencies outside every source's bandwidth: {} MHz — move a center frequency or add a source.", out.join(", ")));
+                    return Some(format!("{name}: {what} frequencies outside {sources}: {} MHz — move a center frequency or add a source.{}", out.join(", "), self.advice_fix()));
                 }
             }
-            if !s.control_channels_hz.iter().any(|&f| inside(f)) {
-                return Some(format!("No control channel of {name} falls inside any source's bandwidth — move a center frequency or add a source."));
+            if !s.control_channels_hz.iter().any(|f| !g.need_missed.contains(f)) {
+                return Some(format!("No control channel of {name} falls inside {} — move a center frequency or add a source.{}", if sys.receive_on.is_empty() { "any source's bandwidth" } else { sources }, self.advice_fix()));
             }
             if sys.is_edacs() && s.edacs().lcns.is_empty() {
                 return Some(format!("{name}: an EDACS site needs its channel list — each LCN (1–25) and its frequency."));
@@ -2514,9 +3177,10 @@ impl Config {
         if self.enabled_channels().any(|c| c.freq_hz <= 0.0) {
             return Some("A conventional channel has no frequency yet.".into());
         }
-        let outside: Vec<String> = self.enabled_channels().filter(|c| !inside(c.freq_hz)).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
+        let missed: Vec<f64> = cov.groups.iter().skip(self.active_sites().count()).flat_map(|g| g.need_missed.iter().copied()).collect();
+        let outside: Vec<String> = self.enabled_channels().filter(|c| missed.contains(&c.freq_hz)).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
         if !outside.is_empty() {
-            return Some(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
+            return Some(format!("Conventional channel(s) outside the bandwidth of every source they may be received on: {} MHz — move a center frequency or disable them.{}", outside.join(", "), self.advice_fix()));
         }
         if let Some((c, e)) = self.enabled_channels().find_map(|c| c.parsed_access().err().map(|e| (c, e))) {
             return Some(format!("Conventional channel {:.5} MHz: {e}.", c.freq_hz / 1e6));
@@ -2552,12 +3216,12 @@ impl Config {
     /// conventional ones. The one place that number is worked out for a
     /// config — the engine, plugins, status and the interface all go by it.
     pub fn call_systems(&self) -> Vec<CallSystem<'_>> {
-        let trunked = self.active_systems().map(|s| (&s.short_name, s.kind.name(), &s.recording, &s.plugins, &s.plugin_delays[..]));
-        let conventional = self.active_conventional().map(|c| (&c.short_name, "conventional", &c.recording, &c.plugins, &c.plugin_delays[..]));
+        let trunked = self.active_systems().map(|s| (s.id, &s.short_name, s.kind.name(), &s.recording, &s.plugins, &s.plugin_delays[..]));
+        let conventional = self.active_conventional().map(|c| (c.id, &c.short_name, "conventional", &c.recording, &c.plugins, &c.plugin_delays[..]));
         trunked
             .chain(conventional)
             .enumerate()
-            .map(|(i, (short_name, kind, recording, plugins, plugin_delays))| CallSystem { index: i as u16, short_name, kind, recording, plugins, plugin_delays })
+            .map(|(i, (id, short_name, kind, recording, plugins, plugin_delays))| CallSystem { index: i as u16, id, short_name, kind, recording, plugins, plugin_delays })
             .collect()
     }
 
@@ -2567,8 +3231,9 @@ impl Config {
     }
 
     /// The engine's config, with each system's talkgroups (kept apart from the config).
-    pub fn engine_config(&self, epoch_ms: f64, talkgroups: &TalkgroupLists) -> EngineConfig {
-        let tg = |short: &str| talkgroups.get(short).map_or_else(Default::default, |rows| talkgroups_of(rows));
+    pub fn engine_config(&self, epoch_ms: f64, names: &NameLists) -> EngineConfig {
+        let tg = |id: SystemId| names.get(&id).map_or_else(Default::default, |n| talkgroups_of(&n.talkgroups));
+        let units = |id: SystemId, u: &UnitNames| UnitTags::new(names.get(&id).map_or(&[][..], |n| &n.unit_names), u.mode.engine());
         let centers = self.resolved_centers();
         // (Keys are read by the app: [`Config::load_keys`].)
         let mut systems: Vec<SystemConfig> = self
@@ -2577,28 +3242,32 @@ impl Config {
                 let rules = self.recording.with(&sys.recording);
                 let sites = sys
                     .active_sites()
-                    .map(|s| SiteConfig { name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: s.expect.engine(), protocol: s.protocol(sys) })
+                    .map(|s| SiteConfig { id: s.id, name: sys.site_name(s).to_string(), control_channels: s.control_channels_hz.clone(), bank: s.bank(), expect: Identity::of_site(&s.expect), protocol: s.protocol(sys) })
                     .collect();
                 SystemConfig {
+                    id: sys.id,
                     calls: rules.call_config(),
                     save: rules.save_rules(),
-                    talkgroups: tg(&sys.short_name),
-                    unit_tags: sys.unit_names.engine(),
+                    talkgroups: tg(sys.id),
+                    unit_tags: units(sys.id, &sys.unit_names),
                     signals: engine_signals(&sys.signals),
+                    pins: self.pins(&sys.receive_on),
+                    preferred_site: sys.preferred_site.clone(),
                     ..SystemConfig::trunked(&sys.short_name, sites)
                 }
             })
             .collect();
         // A conventional system's P25 / DMR / NXDN channels name the talkgroups
-        // they hear by its own talkgroup file (a row's own name comes from the
+        // they hear by its own talkgroups (a row's own name comes from the
         // channel list).
         for v in self.active_conventional() {
             let r = self.recording.with(&v.recording);
             systems.push(SystemConfig {
+                id: v.id,
                 calls: r.call_config(),
                 save: r.save_rules(),
-                talkgroups: tg(&v.short_name),
-                unit_tags: v.unit_names.engine(),
+                talkgroups: tg(v.id),
+                unit_tags: units(v.id, &v.unit_names),
                 signals: engine_signals(&v.signals),
                 ..SystemConfig::conventional(&v.short_name)
             });
@@ -2613,6 +3282,7 @@ impl Config {
             conventional: self.engine_channels(),
             conv: ConvConfig::default(),
             capture_frames: self.recording.capture_frames,
+            tapes: self.diagnostics.needs_tapes(),
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: self.recording.vocoder.engine(),
         }
@@ -2620,12 +3290,139 @@ impl Config {
 }
 
 
-/// Each system's talkgroups, by its short name, in their order. Kept apart
-/// from the config: the desktop app's store, the browser's storage; the
-/// interface sets a system's with `setTalkgroups` and edits one with
-/// `setTalkgroup`. A talkgroup file (Trunk Recorder's CSV) is how they come
-/// in and go out (trunk_core::trunk::read_rows / rows_csv).
-pub type TalkgroupLists = BTreeMap<String, Vec<trunk_core::trunk::TalkgroupRow>>;
+/// What to keep when a capture rule fires.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureTarget {
+    /// `wideband`, `control` or `voice`.
+    pub tier: String,
+    /// How long before, and after, it fired (`30s`, `5m`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+/// A rule fires only after this many matches in a window, counted apart for each value of `by`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureRepeat {
+    pub count: u32,
+    pub within: String,
+    pub by: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureLimit {
+    pub cooldown: String,
+}
+
+/// When to record what the radios receive: an event, a condition on it in
+/// CEL, and what to keep (trunk-pro's `iq_rules`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureRule {
+    pub id: String,
+    pub enabled: bool,
+    pub on: String,
+    /// Only these systems ([]: any).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub systems: Vec<String>,
+    #[serde(rename = "if", skip_serializing_if = "String::is_empty")]
+    pub condition: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<CaptureRepeat>,
+    /// A `schedule` rule: how often.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub every: Option<String>,
+    pub capture: Vec<CaptureTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<CaptureLimit>,
+}
+
+/// What capture rules may use.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CaptureBudget {
+    pub captures_per_day: u32,
+    pub mb_per_day: u32,
+    /// Memory for samples held in case a rule wants them.
+    pub ram_mb: u32,
+}
+
+impl Default for CaptureBudget {
+    fn default() -> Self {
+        CaptureBudget { captures_per_day: 20, mb_per_day: 5000, ram_mb: 256 }
+    }
+}
+
+/// Capture rules (research/iq-corpus.md).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Diagnostics {
+    /// Where captures of the radios go ("": `iq-captures` in the recordings folder).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub capture_dir: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<CaptureRule>,
+    pub budget: CaptureBudget,
+}
+
+impl Diagnostics {
+    pub fn is_empty(&self) -> bool {
+        *self == Diagnostics::default()
+    }
+
+    /// A rule on keeps a channel's samples: the engine must hold them.
+    pub fn needs_tapes(&self) -> bool {
+        self.rules.iter().filter(|r| r.enabled).flat_map(|r| &r.capture).any(|c| c.tier != "wideband")
+    }
+
+    /// The most a rule on looks back at the radios' full samples, in seconds.
+    pub fn wideband_lookback(&self, seconds: impl Fn(&str) -> f64) -> f64 {
+        self.rules.iter().filter(|r| r.enabled).flat_map(|r| &r.capture).filter(|c| c.tier == "wideband").filter_map(|c| c.before.as_deref()).map(seconds).fold(0.0, f64::max)
+    }
+}
+
+/// A system's names, kept apart from the config (the desktop app's store,
+/// the browser's storage), each list in its order: its talkgroups (set with
+/// `setTalkgroups`, one edited with `setTalkgroup`) and its own names for
+/// its radios (`setUnitNames`, `setUnitName`). Files (Trunk Recorder's
+/// talkgroup CSV and unitTagsFile) are how they come in and go out
+/// (trunk_core::trunk::read_rows / rows_csv, read_unit_names / unit_names_csv).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SystemNames {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub talkgroups: Vec<trunk_core::trunk::TalkgroupRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unit_names: Vec<trunk_core::trunk::UnitNameRow>,
+}
+
+impl SystemNames {
+    pub fn is_empty(&self) -> bool {
+        self.talkgroups.is_empty() && self.unit_names.is_empty()
+    }
+}
+
+/// Each system's names ([`SystemNames`]), by its id: a rename keeps them.
+pub type NameLists = BTreeMap<SystemId, SystemNames>;
+
+/// `lists` with system `system`'s names, as `edit` leaves them: a system with none left has no entry.
+pub fn edit_names<T>(lists: &mut NameLists, system: SystemId, edit: impl FnOnce(&mut SystemNames) -> T) -> T {
+    let names = lists.entry(system).or_default();
+    let out = edit(names);
+    if names.is_empty() {
+        lists.remove(&system);
+    }
+    out
+}
+
+/// Talkgroups only, as [`NameLists`] (tests and examples).
+pub fn talkgroup_lists(lists: impl IntoIterator<Item = (SystemId, Vec<trunk_core::trunk::TalkgroupRow>)>) -> NameLists {
+    lists.into_iter().map(|(id, talkgroups)| (id, SystemNames { talkgroups, ..Default::default() })).collect()
+}
 
 /// A system's talkgroups as the engine looks them up, by number.
 pub fn talkgroups_of(rows: &[trunk_core::trunk::TalkgroupRow]) -> trunk_core::trunk::Talkgroups {
@@ -2638,99 +3435,33 @@ pub fn talkgroups_path(dir: &Path, short_name: &str) -> PathBuf {
     dir.join(format!("{short_name}.talkgroups.csv"))
 }
 
-/// A centre that puts every control channel inside one source (and off the
-/// DC spike), or None if they span too much.
-pub fn auto_center(ccs: &[f64], rate_hz: f64, guard_hz: f64) -> Option<f64> {
-    if ccs.is_empty() {
-        return None;
+/// The interface's table of system kinds (`web/src/systemKinds.gen.ts`), from [`SystemKind::info`].
+#[cfg(test)]
+fn system_kinds_ts() -> String {
+    let mut ts = String::from("// Written from the recorder's table (trunk-app config.rs, SystemKind::info): don't edit.\n// `TRP_WRITE=1 cargo test -p trunk-app the_webs_system_kinds_are_these` writes it again.\n\n/** What each kind of system is, beside its name. */\nexport const SYSTEM_KINDS = {\n");
+    for k in SystemKind::ALL {
+        let i = k.info();
+        let lock: Vec<String> = i.site_lock.iter().map(|f| format!("\"{f}\"")).collect();
+        ts += &format!("  {}: {{ label: \"{}\", watched: {}, siteLock: [{}] }},\n", k.name(), i.label, i.watched, lock.join(", "));
     }
-    let lo = ccs.iter().copied().fold(f64::INFINITY, f64::min);
-    let hi = ccs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let half = usable_half_width(rate_hz, guard_hz);
-    if hi - lo > 2.0 * half - 50_000.0 {
-        return None;
-    }
-    let mid = ((lo + hi) / 2.0 / 1000.0).round() * 1000.0;
-    off_dc(mid, ccs, |c| ccs.iter().all(|f| (f - c).abs() <= half - 10_000.0))
-}
-
-/// How far a channel is kept from a source's centre (its DC spike).
-const DC_CLEAR_HZ: f64 = 25_000.0;
-
-/// `c` off the DC spike: moved to either side in widening 12.5 kHz steps
-/// until no channel of `hz` is within [`DC_CLEAR_HZ`] of it and `keep(c)`
-/// (what it must still reach). None if 40 steps don't find one. Every
-/// centre the recorder or Setup picks goes through this.
-fn off_dc(mut c: f64, hz: &[f64], keep: impl Fn(f64) -> bool) -> Option<f64> {
-    for step in 0..=40 {
-        if hz.iter().all(|f| (f - c).abs() >= DC_CLEAR_HZ) && keep(c) {
-            return Some(c);
-        }
-        c += if step % 2 == 1 { -1.0 } else { 1.0 } * 12_500.0 * (step + 1) as f64;
-    }
-    None
-}
-
-/// A source to place ([`plan_centers`]): its rate and guard, and its centre
-/// if it can't be moved (a capture file).
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Placing {
-    pub rate_hz: f64,
-    #[serde(default = "guard_default")]
-    pub guard_hz: f64,
-    #[serde(default)]
-    pub fixed_hz: Option<f64>,
-}
-
-/// Where to tune each source for a system found on the air (Setup's
-/// first-run guide): source `first` at `first_center` (it covers the control
-/// channels `ccs`), each other over the busiest voice channels (`voice`: Hz
-/// and calls seen) still out of reach, or, when every one is reached,
-/// alongside `first` on the side with more of the system. A fixed source
-/// stays; every centre is off the DC spike as [`auto_center`]'s are.
-pub fn plan_centers(sources: &[Placing], first: usize, first_center: f64, ccs: &[f64], voice: &[(f64, f64)]) -> Vec<Option<f64>> {
-    let half = |s: &Placing| usable_half_width(s.rate_hz, s.guard_hz);
-    let mut out: Vec<Option<f64>> = sources.iter().map(|s| s.fixed_hz).collect();
-    if let Some(o) = out.get_mut(first) {
-        o.get_or_insert(first_center);
-    }
-    let all: Vec<f64> = ccs.iter().copied().chain(voice.iter().map(|v| v.0)).collect();
-    for k in 0..sources.len() {
-        if out[k].is_some() {
-            continue;
-        }
-        let h = half(&sources[k]);
-        let reached = |hz: f64| out.iter().zip(sources).any(|(c, s)| c.is_some_and(|c| (hz - c).abs() <= half(s)));
-        let left: Vec<(f64, f64)> = voice.iter().copied().filter(|v| !reached(v.0)).collect();
-        let best = if let Some(&(lowest, _)) = left.first() {
-            // Each channel still out of reach as the window's low edge: the window that takes in the most calls.
-            let score = |c: f64| left.iter().filter(|o| (o.0 - c).abs() <= h).map(|o| o.1).sum::<f64>();
-            let mut best = (lowest + h - 1000.0, -1.0);
-            for v in &left {
-                let c = v.0 + h - 1000.0;
-                let sc = score(c);
-                if sc > best.1 {
-                    best = (c, sc);
-                }
-            }
-            best.0
-        } else {
-            let mid = all.iter().sum::<f64>() / all.len().max(1) as f64;
-            let beside = sources.get(first).map_or(h, half) + h;
-            first_center + if mid >= first_center { beside } else { -beside }
-        };
-        let best = (best / 1000.0).round() * 1000.0;
-        let n = |c: f64| all.iter().filter(|f| (*f - c).abs() <= h).count();
-        let want = n(best);
-        out[k] = Some(off_dc(best, &all, |c| n(c) >= want).unwrap_or(best));
-    }
-    out
+    ts += "} as const;\n\nexport type SystemKind = keyof typeof SYSTEM_KINDS;\n";
+    ts
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The interface's table of system kinds is this one's (`TRP_WRITE=1` writes it).
+    #[test]
+    fn the_webs_system_kinds_are_these() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/systemKinds.gen.ts");
+        let ts = system_kinds_ts();
+        if std::env::var_os("TRP_WRITE").is_some() {
+            std::fs::write(&path, &ts).unwrap();
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), ts, "web/src/systemKinds.gen.ts is out of date: TRP_WRITE=1 cargo test -p trunk-app the_webs_system_kinds_are_these");
+    }
 
     /// Every system gets an id the first time a config is read or set, a
     /// second with the same id one of its own, and an id is never given
@@ -2738,13 +3469,13 @@ mod tests {
     #[test]
     fn systems_get_ids_never_given_twice() {
         let mut c = Config::from_json(r#"{"systems":[{"shortName":"a"},{"shortName":"b","id":7}],"conventional":[{"shortName":"c"}]}"#).unwrap();
-        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(8, "a"), (7, "b"), (9, "c")]);
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(SystemId(8), "a"), (SystemId(7), "b"), (SystemId(9), "c")]);
         assert_eq!(c.next_system_id, 10);
         c.systems.remove(1);
         c.systems.push(System { short_name: "d".into(), ..Default::default() });
-        c.conventional[0].id = 8;
+        c.conventional[0].id = SystemId(8);
         c.assign_system_ids();
-        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(8, "a"), (10, "d"), (11, "c")], "a new one past the removed 7; a copied id made its own");
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(SystemId(8), "a"), (SystemId(10), "d"), (SystemId(11), "c")], "a new one past the removed 7; a copied id made its own");
         let saved = serde_json::to_value(&c).unwrap();
         assert_eq!((saved["systems"][0]["id"].as_u64(), saved["nextSystemId"].as_u64()), (Some(8), Some(12)));
     }
@@ -2752,7 +3483,7 @@ mod tests {
     #[test]
     fn storage_defaults_to_300_second_commits_and_120_days() {
         let c = Config::from_value(serde_json::json!({})).unwrap();
-        assert_eq!((c.storage.commit_seconds, c.storage.retention_days), (300, 120));
+        assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.registry_radios, c.storage.registry_days), (300, 120, 20_000, 365));
         let c = Config::from_value(serde_json::json!({ "storage": { "commitSeconds": 60, "retentionDays": 0 } })).unwrap();
         assert_eq!((c.storage.commit_seconds, c.storage.retention_days, c.storage.backend), (60, 0, StorageBackend::Sqlite));
         let c = Config::from_value(serde_json::json!({ "storage": { "backend": "postgres", "url": "postgres://trp@db/trunk" } })).unwrap();
@@ -2930,7 +3661,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.conventional[0].squelch_db, 8.0);
-        assert_eq!(c.conventional[0].channels[2].mode, ChannelMode::Fm);
+        assert_eq!(c.conventional[0].channels[2].mode, ConvMode::Fm);
         // No control channels: the centre is placed over the enabled channels.
         assert_eq!(c.problem(), None);
         let center = c.resolved_centers()[0];
@@ -2980,7 +3711,9 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let files: TalkgroupLists = [("county".to_string(), trunk_core::trunk::parse_rows("1,County TG\n")), ("fire".to_string(), trunk_core::trunk::parse_rows("7,Fire Ops\n"))].into();
+        let mut c = c;
+        c.assign_system_ids();
+        let files = talkgroup_lists([(c.id_of("county").unwrap(), trunk_core::trunk::parse_rows("1,County TG\n")), (c.id_of("fire").unwrap(), trunk_core::trunk::parse_rows("7,Fire Ops\n"))]);
         let e = c.engine_config(0.0, &files);
         let fire = e.systems.iter().find(|s| s.short_name == "fire").unwrap();
         assert!(fire.talkgroups.contains_key(&7) && !fire.talkgroups.contains_key(&1), "its own, not county's");
@@ -3002,8 +3735,11 @@ mod tests {
             }"#,
         )
         .unwrap();
+        let mut c = c;
+        c.assign_system_ids();
+        let town_id = c.id_of("town").unwrap();
         let rows = c.row_talkgroups();
-        let town = &rows["town"];
+        let town = &rows[&town_id];
         let mut named: Vec<(u32, &str)> = town.values().map(|t| (t.number, t.alpha_tag.as_str())).collect();
         named.sort();
         // The analog row's default and the P25 row's TG Number; not the catch-all (its numbers come from the air), nor a row without names.
@@ -3011,11 +3747,11 @@ mod tests {
         assert_eq!(town[&46012].tag, "Law Dispatch");
         // Ahead of the talkgroup file, whose Ignore flag stays.
         let mut book = crate::stats::NameBook::default();
-        let files: TalkgroupLists = [("town".to_string(), trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))].into();
+        let files = talkgroup_lists([(town_id, trunk_core::trunk::parse_rows("46012,File name\n9,Nine,,,,,,,true\n"))]);
         book.set_config(&c, &files);
-        assert_eq!(book.tg("town", 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
-        assert_eq!(book.tg("town", 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));
-        assert!(book.tg("town", 7).is_none());
+        assert_eq!(book.tg(town_id, 46012).map(|t| t.alpha_tag), Some("Townville PD".into()));
+        assert_eq!(book.tg(town_id, 154430).map(|t| t.alpha_tag), Some("Fire Dispatch".into()));
+        assert!(book.tg(town_id, 7).is_none());
     }
 
     #[test]
@@ -3101,14 +3837,150 @@ mod tests {
         assert!(c.problem().unwrap().contains("channel list"), "{:?}", c.problem());
     }
 
+    /// Advice for a config: a centre typed in that misses the site's voice
+    /// channels moves (and can go back to auto); a capture file never does;
+    /// an Airspy is advised only rates it runs at.
+    #[test]
+    fn advice_for_the_sources_a_config_has() {
+        let mut c: Config = serde_json::from_value(serde_json::json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 }],
+            "systems": [{ "shortName": "dcfd", "sites": [{ "controlChannelsHz": [851012500], "voiceChannelsHz": [851512500, 852012500] }] }]
+        }))
+        .unwrap();
+        let a = c.advice(&[], &Heard::new()).expect("advice");
+        let s = &a.sources[0];
+        assert!(s.changed && s.auto && a.after.reached > a.before.reached, "{a:?}");
+        // As a capture file: nothing.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "file", "path": "x.cu8", "realtime": true, "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        assert_eq!(c.advice(&[], &Heard::new()), None);
+        // An Airspy that said it runs at 10 / 2.5 MSPS: 2.5 covers it all.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
+        let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))], &Heard::new()).expect("advice");
+        assert_eq!(a.sources[0].rate_hz, 2_500_000.0, "{a:?}");
+        // Heard granting a busy voice channel the config doesn't list, 3 MHz up: 10 MSPS reaches it, 2.5 doesn't.
+        let heard: Heard = [("dcfd".to_string(), vec![Weighted { hz: 855_012_500.0, weight: 300.0 }])].into();
+        let a = c.advice(&[Some(crate::rates::Rates::List(vec![10_000_000, 2_500_000]))], &heard);
+        assert_eq!(a, None, "10 MSPS already reaches it, and 2.5 wouldn't: {a:?}");
+        // Start says what the advice would set, after what it found missed.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 849500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        let p = c.problem().expect("the control channel isn't reached");
+        assert!(p.starts_with("No control channel of dcfd falls inside any source's bandwidth") && p.contains("Suggested settings reach it: Source 1 on auto") && p.ends_with("(Setup → Radios)."), "{p}");
+        // An RTL-SDR set over the listed channels; a busy one heard just past its band: moved over it too.
+        c.sources[0] = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 851500000, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        let a = c.advice(&[], &Heard::new()).expect("advice");
+        assert_eq!((a.sources[0].rate_hz, a.sources[0].center_hz), (1_920_000.0, Some(851_500_000.0)), "it reaches what the config lists, and at 1.92 MSPS still would: {a:?}");
+        let heard: Heard = [("dcfd".to_string(), vec![Weighted { hz: 852_900_000.0, weight: 300.0 }])].into();
+        let a = c.advice(&[], &heard).expect("advice");
+        let s = &a.sources[0];
+        assert!(a.after.reached >= a.before.reached + 300.0 && c.sources[0].reaches(s.center_hz.unwrap(), 852_900_000.0), "{a:?}");
+        assert!([851_012_500.0, 851_512_500.0, 852_012_500.0].iter().all(|&f| c.sources[0].reaches(s.center_hz.unwrap(), f)), "and still the listed ones: {a:?}");
+    }
+
+    #[test]
+    fn ppm_is_set_as_the_radio_takes_it() {
+        let rtl: Source = serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "ppm": 0 })).unwrap();
+        let airspy: Source = serde_json::from_value(serde_json::json!({ "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "ppm": 0 })).unwrap();
+        assert_eq!((rtl.settable_ppm(2.0 - 3.6), airspy.settable_ppm(2.0 - 3.614)), (-2.0, -1.61));
+    }
+
+    /// A HydraSDR source reads with an Airspy's gain defaults and the ANT input; it may be the
+    /// radio an Airspy source opens as "the first" (libairspy opens an RFOne), not one by another serial.
+    #[test]
+    fn a_hydrasdr_source() {
+        let src = |v: serde_json::Value| -> Source { serde_json::from_value(v).unwrap() };
+        let h = src(serde_json::json!({ "type": "hydrasdr", "serial": "1A2B3C4D5E6F7081", "centerHz": 0, "rateHz": 5000000 }));
+        assert_eq!(
+            h.kind,
+            SourceKind::Hydrasdr {
+                serial: "1A2B3C4D5E6F7081".into(),
+                gains: AirspyGains::default(),
+                bias_tee: false,
+                packing: true,
+                rf_port: 0,
+            }
+        );
+        assert_eq!(h.label(), "HydraSDR SN 1A2B3C4D5E6F7081");
+        // Its gain is an Airspy's, kept flat beside its other keys.
+        let manual = src(serde_json::json!({ "type": "hydrasdr", "gainMode": "manual", "lnaStep": 3, "agc": true, "rfPort": 2, "centerHz": 0, "rateHz": 5000000 }));
+        let SourceKind::Hydrasdr { gains, rf_port: 2, .. } = manual.kind else { panic!("{:?}", manual.kind) };
+        assert_eq!((gains.gain_mode, gains.lna_step, gains.mixer_step, gains.agc), (AirspyGain::Manual, 3, 10, true));
+        let j = serde_json::to_value(&manual).unwrap();
+        assert_eq!((&j["lnaStep"], &j["gainMode"], j.get("gains")), (&serde_json::json!(3), &serde_json::json!("manual"), None));
+        // The bias-T is on ANT alone: Start (and Setup) say so before the radio opens.
+        let problem = |rf_port: u8, bias_tee: bool| {
+            let mut c: Config = serde_json::from_str(r#"{ "sources": [], "conventional": [{ "channels": [{ "freqHz": 154430000, "mode": "fm" }] }] }"#).unwrap();
+            c.sources.push(src(serde_json::json!({ "type": "hydrasdr", "rfPort": rf_port, "biasTee": bias_tee, "centerHz": 154e6, "rateHz": 5000000 })));
+            c.problem()
+        };
+        assert_eq!((problem(0, true), problem(2, false)), (None, None));
+        assert!(problem(1, true).unwrap().contains("bias-T is on ANT only, not CABLE1"), "{:?}", problem(1, true));
+        assert!(problem(3, false).unwrap().contains("input is ANT, CABLE1, CABLE2"), "{:?}", problem(3, false));
+        let airspy = |serial: &str| src(serde_json::json!({ "type": "airspy", "serial": serial, "centerHz": 0, "rateHz": 10000000 }));
+        assert!(h.may_be(&airspy("")) && h.may_be(&airspy("1a2b3c4d5e6f7081")));
+        assert!(!h.may_be(&airspy("735863DC2F650AE3")));
+    }
+
+    /// What a run reads only when it starts needs a restart; what applies
+    /// while recording doesn't: plugins, sharing and its link, FCC call signs
+    /// the recorder learns, a source's name.
+    #[test]
+    fn an_edit_needs_a_restart_only_for_what_a_run_reads_at_start() {
+        let mut run: Config = serde_json::from_value(serde_json::json!({
+            "sources": [{ "type": "rtlsdr", "serial": "200", "centerHz": 851000000, "rateHz": 2400000, "gainDb": 30 }],
+            "systems": [{ "shortName": "dcfd", "sites": [{ "controlChannelsHz": [851012500] }] }],
+            "conventional": [{ "shortName": "town", "channels": [{ "freqHz": 851500000, "mode": "fm" }] }]
+        }))
+        .unwrap();
+        run.assign_system_ids();
+        let edit = |f: &dyn Fn(&mut Config)| {
+            let mut c = run.clone();
+            f(&mut c);
+            c.needs_restart(&run)
+        };
+        assert!(!edit(&|_| {}));
+        assert!(!edit(&|c| {
+            c.systems[0].share = true;
+            c.systems[0].directory = Some(Default::default());
+            c.systems[0].sites[0].directory_id = "site_n".into();
+            c.systems[0].plugins.insert("x".into(), serde_json::json!({}));
+        }), "sharing and plugins apply live");
+        assert!(!edit(&|c| assert!(c.learn_call_sign("dcfd", 851_012_500.0, "KNJE616"))), "a call sign heard");
+        assert!(!edit(&|c| assert!(c.learn_call_sign("town", 851_500_000.0, "KQX123"))));
+        assert!(!edit(&|c| c.sources[0].name = "Whip".into()), "a name");
+        assert!(edit(&|c| c.sources[0].center_hz = 852e6), "a retune");
+        assert!(edit(&|c| c.systems[0].sites[0].control_channels_hz.push(851_212_500.0)));
+        assert!(edit(&|c| c.recording.min_call_s = 9.0));
+        // A gain waits for the next Start, unless the run took it live (it then has it too).
+        assert!(edit(&|c| if let SourceKind::Rtlsdr { gain_db, .. } = &mut c.sources[0].kind { *gain_db = 20.0 }));
+    }
+
+    /// Keys are read for the systems that record: not for a conventional
+    /// system with no channel on, whatever key source it names.
+    #[test]
+    fn keys_are_for_the_systems_that_record() {
+        let mut c: Config = serde_json::from_value(serde_json::json!({ "conventional": [{ "shortName": "town", "keys": "gone", "channels": [{ "freqHz": 851500000, "mode": "p25", "enabled": false }] }] })).unwrap();
+        assert!(!c.has_keys());
+        c.conventional[0].channels[0].enabled = true;
+        assert!(c.has_keys());
+    }
+
+    #[test]
+    fn a_radio_is_found_by_its_label_wherever_it_is() {
+        let rtl = |serial: &str| -> Source { serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "serial": serial, "centerHz": 0, "rateHz": 2400000 })).unwrap() };
+        let c = Config { sources: vec![rtl("1"), rtl("2"), rtl(""), rtl("")], ..Default::default() };
+        let moved = [rtl(""), rtl("2"), rtl(""), rtl("1")];
+        assert_eq!((0..4).map(|i| c.same_radio(i, &moved)).collect::<Vec<_>>(), [Some(3), Some(1), Some(0), Some(2)], "two \"first found\": in order");
+        assert_eq!(c.same_radio(0, &moved[..3]), None, "taken out");
+    }
+
     #[test]
     fn rtl_usb_transfers_checked() {
-        let rtl = |rate_hz: f64, buf_len: u32| Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len, buffers: 0 }, center_hz: 851e6, rate_hz: rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let rtl = |rate_hz: f64, buf_len: u32| Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len, buffers: 0 }, center_hz: 851e6, rate_hz: rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut c = Config { sources: vec![rtl(2.4e6, 65_536)], systems: vec![system("s", &[851_012_500.0])], ..Default::default() };
         assert_eq!(c.problem(), None);
         c.sources[0] = rtl(2.4e6, 65_000);
         assert!(c.problem().unwrap().contains("multiple of 512"));
-        let hackrf = |lna_db, vga_db| Source { kind: SourceKind::Hackrf { serial: String::new(), lna_db, vga_db, amp: false, bias_tee: false }, center_hz: 851e6, rate_hz: 8e6, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let hackrf = |lna_db, vga_db| Source { kind: SourceKind::Hackrf { serial: String::new(), lna_db, vga_db, amp: false, bias_tee: false }, center_hz: 851e6, rate_hz: 8e6, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         c.sources[0] = hackrf(16, 20);
         assert_eq!(c.problem(), None);
         c.sources[0] = hackrf(20, 20);
@@ -3123,27 +3995,30 @@ mod tests {
         System::one_site(name, Site { control_channels_hz: ccs.to_vec(), ..Default::default() })
     }
 
+    /// Four auto RTLs for one 800 MHz P25 site wider than one of them: Start
+    /// places all four, over every voice channel; knowing only the control
+    /// channel, the spares go alongside rather than stopping Start.
     #[test]
-    fn a_first_run_plan_covers_the_busiest_channels() {
-        let rtl = |fixed_hz| Placing { rate_hz: 2_400_000.0, guard_hz: DEFAULT_GUARD_HZ, fixed_hz };
-        let ccs = [851_000_000.0];
-        // Busy voice channels 3–4 MHz up, a quiet one further: the second radio takes the busy ones.
-        let voice = [(854_000_000.0, 50.0), (854_500_000.0, 40.0), (856_900_000.0, 1.0), (851_200_000.0, 9.0)];
-        let plan = plan_centers(&[rtl(None), rtl(None)], 0, 851_400_000.0, &ccs, &voice);
-        assert_eq!(plan[0], Some(851_400_000.0));
-        let c = plan[1].unwrap();
-        let half = usable_half_width(2_400_000.0, DEFAULT_GUARD_HZ);
-        assert!((854_000_000.0 - c).abs() <= half && (854_500_000.0 - c).abs() <= half, "{c}");
-        assert!(voice.iter().chain([(851_000_000.0, 0.0)].iter()).all(|v| (v.0 - c).abs() >= DC_CLEAR_HZ), "off the DC spike: {c}");
-        // A capture file stays where it is; with everything reached, a spare radio goes alongside.
-        let plan = plan_centers(&[rtl(None), rtl(Some(853_000_000.0)), rtl(None)], 0, 851_400_000.0, &ccs, &voice[..2]);
-        assert_eq!(plan[1], Some(853_000_000.0));
-        assert!(plan[2].unwrap() > 851_400_000.0 + 2.0 * half - 100_000.0, "{plan:?}");
+    fn every_auto_source_is_placed_over_a_wide_site() {
+        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let mut sys = system("p25", &[856_237_500.0]);
+        sys.sites[0].voice_channels_hz = (0..=30).map(|k| 851_012_500.0 + k as f64 * 262_500.0).collect();
+        let mut c = Config { sources: vec![rtl(), rtl(), rtl(), rtl()], systems: vec![sys], ..Default::default() };
+        assert_eq!(c.problem(), None);
+        let centers = c.resolved_centers();
+        for f in c.systems[0].sites[0].voice_channels_hz.iter().chain(&c.systems[0].sites[0].control_channels_hz) {
+            assert!(c.sources.iter().zip(&centers).any(|(s, &x)| s.reaches(x, *f)), "{f} not reached by {centers:?}");
+        }
+        assert!(c.placement().iter().all(|p| p.listed > 0), "each is needed");
+        c.systems[0].sites[0].voice_channels_hz.clear();
+        assert_eq!(c.problem(), None, "{:?}", c.resolved_centers());
+        // Only the control channel known: the spares are placed, but nothing listed needs them.
+        assert_eq!(c.placement().iter().map(|p| p.listed).collect::<Vec<_>>(), [1, 0, 0, 0]);
     }
 
     #[test]
     fn several_systems_centers_and_engine_config() {
-        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ };
+        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
         let mut a = system("east", &[851_012_500.0]);
         a.sites[0].voice_channels_hz = vec![851_500_000.0, 852_000_000.0];
@@ -3177,6 +4052,9 @@ mod tests {
         assert_eq!(sites, [("east", "east", true), ("east", "east-2", true), ("west", "west", false)]);
         c.systems[0].sites[1].name = "east".into();
         assert!(c.problem().unwrap().contains("Two sites of east are named \"east\""), "{:?}", c.problem());
+        // Nor may a site take another system's short name.
+        c.systems[0].sites[1].name = "west".into();
+        assert!(c.problem().unwrap().contains("A site of east is named \"west\""), "{:?}", c.problem());
         c.systems[0].sites.pop();
         // One source can't hold both.
         c.sources.pop();
@@ -3191,7 +4069,7 @@ mod tests {
     fn rows_sharing_a_frequency() {
         let row = |tone: &str, tg: Option<u32>| Channel {
             freq_hz: 154_325_000.0,
-            mode: ChannelMode::Fm,
+            mode: ConvMode::Fm,
             name: String::new(),
             talkgroup: tg,
             description: String::new(),
@@ -3202,7 +4080,7 @@ mod tests {
             code: tone.into(),
             slot: None,
             match_talkgroup: None,
-            enabled: true, auto_tune: false,
+            enabled: true, auto_tune: false, receive_on: Vec::new(),
         };
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
@@ -3226,7 +4104,7 @@ mod tests {
         c.conventional[0].channels[3].slot = Some(1);
         assert!(c.problem().unwrap().contains("only DMR has slots"), "{:?}", c.problem());
         // P25 rows split by talkgroup, a typed number filed under, the others the air's.
-        let p25 = |code: &str, tg: Option<u32>, m: Option<u32>| Channel { freq_hz: 154_325_000.0, mode: ChannelMode::P25, code: code.into(), match_talkgroup: m, ..row("", tg) };
+        let p25 = |code: &str, tg: Option<u32>, m: Option<u32>| Channel { freq_hz: 154_325_000.0, mode: ConvMode::P25, code: code.into(), match_talkgroup: m, ..row("", tg) };
         c.conventional[0].channels = vec![p25("293", Some(45351), Some(1)), p25("293", None, Some(2)), p25("293", None, None)];
         assert_eq!(c.problem(), None);
         let e = c.engine_channels();
@@ -3244,7 +4122,7 @@ mod tests {
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![Channel {
             freq_hz: 154_430_000.0,
-            mode: ChannelMode::Fm,
+            mode: ConvMode::Fm,
             name: "Fire".into(),
             talkgroup: None,
             description: String::new(),
@@ -3255,7 +4133,7 @@ mod tests {
             code: String::new(),
             slot: None,
             match_talkgroup: None,
-            enabled: true, auto_tune: false,
+            enabled: true, auto_tune: false, receive_on: Vec::new(),
         }];
         // Linking a new path writes the current list there.
         c.link_channel_file(0, &cfg_path, "channels.csv").unwrap();
@@ -3351,7 +4229,7 @@ mod tests {
         let c = Config::from_json(r#"{ "systems": [{ "shortName": "a", "type": "P25", "sites": [{ "controlChannelsHz": [1], "modulation": "QPSK" }], "unitNames": { "mode": " OTA " } }],
             "conventional": [{ "shortName": "c", "channels": [{ "freqHz": 1, "mode": "NXDN48" }] }], "recording": { "vocoder": "Fixed-Point", "m4a": { "encoder": "FFmpeg" } } }"#).unwrap();
         assert_eq!((c.systems[0].kind, c.systems[0].sites[0].modulation, c.systems[0].unit_names.mode), (SystemKind::P25, Modulation::Qpsk, UnitNamesMode::Ota));
-        assert_eq!((c.conventional[0].channels[0].mode, c.recording.vocoder, c.recording.m4a.encoder), (ChannelMode::Nxdn48, Vocoder::Fixed, M4aEncoder::Ffmpeg));
+        assert_eq!((c.conventional[0].channels[0].mode, c.recording.vocoder, c.recording.m4a.encoder), (ConvMode::Nxdn(trunk_core::nxdn::Rate::N48), Vocoder::Fixed, M4aEncoder::Ffmpeg));
         let saved = serde_json::to_string(&c).unwrap();
         assert!(saved.contains(r#""type":"p25""#) && saved.contains(r#""modulation":"qpsk""#) && saved.contains(r#""mode":"ota""#) && saved.contains(r#""vocoder":"fixed""#), "{saved}");
         let e = Config::from_json(r#"{ "systems": [{ "shortName": "a", "type": "p26" }] }"#).unwrap_err().to_string();
@@ -3365,6 +4243,166 @@ mod tests {
         assert!(saved.contains(r#""type":"rtlsdr""#) && saved.contains(r#""level":"warning""#) && saved.contains(r#""talkgroupDisplayFormat":"id_tag""#) && saved.contains(r#""access":"control""#), "{saved}");
     }
 
+    /// Signing in off is saved as a config always was; on, it needs a control
+    /// user who can sign in (to turn it off again), and anonymous control is
+    /// no such thing.
+    #[test]
+    fn signing_in_needs_a_way_back_out() {
+        let c = Config::default();
+        assert!(!serde_json::to_string(&c).unwrap().contains("auth"), "off: no auth key");
+        assert_eq!(c.server.auth.problem(), None);
+        let user = |access| AuthUser { access, token: Some(AuthToken { hash: "ab".repeat(32), created: 1_794_000_000 }), passkeys: vec![] };
+        let mut a = Auth { enabled: true, ..Default::default() };
+        assert!(a.problem().unwrap().contains("control"), "nobody at all");
+        a.users.insert("wall".into(), user(ApiAccess::Listen));
+        assert!(a.problem().is_some(), "a listen user can't turn it off");
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        assert!(a.problem().is_some(), "a control user with nothing to sign in with can't either");
+        let passkey = AuthPasskey { name: "iPhone".into(), created: 1_794_000_000, id: "AQID".into(), key: serde_json::json!({ "cred": {} }) };
+        a.users.get_mut("luke").unwrap().passkeys.push(passkey.clone());
+        assert!(a.users["luke"].can_sign_in() && a.problem().is_none(), "a passkey alone will do");
+        a.users.insert("luke".into(), user(ApiAccess::Control));
+        assert_eq!(a.problem(), None);
+        a.anonymous = Some(ApiAccess::Listen);
+        assert_eq!(a.problem(), None);
+        a.anonymous = Some(ApiAccess::Control);
+        assert!(a.problem().unwrap().contains("nonymous"));
+        assert_eq!(Auth { enabled: false, ..a.clone() }.problem(), None, "off, anything goes");
+        let c = Config::from_json(r#"{ "server": { "auth": { "enabled": true, "anonymous": "listen", "users": { "luke": { "access": "control", "token": { "hash": "00", "created": 1794000000 } }, "wall": { "access": "listen" } } } } }"#).unwrap();
+        assert_eq!((c.server.auth.anonymous, c.server.auth.users["luke"].access, c.server.auth.users["wall"].token.is_none()), (Some(ApiAccess::Listen), ApiAccess::Control, true));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":true,"anonymous":"listen","users":{"luke":{"access":"control","token":{"hash":"00","created":1794000000}},"wall":{"access":"listen"}}}"#), "no passkeys: no passkeys key");
+        // Passkeys, saved as they were read (the key as webauthn-rs wrote it).
+        let mut c = c;
+        c.server.auth.users.get_mut("wall").unwrap().passkeys.push(passkey);
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""wall":{"access":"listen","passkeys":[{"name":"iPhone","created":1794000000,"id":"AQID","key":{"cred":{}}}]}"#), "{saved}");
+        assert_eq!(Config::from_json(&saved).unwrap().server.auth, c.server.auth);
+    }
+
+    /// A proxy that signs people in: believed from its addresses alone (IPs
+    /// and CIDR blocks, v4 and v6; one that's neither, or every address,
+    /// refused, signing in on or off); its names are users' (or mapped to them), else `other`'s; a
+    /// control user it can name is a way back in, needing no token.
+    #[test]
+    fn a_proxy_names_users_from_its_addresses() {
+        use std::net::IpAddr;
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        let p = AuthProxy { from: vec!["127.0.0.1".into(), " 10.1.0.0/16".into(), "fd7a:115c:a1e0::/48".into(), "0.0.0.0/1".into()], ..Default::default() };
+        assert_eq!(p.header, "Remote-User", "Authelia's and Authentik's, by default");
+        let only = |n: &str| AuthProxy { from: vec![n.into()], ..Default::default() };
+        assert!(only("127.0.0.1").trusts(ip("127.0.0.1")) && !only("127.0.0.1").trusts(ip("127.0.0.2")));
+        assert!(only("127.0.0.1").trusts(ip("::ffff:127.0.0.1")), "an IPv4 address as IPv6 (bound to ::)");
+        assert!(only("10.1.0.0/16").trusts(ip("10.1.255.3")) && !only("10.1.0.0/16").trusts(ip("10.2.0.1")));
+        assert!(only("fd7a:115c:a1e0::/48").trusts(ip("fd7a:115c:a1e0:ab12::1")) && !only("fd7a:115c:a1e0::/48").trusts(ip("fd7a:115c:a1e1::1")));
+        assert!(only("::1").trusts(ip("::1")) && !only("::1").trusts(ip("127.0.0.1")), "v6 isn't v4");
+        assert!(only("0.0.0.0/0").trusts(ip("8.8.8.8")) && !only("0.0.0.0/0").trusts(ip("::2")), "/0: every v4 address");
+        assert!(only("10.1.2.3/32").trusts(ip("10.1.2.3")) && !only("10.1.2.3/31").trusts(ip("10.1.2.4")));
+        assert_eq!(p.problem(), None);
+        for (bad, says) in [("10.0.0.0/33", "0 to 32"), ("::/129", "0 to 128"),("radiobox.local", "isn't an IP"), ("10.0.0.0/", "bits"), ("10.0.0/8", "isn't an IP"), ("1.2.3.4/x", "bits")] {
+            let why = AuthProxy { from: vec!["127.0.0.1".into(), bad.into()], ..Default::default() }.problem().unwrap_or_default();
+            assert!(why.contains(bad.trim()) && why.contains(says), "{bad}: {why}");
+            assert!(!only(bad).trusts(ip("10.0.0.1")), "{bad}: nobody");
+        }
+        assert!(AuthProxy::default().problem().unwrap().contains("addresses"), "no addresses");
+        for every in ["0.0.0.0/0", " ::/0", "10.0.0.0/0"] {
+            let why = AuthProxy { from: vec!["127.0.0.1".into(), every.into()], ..Default::default() }.problem().unwrap_or_default();
+            assert!(why.contains(every.trim()) && why.contains("every address") && why.contains("turned off"), "{every}: the same as signing in off: {why}");
+        }
+        assert!(AuthProxy { header: "Remote User".into(), ..only("::1") }.problem().unwrap().contains("header"));
+        assert!(AuthProxy { header: String::new(), ..only("::1") }.problem().unwrap().contains("header"));
+        assert!(AuthProxy { other: Some(ApiAccess::Control), ..only("::1") }.problem().unwrap().contains("others listen"));
+        // Off, a bad one is refused all the same.
+        let mut a = Auth { proxy: Some(only("nope")), ..Default::default() };
+        assert!(a.problem().unwrap().contains("\"nope\""));
+        // A control user with no token: a way in only through the proxy.
+        a.proxy = Some(only("127.0.0.1"));
+        a.enabled = true;
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        a.users.insert("wall".into(), AuthUser { access: ApiAccess::Listen, token: None, passkeys: vec![] });
+        assert_eq!(a.problem(), None, "the proxy can name luke");
+        assert!(Auth { proxy: None, ..a.clone() }.problem().unwrap().contains("control"), "no proxy: nobody can");
+        a.users.remove("luke");
+        assert!(a.problem().unwrap().contains("control"), "a proxy with nobody with control to name");
+        a.users.insert("luke".into(), AuthUser { access: ApiAccess::Control, token: None, passkeys: vec![] });
+        // Its names: a user's, or mapped to one; else other's, by its own name.
+        a.proxy.as_mut().unwrap().users.insert("luke@example.com".into(), "luke".into());
+        a.proxy.as_mut().unwrap().users.insert("ghost@example.com".into(), "nobody".into());
+        assert_eq!(a.proxied("luke@example.com"), Some(("luke".into(), ApiAccess::Control)));
+        assert_eq!(a.proxied("wall"), Some(("wall".into(), ApiAccess::Listen)), "the same name");
+        assert_eq!((a.proxied("stranger"), a.proxied("ghost@example.com")), (None, None), "other none: nobody");
+        a.proxy.as_mut().unwrap().other = Some(ApiAccess::Listen);
+        assert_eq!(a.proxied("stranger"), Some(("stranger".into(), ApiAccess::Listen)));
+        assert_eq!(a.proxied("ghost@example.com"), Some(("ghost@example.com".into(), ApiAccess::Listen)), "mapped to no user: other's");
+        assert_eq!(Auth { proxy: None, ..a.clone() }.proxied("luke"), None, "no proxy: nobody");
+        // Saved: no proxy key unset; set, what isn't the default alone, read back the same.
+        assert!(!serde_json::to_string(&Auth { enabled: true, ..Default::default() }).unwrap().contains("proxy"));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["127.0.0.1"] } } } }"#).unwrap();
+        assert_eq!(c.server.auth.proxy, Some(only("127.0.0.1")));
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""auth":{"enabled":false,"proxy":{"from":["127.0.0.1"],"header":"Remote-User"}}"#));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["::1"], "header": "Tailscale-User-Login", "users": { "luke@github": "luke" }, "other": "listen" } } } }"#).unwrap();
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""proxy":{"from":["::1"],"header":"Tailscale-User-Login","users":{"luke@github":"luke"},"other":"listen"}"#), "{saved}");
+        assert_eq!(Config::from_json(&saved).unwrap().server.auth, c.server.auth);
+    }
+
+    /// Cloudflare Access: its team a team name or its URL (the tokens'
+    /// issuer, either way), an Audience tag needed; no addresses needed (its
+    /// signature is the proof); control for others refused as ever.
+    #[test]
+    fn cloudflare_is_a_team_and_an_audience() {
+        let cf = |team: &str, aud: &str| AuthCloudflare { team: team.into(), aud: aud.into() };
+        for team in ["radio", " Radio ", "https://radio.cloudflareaccess.com", "https://RADIO.cloudflareaccess.com/", "my-team-2"] {
+            assert!(cf(team, "a1b2").issuer().is_some_and(|i| i.starts_with("https://") && i.ends_with(".cloudflareaccess.com")), "{team}");
+        }
+        assert_eq!(cf("https://radio.cloudflareaccess.com/", "x").issuer().as_deref(), Some("https://radio.cloudflareaccess.com"));
+        assert_eq!(cf("Radio", "x").issuer().as_deref(), Some("https://radio.cloudflareaccess.com"));
+        for team in ["", "radio.example.com", "https://radio.example.com", "http://radio.cloudflareaccess.com", "-radio", "radio team", "https://.cloudflareaccess.com", &"x".repeat(64)] {
+            assert_eq!(cf(team, "a1b2").issuer(), None, "{team:?}");
+        }
+        let p = |c: AuthCloudflare| AuthProxy { cloudflare: Some(c), ..Default::default() };
+        assert_eq!(p(cf("radio", "a1b2")).problem(), None, "no addresses needed");
+        assert!(p(cf("radio.example.com", "a1b2")).problem().unwrap().contains("team"));
+        assert!(p(cf("radio", " ")).problem().unwrap().contains("Audience"));
+        assert!(AuthProxy { other: Some(ApiAccess::Control), ..p(cf("radio", "a1b2")) }.problem().unwrap().contains("others listen"));
+        let c = Config::from_json(r#"{ "server": { "auth": { "proxy": { "cloudflare": { "team": "radio", "aud": "a1b2" }, "users": { "luke@example.com": "luke" } } } } }"#).unwrap();
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(saved.contains(r#""proxy":{"from":[],"header":"Remote-User","cloudflare":{"team":"radio","aud":"a1b2"},"users":{"luke@example.com":"luke"}}"#), "{saved}");
+        assert!(!serde_json::to_string(&Config::from_json(r#"{ "server": { "auth": { "proxy": { "from": ["::1"] } } } }"#).unwrap()).unwrap().contains("cloudflare"), "unset: no key");
+    }
+
+    /// HTTPS off is saved as a config always was; on, its two paths, from
+    /// the config's folder unless absolute or `~/…`.
+    #[test]
+    fn https_is_two_files_and_off_unless_set() {
+        let c = Config::from_json(r#"{ "server": { "bind": "0.0.0.0", "port": 8443 } }"#).unwrap();
+        assert_eq!((c.server.tls.as_ref(), c.server.scheme()), (None, "http"));
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(!saved.contains(r#""tls""#), "off: no tls key");
+        assert_eq!(serde_json::to_string(&Config::from_json(&saved).unwrap()).unwrap(), saved);
+        let c = Config::from_json(r#"{ "server": { "tls": { "cert": "certs/radiobox.crt", "key": "/etc/ssl/radiobox.key" } } }"#).unwrap();
+        assert_eq!(c.server.scheme(), "https");
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""tls":{"cert":"certs/radiobox.crt","key":"/etc/ssl/radiobox.key"}"#));
+        let t = c.server.tls.unwrap();
+        assert_eq!(t.paths(Path::new("/home/luke/trunk-pro/config.json")), (PathBuf::from("/home/luke/trunk-pro/certs/radiobox.crt"), PathBuf::from("/etc/ssl/radiobox.key")));
+        assert_eq!(Tls { cert: "~/c.pem".into(), key: "k.pem".into(), ..Default::default() }.paths(Path::new("config.json")).0, home().join("c.pem"));
+        // HSTS: off unless set, and no key then.
+        assert!(!t.hsts);
+        let c = Config::from_json(r#"{ "server": { "tls": { "cert": "c.pem", "key": "k.pem", "hsts": true } } }"#).unwrap();
+        assert!(c.server.tls.as_ref().unwrap().hsts && serde_json::to_string(&c).unwrap().contains(r#""tls":{"cert":"c.pem","key":"k.pem","hsts":true}"#));
+        // The URLs' host: the host name when set, else localhost for any or the loopback address.
+        let mut s = Server::default();
+        assert_eq!((s.url_host("127.0.0.1"), s.url_host("0.0.0.0"), s.url_host("::1"), s.url_host("192.168.1.5"), s.url_host("fd00::5")), ("localhost".into(), "localhost".into(), "localhost".into(), "192.168.1.5".into(), "[fd00::5]".into()));
+        assert!(!serde_json::to_string(&s).unwrap().contains("hostname"), "none: no hostname key");
+        s.hostname = " Radio.tail1234.ts.net. ".into();
+        assert_eq!(s.url_host("0.0.0.0"), "radio.tail1234.ts.net");
+        assert_eq!((s.host().as_deref(), s.host_port()), (Some("radio.tail1234.ts.net"), None));
+        // With a port: where the dashboard is reached (a proxy in front); the name alone is the host.
+        s.hostname = "Radio.example.com.:8443".into();
+        assert_eq!((s.host().as_deref(), s.host_port(), s.url_host("0.0.0.0")), (Some("radio.example.com"), Some(8443), "radio.example.com".into()));
+        s.hostname = "radio.example.com:0".into();
+        assert_eq!((s.host().as_deref(), s.host_port()), (Some("radio.example.com"), None), "no port 0");
+    }
+
     #[test]
     fn loading_an_older_config_writes_its_talkgroup_files_beside_it() {
         let dir = std::env::temp_dir().join(format!("trunk-load-tg-{}", std::process::id()));
@@ -3376,4 +4414,108 @@ mod tests {
         assert!(!serde_json::to_string(&c).unwrap().contains("talkgroupsCsv"));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn a_source_can_be_named() {
+        let named: Source = serde_json::from_str(r#"{"type":"rtlsdr","serial":"","centerHz":851000000,"rateHz":2400000,"name":" Whip "}"#).unwrap();
+        assert_eq!(named.title(1), "Source 2 (Whip)");
+        assert_eq!(named.label(), "RTL-SDR (first)", "a name isn't its identity");
+        assert_eq!(named.radio(), Source { name: String::new(), ..named.clone() });
+        assert!(serde_json::to_string(&named).unwrap().contains("\"name\":\" Whip \""));
+        let plain: Source = serde_json::from_str(r#"{"type":"rtlsdr","serial":"","centerHz":851000000,"rateHz":2400000}"#).unwrap();
+        assert_eq!(plain.title(1), "Source 2");
+        assert!(!serde_json::to_string(&plain).unwrap().contains("name"), "an unnamed source is saved as it was");
+        let mut c = Config::default();
+        c.sources = vec![Source { name: "Whip".into(), kind: SourceKind::Hackrf { serial: String::new(), lna_db: 4, vga_db: 20, amp: false, bias_tee: false }, ..plain }];
+        assert!(c.problem().unwrap().starts_with("Source 1 (Whip): "), "{:?}", c.problem());
+    }
+
+    #[test]
+    fn a_channel_can_be_auto() {
+        let c: Config = serde_json::from_str(
+            r#"{
+                "conventional": [{ "shortName": "frs", "channels": [
+                    { "freqHz": 462562500, "mode": "auto", "name": "FRS 1" },
+                    { "freqHz": 462587500, "mode": "auto", "name": "FRS 2", "bandwidthKhz": 16 }] }],
+                "sources": [{ "type": "file", "path": "a.cu8", "centerHz": 462500000, "rateHz": 2400000, "realtime": false }]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(c.problem(), None);
+        let e = c.engine_config(0.0, &Default::default());
+        assert!(e.conventional.iter().all(|x| x.mode == trunk_core::trunk::ConvMode::Auto));
+        assert_eq!(e.conventional[1].analog.half_bw_hz, 8000.0, "its analog receiver's width, as an FM channel's");
+        // Written back as it was read, every mode by its name; one not listed is refused, naming them.
+        assert!(serde_json::to_string(&c).unwrap().contains(r#""mode":"auto""#));
+        for m in trunk_core::trunk::ConvMode::ALL {
+            assert_eq!(serde_json::from_value::<trunk_core::trunk::ConvMode>(serde_json::to_value(m).unwrap()).unwrap(), m);
+        }
+        assert_eq!(serde_json::from_str::<trunk_core::trunk::ConvMode>(r#""""#).unwrap(), trunk_core::trunk::ConvMode::Fm);
+        let bad = serde_json::from_str::<trunk_core::trunk::ConvMode>(r#""tdma""#).unwrap_err().to_string();
+        assert!(bad.contains("fm, am, p25, dmr, nxdn48, nxdn96 or auto"), "{bad}");
+        // It has no code to hold: a tone on it stops Start, naming the frequency.
+        let mut bad = c.clone();
+        bad.conventional[0].channels[0].code = "100.0".into();
+        assert!(bad.problem().unwrap().contains("auto channels carry no tone or code"), "{:?}", bad.problem());
+        // Nor can a frequency be listed twice.
+        let mut twice = c.clone();
+        let first = twice.conventional[0].channels[0].clone();
+        twice.conventional[0].channels.push(first);
+        assert!(twice.problem().unwrap().contains("is auto"), "{:?}", twice.problem());
+    }
+
+    #[test]
+    fn a_system_or_channel_can_be_pinned_to_sources() {
+        let mut c: Config = serde_json::from_str(
+            r#"{
+                "systems": [{ "shortName": "trunked", "receiveOn": ["file b.cu8"], "sites": [{ "controlChannelsHz": [154200000] }] }],
+                "conventional": [{ "shortName": "conv", "channels": [
+                    { "freqHz": 154430000, "mode": "fm", "name": "A", "receiveOn": ["file b.cu8"] },
+                    { "freqHz": 154325000, "mode": "fm", "name": "B" }] }],
+                "sources": [
+                    { "type": "file", "path": "a.cu8", "centerHz": 154000000, "rateHz": 2400000, "realtime": false },
+                    { "type": "file", "path": "b.cu8", "centerHz": 154000000, "rateHz": 2400000, "realtime": false }]
+            }"#,
+        )
+        .unwrap();
+        let e = c.engine_config(0.0, &Default::default());
+        assert_eq!(e.systems[0].pins, Pins::only(vec![1]), "a trunked system is pinned as a whole");
+        assert_eq!(e.conventional.iter().map(|x| x.pins.clone()).collect::<Vec<_>>(), [Pins::only(vec![1]), Pins::any()], "a conventional channel by itself");
+        assert_eq!(c.problem(), None);
+        // Each frequency on the source it's received on; the pinned ones on b, the rest on the first.
+        let on: Vec<(f64, Option<usize>)> = c.receivers().iter().map(|r| (r.hz, r.source)).collect();
+        assert_eq!(on, [(154_200_000.0, Some(1)), (154_430_000.0, Some(1)), (154_325_000.0, Some(0))]);
+        // A pin names the radio, not its place: moved, it moves with it.
+        c.sources.swap(0, 1);
+        assert_eq!(c.engine_config(0.0, &Default::default()).systems[0].pins, Pins::only(vec![0]));
+        // A radio no longer there: Start says so, rather than receiving it anywhere.
+        c.sources.remove(0);
+        assert!(c.problem().unwrap().starts_with("trunked: it is set to receive on file b.cu8, which isn't one of the sources"), "{:?}", c.problem());
+        assert_eq!(c.pins(&["file b.cu8".into()]), Pins::only(vec![]), "none, not any");
+        // Unpinned is how a config was always written.
+        c.systems[0].receive_on.clear();
+        assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("receiveOn"));
+        assert!(!serde_json::to_string(&c.conventional[0].channels[1]).unwrap().contains("receiveOn"));
+    }
+
+    /// Auto sources follow pins: a system kept on a radio is placed for by
+    /// it, and a radio other systems can't use doesn't count as needed for
+    /// what a pinned one is received on.
+    #[test]
+    fn auto_placement_and_the_start_check_follow_pins() {
+        let rtl = |serial: &str| Source { kind: SourceKind::Rtlsdr { serial: serial.into(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let mut far = system("far", &[771_106_250.0]);
+        far.receive_on = vec!["RTL-SDR SN 2".into()];
+        let mut c = Config { sources: vec![rtl("1"), rtl("2")], systems: vec![far, system("near", &[851_012_500.0])], ..Default::default() };
+        assert_eq!(c.problem(), None);
+        let centers = c.resolved_centers();
+        assert!(c.sources[0].reaches(centers[0], 851_012_500.0), "SN 1 may not take far, so it takes near: {centers:?}");
+        assert!(c.sources[1].reaches(centers[1], 771_106_250.0), "{centers:?}");
+        assert!(c.placement().iter().all(|p| p.listed > 0));
+        // Kept on SN 2, tuned where it can't hear far: Start says so, about the sources it's kept on.
+        c.sources[1].center_hz = 851_000_000.0;
+        let p = c.problem().unwrap();
+        assert!(p.contains("No control channel of far falls inside the bandwidth of the sources it receives on"), "{p}");
+    }
+
 }

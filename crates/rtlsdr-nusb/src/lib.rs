@@ -1,4 +1,4 @@
-//! Native RTL2832U / R820T / R828D driver built on `nusb`.
+//! Native RTL2832U / R820T / R828D / E4000 driver built on `nusb`.
 //!
 //! Device and stream operations can be awaited, or synchronously executed with
 //! [`MaybeFuture::wait`] on native targets. Enable `smol` or `tokio` when awaiting
@@ -51,7 +51,7 @@ pub use errors::{Error, ErrorKind, Result};
 pub use num_complex::Complex32;
 pub use nusb::MaybeFuture;
 pub use rx::{MAX_F32_IQ_SAMPLES_PER_TRANSFER, RxBuffers, RxStream, SampleBlock, StreamingStats};
-pub use tuners::TunerKind;
+pub use tuners::{Board, TunerKind};
 
 /// What a device's control pipe has counted since it opened.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

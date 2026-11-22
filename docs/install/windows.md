@@ -60,7 +60,7 @@ trunk-pro.exe --no-open --start
 
 ### Recording unattended
 
-Turn on **Start recording when the app starts** in **Setup → Recording**, so that recording resumes
+Turn on **Record when the app starts** in **Setup → Recording**, so that recording resumes
 whenever `trunk-pro.exe` is started. Trunk Recorder Pro doesn't install a Windows service or a
 startup entry; to start it at logon, put a shortcut to `trunk-pro.exe` in your Startup folder
 (press Win+R and type `shell:startup`). Set Windows not to sleep while it records.
@@ -70,7 +70,7 @@ startup entry; to start it at logon, put a shortcut to `trunk-pro.exe` in your S
 | What | Where |
 |---|---|
 | Settings (`config.json`) | `%APPDATA%\trunk-pro\` (usually `C:\Users\<you>\AppData\Roaming\trunk-pro\`) |
-| Band plans, talker aliases, plugins, statistics | The same folder, beside `config.json` |
+| The store (`trunk-pro.sqlite`: talkgroups, band plans, talker aliases, history), plugins | The same folder, beside `config.json` ([what each file is](../configuration/README.md#files-kept-beside-the-config)) |
 | Log files (when **To files** is on in **Setup → Recording → Log**) | `logs\` in the same folder |
 | Recordings | `%USERPROFILE%\TrunkRecorderPro\` (change it in **Setup → Recording → Recordings folder**) |
 

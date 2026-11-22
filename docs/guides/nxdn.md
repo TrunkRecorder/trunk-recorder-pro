@@ -5,11 +5,11 @@ IDAS): the two rates, Type-C and Type-D trunking, RANs, and how channel numbers 
 key is listed in the [trunked systems reference](../configuration/systems.md#nxdn).
 Conventional NXDN channels are covered in [Conventional channels](conventional.md).
 
-> **Not yet tried on a live system.** NXDN support was released in v0.1.4, but there is no NXDN
+> **Little tried on live systems.** NXDN support was released in v0.1.4, but there is no NXDN
 > system near the developer. It has been tested on recordings (the sigidwiki NXDN48 and NXDN96
-> IQ files) and on synthesized control and traffic channels only. If you have a real NXDN system,
-> reports and captures are very welcome; see [Diagnostic tools](#diagnostic-tools) for what to
-> capture.
+> IQ files), on captures from users' Type-C systems (#170), and on synthesized control and
+> traffic channels. If you have a real NXDN system, reports and captures are very welcome; see
+> [Diagnostic tools](#diagnostic-tools) for what to capture.
 
 ## What it handles
 
@@ -43,7 +43,7 @@ system's **NXDN type** (`nxdnType`): **Type-C (control channel)** (the default) 
 - **Voice frequencies, MHz** (Type-C) or **More repeaters, MHz** (Type-D) (`nxdnChannelsHz`):
   for Type-C, the site's voice frequencies, which are watched so channel numbers can be learned.
   For Type-D, optional: the repeaters may all go in the first field.
-- **Channel table (optional)** (`lcnTableHz`): channel numbers you know, as `20=451.0125, 21=…`
+- **Channel table** (`lcnTableHz`): channel numbers you know, as `20=451.0125, 21=…`
   (Type-D: repeater numbers).
 
 In the config file (frequencies in Hz):
@@ -78,8 +78,8 @@ The control channel assigns a call to a channel number. Its frequency comes from
 3. learning: a grant for a channel it doesn't know, then the same group's call showing up on one
    of the watched **Voice frequencies** within 4 seconds, ties the channel to that frequency.
 
-Learned channels are saved to `<shortName>.bandplan` in the folder the config file is in and
-loaded on the next start. The log reports what it learns ("Channel 12 is 451.11875 MHz (…)"), and
+Learned channels are kept in the recorder's store (for each site) and loaded on the next start.
+The log reports what it learns ("Channel 12 is 451.11875 MHz (…)"), and
 a channel number it can't place yet ("Channel 12 isn't in the channel table: listening for the
 call on the watched frequencies").
 
@@ -105,10 +105,14 @@ watched frequency heard on a different RAN with a chip (for example **RAN 7**).
 
 The call JSON has `ran`, and file name formats can use `{ran}`.
 
+Radios' registrations, group registrations and deregistrations are decoded, so a Type-C system's
+radios show on the unit pages and in plugins' `unit` topic as P25's affiliations do.
+
 ## Site lock and several sites
 
 A Type-C site announces a system code and a site code. The **Site lock** on the site's card takes
-**System ID** (in hex) and **Site**; a control channel announcing something else isn't followed.
+**System ID** (in hex) and **Site**; a control channel announcing something else isn't followed
+(see [Site lock](multi-site.md#site-lock)).
 A call heard on two sites of one system is saved once. When two systems set up apart announce the
 same system code, Setup offers **Make them one system**.
 
@@ -118,8 +122,9 @@ under the system's **Sites**. See [Several systems and sites](multi-site.md).
 ## Encryption
 
 Encrypted transmissions (scrambler, DES or AES) are marked and left out of the audio, as on P25
-and DMR. A call that was all encrypted is kept, without audio, only when `recordEncrypted` is
-`true` in the config file.
+and DMR. A call that was all encrypted is kept, without audio, when `recordEncrypted` is `true`
+in the config file; a call the grant didn't mark encrypted is also kept when **Calls with no
+audio** is on.
 
 Not decoded: full-rate (EFR) voice and data calls.
 
@@ -129,9 +134,9 @@ Kenwood NEXEDGE radios can send their programmed name ("E12 CAPT") while they ta
 characters at a time in the SACCH and FACCH1 of the traffic channel. Trunk Recorder Pro puts
 the pieces together once the call has named its radio, checks the alias's checksum, and learns it
 as it does a P25 talker alias: it appears as the radio's `tag_ota` in the call JSON and on the
-**Radio system** page, and is kept in `<shortName>.units.csv`. See
-[Talker aliases](talkgroups-and-units.md#talker-aliases) for the file and for how a unit names
-file combines with it. It works on trunked (Type-C) and conventional channels, at both rates.
+**Radio system** page, and is kept in the store with the system's other talker aliases. See
+[Talker aliases](talkgroups-and-units.md#talker-aliases) for how a unit names file combines with
+it. It works on trunked (Type-C) and conventional channels, at both rates.
 
 Only plain ASCII aliases are read: one with other characters (a Japanese or Chinese name in
 Shift-JIS or Big5, say) is dropped, as is one whose checksum doesn't match. Icom's version

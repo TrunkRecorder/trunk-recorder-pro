@@ -32,6 +32,8 @@ The top-level `plugins` object is keyed by plugin id. Each entry:
 | `settings` | | `null` | any | Its settings for the whole recorder, as the plugin's own schema describes them (the `config` schema in its manifest; `trunk-pro plugin describe <executable>` prints it) |
 | `path` | | `""` | string | Run this executable instead of the installed one: a build of your own, while developing a plugin. Use an absolute path |
 | `shareDecrypted` | | `false` | bool | Give it calls decrypted with your keys (their audio and files). See [Decrypted calls](../plugins/README.md#decrypted-calls) |
+| `sitesOff` | | `[]` | integer array | The sites (by their `id`) it's turned off for: their radio activity and status aren't sent to it, nor a recorded call only they heard. In Setup: **Sites** on the system's card |
+| `systemsOff` | | `[]` | integer array | The systems (by `id`) it's turned off for: nothing about them is sent to it. Not for a plugin that takes `totals` (every system's figures): it's on for all of them, with a warning in its log. In Setup: **Systems** on its card |
 
 A plugin with no entry is off. Unknown keys in an entry are dropped on save.
 
@@ -52,9 +54,9 @@ with it; renaming it by hand in the file is fine too, since the settings live in
 
 ### Overriding the recorder-wide settings
 
-`override` in a system's settings for a plugin changes any of the plugin's recorder-wide `settings`
-for that system alone, such as sending its calls to another server. Settings it leaves out are the
-recorder-wide ones. A required setting, such as Rdio Scanner's server, can be left empty
+`override` in a system's settings for a plugin changes those of the plugin's recorder-wide
+`settings` the plugin lets a system set again (`system_overrides` in its manifest), for that system
+alone, such as sending its calls to another server. Settings it leaves out are the recorder-wide ones. A required setting, such as Rdio Scanner's server, can be left empty
 recorder-wide when every system that uses the plugin overrides it.
 
 ```json
@@ -63,9 +65,27 @@ recorder-wide when every system that uses the plugin overrides it.
                                 "override": { "server": "https://rdio.example.org" } } } }
 ```
 
-In Setup, each plugin on a system's card has a *settings for this system* section for this. Keys
-the plugin has no setting for are ignored, with a warning in its log. An uploader keeps a separate
+In Setup, each plugin that offers some has a *shared settings* section on a system's card for this.
+Any other key is ignored, with a warning in its log; its card in Setup → Plugins lists the systems
+with such keys (**Ignored overrides**), and **Remove** clears them. An uploader keeps a separate
 queue for each server it sends to, so a server that's down doesn't hold up uploads to the others.
+
+### Settings for each site
+
+`perSite` in a system's settings for a plugin gives each of its sites, by the site's `id`, its own
+values for those of the plugin's per-system settings the plugin lets a site set again
+(`site_overrides` in its manifest). Settings a site leaves out are the system's.
+
+```json
+{ "shortName": "dcfd", "type": "p25",
+  "sites": [{ "id": 7, "name": "north", … }, { "id": 8, "name": "south", … }],
+  "plugins": { "broadcastify": { "apiKey": "...", "systemId": 42,
+                                 "perSite": { "8": { "systemId": 77 } } } } }
+```
+
+A call south heard goes to Broadcastify system 77, and one only north heard to 42. In Setup, each site
+has a row of its own on the system's card. Keys the plugin doesn't offer are ignored, with a warning in
+its log. Each site gets its `id` when the config is read, and keeps it through renames.
 
 ### Several copies of a plugin
 
@@ -108,7 +128,8 @@ card:
 | **Only some** | `"only"` | The talkgroups in **Only these** (`talkgroupAllow`), less any in **Except these** (`talkgroupDeny`) |
 | **All but some** | `"allBut"` | Every talkgroup but those in **Except these** (`talkgroupDeny`) |
 
-A list the choice doesn't use is kept, hidden, for when it's chosen again. With no
+**Only some** needs at least one entry in **Only these**: with none, the plugin won't start. A list
+the choice doesn't use is kept, hidden, for when it's chosen again. With no
 `talkgroupMode`, the plugin takes every talkgroup, whatever the lists say.
 
 ```json
@@ -128,7 +149,7 @@ keys, and a key left out picks everything:
 | `plugins` | | every plugin | array | Plugin ids. One copy of a plugin is `id#2`, `id#3`… |
 | `talkgroups` | | every talkgroup | array | Only these talkgroups: numbers, ranges (`"1000-1099"`) and patterns (`"507*"`, `"12?45"`), as strings or numbers ([Choosing talkgroups](#choosing-talkgroups)) |
 | `exceptTalkgroups` | | none | array | Not these, of those `talkgroups` picks: the same kinds of entry. With `talkgroups` left out, the rule is for every talkgroup but these |
-| `delayS` | | `0` | number | How long, in seconds. `0` is no delay, to let something through that a broader rule delays |
+| `delayS` | | `0` | number | How long, in seconds (Setup asks in minutes). `0` is no delay, to let something through that a broader rule delays |
 
 ```json
 {
@@ -193,18 +214,15 @@ how many calls are waiting for each plugin.
 A change to the delays applies at once, without restarting the plugins, to the calls already
 waiting too: shortening one lets them go sooner.
 
-Changing any other plugin setting, recorder-wide or per system, or `recording.m4a`, restarts the running
-plugins at once with the new settings, even while recording. The OpenMHz, Broadcastify, Rdio Scanner
+A change to a plugin's recorder-wide `settings` alone is sent to the running plugin as it runs, if
+every plugin changed takes its settings that way. Otherwise, and for any other plugin change (its
+entry, a system's settings for it) or `recording.m4a`, the running plugins restart at once with the
+new settings, even while recording. The OpenMHz, Broadcastify, Rdio Scanner
 and upload-script plugins save calls still waiting in `plugin-data/<id>/queue.jsonl`, so a restart
 doesn't lose them.
 
 ## Files
 
-| Where | What |
-|---|---|
-| `plugins/<id>/<id>` (`<id>.exe` on Windows) | The installed executable |
-| `plugin-data/<id>/` | Its own data and working folder |
-| `plugin-hold/` | Finished calls waiting out a [delay](#delays) |
-| `plugin-registry.json` | The plugin store's cached index |
-
-All beside the config file; see [Files kept beside the config](README.md#files-kept-beside-the-config).
+Installed plugins (`plugins/<id>/`), their data (`plugin-data/<id>/`), calls waiting out a
+[delay](#delays) (`plugin-hold/`) and the plugin store's index are kept beside the config file: see
+[Files kept beside the config](README.md#files-kept-beside-the-config).

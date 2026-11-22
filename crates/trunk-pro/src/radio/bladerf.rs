@@ -15,7 +15,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
-use crate::sdr::{Applied, Control, Gain, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
 
 type Dev = *mut c_void;
 
@@ -147,18 +147,6 @@ fn api() -> Result<&'static Api, String> {
     .map_err(|e| e.clone())
 }
 
-/// Log the gain the board reports (`reported`), and warn when it isn't what `cfg` asks.
-fn say_gain(cfg: &BladerfConfig, reported: Option<(c_int, c_int)>) {
-    let Some((mode, gain)) = reported else { return };
-    let agc_on = mode != GAIN_MGC;
-    let text = format!("bladeRF {}: the board reports {}, gain {gain} dB", if cfg.serial.is_empty() { "(first)" } else { &cfg.serial }, if agc_on { "AGC" } else { "manual gain" });
-    if agc_on != cfg.agc || (!cfg.agc && (gain as f64 - cfg.gain_db).abs() > 1.0) {
-        log::warn!("{text}, not the {} asked for{}", if cfg.agc { "AGC".to_string() } else { format!("{} dB", cfg.gain_db) }, if !cfg.agc && agc_on == cfg.agc { " (outside the board's range here, so clamped)" } else { "" });
-    } else {
-        log::info!("{text}");
-    }
-}
-
 /// The gain as `cfg` says: the board's AGC, or manual at `gain_db`.
 ///
 /// SAFETY (callers): `dev` is open.
@@ -173,14 +161,16 @@ unsafe fn set_gain(a: &Api, dev: Dev, cfg: &BladerfConfig) -> Result<(), String>
     }
 }
 
-/// What the board runs at: (gain mode, gain dB), when this libbladeRF can say.
+/// What the board runs at — its AGC, or a manual gain in whole dB within its
+/// range at this frequency — when this libbladeRF can say.
 ///
 /// SAFETY (callers): `dev` is open.
-unsafe fn report_gain(a: &Api, dev: Dev) -> Option<(c_int, c_int)> {
+unsafe fn gain_set(a: &Api, dev: Dev) -> Option<Gain> {
     let (gm, gg) = (a.get_gain_mode?, a.get_gain?);
     let (mut mode, mut gain): (c_int, c_int) = (0, 0);
     // SAFETY: the out-pointers are live locals.
-    unsafe { (gm(dev, RX0, &mut mode) == 0 && gg(dev, RX0, &mut gain) == 0).then_some((mode, gain)) }
+    let read = unsafe { gm(dev, RX0, &mut mode) == 0 && gg(dev, RX0, &mut gain) == 0 };
+    read.then(|| if mode != GAIN_MGC { Gain::Agc } else { Gain::Db(gain as f32) })
 }
 
 fn carr(a: &[c_char]) -> String {
@@ -275,6 +265,9 @@ impl crate::sdr::Radio for BladerfConfig {
             self.gain_db = db as f64;
         }
     }
+    fn gain(&self) -> Option<Gain> {
+        Some(if self.agc { Gain::Agc } else { Gain::Db(self.gain_db as f32) })
+    }
     fn rate_hz(&self) -> f64 {
         self.rate_hz
     }
@@ -298,14 +291,16 @@ impl Tunable for Device {
         Ok(Retuned { hz, gap: 0 })
     }
     /// A manual gain (AGC on or off waits for the next start).
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
-        let Gain::Db(db) = g else { return Ok(0) };
+    fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
+        let Gain::Db(db) = g else { return Ok(Regained::LEFT_ALONE) };
         // SAFETY: an open device.
-        unsafe {
+        let set = unsafe {
             check(self.a, "manual gain", (self.a.set_gain_mode)(self.dev, RX0, GAIN_MGC))?;
             check(self.a, "gain", (self.a.set_gain)(self.dev, RX0, db.round() as c_int))?;
-        }
-        Ok(0)
+            gain_set(self.a, self.dev)
+        };
+        // (A libbladeRF that can't say: the whole dB it was given.)
+        Ok(Regained { gap: 0, gain: set.or(Some(Gain::Db(db.round()))) })
     }
 }
 
@@ -403,7 +398,7 @@ fn stream_once(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
         // its own (its gain table is reloaded for the band), and then neither the
         // gain nor AGC set beforehand would hold. Then say what the board reports.
         set_gain(a, d.dev, cfg)?;
-        let reported = report_gain(a, d.dev);
+        sink.gained(cfg.gain(), gain_set(a, d.dev));
         log::info!(
             "bladeRF {} ({board}): {:.4} MHz, {:.3} MSPS, bandwidth {:.3} MHz, {}",
             if cfg.serial.is_empty() { "(first)" } else { &cfg.serial },
@@ -412,7 +407,6 @@ fn stream_once(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
             bw_actual as f64 / 1e6,
             if cfg.agc { "AGC".to_string() } else { format!("gain {} dB", cfg.gain_db) }
         );
-        say_gain(cfg, reported);
 
         let mut raw = vec![0i16; per * 2];
         let mut next_t: Option<u64> = None;

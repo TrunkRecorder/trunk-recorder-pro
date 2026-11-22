@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { activeSites, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newSiteName, newSystem, normalizeSystem, planCenters, radioName, rateFor, rateOk, ratesText, resolvedCenters, restartKey, usableHalfWidth, sameOnTheAir, siteNameOf, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -28,12 +28,27 @@ test("activeSites: the recorder's order; site names unique in a system; new site
   assert.match(nameProblem(c) ?? "", /Two sites of a are named "a"/);
 });
 
+test("a neighbouring site: by the fields its protocol states, and how a radio roams to it", () => {
+  const p25 = adjacentIdentity({ wacn: 0xbee00, sysId: 0x954, rfss: 1, site: 1, freqHz: 854_000_000 });
+  assert.equal(siteAddress(p25), "BEE00:954:1-1");
+  assert.equal(siteAddress(adjacentIdentity({ wacn: 1, sysId: 0x97, rfss: 1, site: 1, freqHz: 0 })), "00001:097:1-1");
+  const here = { nac: 0x1f1, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 2 };
+  assert.equal(roaming(here, p25), "inter-system");
+  assert.equal(roaming(here, { ...p25, wacn: 1 }), "inter-WACN");
+  assert.equal(roaming(here, { ...p25, sysId: 0x1a2 }), "intra-system");
+  assert.ok(sameSite(here, { wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site: 2 }) && !sameSite(here, { wacn: 1, sysId: 0x1a2, rfss: 1, site: 2 }));
+  const nxdn = adjacentIdentity({ wacn: 0, sysId: 0x1a, rfss: 0, site: 5, freqHz: 0 }, "nxdn");
+  assert.deepEqual(nxdn, { sysId: 0x1a, site: 5 }, "no WACN or RFSS to lock on");
+  assert.equal(siteAddress(nxdn), "SysID 1A · site 5");
+  assert.equal(roaming({ sysId: 0x1a, site: 4 }, nxdn), "intra-system");
+});
+
 test("sameOnTheAir: systems set up apart whose sites announce one system", () => {
   const c: Config = defaultConfig();
   c.systems.push(newSystem(c, { shortName: "dcfd" }), newSystem(c, { shortName: "dcfd2" }), newSystem(c, { shortName: "other", expect: { wacn: 0xbee00, sysId: 0x9 } }), newSystem(c, { shortName: "cm", type: "dmr" }));
   const id = (x: Partial<SiteIdentity>): SiteIdentity => ({ nac: null, wacn: null, sysId: null, rfss: null, site: null, ...x });
   const site = (name: string, identity: Partial<SiteIdentity>): SiteStatus =>
-    ({ index: 0, name, nowS: 0, controlChannelHz: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null });
+    ({ index: 0, name, nowS: 0, controlChannelHz: null, source: null, identity: id(identity), good: 0, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });
   const sys = (shortName: string, sites: SiteStatus[]): SystemStatus => ({ index: 0, shortName, activeCalls: 0, recording: 0, conventionalOpen: 0, callsConcluded: 0, sites });
   assert.deepEqual(sameOnTheAir(c, []), []);
   const live = [sys("dcfd", [site("dcfd", { wacn: 0xbee00, sysId: 0x1a2, site: 1 })]), sys("dcfd2", [site("dcfd2", { wacn: 0xbee00, sysId: 0x1a2, site: 2 })])];
@@ -90,7 +105,7 @@ test("the first-run guide places radios with the recorder's planner: the busiest
     { hz: 854_000_000, weight: 50 },
     { hz: 854_500_000, weight: 40 },
   ];
-  const [first, second, file] = planCenters([rtl, rtl, { ...rtl, fixedHz: 860_000_000 }], 0, 851_400_000, [851_000_000], voice);
+  const [first, second, file] = placeSources([{ ...rtl, fixedHz: 851_400_000 }, rtl, { ...rtl, fixedHz: 860_000_000 }], { groups: [{ channels: voice, need: [851_000_000] }] });
   assert.equal(first, 851_400_000);
   assert.ok(second !== null && voice.every((v) => Math.abs(v.hz - second) <= usableHalfWidth(rtl.rateHz) && Math.abs(v.hz - second) >= 25_000), String(second));
   assert.equal(file, 860_000_000);
@@ -101,7 +116,7 @@ test("SOURCE_KINDS: each kind's new source is that kind, and names its device wh
     assert.equal(k.fresh().type, type);
     if (k.device) assert.equal(deviceId(sourceFor(type, "x1")), "x1", type);
   }
-  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "bladerf", "hackrf", "soapy"]);
+  assert.deepEqual(DRIVER_KINDS, ["usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "soapy"]);
   assert.equal(sourceKey(sourceFor("bladerf", "f12ce103")), "bladerf:f12ce103");
 });
 
@@ -112,13 +127,24 @@ test("a new HackRF source: the driver's gain defaults, a native kind with a devi
   assert.equal(SOURCE_KINDS.hackrf.driver, undefined, "nothing to install");
   assert.equal(sourceKey(sourceFor("hackrf", "0000a1")), "hackrf:0000a1");
   const none = { available: true, detail: "", devices: [] };
-  const radios: Radios = { usrp: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] }, airspy: none, bladerf: none };
+  const radios: Radios = { usrp: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] }, airspy: none, hydrasdr: none, bladerf: none };
   assert.equal(foundRadio(radios, h)?.serial, "0000a1", "the first, when none is named");
   assert.equal(detectRadios([], radios)[0].kind, "hackrf");
-  // Its stages apply while recording, as an Airspy's do.
-  const c = (x: Source) => ({ ...defaultConfig(), sources: [x] });
-  assert.equal(restartKey(c({ ...h, lnaDb: 32, vgaDb: 40, amp: true } as Source), true), restartKey(c(h), true));
-  assert.notEqual(restartKey(c({ ...h, rateHz: 10e6 }), true), restartKey(c(h), true));
+});
+
+test("a HydraSDR: found by its driver, started at a rate it runs at, its gain as an Airspy's; imported from gr-osmosdr's hydrasdr", () => {
+  const none = { available: true, detail: "", devices: [] };
+  const rfone = { serial: "1A2B3C4D5E6F7081", label: "HydraSDR RFOne · SN 1A2B3C4D5E6F7081", model: "RFOne", rates: [10_000_000, 5_000_000, 2_500_000, 1_250_000] };
+  const radios: Radios = { usrp: none, hackrf: none, airspy: none, hydrasdr: { available: true, detail: "libhydrasdr 1.1.4", devices: [rfone] }, bladerf: none };
+  const [found] = detectRadios([], radios);
+  assert.equal(found.kind, "hydrasdr");
+  assert.equal(found.key, "hydrasdr:1A2B3C4D5E6F7081");
+  assert.deepEqual(found.source, { ...newHydrasdr(), serial: "1A2B3C4D5E6F7081" });
+  assert.equal(radioName("hydrasdr", rfone), "HydraSDR RFOne");
+  const tr = JSON.stringify({ sources: [{ center: 857e6, rate: 2.5e6, device: "hydrasdr=0,bias=1", lnaGain: 12, mixGain: 8, ifGain: 9 }], systems: [] });
+  const s = importTrunkRecorderConfig(tr, defaultConfig()).config.sources.find((x) => x.type === "hydrasdr");
+  assert.ok(s && airspyGains(s));
+  assert.deepEqual([s.rateHz, s.gainMode, s.lnaStep, s.mixerStep, s.vgaStep, s.biasTee, s.type === "hydrasdr" && s.rfPort], [2_500_000, "manual", 12, 8, 9, true, 0]);
 });
 
 test("importing a bladeRF already set up keeps one source", () => {
@@ -128,26 +154,13 @@ test("importing a bladeRF already set up keeps one source", () => {
   assert.equal(twice.sources.filter((x) => x.type === "bladerf").length, 1);
 });
 
-test("restartKey: a radio's gain doesn't need a restart on the desktop recorder; other settings do", () => {
-  const base = defaultConfig();
-  const c = (src: Partial<Source> & { type: Source["type"] }) => ({ ...base, sources: [{ ...SOURCE_KINDS[src.type].fresh(), ...src } as Source] });
-  const rtl = c({ type: "rtlsdr", gainDb: 30 });
-  assert.equal(restartKey(c({ type: "rtlsdr", gainDb: 20 }), true), restartKey(rtl, true), "an RTL-SDR's gain");
-  assert.equal(restartKey(c({ type: "rtlsdr", agc: true }), true), restartKey(rtl, true), "an RTL-SDR's AGC");
-  assert.notEqual(restartKey(c({ type: "rtlsdr", gainDb: 20 }), false), restartKey(rtl, false), "the browser build restarts for it");
-  assert.notEqual(restartKey(c({ type: "rtlsdr", gainDb: 30, centerHz: 851e6 }), true), restartKey(rtl, true), "a retune");
-  const blade = c({ type: "bladerf", gainDb: 30 });
-  assert.equal(restartKey(c({ type: "bladerf", gainDb: 42 }), true), restartKey(blade, true), "a bladeRF's gain");
-  assert.notEqual(restartKey(c({ type: "bladerf", gainDb: 30, agc: true }), true), restartKey(blade, true), "a bladeRF's AGC waits for the start");
-});
-
 test("foundRadio: what the picked radio runs at, once its driver has asked it; a new source starts at one of them", () => {
   const r2 = { serial: "735863DC2F650AE3", label: "Airspy R2 · SN 735863DC2F650AE3", model: "R2", rates: [10_000_000, 2_500_000] };
   const mini = { serial: "B", label: "Airspy Mini · SN B", model: "Mini", rates: [6_000_000, 3_000_000] };
   const busy = { serial: "C", label: "Airspy · SN C" };
   const blade = { serial: "f12ce1037830a1b27f3ceeba1f521413", label: "bladeRF 2.0 · SN f12ce1037830…", model: "bladeRF 2.0", rateRange: [520_834, 61_440_000] as [number, number] };
   const driver = (devices: FoundRadio[] | null) => ({ available: true, detail: "", devices });
-  const radios: Radios = { usrp: driver(null), hackrf: driver([]), airspy: driver([r2, mini, busy]), bladerf: driver([blade]) };
+  const radios: Radios = { usrp: driver(null), hackrf: driver([]), airspy: driver([r2, mini, busy]), hydrasdr: driver([]), bladerf: driver([blade]) };
   const airspy = (serial: string) => ({ ...(SOURCE_KINDS.airspy.fresh() as Extract<Source, { type: "airspy" }>), serial });
   assert.equal(foundRadio(radios, airspy(r2.serial)), r2);
   assert.equal(foundRadio(radios, airspy("")), r2, "the first found");
@@ -172,4 +185,24 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
   assert.equal(sourceFor("airspy", mini.serial, mini).rateHz, 6_000_000);
   assert.equal(sourceFor("airspy", "C", busy).rateHz, 6_000_000, "not asked: the default");
   assert.equal(sourceFor("bladerf", blade.serial, blade).rateHz, 10_000_000, "in its range: the default");
+});
+
+test("advice for the sources (the recorder's Config::advice): a typed-in centre that misses the site's voice channels moves, and can go back to auto", () => {
+  const c = defaultConfig();
+  c.sources = [{ type: "rtlsdr", serial: "", centerHz: 849_500_000, rateHz: 2_400_000, gainDb: 25, agc: false, ppm: 0, bufLen: 0, buffers: 0 }];
+  c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_012_500] }));
+  c.systems[0].sites[0].voiceChannelsHz = [851_512_500, 852_012_500];
+  const a = sourceAdvice(c, [undefined]);
+  assert.ok(a, "advice");
+  assert.ok(a.sources[0].changed && a.sources[0].auto && a.after.reached > a.before.reached, JSON.stringify(a));
+  c.sources[0].centerHz = a.sources[0].centerHz!;
+  c.sources[0].rateHz = a.sources[0].rateHz;
+  assert.equal(sourceAdvice(c, [undefined]), null, "taken: nothing more to say");
+});
+
+test("each kind of system is as the recorder's table says: named, and locked by its fields", () => {
+  assert.deepEqual([kindLabel("edacs"), kindLabel("smartnet"), kindLabel(undefined)], ["EDACS", "SmartNet", "P25"]);
+  assert.deepEqual([systemType("edacs"), systemType("nope"), systemType(3)], ["edacs", "p25", "p25"]);
+  assert.deepEqual(siteLockFields({ type: "p25" }), ["nac", "wacn", "sysId", "rfss", "site"]);
+  assert.deepEqual([siteLockFields({ type: "nxdn" }), siteLockFields({ type: "nxdn", nxdnType: "typeD" }), siteLockFields({ type: "dmr" })], [["sysId", "site"], [], []]);
 });

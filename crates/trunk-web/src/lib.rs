@@ -65,6 +65,8 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
         match o {
             // (No plugins in the browser; none are asked for.)
             Output::Plugin(_) | Output::Log(_) => continue,
+            // (Capture rules are the desktop app's.)
+            Output::Fact { .. } => {}
             Output::Rollup(r) => {
                 history.insert(&r);
                 continue;
@@ -88,12 +90,12 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
                 set(&obj, "t", "text");
                 set(&obj, "json", m.to_json());
             }
-            Output::Audio { system, short_name, tg, frame, .. } => {
+            Output::Audio { short_name, audio, .. } => {
                 set(&obj, "t", "audio");
-                set(&obj, "system", system);
+                set(&obj, "system", audio.system);
                 set(&obj, "shortName", short_name);
-                set(&obj, "tg", tg);
-                set(&obj, "frame", Uint8Array::from(frame.as_slice()));
+                set(&obj, "tg", audio.talkgroup);
+                set(&obj, "frame", Uint8Array::from(trunk_app::session::audio_frame(&audio).as_slice()));
             }
             // (No frame capture in the browser: the setting is desktop-only.)
             Output::File { rel, wav, record, .. } => {
@@ -119,16 +121,18 @@ pub struct WebSession {
 
 #[wasm_bindgen]
 impl WebSession {
-    /// `config_json`: the interface's Config. `talkgroups_json`: each system's talkgroups, `{shortName: [Talkgroup]}`.
+    /// `config_json`: the interface's Config. `names_json`: each system's names, `{shortName: {talkgroups, unitNames}}`.
     /// `bandplans_json`: `{key: plan}` (a site's key: [`trunk_app::session::bandplan_key`]) saved from a previous run
     /// ([`WebSession::due`]).
     #[wasm_bindgen(constructor)]
-    pub fn new(config_json: &str, talkgroups_json: &str, epoch_ms: f64, bandplans_json: Option<String>) -> Result<WebSession, JsError> {
+    pub fn new(config_json: &str, names_json: &str, epoch_ms: f64, bandplans_json: Option<String>) -> Result<WebSession, JsError> {
         let cfg = Config::from_json(config_json).map_err(|e| JsError::new(&format!("config: {e}")))?;
-        let talkgroups: trunk_app::config::TalkgroupLists = serde_json::from_str(talkgroups_json).unwrap_or_default();
+        // (The page keeps names by short name; the session, by id.)
+        let by_name: std::collections::BTreeMap<String, trunk_app::config::SystemNames> = serde_json::from_str(names_json).unwrap_or_default();
+        let names: trunk_app::config::NameLists = by_name.into_iter().filter_map(|(n, v)| Some((cfg.id_of(&n)?, v))).collect();
         let plans: serde_json::Map<String, serde_json::Value> = bandplans_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
         let plan = |name: &str| plans.get(name).and_then(|v| v.as_str()).map(str::to_string);
-        let s = Session::new(cfg, &talkgroups, epoch_ms, &plan, local_offset).map_err(|e| JsError::new(&e))?;
+        let s = Session::new(cfg, &names, epoch_ms, &plan, local_offset).map_err(|e| JsError::new(&e))?;
         Ok(WebSession { s, out: Vec::new(), history: History::default() })
     }
     /// What the page watches: JSON `["spectrum:0", "log", …]`.
@@ -149,7 +153,16 @@ impl WebSession {
     /// A system's talkgroups changed (JSON `[Talkgroup]`): calls from now on go by them.
     pub fn set_talkgroups(&mut self, short_name: &str, talkgroups_json: &str) {
         let rows: Vec<trunk_core::trunk::TalkgroupRow> = serde_json::from_str(talkgroups_json).unwrap_or_default();
-        self.s.set_talkgroups(short_name, &rows);
+        if let Some(id) = self.s.config().id_of(short_name) {
+            self.s.set_talkgroups(id, &rows);
+        }
+    }
+    /// A system's own names for its radios changed (JSON `[UnitName]`): calls from now on are named by them.
+    pub fn set_unit_names(&mut self, short_name: &str, unit_names_json: &str) {
+        let rows: Vec<trunk_core::trunk::UnitNameRow> = serde_json::from_str(unit_names_json).unwrap_or_default();
+        if let Some(id) = self.s.config().id_of(short_name) {
+            self.s.set_unit_names(id, &rows);
+        }
     }
     /// This browser's directory recorder ID ([`directory_recorder_id`]): shares go under it.
     pub fn set_recorder(&mut self, id: &str) {
@@ -177,8 +190,8 @@ impl WebSession {
         let shared = self.s.shared();
         let mut r = shared.radio.lock().unwrap();
         for (name, v) in m {
-            if let Some(text) = v.as_str() {
-                r.load(&name, text);
+            if let (Some(id), Some(text)) = (self.s.config().id_of(&name), v.as_str()) {
+                r.load(id, text);
             }
         }
     }
@@ -212,7 +225,8 @@ impl WebSession {
     /// run ([`WebSession::due`]).
     pub fn load_units(&mut self, units_json: &str) {
         let units: serde_json::Map<String, serde_json::Value> = serde_json::from_str(units_json).unwrap_or_default();
-        self.s.load_units(&|name| units.get(name).and_then(|v| v.as_str()).map(str::to_string));
+        let cfg = self.s.config().clone();
+        self.s.load_units(&|id| cfg.system_ids().find(|(i, _)| *i == id).and_then(|(_, name)| units.get(name)?.as_str()).map(str::to_string));
     }
     /// Preload the codes conventional frequencies carried (what
     /// [`WebSession::due`] gave on an earlier run).
@@ -235,11 +249,15 @@ impl WebSession {
         let items: Vec<serde_json::Value> = saved
             .into_iter()
             .filter_map(|saved| {
-                let (kind, key) = (saved.kind().as_str(), saved.key().to_string());
-                let text = match saved {
-                    Saved::Units { csv: t, .. } | Saved::Sharing(t) | Saved::Bandplan { plan: t, .. } | Saved::Heard(t) | Saved::Tune(t) => t,
+                let kind = saved.kind().as_str();
+                // (By short name: the page keeps a system's by that.)
+                let name = |id: trunk_core::trunk::SystemId| self.s.short_name(id).to_string();
+                let (key, text) = match saved {
+                    Saved::Units { csv: t, system } => (name(system), t),
+                    Saved::Sharing(t) | Saved::Heard(t) | Saved::Tune(t) => (String::new(), t),
+                    Saved::Bandplan { plan: t, key } => (key, t),
                     // (The browser keeps each system's registry whole: the systems that changed are written.)
-                    Saved::Registry { system, .. } => serde_json::to_string(&radio.systems.get(&system)?.whole()).ok()?,
+                    Saved::Registry { system, .. } => (name(system), serde_json::to_string(&radio.systems.get(&system)?.whole()).ok()?),
                 };
                 Some(serde_json::json!({ "kind": kind, "name": key, "text": text }))
             })
@@ -433,7 +451,7 @@ impl WebRtl {
             b = b.serial(serial);
         }
         let dev = b.open().await.map_err(|e| match e {
-            rtlsdr_nusb::Error::UnsupportedTuner => err("this dongle's tuner isn't supported in the browser (only R820T / R828D; not E4000, FC0012, FC0013 or FC2580) — the desktop app can use it as a SoapySDR source with driver=rtlsdr"),
+            rtlsdr_nusb::Error::UnsupportedTuner => err("this dongle's tuner isn't supported in the browser (only R820T / R828D / E4000; not FC0012, FC0013 or FC2580) — the desktop app can use it as a SoapySDR source with driver=rtlsdr"),
             e => err(e),
         })?;
         let mut rx = dev.rx_stream().map_err(err)?;

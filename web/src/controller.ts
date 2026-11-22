@@ -5,10 +5,13 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "../../docs/api/client.js";
-import { copyOverride, copyOwn, OVERRIDE, pluginCopies } from "./protocol.ts";
+import { copyOverride, copyOwn, copyPerSite, OVERRIDE, PER_SITE, pluginCopies } from "./protocol.ts";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
+  ApiAccess,
+  OwnPasskey,
+  Session,
   MonitorEvent,
   PlatformInfo,
   RadioResult,
@@ -17,11 +20,15 @@ import type {
   AudioChunk,
   CallEntry,
   CallView,
+  CaptureRule,
+  CaptureWhat,
   Config,
   Conventional,
   Device,
   DirListing,
   EngineStatus,
+  DataKind,
+  DataTable,
   FromRecorder,
   LogLine,
   Phase,
@@ -31,14 +38,18 @@ import type {
   InterfacesList,
   Store,
   StoreKind,
+  Origin,
+  OriginFrom,
   Talkgroup,
   TalkgroupEdit,
+  UnitName,
   PluginValues,
   LockableKeys,
   Radios,
   SourceStatus,
   SiteIdentity,
   SourceProfile,
+  TuneReport,
   Spectrum,
   SurveyBand,
   Capability,
@@ -64,18 +75,19 @@ import {
   newSystem,
   normalizeSite,
   resolvedCenters,
-  restartKey,
+  reaches,
   sameSystem,
   shortNameFor,
   siteNameOf,
-  sourceCovering,
+  receiverOf,
   sourceKey,
   trpBase,
-  usableHalfWidth,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
-import { parseUnitsCsv, type UnitAliases } from "./units.ts";
-import { editCells, ignoreEdit, withEdit } from "./talkgroups.ts";
+import { mdcHeard, parseUnitsCsv, withUnitName, type MdcUnits, type UnitAliases } from "./units.ts";
+import { ignoreEdit, sameEdit, withEdit } from "./talkgroups.ts";
+import { editedNow, fromNow } from "./origins.ts";
+import { talkgroupsReplace, unitNamesReplace } from "./rules.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
 
@@ -88,11 +100,15 @@ export interface AppState {
   configPath: string;
   phase: Phase;
   error: string | null;
+  /** The recording's own error (a Start refused, a run that failed), as the recorder last said with its phase: replaced, not kept, by each. */
+  runError: string | null;
   notice: string | null;
   ended: boolean;
   config: Config | null;
   /** Each system's talkgroups, by short name (none: absent): kept beside the config, not in it. */
   talkgroups: Record<string, Talkgroup[]>;
+  /** Each system's own names for its radios, by short name (none: absent), in their order: kept beside the config, as its talkgroups. */
+  unitNames: Record<string, UnitName[]>;
   devices: Device[];
   /** Optional drivers (desktop app); null in the web build. */
   radios: Radios | null;
@@ -109,6 +125,8 @@ export interface AppState {
   history: CallEntry[];
   /** Each system's radios' talker aliases, by short name. */
   units: Record<string, UnitAliases>;
+  /** Each system's radios whose IDs came in MDC1200, by short name: shown in hex (unitIdOf). */
+  mdcUnits: MdcUnits;
   /** The codes each conventional frequency (Hz, as a string) carried. */
   heard: Record<string, HeardCode[]>;
   listen: boolean;
@@ -123,6 +141,18 @@ export interface AppState {
   surveyBands: SurveyBand[];
   /** What the recorder can do beyond recording (hello): see [`can`]. */
   capabilities: Capability[];
+  /** What this connection may do (hello): see [`mayEdit`]; null before the first hello. */
+  access: ApiAccess | null;
+  /** The user this browser signed in as, by name (hello); null: none (signing in off, or not signed in). */
+  user: string | null;
+  /** Whether signing in is on (GET /api/session, asked after each hello: a listen-only connection's config doesn't say). */
+  signingIn: boolean;
+  /** Whether passkeys work where this page is (GET /api/session: the built-in interface's port, localhost or server.hostname, and this page at their one origin). */
+  passkeys: boolean;
+  /** Whether the proxy in front signed this browser in (GET /api/session): signing out is the proxy's. */
+  proxied: boolean;
+  /** The signed-in user's own passkeys (GET /api/session), any role; null: the session couldn't say. */
+  ownPasskeys: OwnPasskey[] | null;
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
@@ -131,7 +161,9 @@ export interface AppState {
   /** A source's roll-off as last measured (Setup), and the source being measured now (null: none). */
   profile: SourceProfile | null;
   profiling: number | null;
-  /** Settings changed since this run started that only apply after a restart. */
+  /** A radio's gain being tuned (tuneGain), or the last tuning, as the recorder last reported it; `source` is its place in Setup. */
+  tune: TuneReport | null;
+  /** Settings changed since this run started that only apply after a restart: the recorder's verdict (Config::needs_restart), with its phase. */
   restartNeeded: boolean;
   /** This browser's changes: being saved, all saved, or the last one wasn't (`saveError`: why); idle before any. */
   saveStatus: "idle" | "saving" | "saved" | "failed";
@@ -170,7 +202,7 @@ export interface AppState {
   setupTab: SetupTab;
 }
 
-export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "data" | "plugins";
+export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "access" | "data" | "plugins";
 
 export type View = "overview" | "listen" | "rf" | "decode" | "radio" | "plugin" | "plugins" | "interfaces" | "platform" | "setup";
 const VIEWS: View[] = ["overview", "listen", "rf", "decode", "radio", "plugin", "plugins", "interfaces", "platform", "setup"];
@@ -195,10 +227,12 @@ let state: AppState = {
   configPath: "",
   phase: "idle",
   error: null,
+  runError: null,
   notice: null,
   ended: false,
   config: null,
   talkgroups: {},
+  unitNames: {},
   devices: [],
   radios: null,
   lockable: [],
@@ -211,6 +245,7 @@ let state: AppState = {
   log: [],
   history: [],
   units: {},
+  mdcUnits: {},
   heard: {},
   listen: false,
   listenSystem: null,
@@ -219,11 +254,18 @@ let state: AppState = {
   survey: { stage: "idle" },
   surveyBands: [],
   capabilities: [],
+  access: null,
+  user: null,
+  signingIn: false,
+  passkeys: false,
+  proxied: false,
+  ownPasskeys: null,
   surveySpectrum: null,
   surveyLicenses: null,
   surveyFor: null,
   profile: null,
   profiling: null,
+  tune: null,
   restartNeeded: false,
   saveStatus: "idle",
   saveError: null,
@@ -245,21 +287,15 @@ let state: AppState = {
   setupTab: loadSetupTab(),
 };
 
+/** Recording, or about to be: calls are coming (Starting or Running; not while Stopping). */
+export const isRecording = (p: Phase): boolean => p === "running" || p === "starting";
+/** The radios are in use: from Start until the run has let them go (any phase but Idle). */
+export const holdsRadios = (p: Phase): boolean => p !== "idle";
+
 const listeners = new Set<() => void>();
-/** restartKey of the config the current run started with (null: not running). */
-let runKey: string | null = null;
-/** The desktop recorder takes a radio's gain while recording; the browser build doesn't. */
-const liveGain = import.meta.env.MODE !== "web";
 
 function set(patch: Partial<AppState>): void {
-  const was = state;
   state = { ...state, ...patch };
-  // (Only when the config or phase changed: spectrum and stats come many times a second.)
-  if (state.config !== was.config || state.phase !== was.phase) {
-    const key = state.phase === "idle" || !state.config ? null : restartKey(state.config, liveGain);
-    runKey = key && (runKey ?? key);
-    state.restartNeeded = key !== runKey;
-  }
   // (Its rules' answers last as long as the config does: rules.ts.)
   if ("config" in patch) configReplaced(state.config);
   for (const l of listeners) l();
@@ -326,6 +362,14 @@ export function can(c: Capability): boolean {
   return state.capabilities.includes(c);
 }
 
+/**
+ * Whether this connection may change the recorder (hello.access is control):
+ * what to show. A view-only one sees no setup, no Start and no editors.
+ */
+export function mayEdit(): boolean {
+  return state.access === "control";
+}
+
 export const web: WorkerTransport | null = import.meta.env.MODE === "web" ? new (await import("./web/workerTransport.ts")).WorkerTransport() : null;
 export const transport: Transport = web ?? new WsTransport();
 
@@ -345,13 +389,13 @@ export function onRecorderMessage(f: (m: FromRecorder) => void): void {
 
 transport.onConnection = (connected) => {
   set({ connected, ...(connected ? {} : { phase: "idle" as Phase }) });
-  if (!connected) return;
+  if (!connected) return void signedOut();
   // A new connection's greeting says how things are, from nothing: what
   // collects (events, files by system) starts over, an edit awaiting an
   // answer won't get one (a talkgroup edit's is sent again: "hello").
   saving = queued = false;
   wholeSent.clear();
-  set({ events: [], talkgroups: {}, units: {} });
+  set({ events: [], talkgroups: {}, unitNames: {}, units: {}, mdcUnits: {} });
 };
 transport.onAudio = onAudio;
 transport.onMessage = (m: FromRecorder) => {
@@ -363,15 +407,16 @@ function take(m: FromRecorder): void {
   switch (m.type) {
     // The greeting's end: everything before it said how things are now.
     case "hello":
-      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities });
+      set({ version: m.version, platform: m.platform, configPath: m.configPath, surveyBands: m.surveyBands, capabilities: m.capabilities, access: m.access, user: m.user ?? null });
+      void refreshSession();
       if (state.listen) transport.send({ type: "listen", on: true, system: state.listenSystem, talkgroup: state.listenTalkgroup });
       // (A new connection: it watches nothing until told.)
       sendTopics(true);
-      // Talkgroup edits not answered before the connection dropped: sent again (shown meanwhile).
-      for (const u of unanswered) transport.send({ type: "setTalkgroup", system: u.system, talkgroup: u.tg, edit: u.edit });
+      // Edits not answered before the connection dropped: sent again (shown meanwhile).
+      for (const u of unanswered) sendNameEdit(u);
       break;
     case "state":
-      set({ phase: m.phase, error: m.error ?? state.error, ended: m.ended, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
+      set({ phase: m.phase, runError: m.error, ended: m.ended, restartNeeded: m.restartNeeded, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
       if (m.phase === "idle") set({ nowPlaying: null, stats: null });
       break;
     case "config":
@@ -386,18 +431,25 @@ function take(m: FromRecorder): void {
       configSaved(m.version, m.error);
       break;
     case "talkgroups":
-      if (wholeSent.get(m.system)) wholeSent.set(m.system, wholeSent.get(m.system)! - 1);
-      set({ talkgroups: withList(state.talkgroups, m.system, withUnanswered(m.system, m.talkgroups)) });
-      saveSettled();
+      namesTold("talkgroups", m.system, m.talkgroups);
       break;
     case "talkgroupEdited":
-      talkgroupEdited(m.system, m.talkgroup, m.edit);
+      nameEdited({ list: "talkgroups", system: m.system, key: m.talkgroup, edit: m.edit }, m.origin);
+      break;
+    case "unitNames":
+      namesTold("unitNames", m.system, m.unitNames);
+      break;
+    case "unitNameEdited":
+      nameEdited({ list: "unitNames", system: m.system, key: m.unit, name: m.name }, m.origin);
       break;
     case "units":
       set({ units: { ...state.units, [m.system]: parseUnitsCsv(m.csv) } });
       break;
+    case "mdcUnits":
+      set({ mdcUnits: { ...state.mdcUnits, [m.system]: { ...state.mdcUnits[m.system], ...Object.fromEntries(m.units.map((u) => [u, true])) } } });
+      break;
     case "history":
-      set({ history: m.entries });
+      set({ history: m.entries, mdcUnits: mdcHeard(state.mdcUnits, m.entries) });
       break;
     case "status":
       set({ status: m.status, sources: m.sources, load: m.load, calls: m.calls });
@@ -413,7 +465,7 @@ function take(m: FromRecorder): void {
       set({ log: [...state.log, ...m.lines].slice(-2000) });
       break;
     case "concluded":
-      set({ history: [m.entry, ...state.history].slice(0, 500) });
+      set({ history: [m.entry, ...state.history].slice(0, 500), mdcUnits: mdcHeard(state.mdcUnits, [m.entry]) });
       break;
     case "callFiles":
       set({ history: state.history.map((e) => (e.path === m.path ? { ...e, audio: m.audio, json: m.json } : e)) });
@@ -488,11 +540,24 @@ function take(m: FromRecorder): void {
     case "monitorEvent":
       set({ events: [...state.events, m].slice(-200) });
       break;
+    case "tune": {
+      const { type: _, ...tune } = m;
+      // (A `check`'s plan changes nothing: not a tuning to show.)
+      if (tune.phase !== "planned") set({ tune });
+      break;
+    }
     case "subscribed":
       break;
     case "statsResult":
     case "radioResult":
     case "callsResult":
+    case "iqCaptures":
+    case "iqRuleChecked":
+    case "iqCaptureReview":
+    case "dataSummary":
+    case "dataDeleted":
+    case "dataCompacted":
+    case "tokenCreated":
     case "pluginActionResult": {
       const r = pending.get(m.id);
       pending.delete(m.id);
@@ -580,14 +645,14 @@ export function useTopic(topic: string | null): void {
 let nextId = 1;
 const pending = new Map<number, (m: FromRecorder) => void>();
 
-function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }): Promise<T> {
+function ask<T extends FromRecorder>(msg: ToRecorder & { id: number }, waitMs = 20_000): Promise<T> {
   return new Promise((resolve) => {
     pending.set(msg.id, (m) => resolve(m as T));
     transport.send(msg);
     // Never answered (the connection dropped): let it go.
     setTimeout(() => {
       if (pending.delete(msg.id)) resolve({ type: "error", message: "no answer" } as unknown as T);
-    }, 20_000);
+    }, waitMs);
   });
 }
 
@@ -617,11 +682,252 @@ export function callsQuery(q: Omit<Extract<ToRecorder, { type: "callsQuery" }>, 
   return ask<CallsResult>({ type: "callsQuery", id: nextId++, ...q });
 }
 
+export type IqCaptures = Extract<FromRecorder, { type: "iqCaptures" }>;
+type IqAnswer = IqCaptures | { type: "error"; message: string };
+
+/** The radios' captures on disk, and the one being made. */
+export function iqCaptures(): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptures", id: nextId++ });
+}
+
+/** Record `what` for `seconds` (the next call: as long as it is), showing a problem or everything working. */
+export function iqCaptureStart(what: CaptureWhat, seconds: number, note: string, problem: boolean): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureStart", id: nextId++, seconds, note, what, problem });
+}
+
+/** Give up capture `key`, asked for and still waiting. */
+export function iqCaptureCancel(key: number): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureCancel", id: nextId++, key });
+}
+
+export type IqCaptureReview = Extract<FromRecorder, { type: "iqCaptureReview" }>;
+
+/** What a capture would publish. */
+export function iqCaptureReview(name: string): Promise<IqCaptureReview | { type: "error"; message: string }> {
+  return ask<IqCaptureReview>({ type: "iqCaptureReview", id: nextId++, name }, 60_000);
+}
+
+/** Send a capture its owner has reviewed to the public corpus. */
+export function iqCaptureSend(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureSend", id: nextId++, name });
+}
+
+/** Take a sent capture back from the corpus. */
+export function iqCaptureWithdraw(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureWithdraw", id: nextId++, name });
+}
+
+/** Why a capture rule can't run, if so. */
+export function iqRuleCheck(rule: CaptureRule): Promise<Extract<FromRecorder, { type: "iqRuleChecked" }> | { type: "error"; message: string }> {
+  return ask({ type: "iqRuleCheck", id: nextId++, rule });
+}
+
+export function iqCaptureDelete(name: string): Promise<IqAnswer> {
+  return ask<IqCaptures>({ type: "iqCaptureDelete", id: nextId++, name });
+}
+
+export type DataSummary = Extract<FromRecorder, { type: "dataSummary" }>;
+export type DataDeleted = Extract<FromRecorder, { type: "dataDeleted" }>;
+
+/** What the store keeps of each system it has (the config's, and those removed whose data stayed). */
+export function dataSummary(): Promise<DataSummary | { type: "error"; message: string }> {
+  return ask<DataSummary>({ type: "dataSummary", id: nextId++ });
+}
+
+/** Every kind of data the store keeps, as deleteData takes them. */
+export const DATA_KINDS: DataKind[] = ["calls", "talkgroups", "unitNames", "talkerAliases", "registry", "dashboardHistory"];
+
+/**
+ * Delete `kinds` of system `system`'s data (its id; none: every system's)
+ * from the store, after any config edit waiting to be sent (a system just
+ * removed is gone from the config first, and the store forgets it too).
+ * A big store takes a while: waited for up to 10 minutes.
+ */
+export function deleteData(kinds: DataKind[], system?: number): Promise<DataDeleted | { type: "error"; message: string }> {
+  flushConfig();
+  return ask<DataDeleted>({ type: "deleteData", id: nextId++, kinds, ...(system === undefined ? {} : { system }) }, 600_000);
+}
+
+export type DataCompacted = Extract<FromRecorder, { type: "dataCompacted" }>;
+
+/** Give the space deleted data left in the store back to the disk: waited for up to 30 minutes (it rewrites the whole store). */
+export function compactData(): Promise<DataCompacted | { type: "error"; message: string }> {
+  return ask<DataCompacted>({ type: "compactData", id: nextId++ }, 1_800_000);
+}
+
+/** Where a table's CSV file is (every system's, or system `system`'s): the recorder names it by the system, the table and the time. */
+export function exportUrl(table: DataTable, system?: number): string {
+  return `/api/v1/export/${table}${system === undefined ? "" : `?system=${system}`}`;
+}
+
 export type PluginActionResult = Extract<FromRecorder, { type: "pluginActionResult" }>;
 
 /** Press plugin `plugin`'s button `action` on `value` (the settings object it's on, as edited): how it went, as the plugin says. */
 export function pluginAction(plugin: string, action: string, value: unknown): Promise<PluginActionResult> {
   return ask<PluginActionResult>({ type: "pluginAction", id: nextId++, plugin, action, value });
+}
+
+// ── signing in ───────────────────────────────────────────────────────────────
+//
+// Optional (server.auth): a browser signs in as a user with their access
+// token's secret, and keeps a session cookie (POST /api/login). The desktop app's server alone: the
+// browser build is its own recorder, with nothing to sign in to.
+
+export type TokenCreated = Extract<FromRecorder, { type: "tokenCreated" }>;
+
+/** A new user `name` with `access` and an access token: its secret, in the answer alone (shown this once). */
+export function createToken(name: string, access: ApiAccess): Promise<TokenCreated> {
+  return ask<TokenCreated>({ type: "createToken", id: nextId++, name, access });
+}
+
+export type { OwnPasskey, Session };
+
+/** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
+export async function fetchSession(): Promise<Session | null> {
+  if (transport.kind !== "desktop") return null;
+  try {
+    const r = await fetch("/api/session", { cache: "no-store" });
+    return r.ok ? ((await r.json()) as Session) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether passkeys work on this page, by session `x`: the recorder says so, and this page is at the one origin they work at (not a tunnel's other port). */
+export const passkeysHere = (x: Pick<Session, "passkeys" | "passkeyOrigin">, origin: string = typeof location === "undefined" ? "" : location.origin) => !!x.passkeys && x.passkeyOrigin === origin;
+
+/** The session asked again, into the state: signing in, passkeys here, the proxy, the user's own passkeys. */
+export async function refreshSession(): Promise<void> {
+  const x = await fetchSession();
+  if (x) set({ signingIn: x.auth, passkeys: passkeysHere(x), proxied: !!x.proxy, ownPasskeys: x.ownPasskeys ?? [] });
+}
+
+/** Who signed in (POST /api/login's answer): the user's role and name. */
+export type SignedIn = { access: ApiAccess; user: string };
+
+/** Sign this browser in with access token `secret` (its cookie set): who it signed in as; null: the recorder didn't take it. */
+export async function signIn(secret: string): Promise<SignedIn | null> {
+  if (transport.kind !== "desktop") return null;
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: secret.trim() }), cache: "no-store" });
+    return r.ok ? ((await r.json()) as SignedIn) : null;
+  } catch {
+    return null;
+  }
+}
+
+// Passkeys: WebAuthn ceremonies with the recorder (POST /api/passkey/…), its binary values base64url.
+// (The sign-in page, signin.html, has its own copy: it's served alone, before signing in.)
+
+const bytes = (s: string) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+const b64url = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const post = (url: string, body?: unknown) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body ?? {}), cache: "no-store" });
+
+/** Why a passkey ceremony didn't finish, in a word or three. */
+function passkeyFailed(x: unknown): string {
+  const name = (x as { name?: string } | null)?.name;
+  if (name === "NotAllowedError" || name === "AbortError") return "Cancelled";
+  if (name === "InvalidStateError") return "On this device already";
+  return String((x as { message?: string } | null)?.message ?? x).trim() || "Failed";
+}
+
+/** Sign this browser in with a passkey (the browser asks which): who it signed in as, or why not. */
+export async function passkeySignIn(): Promise<SignedIn | string> {
+  try {
+    const r = await post("/api/passkey/login/start");
+    if (!r.ok) return (await r.text()).trim();
+    const { id, options } = (await r.json()) as { id: string; options: { publicKey: Record<string, unknown> & { challenge: string } } };
+    const publicKey = { ...options.publicKey, challenge: bytes(options.publicKey.challenge) } as unknown as PublicKeyCredentialRequestOptions;
+    const cred = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential | null;
+    if (!cred) return "Cancelled";
+    const a = cred.response as AuthenticatorAssertionResponse;
+    const response = { authenticatorData: b64url(a.authenticatorData), clientDataJSON: b64url(a.clientDataJSON), signature: b64url(a.signature), userHandle: a.userHandle ? b64url(a.userHandle) : null };
+    const done = await post("/api/passkey/login/finish", { id, credential: { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, extensions: {}, response } });
+    return done.ok ? ((await done.json()) as SignedIn) : done.status === 401 ? "Not a passkey here" : (await done.text()).trim();
+  } catch (x) {
+    return passkeyFailed(x);
+  }
+}
+
+/** Add a passkey called `name` for the user this browser signed in as (the browser makes it): its name as saved, or why not. */
+export async function addPasskey(name: string): Promise<{ name: string } | string> {
+  try {
+    const r = await post("/api/passkey/register/start", { name });
+    if (!r.ok) return (await r.text()).trim();
+    type Options = { publicKey: Record<string, unknown> & { challenge: string; user: { id: string }; excludeCredentials?: { id: string }[] } };
+    const { id, options } = (await r.json()) as { id: string; options: Options };
+    const o = options.publicKey;
+    const publicKey = { ...o, challenge: bytes(o.challenge), user: { ...o.user, id: bytes(o.user.id) }, excludeCredentials: (o.excludeCredentials ?? []).map((c) => ({ ...c, id: bytes(c.id) })) } as unknown as PublicKeyCredentialCreationOptions;
+    const cred = (await navigator.credentials.create({ publicKey })) as PublicKeyCredential | null;
+    if (!cred) return "Cancelled";
+    const a = cred.response as AuthenticatorAttestationResponse;
+    const response = { attestationObject: b64url(a.attestationObject), clientDataJSON: b64url(a.clientDataJSON) };
+    const done = await post("/api/passkey/register/finish", { id, credential: { id: cred.id, rawId: b64url(cred.rawId), type: cred.type, extensions: {}, response } });
+    if (!done.ok) return (await done.text()).trim();
+    const added = (await done.json()) as { name: string };
+    // (Its list, again: a View user's config doesn't hold it.)
+    await refreshSession();
+    return added;
+  } catch (x) {
+    return passkeyFailed(x);
+  }
+}
+
+/** A name for a passkey made in this browser: its system and browser ("Mac Safari"), 1–3 words. */
+export function passkeyName(ua: string = typeof navigator === "undefined" ? "" : navigator.userAgent): string {
+  const os = /iPhone/.test(ua) ? "iPhone" : /iPad/.test(ua) ? "iPad" : /Android/.test(ua) ? "Android" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : /CrOS/.test(ua) ? "Chromebook" : /Linux/.test(ua) ? "Linux" : "";
+  const browser = /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "";
+  return [os, browser].filter(Boolean).join(" ") || "Passkey";
+}
+
+/**
+ * Sign `user` out everywhere (POST /api/logout `{all: true}`): every browser's session of theirs signed in until now ends
+ * (access tokens don't). Left out, the user this browser signed in as (this browser too: then the page again). Why not, or null.
+ */
+export async function signOutEverywhere(user?: string): Promise<string | null> {
+  try {
+    const r = await fetch("/api/logout", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(user ? { all: true, user } : { all: true }), cache: "no-store" });
+    if (!r.ok) return (await r.text()).trim() || `Failed: ${r.status}`;
+  } catch {
+    return "No answer";
+  }
+  if (!user) location.reload();
+  return null;
+}
+
+/** Sign out (the cookie cleared), and the page again (`reload`): the server's sign-in page, or the app as anyone may see it. */
+export async function signOut(reload = true): Promise<void> {
+  try {
+    await fetch("/api/logout", { method: "POST", cache: "no-store" });
+  } catch {
+    // Reloaded anyway.
+  }
+  if (reload) location.reload();
+}
+
+const RELOADED_KEY = "trp.signedOutAt";
+let askingSession = false;
+
+/**
+ * The connection dropped, or couldn't be made: a WebSocket refused for want
+ * of access (a user removed, signing in turned on) can't say so, the
+ * session does. Without access, the page again: the server's sign-in page in
+ * its place. Not when the session couldn't be asked (the recorder down), nor
+ * twice within a minute.
+ */
+async function signedOut(): Promise<void> {
+  if (askingSession || transport.kind !== "desktop") return;
+  askingSession = true;
+  const s = await fetchSession();
+  askingSession = false;
+  if (!s?.auth || s.access !== null) return;
+  try {
+    if (Date.now() - Number(sessionStorage.getItem(RELOADED_KEY) ?? 0) < 60_000) return;
+    sessionStorage.setItem(RELOADED_KEY, String(Date.now()));
+  } catch {
+    // Not remembered: reloaded all the same.
+  }
+  location.reload();
 }
 
 /**
@@ -643,41 +949,133 @@ export function usePolled<T>(key: string, run: () => Promise<T>, everyMs: number
   return v && v.key === key ? v.v : null;
 }
 
+// ── names: talkgroups and radio names ───────────────────────────────────────
+
+// A system's names are kept beside the config, in lists by system: its
+// talkgroups and its own names for its radios. Each list is set whole (a
+// file loaded) or edited a row at a time, shown at once and sent to the
+// recorder, which answers every interface; each moves with its system.
+
+/** The lists of a system's names, by their AppState key. */
+export type NameList = "talkgroups" | "unitNames";
+const NAME_LISTS: NameList[] = ["talkgroups", "unitNames"];
+interface NameRows {
+  talkgroups: Talkgroup[];
+  unitNames: UnitName[];
+}
+
+/** An edit of one row: a talkgroup's cells, or a radio's name. */
+type NameEdit = { list: "talkgroups"; system: string; key: number; edit: TalkgroupEdit } | { list: "unitNames"; system: string; key: number; name: string };
+
+/** `rows` with `e` made, by `origin`: the recorder's own edit. */
+function withNameEdit<L extends NameList>(rows: NameRows[L], e: NameEdit, origin: Origin): NameRows[L] {
+  return (e.list === "talkgroups" ? withEdit(rows as Talkgroup[], e.key, e.edit, origin) : withUnitName(rows as UnitName[], e.key, e.name, origin)) as NameRows[L];
+}
+
+function sendNameEdit(e: NameEdit): void {
+  transport.send(e.list === "talkgroups" ? { type: "setTalkgroup", system: e.system, talkgroup: e.key, edit: e.edit } : { type: "setUnitName", system: e.system, unit: e.key, name: e.name });
+}
+
+function sameNameEdit(a: NameEdit, b: NameEdit): boolean {
+  if (a.list !== b.list || a.system !== b.system || a.key !== b.key) return false;
+  return a.list === "talkgroups" ? sameEdit(a.edit, (b as typeof a).edit) : a.name.trim() === (b as typeof a).name.trim();
+}
+
+/** `lists` (one of AppState's) with system `system`'s now `rows` (`[]`: none). */
+function withList<R>(lists: Record<string, R[]>, system: string, rows: R[]): Record<string, R[]> {
+  const next = { ...lists };
+  if (rows.length) next[system] = rows;
+  else delete next[system];
+  return next;
+}
+
+/** Edits this browser sent that the recorder hasn't answered yet, oldest first. */
+let unanswered: NameEdit[] = [];
+/** Whole lists this browser sent not answered yet, by list and system. */
+const wholeSent = new Map<string, number>();
+const sentKey = (list: NameList, system: string) => `${list}:${system}`;
+
+/** `rows` (system `system`'s list `list` as the recorder has it) with this browser's edits not answered yet. */
+function withUnanswered<L extends NameList>(list: L, system: string, rows: NameRows[L]): NameRows[L] {
+  return unanswered.filter((u) => u.list === list && u.system === system).reduce((f, u) => withNameEdit<L>(f, u, editedNow()), rows);
+}
+
+/** Make edit `e`: shown at once, sent as the row's edit alone, the recorder's copy edited the same way. */
+function editName(e: NameEdit): void {
+  unanswered.push(e);
+  const rows = withNameEdit(state[e.list][e.system] ?? [], e, editedNow());
+  set({ [e.list]: withList<unknown>(state[e.list], e.system, rows), saveStatus: "saving", saveError: null } as Partial<AppState>);
+  sendNameEdit(e);
+}
+
+/** An edit made (by this browser or another), by `origin`: this browser's answered, or another's made here too. */
+function nameEdited(e: NameEdit, origin: Origin): void {
+  if (unanswered.length && sameNameEdit(unanswered[0], e)) unanswered.shift();
+  else {
+    // Another's, made before this browser's not answered yet: those are made over it again.
+    const rows = withNameEdit(state[e.list][e.system] ?? [], e, origin);
+    set({ [e.list]: withList<unknown>(state[e.list], e.system, withUnanswered(e.list, e.system, rows)) } as Partial<AppState>);
+  }
+  saveSettled();
+}
+
+/** System `system`'s list `list`, as the recorder has it now. */
+function namesTold<L extends NameList>(list: L, system: string, rows: NameRows[L]): void {
+  const k = sentKey(list, system);
+  if (wholeSent.get(k)) wholeSent.set(k, wholeSent.get(k)! - 1);
+  set({ [list]: withList<unknown>(state[list], system, withUnanswered(list, system, rows)) } as Partial<AppState>);
+  saveSettled();
+}
+
+/** System `system`'s list `list` is now `rows` (`[]`: none), from `from` (none: the rows' own origins): saved on the recorder at once. */
+function setNames<L extends NameList>(list: L, system: string, rows: NameRows[L], from?: OriginFrom): void {
+  const k = sentKey(list, system);
+  wholeSent.set(k, (wholeSent.get(k) ?? 0) + 1);
+  const had = state[list][system] ?? [];
+  const shown = list === "talkgroups" ? talkgroupsReplace(had as Talkgroup[], rows as Talkgroup[], fromNow(from)) : unitNamesReplace(had as UnitName[], rows as UnitName[], fromNow(from));
+  set({ [list]: withList<unknown>(state[list], system, shown), saveStatus: "saving", saveError: null } as Partial<AppState>);
+  transport.send(list === "talkgroups" ? { type: "setTalkgroups", system, talkgroups: rows as Talkgroup[], from } : { type: "setUnitNames", system, unitNames: rows as UnitName[], from });
+}
+
+/**
+ * Whether system `system`'s list `list` may become `rows`: yes, unless that
+ * changes or drops names edited by hand and the user, asked (`what`: what's
+ * being loaded, "dc.csv"), says no.
+ */
+export function mayReplaceNames(list: NameList, system: string, rows: NameRows[NameList], what: string): boolean {
+  const had: { origin?: Origin }[] = state[list][system] ?? [];
+  if (!had.some((r) => r.origin?.kind === "edited")) return true;
+  const key = (r: Talkgroup | UnitName) => ("number" in r ? String(r.number) : r.unit);
+  const after = new Map<string, { origin?: Origin }>(
+    (list === "talkgroups" ? talkgroupsReplace(had as Talkgroup[], rows as Talkgroup[], fromNow({ kind: "file" })) : unitNamesReplace(had as UnitName[], rows as UnitName[], fromNow({ kind: "file" }))).map((r) => [key(r), r]),
+  );
+  const lost = (had as (Talkgroup | UnitName)[]).filter((r) => r.origin?.kind === "edited" && after.get(key(r))?.origin?.kind !== "edited").length;
+  return !lost || confirm(`${what} replaces ${lost} name${lost === 1 ? "" : "s"} edited by hand. Use it anyway?`);
+}
+
+/** System `system`'s talkgroups are now `rows` (`[]`: none), from `from`: saved on the recorder at once. */
+export function setTalkgroups(system: string, rows: Talkgroup[], from?: OriginFrom): void {
+  setNames("talkgroups", system, rows, from);
+}
+
+/** System `system`'s own names for its radios are now `rows` (`[]`: none), from `from`: saved on the recorder at once. */
+export function setUnitNames(system: string, rows: UnitName[], from?: OriginFrom): void {
+  setNames("unitNames", system, rows, from);
+}
+
 /** Mark talkgroup `tg` of system `system` ignored (or not). */
 export function setTalkgroupIgnore(system: string, tg: number, ignore: boolean, alphaTag = ""): void {
   editTalkgroup(system, tg, ignoreEdit(state.talkgroups[system] ?? [], tg, ignore, alphaTag));
 }
 
-/**
- * Edit one talkgroup of system `system`'s: shown at once, sent as the
- * row's edit alone (setTalkgroup), the recorder's copy edited the same way.
- */
+/** Edit one talkgroup of system `system`'s (setTalkgroup): only the cells `edit` sets change. */
 export function editTalkgroup(system: string, tg: number, edit: TalkgroupEdit): void {
-  unanswered.push({ system, tg, edit });
-  set({ talkgroups: withList(state.talkgroups, system, withEdit(state.talkgroups[system] ?? [], tg, edit)), saveStatus: "saving", saveError: null });
-  transport.send({ type: "setTalkgroup", system, talkgroup: tg, edit });
+  editName({ list: "talkgroups", system, key: tg, edit });
 }
 
-/** Talkgroup edits this browser sent that the recorder hasn't answered yet, oldest first. */
-let unanswered: { system: string; tg: number; edit: TalkgroupEdit }[] = [];
-/** Whole talkgroup lists this browser sent not answered yet, by system. */
-const wholeSent = new Map<string, number>();
-
-/** `rows` (system `system`'s talkgroups as the recorder has them) with this browser's edits not answered yet. */
-function withUnanswered(system: string, rows: Talkgroup[]): Talkgroup[] {
-  return unanswered.filter((u) => u.system === system).reduce((f, u) => withEdit(f, u.tg, u.edit), rows);
-}
-
-/** A talkgroup edited (by this browser or another): this browser's answered, or another's made here too. */
-function talkgroupEdited(system: string, tg: number, edit: TalkgroupEdit): void {
-  const same = (u: (typeof unanswered)[number]) => u.system === system && u.tg === tg && JSON.stringify(editCells(u.edit)) === JSON.stringify(editCells(edit));
-  if (unanswered.length && same(unanswered[0])) unanswered.shift();
-  else {
-    // Another's, made before this browser's not answered yet: those are made over it again.
-    const rows = withEdit(state.talkgroups[system] ?? [], tg, edit);
-    set({ talkgroups: withList(state.talkgroups, system, withUnanswered(system, rows)) });
-  }
-  saveSettled();
+/** Name radio `unit` of system `system` (setUnitName; "": its own name taken out). */
+export function nameUnit(system: string, unit: number, name: string): void {
+  editName({ list: "unitNames", system, key: unit, name });
 }
 
 /** Nothing of this browser's waiting to be saved any more: say it's saved (unless the last one failed). */
@@ -686,96 +1084,97 @@ function saveSettled(): void {
   if (!waiting && state.saveStatus === "saving") set({ saveStatus: "saved" });
 }
 
-// ── talkgroups ───────────────────────────────────────────────────────────────
-
-/** `lists` with system `system`'s talkgroups now `rows` (`[]`: none). */
-function withList(lists: Record<string, Talkgroup[]>, system: string, rows: Talkgroup[]): Record<string, Talkgroup[]> {
-  const next = { ...lists };
-  if (rows.length) next[system] = rows;
-  else delete next[system];
-  return next;
-}
-
-/** System `system`'s talkgroups are now `rows` (`[]`: none): saved on the recorder at once. */
-export function setTalkgroups(system: string, rows: Talkgroup[]): void {
-  wholeSent.set(system, (wholeSent.get(system) ?? 0) + 1);
-  set({ talkgroups: withList(state.talkgroups, system, rows), saveStatus: "saving", saveError: null });
-  transport.send({ type: "setTalkgroups", system, talkgroups: rows });
-}
-
 /**
  * Rename `sys` (one of `x`'s systems, trunked or conventional) to `to`, in an
- * updateConfig: its talkgroups move with it, and plugin settings that
- * name it follow. Setup and the first-run guide both rename this way.
+ * updateConfig: its names move with it, and plugin settings that name it
+ * follow. Setup and the first-run guide both rename this way.
  */
-export function renameSystem(x: Config, sys: { shortName: string }, to: string): void {
+export function renameSystem(x: Config, sys: System | Conventional, to: string): void {
   if (sys.shortName === to) return;
-  moveTalkgroups(sys.shortName, to, [...x.systems, ...x.conventional].some((s) => s !== sys && s.shortName === to));
+  moveNames(sys.shortName, to, [...x.systems, ...x.conventional].some((s) => s !== sys && s.shortName === to));
   renameSystemRefs(x, sys.shortName, to, state.plugins?.plugins ?? []);
+  // A site without a name of its own goes by the system's: so does the system's preferred site.
+  if ("sites" in sys && sys.preferredSite === sys.shortName && sys.sites.some((s) => !s.name?.trim())) sys.preferredSite = to;
   sys.shortName = to;
 }
 
-/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its talkgroups go too (once the config is saved), unless a system still has the name. */
-export function forgetTalkgroups(x: Config, name: string): void {
-  if ([...x.systems, ...x.conventional].some((s) => s.shortName === name)) return;
-  const rows = state.talkgroups[name];
-  if (rows === undefined) return;
-  forgottenTalkgroups.set(name, rows);
-  set({ talkgroups: withList(state.talkgroups, name, []) });
+/** A system's lists, as AppState has them. */
+function namesOf(lists: Pick<AppState, NameList>, system: string): Partial<NameRows> {
+  return Object.fromEntries(NAME_LISTS.filter((l) => lists[l][system] !== undefined).map((l) => [l, lists[l][system]]));
 }
 
-// Talkgroups follow the config they are edited with: moved and dropped in
-// the store as the edit is made, on the recorder once the edit is saved (a
+/** `lists` with system `from`'s moved to `to` (`""`: dropped), and `put`'s put under `to`. */
+function withNamesAt(lists: Pick<AppState, NameList>, from: string, to: string, put: Partial<NameRows> = namesOf(lists, from)): Pick<AppState, NameList> {
+  const out = { ...lists };
+  for (const l of NAME_LISTS) {
+    out[l] = withList<unknown>(out[l], from, []) as never;
+    if (to && put[l]) out[l] = withList<unknown>(out[l], to, put[l]!) as never;
+  }
+  return out;
+}
+
+/** System `name` is gone from `x` (removed, or made a site of another), in an updateConfig: its names go too (once the config is saved), unless a system still has the name. */
+export function forgetNames(x: Config, name: string): void {
+  if ([...x.systems, ...x.conventional].some((s) => s.shortName === name)) return;
+  const had = namesOf(state, name);
+  if (!Object.keys(had).length) return;
+  forgottenNames.set(name, had);
+  set(withNamesAt(state, name, ""));
+}
+
+// Names follow the config they are edited with: moved and dropped in the
+// store as the edit is made, on the recorder once the edit is saved (a
 // refused edit puts them back).
 
-/** Talkgroups following a renamed system: its name when the renaming began → its name now, and the name they sit under in the store. */
-const movedTalkgroups = new Map<string, { now: string; at: string }>();
-/** Talkgroups of systems removed (by name), in case the edit is refused. */
-const forgottenTalkgroups = new Map<string, Talkgroup[]>();
+/** Names following a renamed system: its name when the renaming began → its name now, and the name they sit under in the store. */
+const movedNames = new Map<string, { now: string; at: string }>();
+/** Names of systems removed (by name), in case the edit is refused. */
+const forgottenNames = new Map<string, Partial<NameRows>>();
 
 /**
- * System `from` is renamed `to` (as its short name is typed): its
- * talkgroups follow. Not onto "" or a name another system has (`taken`):
- * they wait under its last name of its own until the new one is.
+ * System `from` is renamed `to` (as its short name is typed): its names
+ * follow. Not onto "" or a name another system has (`taken`): they wait
+ * under its last name of its own until the new one is.
  */
-export function moveTalkgroups(from: string, to: string, taken = false): void {
+export function moveNames(from: string, to: string, taken = false): void {
   if (from === to) return;
-  const began = [...movedTalkgroups].find(([, m]) => m.now === from)?.[0] ?? from;
-  const move = movedTalkgroups.get(began) ?? { now: from, at: from };
-  const rows = state.talkgroups[move.at];
-  if (rows === undefined) return;
+  const began = [...movedNames].find(([, m]) => m.now === from)?.[0] ?? from;
+  const move = movedNames.get(began) ?? { now: from, at: from };
+  if (!Object.keys(namesOf(state, move.at)).length) return;
   move.now = to;
-  if (to === began) movedTalkgroups.delete(began);
-  else movedTalkgroups.set(began, move);
+  if (to === began) movedNames.delete(began);
+  else movedNames.set(began, move);
   if (to === "" || taken) return;
-  if (move.at !== to) set({ talkgroups: withList(withList(state.talkgroups, move.at, []), to, rows) });
+  if (move.at !== to) set(withNamesAt(state, move.at, to));
   move.at = to;
 }
 
-/** The config was saved: the recorder's talkgroups follow it. */
-function sendTalkgroupMoves(): void {
-  for (const [began, m] of movedTalkgroups) {
+/** The config was saved: the recorder's names follow it (each row with its own origin). */
+function sendNameMoves(): void {
+  const send = (list: NameList, system: string, rows: NameRows[NameList]) =>
+    transport.send(list === "talkgroups" ? { type: "setTalkgroups", system, talkgroups: rows as Talkgroup[] } : { type: "setUnitNames", system, unitNames: rows as UnitName[] });
+  for (const [began, m] of movedNames) {
     // (Waiting for a name of its own: they stay where they were.)
     if (m.at !== m.now) continue;
-    transport.send({ type: "setTalkgroups", system: m.now, talkgroups: state.talkgroups[m.now] ?? [] });
-    transport.send({ type: "setTalkgroups", system: began, talkgroups: [] });
-    movedTalkgroups.delete(began);
+    for (const l of NAME_LISTS) {
+      if (!state[l][m.now]) continue;
+      send(l, m.now, state[l][m.now]);
+      send(l, began, []);
+    }
+    movedNames.delete(began);
   }
-  for (const name of forgottenTalkgroups.keys()) transport.send({ type: "setTalkgroups", system: name, talkgroups: [] });
-  forgottenTalkgroups.clear();
+  for (const [name, had] of forgottenNames) for (const l of NAME_LISTS) if (had[l]) send(l, name, []);
+  forgottenNames.clear();
 }
 
-/** The edit was refused: the talkgroups are where the recorder has them. */
-function undoTalkgroupMoves(): void {
-  let lists = state.talkgroups;
-  for (const [began, m] of movedTalkgroups) {
-    const rows = lists[m.at];
-    if (m.at !== began && rows !== undefined) lists = withList(withList(lists, m.at, []), began, rows);
-  }
-  for (const [name, rows] of forgottenTalkgroups) lists = withList(lists, name, rows);
-  movedTalkgroups.clear();
-  forgottenTalkgroups.clear();
-  set({ talkgroups: lists });
+/** The edit was refused: the names are where the recorder has them. */
+function undoNameMoves(): void {
+  let lists: Pick<AppState, NameList> = state;
+  for (const [began, m] of movedNames) if (m.at !== began) lists = withNamesAt(lists, m.at, began);
+  for (const [name, had] of forgottenNames) lists = withNamesAt(lists, name, name, had);
+  movedNames.clear();
+  forgottenNames.clear();
+  set(lists);
 }
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -809,14 +1208,14 @@ function configSaved(version: number, error: string | undefined): void {
     queued = false;
     if (pendingConfig) clearTimeout(pendingConfig);
     pendingConfig = null;
-    undoTalkgroupMoves();
+    undoNameMoves();
     if (server.config) set({ config: keepCards(server.config, state.config) });
     basedOn = server.version;
     set({ error });
     return;
   }
   basedOn = version;
-  sendTalkgroupMoves();
+  sendNameMoves();
   if (queued) {
     queued = false;
     sendConfig();
@@ -978,6 +1377,12 @@ function blank(v: PluginValues | undefined): boolean {
   return !v || Object.values(v).every((x) => x === undefined || x === null || x === "" || (Array.isArray(x) && x.length === 0));
 }
 
+/** A copy from its parts, each left out when there's nothing in it: its own settings, what it overrides, its sites' own. */
+function copyOf(own: PluginValues, over: PluginValues, perSite: Record<string, PluginValues>): PluginValues {
+  const sites = Object.fromEntries(Object.entries(perSite).filter(([, v]) => !blank(v)));
+  return { ...own, ...(blank(over) ? {} : { [OVERRIDE]: over }), ...(Object.keys(sites).length ? { [PER_SITE]: sites } : {}) };
+}
+
 export function setPluginEnabled(id: string, enabled: boolean): void {
   updateConfig((x) => {
     const all = (x.plugins ??= {});
@@ -985,6 +1390,47 @@ export function setPluginEnabled(id: string, enabled: boolean): void {
   });
 }
 /** Whether a plugin is given calls decrypted with the recorder's keys. */
+/** Plugin `id` on or off for the system with id `system` (`systemsOff`). */
+export function setPluginSystemOn(id: string, system: number, on: boolean): void {
+  setPluginOff(id, "systemsOff", system, !on);
+}
+
+/** Plugin `id` on or off for the site with id `site` (`sitesOff`). */
+export function setPluginSiteOn(id: string, site: number, on: boolean): void {
+  setPluginOff(id, "sitesOff", site, !on);
+}
+
+function setPluginOff(id: string, list: "systemsOff" | "sitesOff", which: number, off: boolean): void {
+  updateConfig((x) => {
+    const all = (x.plugins ??= {});
+    const p = { ...(all[id] ?? { enabled: false }) };
+    const ids = (p[list] ?? []).filter((y) => y !== which);
+    if (off) ids.push(which);
+    if (ids.length) p[list] = ids.sort((a, b) => a - b);
+    else delete p[list];
+    all[id] = p;
+  });
+}
+
+/** Remove what systems and sites set again of plugin `id`'s settings that it doesn't let them (`offered`: those it does, of
+ * its own; `siteOffered`: of its settings for each system): the recorder ignores those. */
+export function dropIgnoredOverrides(id: string, offered: string[], siteOffered: string[]): void {
+  const keep = (v: PluginValues, keys: string[]) => Object.fromEntries(Object.entries(v).filter(([k]) => keys.includes(k)));
+  updateConfig((x) => {
+    for (const sys of [...x.systems, ...x.conventional]) {
+      const v = sys.plugins?.[id];
+      if (v === undefined || v === null) continue;
+      const copies = pluginCopies(v).map((c) => {
+        const sites = Object.fromEntries(Object.entries(copyPerSite(c)).map(([s, values]) => [s, keep(values, siteOffered)]));
+        return copyOf(copyOwn(c), keep(copyOverride(c), offered), sites);
+      });
+      if (copies.length === 1 && !Object.keys(copies[0]).length) delete sys.plugins![id];
+      else sys.plugins![id] = copies.length === 1 ? copies[0] : copies;
+      if (!Object.keys(sys.plugins!).length) delete sys.plugins;
+    }
+  });
+}
+
 export function setPluginShareDecrypted(id: string, share: boolean): void {
   updateConfig((x) => {
     const all = (x.plugins ??= {});
@@ -1022,8 +1468,7 @@ function editSystemPlugin(system: SystemRef, id: string, f: (copies: PluginValue
 export function setSystemPluginSettings(system: SystemRef, id: string, values: PluginValues, copy = 0): void {
   editSystemPlugin(system, id, (c) => {
     while (c.length <= copy) c.push({});
-    const over = copyOverride(c[copy]);
-    c[copy] = blank(over) ? copyOwn(values) : { ...copyOwn(values), [OVERRIDE]: over };
+    c[copy] = copyOf(copyOwn(values), copyOverride(c[copy]), copyPerSite(c[copy]));
     return c;
   });
 }
@@ -1031,8 +1476,15 @@ export function setSystemPluginSettings(system: SystemRef, id: string, values: P
 export function setSystemPluginOverride(system: SystemRef, id: string, over: PluginValues, copy = 0): void {
   editSystemPlugin(system, id, (c) => {
     while (c.length <= copy) c.push({});
-    const own = copyOwn(c[copy]);
-    c[copy] = blank(over) ? own : { ...own, [OVERRIDE]: over };
+    c[copy] = copyOf(copyOwn(c[copy]), over, copyPerSite(c[copy]));
+    return c;
+  });
+}
+/** What site `site` (its id) of a system sets again of a copy's settings for a plugin; empty: as the system's. */
+export function setSystemPluginSiteSettings(system: SystemRef, id: string, site: number, values: PluginValues, copy = 0): void {
+  editSystemPlugin(system, id, (c) => {
+    while (c.length <= copy) c.push({});
+    c[copy] = copyOf(copyOwn(c[copy]), copyOverride(c[copy]), { ...copyPerSite(c[copy]), [String(site)]: values });
     return c;
   });
 }
@@ -1102,7 +1554,7 @@ export function settingsOpened(): void {
 }
 
 export function dismissError(): void {
-  set({ error: null });
+  set({ error: null, runError: null });
 }
 export function setNotice(notice: string | null): void {
   set({ notice });
@@ -1139,7 +1591,7 @@ export function closeGuide(): void {
 function loadSetupTab(): SetupTab {
   try {
     const t = localStorage.getItem(TAB_KEY);
-    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "data" || t === "plugins") return t;
+    if (t === "systems" || t === "conventional" || t === "radios" || t === "recording" || t === "access" || t === "data" || t === "plugins") return t;
   } catch {
     // Not remembered.
   }
@@ -1230,9 +1682,9 @@ export function findOnAir(l: LookingFor): string | null {
   setView("setup");
   const src = state.config?.sources[0];
   // (Idle, a source; recording, or none set up yet, a spare radio.)
-  const spare = state.phase === "idle" && src ? undefined : spareRadios(state)[0];
+  const spare = !holdsRadios(state.phase) && src ? undefined : spareRadios(state)[0];
   if (!state.connected) return "Not connected to the recorder.";
-  if (state.phase !== "idle" && !spare) return "Recording has the radios: stop recording to scan, or plug in a spare radio to scan with meanwhile.";
+  if (holdsRadios(state.phase) && !spare) return "Recording has the radios: stop recording to scan, or plug in a spare radio to scan with meanwhile.";
   if (!src && !spare) return "Add a radio first (Setup → Radios).";
   const radio = spare ?? src!;
   if (needsDriver(radio) && !can("drivers")) return "Its radio needs the desktop app.";
@@ -1245,6 +1697,16 @@ export function profileSource(source: number, centerHz: number): void {
   flushConfig();
   set({ profile: null, profiling: source });
   transport.send({ type: "profileSource", source, centerHz });
+}
+
+/** Tune Setup's source `source` (configIndex) by what its systems decode, while recording, and keep the best (saved); progress in `tune`. */
+export function tuneGain(source: number): void {
+  flushConfig();
+  transport.send({ type: "tuneGain", source, apply: true });
+}
+/** Stop tuning: the radio goes back as it was. */
+export function tuneStop(): void {
+  transport.send({ type: "tuneStop" });
 }
 export function surveyListen(freqHz: number): void {
   transport.send({ type: "surveyListen", freqHz });
@@ -1519,7 +1981,9 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
     // (In the config's own terms.)
     const band: Partial<Site> = b ?? {};
     const fields: Partial<Site> = { controlChannelsHz: sug.controlChannels, expect, voiceChannelsHz: sug.voiceChannels, enabled: true, ...band };
+    // (Only a system of the kind found takes it: the survey offers no other, and one that changed since gets a new system.)
     let sys = target === "new" ? undefined : c.systems[target.system];
+    if (sys?.type !== type) sys = undefined;
     let site: Site;
     if (!sys || target === "new") {
       sys = newSystem(c, { shortName: shortNameFor(c, expect, type === "smartnet"), type, ...fields });
@@ -1528,7 +1992,6 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
       withLicenses(sys, site, true);
     } else if (target.site !== "new" && sys.sites[target.site]) {
       // Replaced: its name and modulation stay.
-      sys.type = type;
       site = normalizeSite({ ...sys.sites[target.site], ...fields }, sys);
       sys.sites[target.site] = site;
       withLicenses(sys, site, false);
@@ -1547,11 +2010,10 @@ export function applySurvey(i: number, sug: SurveySuggestion, target: SurveyTarg
         src.agc = false;
       }
       // Don't strand another site that only this source covers now.
-      const centers = resolvedCenters(c);
-      const within = (f: number) => Math.abs(f - sug.centerHz) <= usableHalfWidth(src.rateHz, src.guardHz);
-      const stranded = activeSites(c).some(({ site: x }) => {
+      const within = (f: number) => reaches(src, sug.centerHz, f);
+      const stranded = activeSites(c).some(({ sys: y, site: x }) => {
         if (x === site) return false;
-        const on = x.controlChannelsHz.map((f) => sourceCovering(c, centers, f));
+        const on = x.controlChannelsHz.map((f) => receiverOf(c, y.shortName, f));
         const onlyHere = on.includes(i) && !on.some((k) => k >= 0 && k !== i);
         return onlyHere && !x.controlChannelsHz.some(within);
       });
@@ -1649,16 +2111,14 @@ export function unlockKeys(source: string, password: string | null): void {
 
 export function start(): void {
   flushConfig();
-  // The recorder reads the config now: what it runs with from here.
-  runKey = state.config ? restartKey(state.config, liveGain) : null;
-  set({ error: null, ended: false, restartNeeded: false });
+  set({ error: null, runError: null, ended: false });
   transport.send({ type: "start" });
   if (state.listen) void player.resume().catch(() => {});
 }
 
 /** Stop recording and end the desktop app (the web build has nothing to quit). */
 export function quitApp(): void {
-  if ((state.phase === "running" || state.phase === "starting") && !confirm("Recording is running. Quit anyway? Calls in progress are saved.")) return;
+  if (isRecording(state.phase) && !confirm("Recording is running. Quit anyway? Calls in progress are saved.")) return;
   flushConfig();
   transport.send({ type: "quit" });
 }

@@ -5,7 +5,8 @@
 //! `trunk-pro tool dmr <capture> --center Hz --rate Hz --freq Hz [--bursts]
 //! [--audio out.f32 --slot 0|1]` — one DMR channel: its link control, CSBKs
 //! and calls as JSON lines (`--bursts`: every burst), then counts;
-//! `--audio` vocodes a slot's voice (8 kHz f32).
+//! `--audio` vocodes a slot's voice (8 kHz f32). Voice, its muting and talker
+//! aliases are the recorder's own ([`dmr::voice::DmrVoice`]).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -16,7 +17,7 @@ use trunk_core::dmr::slot::data_type_name;
 use trunk_core::dmr::{self, Burst, Framer, LcFrom, SlotEvent};
 use trunk_core::dsp::c4fm::{C4fm, C4fmOptions};
 use trunk_core::dsp::{Channelizer, Receiver};
-use trunk_core::mbe::{self, FRAME_SAMPLES};
+use trunk_core::trunk::voice::TrackerOut;
 
 use crate::toolkit::{hex, AudioOut, Capture};
 use crate::Args;
@@ -104,9 +105,9 @@ pub fn run(a: &Args) {
     let (head, _, _) = chz.add_head(freq - center, dmr::CHANNEL_CUTOFF_HZ, 0.0);
     let mut rx = C4fm::dmr(rate);
     let mut framer = Framer::new();
-    let mut chan = dmr::Channel::default();
-    let mut vocoders = [mbe::Decoder::new(mbe::lcg(1), mbe::Profile::Enhanced), mbe::Decoder::new(mbe::lcg(2), mbe::Profile::Enhanced)];
     let mut audio_out = AudioOut::open(a, "audio");
+    let mut voice = dmr::voice::DmrVoice::new(1);
+    let mut vout = Vec::new();
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     let (mut syms, mut bursts, mut ev) = (Vec::new(), Vec::<Burst>::new(), Vec::new());
@@ -114,6 +115,7 @@ pub fn run(a: &Args) {
     let (mut vcw, mut vcw_errs, mut vcw_clean) = (0u64, 0u64, 0u64);
     // Per slot: the last LC printed (only changes are), voice frames since.
     let mut last_lc: [Option<dmr::Lc>; 2] = [None, None];
+    let mut last_alias: [Option<dmr::alias::Decoded>; 2] = [None, None];
     let t0 = Instant::now();
     cap.channelize(&mut chz, |chz| {
         syms.clear();
@@ -125,7 +127,7 @@ pub fn run(a: &Args) {
         for b in &bursts {
             let t = b.sample / rate;
             ev.clear();
-            chan.burst(b, &mut ev);
+            voice.chan.burst(b, &mut ev);
             let slot = ev.first().map(|e| e.0);
             if all {
                 let (tact, _) = dmr::burst::cach(&b.cach);
@@ -153,20 +155,15 @@ pub fn run(a: &Args) {
                 let _ = writeln!(out, "{line}");
             }
             for (s, e) in ev.drain(..) {
-                match e {
+                if let Some(xpt) = dmr::xpt::control(&e) {
+                    let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "xpt": xpt }));
+                }
+                match e.clone() {
                     SlotEvent::Voice { frame, .. } => {
                         vcw += 1;
                         vcw_errs += frame.errs as u64;
                         vcw_clean += (frame.errs <= 1) as u64;
                         *counts.entry(format!("voice_slot{s}")).or_default() += 1;
-                        if s == want_slot {
-                            if let Some(w) = audio_out.as_mut() {
-                                let mut buf = [0f32; FRAME_SAMPLES];
-                                vocoders[s as usize].ambe(&frame.bits, frame.errs, &mut buf);
-                                mbe::to_unit(&mut buf);
-                                w.samples(&buf);
-                            }
-                        }
                     }
                     SlotEvent::Lc { lc, from } => {
                         *counts.entry(format!("lc_{from:?}").to_lowercase()).or_default() += 1;
@@ -179,8 +176,8 @@ pub fn run(a: &Args) {
                                 lc.voice_user().unwrap_or(false),
                                 lc.target(),
                                 lc.source(),
-                                lc.emergency(),
-                                lc.encrypted(),
+                                lc.voice_user().is_some() && lc.emergency(),
+                                lc.voice_user().is_some() && lc.encrypted(),
                                 hex(&lc.0)
                             );
                         }
@@ -193,6 +190,10 @@ pub fn run(a: &Args) {
                     SlotEvent::MbcContinuation(bytes) => {
                         let _ = writeln!(out, "{{\"t\":{t:.4},\"slot\":{s},\"mbc_continuation\":\"{}\"}}", hex(&bytes));
                     }
+                    SlotEvent::Slco(raw) => {
+                        *counts.entry("slco".into()).or_default() += 1;
+                        let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "slco": raw[0] >> 4, "hex": hex(&raw) }));
+                    }
                     SlotEvent::Privacy { alg, key } => {
                         *counts.entry("pi_header".into()).or_default() += 1;
                         let _ = writeln!(out, "{{\"t\":{t:.4},\"slot\":{s},\"privacy\":{{\"alg\":{alg},\"key\":{key}}}}}");
@@ -201,17 +202,63 @@ pub fn run(a: &Args) {
                         *counts.entry(format!("{}{}", data_type_name(data_type), if ok { "" } else { "_bad" })).or_default() += 1;
                     }
                 }
+                voice.event(s, e, t, &mut vout);
+                for o in vout.drain(..) {
+                    if let (TrackerOut::Audio(buf, _), Some(w)) = (&o.out, audio_out.as_mut()) {
+                        if o.slot == want_slot {
+                            w.samples(buf);
+                        }
+                    }
+                }
+                // The talker alias as it comes together (partial ones too: the recorder names a radio only by a whole one).
+                let alias = voice.alias_so_far(s);
+                if alias != last_alias[s as usize].as_ref() {
+                    if let Some(alias) = alias {
+                        let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "alias": alias }));
+                    }
+                    last_alias[s as usize] = alias.cloned();
+                }
             }
         }
     });
     let _ = out.flush();
     let secs = cap.air();
-    eprintln!("{secs:.1} s in {:.2} s; bursts {} syncs {} (framer locked: {}); CACH errors {}", t0.elapsed().as_secs_f64(), framer.bursts, framer.syncs, framer.locked(), chan.tact_errors);
+    eprintln!("{secs:.1} s in {:.2} s; bursts {} syncs {} (framer locked: {}); CACH errors {}", t0.elapsed().as_secs_f64(), framer.bursts, framer.syncs, framer.locked(), voice.chan.tact_errors);
     eprintln!("voice codewords {vcw}: {:.1} % with ≤ 1 error, {:.2} errors each", 100.0 * vcw_clean as f64 / vcw.max(1) as f64, vcw_errs as f64 / vcw.max(1) as f64);
-    for (s, d) in chan.slots.iter().enumerate() {
+    for (s, d) in voice.chan.slots.iter().enumerate() {
         eprintln!("slot {s}: colour code {:?}, bad blocks {}", d.color_code, d.bad_blocks);
     }
     for (k, n) in counts {
         eprintln!("  {k}: {n}");
     }
+}
+
+/// `trunk-pro tool dmrsynth <out.cu8> [--center Hz] [--rate Hz] [--freq Hz]
+/// [--superframes 15] [--tg 101] [--source 1234] [--cc 1]` — a synthetic DMR
+/// repeater ([`dmr::synth`]): idle bursts, a voice transmission on slot 1,
+/// idle again; for `replay --dmr` (and perf/gate.sh).
+pub fn run_synth(a: &Args) {
+    use dmr::synth::{dibits, modulate, Tx};
+    let path = a.positional.get(1).unwrap_or_else(|| crate::die("tool dmrsynth: no output file"));
+    let center = a.num("center", 464_000_000.0);
+    let fs = a.num("rate", 2_400_000.0);
+    let freq = a.num("freq", center + 100_000.0);
+    let tx = Tx {
+        cc: a.num("cc", 1.0) as u8,
+        slot: 1,
+        talkgroup: a.num("tg", 101.0) as u32,
+        source: a.num("source", 1234.0) as u32,
+        superframes: a.num("superframes", 15.0) as usize,
+        idle_before: 20,
+        idle_after: 40,
+        csbks: Vec::new(),
+        mobile: false,
+    };
+    let mut ph = 0.0;
+    let mut iq = modulate(&dibits(&tx), fs, freq - center, 0.25, &mut ph);
+    let mut seed = 1;
+    trunk_core::nxdn::synth::add_noise(&mut iq, 0.01, &mut seed);
+    let bytes: Vec<u8> = iq.iter().flat_map(|v| [(v.re * 127.5 + 127.5).clamp(0.0, 255.0) as u8, (v.im * 127.5 + 127.5).clamp(0.0, 255.0) as u8]).collect();
+    std::fs::write(path, bytes).unwrap_or_else(|e| crate::die(&format!("{path}: {e}")));
+    eprintln!("{path}: {:.1} s at {fs} S/s, centre {center} Hz; DMR on {freq} Hz, CC {}, TG {} on slot 1, {} superframes", iq.len() as f64 / fs, tx.cc, tx.talkgroup, tx.superframes);
 }

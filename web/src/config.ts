@@ -1,43 +1,30 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, System, SystemStatus, Talkgroup, UnitNames } from "./protocol.ts";
+import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitName, UnitNames, Origin } from "./protocol.ts";
 import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
-import { defaultConfig, parseChannelCsv, readConfig, usableHalfWidth } from "./rules.ts";
+import { SYSTEM_KINDS, type SystemKind } from "./systemKinds.gen.ts";
+
+export { SYSTEM_KINDS };
+
+/** Holds when `A` and `B` are the same type. */
+type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+/** The config's kinds of system are the recorder's table's (systemKinds.gen.ts). */
+const sameKinds: Same<System["type"], SystemKind> = true;
+void sameKinds;
+
+/** What a kind of system is called ("SmartNet"; P25 when none is said). */
+export const kindLabel = (type: System["type"] | undefined) => SYSTEM_KINDS[type ?? "p25"].label;
+import { readUnitNamesFile } from "./units.ts";
+import { fromNow } from "./origins.ts";
+import { defaultConfig, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
-export { autoCenter, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, planCenters, readConfig, resolvedCenters, startProblem, usableHalfWidth } from "./rules.ts";
-
-/**
- * The settings the recorder reads only when it starts. Left out are those it
- * takes while recording (plugins, their settings and delays,
- * the log, the dashboard's monitor, the web server's origins / home /
- * interfaces; with `liveGain`, the desktop recorder, a radio's gain) and what
- * only matters when the app launches (server address, start on launch).
- */
-export function restartKey(c: Config, liveGain: boolean): string {
-  return JSON.stringify({
-    sources: liveGain ? c.sources.map(withoutLiveGain) : c.sources,
-    // (Sharing and the directory's link apply live: a first share saves the link.)
-    systems: c.systems.map(({ plugins: _a, pluginDelays: _d, share: _s, directory: _l, ...s }) => ({ ...s, sites: s.sites.map(({ directoryId: _i, ...x }) => x) })),
-    conventional: c.conventional.map(({ plugins: _a, pluginDelays: _d, channelFileStatus: _f, ...s }) => s),
-    recording: c.recording,
-  });
-}
-
-/** A source without the gain settings a running recorder takes from it (as runtime::live_gain decides). */
-function withoutLiveGain(x: Source): Source {
-  const k = SOURCE_KINDS[x.type];
-  const agc = "agc" in x && x.agc;
-  if (!k.liveGain || (agc && !k.liveAgc)) return x;
-  const y: Record<string, unknown> = { ...x };
-  for (const f of [...k.liveGain, ...(k.liveAgc ? ["agc"] : [])]) delete y[f];
-  return y as Source;
-}
+export { receivers, sourceInputs, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceAdvice, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
+export type { Advice, AdviceScore, Heard } from "./rules.ts";
 
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
 export const RTL_DEFAULT_GAIN_DB = 25.4;
 
-export const SAMPLE_RATES = [2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_024_000];
 
 /** A fresh config (the web build; the desktop app gets its own from the recorder). */
 /** The log's defaults (the recorder's LogSettings). */
@@ -45,9 +32,6 @@ export function defaultLog(): LogSettings {
   return defaultConfig().log!;
 }
 
-export const USRP_RATES = [2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000];
-/** Airspy R2: 10 / 2.5; Mini: 6 / 3 (and 10 with newer firmware). */
-export const AIRSPY_RATES = [10_000_000, 6_000_000, 3_000_000, 2_500_000];
 
 export function newDongle(): Source {
   return { type: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, bufLen: 0, buffers: 0 };
@@ -58,18 +42,21 @@ export function newUsrp(): Source {
 export function newAirspy(): Source {
   return { type: "airspy", serial: "", centerHz: 0, rateHz: 6_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, ppm: 0 };
 }
-/** Offered for a bladeRF (any rate 0.52–61.44 MSPS can be typed; above ~40 MSPS needs USB 3 and a fast CPU). */
-export const BLADERF_RATES = [2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000, 25_000_000, 30_720_000];
+export function newHydrasdr(): Source {
+  return { type: "hydrasdr", serial: "", centerHz: 0, rateHz: 5_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, rfPort: 0, ppm: 0 };
+}
+/** A source whose gain is set as an Airspy's ([`AirspyGains`]): libairspy's tables, or its three stages (an Airspy, a HydraSDR). */
+export const airspyGains = (x: Source): x is Extract<Source, { type: "airspy" | "hydrasdr" }> => x.type === "airspy" || x.type === "hydrasdr";
+/** The kinds whose radio is picked by serial from those its driver found. */
+export type SerialKind = "airspy" | "hydrasdr" | "bladerf" | "hackrf";
+/** A source whose radio is picked by serial from those its driver found (an Airspy, a HydraSDR, a bladeRF, a HackRF). */
+export const pickedBySerial = (x: Source): x is Extract<Source, { type: SerialKind }> => airspyGains(x) || x.type === "bladerf" || x.type === "hackrf";
 export function newBladerf(): Source {
   return { type: "bladerf", serial: "", centerHz: 0, rateHz: 10_000_000, bandwidthHz: 0, gainDb: 30, agc: false, biasTee: false, ppm: 0 };
 }
-/** Offered for a HackRF (1–20 MSPS can be typed). */
-export const HACKRF_RATES = [8_000_000, 10_000_000, 4_000_000, 2_000_000, 16_000_000, 20_000_000];
 export function newHackrf(): Source {
   return { type: "hackrf", serial: "", centerHz: 0, rateHz: 8_000_000, lnaDb: 16, vgaDb: 20, amp: false, biasTee: false, ppm: 0 };
 }
-/** Offered for SoapySDR devices; any rate the device takes can be typed. */
-export const SOAPY_RATES = [2_000_000, 2_400_000, 2_500_000, 3_000_000, 6_000_000, 8_000_000, 10_000_000];
 export function newSoapy(): Source {
   return { type: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
 }
@@ -111,8 +98,6 @@ export interface SourceKind {
   native?: boolean;
   /** The name SoapySDR lists it under, when this source drives it natively. */
   soapyDriver?: string;
-  /** Its gain settings, which the desktop recorder takes while recording (runtime::live_gain). */
-  liveGain?: string[];
   /** Its AGC switches on or off while recording too (else only with AGC off is the gain live). */
   liveAgc?: boolean;
   /** The radios it covers, when its name doesn't say ("HackRF, SDRplay…"). */
@@ -122,73 +107,86 @@ export interface SourceKind {
 }
 
 export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
-  rtlsdr: { label: "RTL-SDR", fresh: newDongle, rates: SAMPLE_RATES, device: "serial", soapyDriver: "rtlsdr", liveGain: ["gainDb"], liveAgc: true },
+  rtlsdr: { label: "RTL-SDR", fresh: newDongle, get rates() { return sourceRates("rtlsdr"); }, rateHint: "2.4 or less is dependable", device: "serial", soapyDriver: "rtlsdr", liveAgc: true },
   usrp: {
     label: "USRP",
     fresh: newUsrp,
-    rates: USRP_RATES,
+    get rates() { return sourceRates("usrp"); },
     freeRate: true,
-    rateHint: "MSPS; wider costs more CPU",
+    rateHint: "Wider costs more CPU",
     device: "args",
     driver: { name: "UHD", macos: "brew install uhd", linux: "sudo apt install libuhd-dev uhd-host", windows: "Ettus's UHD installer", then: "run uhd_images_downloader" },
     soapyDriver: "uhd",
-    liveGain: ["gainDb"],
   },
   airspy: {
     label: "Airspy",
     fresh: newAirspy,
-    rates: AIRSPY_RATES,
+    get rates() { return sourceRates("airspy"); },
     rateHint: "R2: 10 or 2.5; Mini: 6 or 3",
     device: "serial",
     driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
     soapyDriver: "airspy",
-    biasT: "Powers an LNA via the antenna cable",
-    liveGain: ["gainMode", "gainStep", "lnaStep", "mixerStep", "vgaStep"],
+    biasT: "Powers an LNA on the antenna cable",
+    liveAgc: true,
+  },
+  hydrasdr: {
+    label: "HydraSDR",
+    fresh: newHydrasdr,
+    get rates() { return sourceRates("hydrasdr"); },
+    rateHint: "RFOne: 10, 5 or 2.5 (lower ones decimated)",
+    device: "serial",
+    driver: {
+      name: "libhydrasdr 1.1+",
+      macos: "libhydrasdr.1.dylib from the hydrasdr-host release",
+      linux: "the hydrasdr-host-tools package from the hydrasdr-host release",
+      windows: "put hydrasdr.dll and libusb-1.0.dll (from the hydrasdr-host release) next to trunk-pro.exe",
+    },
+    soapyDriver: "hydrasdr",
+    biasT: "Powers an LNA via the ANT port (4.5 V, up to 300 mA)",
     liveAgc: true,
   },
   bladerf: {
     label: "bladeRF",
     fresh: newBladerf,
-    rates: BLADERF_RATES,
+    get rates() { return sourceRates("bladerf"); },
     freeRate: true,
-    rateHint: "MSPS, 0.52–61.44 (the original bladeRF: up to 40)",
+    rateHint: "0.52–61.44 MSPS (original bladeRF: to 40)",
     device: "serial",
     driver: { name: "libbladeRF 2.x", macos: "brew install libbladerf", linux: "sudo apt install libbladerf2 bladerf-fpga-hostedxa4", windows: "Nuand's bladeRF installer" },
     soapyDriver: "bladerf",
     biasT: "Powers an LNA via the antenna cable (bladeRF 2.0)",
-    liveGain: ["gainDb"],
   },
   hackrf: {
     label: "HackRF",
     fresh: newHackrf,
-    rates: HACKRF_RATES,
+    get rates() { return sourceRates("hackrf"); },
     freeRate: true,
-    rateHint: "MSPS, 1–20",
+    rateHint: "1–20 MSPS",
     device: "serial",
     native: true,
     soapyDriver: "hackrf",
     biasT: "Powers an LNA via the antenna port (up to 50 mA)",
-    liveGain: ["lnaDb", "vgaDb", "amp"],
   },
   soapy: {
     label: "SoapySDR",
     fresh: newSoapy,
-    rates: SOAPY_RATES,
+    get rates() { return sourceRates("soapy"); },
     freeRate: true,
-    rateHint: "MSPS, one the device supports",
+    rateHint: "One the device supports",
     device: "args",
     driver: { name: "SoapySDR and your radio's module", macos: "brew install soapysdr soapyhackrf", linux: "sudo apt install soapysdr0.8-module-all", windows: "PothosSDR or radioconda" },
     covers: "SDRplay, LimeSDR, PlutoSDR…",
-    liveGain: ["gainDb"],
   },
-  file: { label: "Capture file", fresh: newFile, rates: [...SAMPLE_RATES, 8_000_000, 10_000_000] },
+  file: { label: "Capture file", fresh: newFile, get rates() { return sourceRates("file"); } },
 };
 
 /** The kinds of source with a driver (installed, or built in) and so the desktop app: the recorder reports each in `radios`. */
 export type DriverKind = keyof Radios;
-export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter((k): k is DriverKind => !!(SOURCE_KINDS[k].driver || SOURCE_KINDS[k].native));
+/** A kind of source the desktop app alone opens: a library loaded at run time, or a driver of its own. */
+export const kindNeedsDriver = (k: Source["type"]): k is DriverKind => !!(SOURCE_KINDS[k].driver || SOURCE_KINDS[k].native);
+export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter(kindNeedsDriver);
 /** A source that needs a driver, and so the desktop app. */
-export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => !!(SOURCE_KINDS[x.type].driver || SOURCE_KINDS[x.type].native);
+export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => kindNeedsDriver(x.type);
 /** A source with a bias-T the recorder switches. */
 export const hasBiasT = (x: Source): x is Extract<Source, { biasTee: boolean }> => !!SOURCE_KINDS[x.type].biasT;
 
@@ -223,20 +221,6 @@ export function foundRadio(radios: Radios | null | undefined, x: Source): FoundR
   return devices.find((d) => (x.type === "bladerf" ? !!d.serial?.toLowerCase().startsWith(id.toLowerCase()) : (d.serial ?? d.args) === id));
 }
 
-/** Whether the radio runs at `hz`, as it said when opened (true when that isn't known). */
-export function rateOk(hz: number, found: FoundRadio | undefined): boolean {
-  if (found?.rates?.length) return found.rates.includes(hz);
-  if (found?.rateRange) return hz >= found.rateRange[0] && hz <= found.rateRange[1];
-  return true;
-}
-
-/** `hz` if the radio runs at it (or that isn't known), else the nearest it does: its first rate, or the end of its range. */
-export function rateFor(hz: number, found: FoundRadio | undefined): number {
-  if (rateOk(hz, found)) return hz;
-  if (found?.rates?.length) return found.rates[0];
-  const [lo, hi] = found!.rateRange!;
-  return Math.min(Math.max(hz, lo), hi);
-}
 
 /** What the radio runs at, MSPS ("10 or 2.5", "0.52–61.44"), when it said; null when not. */
 export function ratesText(found: FoundRadio | undefined): string | null {
@@ -300,6 +284,9 @@ export function formatFromPath(path: string): "cu8" | "cs16" | "cf32" {
   return ["cf32", "cfile", "fc32", "complex"].includes(ext) ? "cf32" : ["cs16", "sc16"].includes(ext) ? "cs16" : "cu8";
 }
 
+/** What source `i` is called: "Source 2", or "Source 2 (Whip)" once it has a `name` (the recorder's Source::title). */
+export const sourceTitle = (c: Config, i: number): string => sourceNames(c)[i]?.title ?? "";
+
 /** Left unused at each edge of a source's band unless it says otherwise (`guardHz`), Hz. */
 /** The conventional channels being recorded: switched on, in a system that is. */
 export function enabledChannels(c: Config): Channel[] {
@@ -332,18 +319,17 @@ function dmrImport(sys: Record<string, unknown>): SystemInput {
 
 /**
  * The site-lock fields a system's protocol states (the recorder's
- * ControlChannel::identity_fields): the lock compares only these. DMR and
- * NXDN Type-D state none (their sites are told apart by colour code / RAN);
- * NXDN Type-C its system and site codes.
+ * System::site_lock_fields): the lock compares only these. DMR and NXDN
+ * Type-D state none (their sites are told apart by colour code / RAN).
  */
 export function siteLockFields(sys: Pick<System, "type" | "nxdnType">): (keyof SiteIdentity)[] {
-  if (sys.type === "nxdn") return sys.nxdnType === "typeD" ? [] : ["sysId", "site"];
-  return sys.type === "smartnet" ? ["sysId", "site"] : sys.type === "edacs" ? ["site"] : sys.type === "dmr" ? [] : ["nac", "wacn", "sysId", "rfss", "site"];
+  if (sys.type === "nxdn" && sys.nxdnType === "typeD") return [];
+  return [...SYSTEM_KINDS[sys.type].siteLock];
 }
 
 /** A system's type as written: "p25" for one this version doesn't know. */
 export function systemType(t: unknown): System["type"] {
-  return t === "smartnet" || t === "dmr" || t === "nxdn" || t === "edacs" ? t : "p25";
+  return typeof t === "string" && Object.hasOwn(SYSTEM_KINDS, t) ? (t as System["type"]) : "p25";
 }
 
 /** Frequencies a watching protocol (DMR, NXDN, EDACS) needs besides the control channels (the recorder's Site::watched_channels). */
@@ -480,7 +466,7 @@ export function normalizeSystem(x: SystemInput): System {
     ...(type === "smartnet" && x.defaultMode === "analog" ? { defaultMode: "analog" as const } : {}),
     enabled: x.enabled ?? true,
     ...(x.recording && Object.keys(x.recording).length ? { recording: x.recording } : {}),
-    ...(x.unitNames && (x.unitNames.csv || x.unitNames.mode) ? { unitNames: x.unitNames } : {}),
+    ...(x.unitNames?.mode ? { unitNames: { mode: x.unitNames.mode } } : {}),
     ...(x.keys?.trim() ? { keys: x.keys } : {}),
     ...(plain(x.plugins) && Object.keys(x.plugins!).length ? { plugins: x.plugins } : {}),
     ...(x.pluginDelays?.length ? { pluginDelays: x.pluginDelays } : {}),
@@ -578,6 +564,33 @@ export function sameSystem(a: SiteIdentity, b: SiteIdentity): boolean {
   return a.wacn != null && a.sysId != null && a.wacn === b.wacn && a.sysId === b.sysId;
 }
 
+/** One site: the same System ID and site, and no WACN or RFSS that both state and disagree on. */
+export function sameSite(a: SiteIdentity, b: SiteIdentity): boolean {
+  const agree = (x: number | null | undefined, y: number | null | undefined) => x == null || y == null || x === y;
+  return a.sysId != null && a.site != null && a.sysId === b.sysId && a.site === b.site && agree(a.wacn, b.wacn) && agree(a.rfss, b.rfss);
+}
+
+/** A neighbouring site's identity, in the fields a site of `type` states: P25 all four, NXDN its System ID and site. */
+export function adjacentIdentity(a: AdjacentSite, type: System["type"] = "p25"): SiteIdentity {
+  return type === "p25" ? { wacn: a.wacn, sysId: a.sysId, rfss: a.rfss, site: a.site } : { sysId: a.sysId, site: a.site };
+}
+
+/** A site by its address: P25's WACN:System:RFSS-site (WACN and System ID in hex, as on the air); else its System ID and site. */
+export function siteAddress(id: SiteIdentity): string {
+  const h = (v: number | null | undefined, n: number) => (v ?? 0).toString(16).toUpperCase().padStart(n, "0");
+  return id.wacn != null ? `${h(id.wacn, 5)}:${h(id.sysId, 3)}:${id.rfss ?? 0}-${id.site ?? "?"}` : `SysID ${h(id.sysId, 1)} · site ${id.site ?? "?"}`;
+}
+
+/**
+ * What a radio of `from` crosses to reach site `to`, in TIA-102's roaming
+ * terms: another site or RFSS of its own system (intra-system), another
+ * system of its WACN (inter-system), or another WACN (inter-WACN).
+ */
+export function roaming(from: SiteIdentity, to: SiteIdentity): "intra-system" | "inter-system" | "inter-WACN" {
+  if (from.wacn != null && to.wacn != null && from.wacn !== to.wacn) return "inter-WACN";
+  return from.sysId !== to.sysId ? "inter-system" : "intra-system";
+}
+
 /**
  * Systems set up apart whose sites announce one system on the air (P25:
  * the same WACN and System ID; SmartNet, NXDN Type-C: the same System ID),
@@ -616,9 +629,33 @@ export function systemWithChannel(c: Config, hz: number): System | undefined {
   return c.systems.find((sys) => sys.sites.some((x) => [...x.controlChannelsHz, ...watchedChannels(sys, x)].some((f) => Math.abs(f - hz) < 6_000)));
 }
 
-/** The source (index) whose usable band holds `hz`, or -1. */
-export function sourceCovering(c: Config, centers: (number | null)[], hz: number): number {
-  return c.sources.findIndex((s, i) => centers[i] !== null && Math.abs(hz - (centers[i] ?? 0)) <= usableHalfWidth(s.rateHz, s.guardHz));
+/** Whether its calls and control channels correct its frequency error (Trunk Recorder's autoTune). */
+export const autoTuneOn = (x: Source | undefined): boolean => !!x && "autoTune" in x && !!x.autoTune;
+
+/**
+ * Config source `i` as it's running: the running source on the same radio,
+ * by its label (the nth of that label, for two "first found"), not the one at
+ * its place, since Setup may have added, removed or moved sources since Start.
+ */
+export function runningSource(running: SourceStatus[], c: Config, i: number): SourceStatus | undefined {
+  const labels = sourceLabels(c);
+  const nth = labels.slice(0, i).filter((x) => x === labels[i]).length;
+  return running.filter((x) => x.label === labels[i])[nth];
+}
+
+/** Where in the config running source `st`'s radio is ([`runningSource`]'s other way), or -1 when it's gone. */
+export function configIndex(running: SourceStatus[], c: Config, st: SourceStatus): number {
+  return c.sources.findIndex((_, k) => runningSource(running, c, k) === st);
+}
+
+/** Whether a source of `s`'s rate and guard tuned to `center` reaches `hz` (Source::reaches). */
+export function reaches(s: { rateHz: number; guardHz?: number }, center: number, hz: number): boolean {
+  return Math.abs(hz - center) <= usableHalfWidth(s.rateHz, s.guardHz);
+}
+
+/** The source system `system`'s frequency `hz` is received on (the recorder's choice: the first of those it may be received on that reaches it), or -1. */
+export function receiverOf(c: Config, system: string, hz: number): number {
+  return receivers(c).find((r) => r.system === system && r.hz === hz)?.source ?? -1;
 }
 
 /** A conventional channel's talkgroup when none is given: its frequency in kHz. */
@@ -855,20 +892,22 @@ function trPlugins(j: Record<string, unknown>, names: Map<string, string>, impor
   return { plugins: [...out.values()], other };
 }
 
-/** A Trunk Recorder system's unitTagsFile (from `files`, else a to-do) and unitTagsMode. */
-function trUnitNames(sys: Record<string, unknown>, files: Record<string, string>, shortName: string, todo: ImportTodo[]): UnitNames | undefined {
-  const out: UnitNames = {};
+/** A Trunk Recorder system's unitTagsMode (for the config), and its unitTagsFile's names (from `files`, else a to-do; kept beside the config: setUnitNames). */
+function trUnitNames(sys: Record<string, unknown>, files: Record<string, string>, shortName: string, todo: ImportTodo[]): { mode?: UnitNames; rows?: UnitName[] } {
   const mode = sys.unitTagsMode;
-  if (mode === "ota" || mode === "user_only" || mode === "none") out.mode = mode;
+  const out: { mode?: UnitNames; rows?: UnitName[] } = mode === "ota" || mode === "user_only" || mode === "none" ? { mode: { mode } } : {};
   if (typeof sys.unitTagsFile === "string" && sys.unitTagsFile) {
     const csv = files[sys.unitTagsFile];
     if (csv === undefined) todo.push({ kind: "units", system: shortName, file: sys.unitTagsFile });
-    else {
-      out.csv = csv;
-      out.name = baseName(sys.unitTagsFile);
-    }
+    else out.rows = fromTrunkRecorder(readUnitNamesFile(csv).unitNames, sys.unitTagsFile);
   }
-  return out.csv || out.mode ? out : undefined;
+  return out;
+}
+
+/** `rows`, read from Trunk Recorder's file `file`, with that as where they came from. */
+function fromTrunkRecorder<R extends { origin?: Origin }>(rows: R[], file: string): R[] {
+  const origin = fromNow({ kind: "trunkRecorder", name: baseName(file) });
+  return rows.map((r) => ({ ...r, origin }));
 }
 
 /**
@@ -936,7 +975,7 @@ export function importTrunkRecorderConfig(
   base: Config,
   files: Record<string, string> = {},
   merge = false,
-): { config: Config; talkgroups: Record<string, Talkgroup[]>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
+): { config: Config; talkgroups: Record<string, Talkgroup[]>; unitNames: Record<string, UnitName[]>; notes: string[]; todo: ImportTodo[]; plugins: PluginImport[]; added: { sources: number[]; systems: string[] } } {
   // A byte-order mark (Windows editors add one) is not JSON; Trunk Recorder skips it, so do we.
   const j = JSON.parse(text.replace(/^\uFEFF/, "")) as Record<string, unknown>;
   const notes: string[] = [];
@@ -945,8 +984,9 @@ export function importTrunkRecorderConfig(
   const names = new Map<string, string>();
   const systemNames = new Map<unknown, string>();
   const cfg: Config = structuredClone(base);
-  // Each system's talkgroups (read from its file), by its short name here (kept beside the config: setTalkgroups).
+  // Each system's talkgroups and radio names (read from its files), by its short name here (kept beside the config: setTalkgroups, setUnitNames), each row from its file.
   const talkgroups: Record<string, Talkgroup[]> = {};
+  const unitNames: Record<string, UnitName[]> = {};
   const sources = (j.sources as Record<string, unknown>[] | undefined) ?? [];
   const systems = (j.systems as Record<string, unknown>[] | undefined) ?? [];
   const imported: Source[] = [];
@@ -1024,17 +1064,18 @@ export function importTrunkRecorderConfig(
       notes.push(`bladeRF source imported (${agc ? "AGC" : `gain ${gain ?? full ?? 30} dB`}): it needs libbladeRF 2.x and the board's FPGA image installed on this computer.`);
       continue;
     }
-    if (/airspy/.test(dev)) {
-      const sn = /airspy=(0x)?([0-9a-fA-F]{8,16})/.exec(dev)?.[2] ?? "";
-      const rate = typeof s.rate === "number" && AIRSPY_RATES.includes(s.rate) ? s.rate : 6_000_000;
+    // (gr-osmosdr's HydraSDR source takes an Airspy's settings, and opens the first one.)
+    const hydra = /hydrasdr/i.test(dev);
+    if (hydra || /airspy/.test(dev)) {
+      const sn = /(?:airspy|hydrasdr)=(0x)?([0-9a-fA-F]{8,16})/i.exec(dev)?.[2] ?? "";
+            const rate = typeof s.rate === "number" && sourceRates(hydra ? "hydrasdr" : "airspy").includes(s.rate) ? s.rate : hydra ? 5_000_000 : 6_000_000;
       // Trunk Recorder sets the Airspy's stages by name (LNA, MIX, IF = VGA); else one overall gain, read here as the linearity step.
       const lna = stage(s.lnaGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.LNA);
       const mix = stage(s.mixGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.MIX);
       const vga = stage(s.ifGain) ?? stage(s.vgaGain) ?? stage((s.gainSettings as Record<string, unknown> | undefined)?.IF);
       const manual = lna !== undefined || mix !== undefined || vga !== undefined;
       const clamp = (v: number | undefined, max: number) => Math.max(0, Math.min(max, Math.round(v ?? 10)));
-      imported.push({
-        type: "airspy",
+      const gains = {
         serial: sn.toUpperCase(),
         centerHz: center,
         rateHz: rate,
@@ -1048,9 +1089,10 @@ export function importTrunkRecorderConfig(
         packing: true,
         ppm,
         ...autoTune,
-      });
+      } as const;
+      imported.push(hydra ? { type: "hydrasdr", ...gains, rfPort: 0 } : { type: "airspy", ...gains });
       notes.push(
-        `Airspy source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): it needs libairspy installed on this computer.`,
+        `${hydra ? "HydraSDR" : "Airspy"} source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): it needs ${hydra ? "libhydrasdr" : "libairspy"} installed on this computer.`,
       );
       continue;
     }
@@ -1134,7 +1176,8 @@ export function importTrunkRecorderConfig(
     const own = trRecording(sys);
     if (Object.keys(own).length) x.recording = own;
     const units = trUnitNames(sys, files, x.shortName, todo);
-    if (units) x.unitNames = units;
+    if (units.mode) x.unitNames = units.mode;
+    if (units.rows) unitNames[x.shortName] = units.rows;
     cfg.conventional.push(x);
     mine.push(x);
     if (channels.length) todo.push({ kind: "squelch", system: x.shortName });
@@ -1184,14 +1227,16 @@ export function importTrunkRecorderConfig(
         const csv = files[sys.talkgroupsFile];
         const had = talkgroups[x.shortName];
         if (x !== one && had) {
-          if (csv !== undefined && JSON.stringify(readTalkgroupFile(csv).talkgroups) !== JSON.stringify(had)) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
+          const rows = (t: Talkgroup[]) => JSON.stringify(t.map(({ origin: _, ...r }) => r));
+          if (csv !== undefined && rows(readTalkgroupFile(csv).talkgroups) !== rows(had)) notes.push(`${ownName}'s talkgroup file wasn't used: ${x.shortName}'s sites share the first one's.`);
         } else if (csv === undefined) todo.push({ kind: "talkgroups", system: x.shortName, file: sys.talkgroupsFile });
-        else talkgroups[x.shortName] = readTalkgroupFile(csv).talkgroups;
+        else talkgroups[x.shortName] = fromTrunkRecorder(readTalkgroupFile(csv).talkgroups, sys.talkgroupsFile);
       }
       if (sys.siteId !== undefined && sys.siteId !== null && sys.siteId !== "") todo.push({ kind: "siteLock", system: x.shortName, siteId: String(sys.siteId), site });
       if (x === one) {
         const units = trUnitNames(sys, files, x.shortName, todo);
-        if (units) x.unitNames = units;
+        if (units.mode) x.unitNames = units.mode;
+        if (units.rows) unitNames[x.shortName] = units.rows;
       }
     }
     const joined = [...made.values()].filter((x) => x.sites.length > 1);
@@ -1237,7 +1282,7 @@ export function importTrunkRecorderConfig(
   const { plugins, other } = trPlugins(j, names, systemNames);
   if (other.length) todo.push({ kind: "plugins", names: other });
   const added = { sources: addedSources, systems: mine.map((o) => (o as System | Conventional).shortName) };
-  if (merge) return { config: cfg, talkgroups, notes, todo, plugins, added };
+  if (merge) return { config: cfg, talkgroups, unitNames, notes, todo, plugins, added };
   if (typeof j.captureDir === "string") cfg.recording.captureDir = j.captureDir;
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
@@ -1258,5 +1303,5 @@ export function importTrunkRecorderConfig(
   if (tgFormat) log.talkgroupDisplayFormat = tgFormat as LogSettings["talkgroupDisplayFormat"];
   if (log.file && log.dir && !log.dir.startsWith("/")) notes.push(`The log folder "${log.dir}" is now next to the config file.`);
   cfg.log = log;
-  return { config: cfg, talkgroups, notes, todo, plugins, added };
+  return { config: cfg, talkgroups, unitNames, notes, todo, plugins, added };
 }

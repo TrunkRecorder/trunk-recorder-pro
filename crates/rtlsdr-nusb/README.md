@@ -1,8 +1,10 @@
 > **Trunk Recorder Pro's fork** of [rtlsdr-nusb](https://github.com/bastibl/rtlsdr-nusb) 0.3.0
-> (Apache-2.0, see `LICENSE`), patched in for the whole workspace by `[patch.crates-io]`. The one
-> change: the receive stream's USB transfers can be sized and counted (`RxBuffers`,
-> `Device::rx_stream_with`), like librtlsdr's `buf_len` / `buf_num`. Several dongles on one USB 2.0
-> bus need transfers smaller than the fixed 8 × 256 KiB. Everything else is upstream's.
+> (Apache-2.0, see `LICENSE`), patched in for the whole workspace by `[patch.crates-io]`. Two
+> changes: the receive stream's USB transfers can be sized and counted (`RxBuffers`,
+> `Device::rx_stream_with`), like librtlsdr's `buf_len` / `buf_num` (several dongles on one USB 2.0
+> bus need transfers smaller than the fixed 8 × 256 KiB); and it drives the Elonics E4000 tuner
+> (`src/tuners/e4k.rs`, ported from osmocom librtlsdr's `tuner_e4k.c`, so that file is
+> GPL-2.0-or-later, see `LICENSE-GPL-2.0`). Everything else is upstream's.
 
 # rtlsdr-nusb
 
@@ -13,9 +15,11 @@ close/shutdown and sync/async APIs follow
 
 ## Hardware and controls
 
-- RTL2832U with R820T/R820T2/R860-compatible or R828D tuners.
-- R828D input selection and RTL-SDR Blog V4 HF upconversion/filter switching.
-  V4 detection uses USB manufacturer `RTLSDRBlog` and product `Blog V4`.
+- RTL2832U with R820T/R820T2/R860-compatible, R828D or Elonics E4000 tuners.
+- R828D input selection, and the RTL-SDR Blog boards' HF upconversion and
+  input switching: the V4 (R828D, with notch filters) and the V4L (R828S,
+  which answers as an R820T). `Board` names them from the USB manufacturer
+  `RTLSDRBlog` and product `Blog V4` or `Blog V4L`.
 - Frequency, sample rate, automatic/manual tuner gain, ppm correction, GPIO 0
   bias tee (off by default), and I/Q direct sampling on suitably wired boards.
 - Typed raw unsigned eight-bit I/Q blocks or converted `Complex32` samples.
@@ -24,7 +28,7 @@ close/shutdown and sync/async APIs follow
 
 The current range is 900,001–3,200,000 complex samples/s. Rates above 2.4 MS/s
 may drop samples. Tuner operation starts at 28.8 MHz; lower frequencies require
-Blog V4 or a suitable direct-sampling input. The nominal upper limit is
+Blog V4/V4L or a suitable direct-sampling input. The nominal upper limit is
 1.766 GHz, subject to the individual tuner's PLL locking. Manual gain is an
 approximation based on the reference driver's LNA/mixer steps, not librtlsdr's
 gain table. Generic R828D boards currently assume a 28.8 MHz tuner crystal;
@@ -33,8 +37,14 @@ boards with a different tuner crystal are not supported.
 Hardware validation so far: an R820T-family `0bda:2838` receiver on Linux, with
 blocking/async capture, retuning at 100, 433.92 and 1090 MHz, sample rates of
 1.024, 2.048 and 2.4 MS/s, stop/restart, raw IQ and final-owner cleanup.
-R828D/Blog V4, direct sampling and bias power switching need hardware validation.
-Other tuners (E4000, FC0012/13, FC2580) and EEPROM programming are not implemented.
+A Blog V4L was reported working (PR #183). R828D/Blog V4, direct sampling and
+bias power switching need hardware validation.
+E4000 (zero IF): about 52–2200 MHz with a gap where its PLL does not lock
+(1090–1230 MHz on the unit tested; here capped at 1.766 GHz like the others);
+manual gain is librtlsdr's nearest step from -1 to 42 dB; its IF filters
+follow the sample rate. Validated on hardware on Windows (`tests/hardware.rs`, `e4000_p25_bands_gain_and_lock_range`:
+136–870 MHz P25 bands, gain steps, I/Q balance, lock range). Other tuners
+(FC0012/13, FC2580) and EEPROM programming are not implemented.
 No Seify integration is included.
 
 ## Blocking capture
@@ -181,4 +191,7 @@ archive.
 ## Acknowledgment and license
 
 Based on [webrtlsdr](https://github.com/jtarrio/webrtlsdr). Distributed under
-[Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE), except `src/tuners/e4k.rs`, derived from osmocom
+librtlsdr's `tuner_e4k.c` and distributed under
+[GPL-2.0-or-later](LICENSE-GPL-2.0). A build that includes it is therefore
+covered by both: `Apache-2.0 AND GPL-2.0-or-later`.

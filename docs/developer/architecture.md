@@ -1,10 +1,14 @@
-# Trunk Recorder Pro architecture (text version)
+# Architecture
 
-This is the plain-text companion to [architecture.html](architecture.html). It has the same
-content as the interactive page, with every diagram written out as lists and tables, so tools
-and language models can read it directly. Paths are relative to `crates/` unless they start
-with `web/` or `docs/`. Line numbers are left out because they drift; names of types and
-functions are given instead.
+How Trunk Recorder Pro is put together: the crates, the threads, and the path a sample takes from
+the radio to a saved call, with the types and functions at each step. This is the canonical
+text; [architecture.html](architecture.html) is an illustrated version with interactive diagrams,
+which may lag it. Paths are relative to `crates/` unless they start with `web/` or `docs/`. Line
+numbers are left out because they drift; names of types and functions are given instead.
+
+For building, releasing and the code layout see [Development](README.md); for the config file's
+keys, [Configuration](../configuration/README.md); for the interface protocol,
+[api/README.md](../api/README.md).
 
 Contents
 
@@ -38,11 +42,23 @@ Contents
 | Platform | `trunk-web` | The browser build: `WebSession` + RTL-SDR over WebUSB, exported with wasm-bindgen into a Web Worker; and the config rules (`rules.rs`) the interface runs in both builds. | Yes (WebUSB, OPFS) |
 | Protocol | `trunk-recorder-plugin` | The plugin wire protocol (`HostMessage`, `PluginMessage`, `Manifest`, `CallRecord`: the call JSON) and a Rust SDK for plugin authors. Published on crates.io. | SDK only |
 | UI | `web/` | The React interface. Embedded in the `trunk-pro` binary and also runs the browser build. Loads trunk-web's WebAssembly for the config rules (`web/src/rules.ts`). | — |
+| Driver | `rtlsdr-nusb` | Our fork of the RTL-SDR driver (USB transfer sizes), patched in for the whole workspace. | Yes |
+
+`trunk-recorder-plugin` is used by trunk-core, trunk-app and trunk-pro with
+`default-features = false`; its SDK is the feature `sdk`.
 
 The rule that holds this together: **`trunk-core` and `trunk-app` never do I/O.** They take
 samples plus a wall-clock time and return values (events, JSON strings, WAV bytes). The
 platform crates own devices, threads, files and sockets. That is why the same recording logic
 runs in a desktop process and in a Web Worker and gives bit-identical calls on the same capture.
+
+| Crate | Main entry points |
+|---|---|
+| `trunk-core` | `trunk::Engine` (everything), `dsp::Channelizer`, `dsp::c4fm::C4fm`, `dsp::cqpsk::Cqpsk`, `dsp::fm::Nbfm`, `dsp::am::Am`, `dsp::filters` (RRC, windowed-sinc), `p25`, `dmr`, `nxdn`, `smartnet`, `ambe` (AMBE+2 codeword, shared by DMR, NXDN and Phase 2), `bits` (bit fields, CRC-CCITT), `mbe` (vocoders, `mbe::Profile`), `metrics`, `loudness`, `survey::Survey` |
+| `trunk-app` | `Config`, `migrate` (older configs upgraded), `Session`, `Feeder`, `Output`, `protocol` (`ToClient`, `Command`), `stats` (dashboard measurements), `survey::SurveySession`, `filename`, `channels` (conventional CSV), `heard` (codes conventional frequencies carried), `keys` (key sources), `samples` (sample formats → IQ), `log::Record` |
+| `trunk-pro` | `main.rs` (CLI; `tool.rs` + `toolkit.rs`, `snrtool.rs`, `dmrtool.rs`, `nxdntool.rs` analysis tools), `runtime.rs` (`Ctx`, threads), `server.rs` (HTTP + WebSocket), `access.rs`, `sdr.rs` + `radio/` (drivers), `plugins/` (host, store, manage, archive, encode, delay, hold, cli), `interfaces/` (other interfaces: store, serve, cli), `store.rs` (what both stores share), `db/` (the call store: schema, writer, reads, backfill), `spool.rs`, `unlock.rs` (key containers), `statstore.rs`, `monitor.rs` + `platform.rs` (the computer), `survey.rs`, `paths.rs`, `logging.rs` |
+| `trunk-web` | `WebSession`, `WebRtl`, `WebSurvey`, `WebProfiler`; `rules` (the config's rules for the page) |
+| `trunk-recorder-plugin` | `protocol` (`HostMessage`, `PluginMessage`, `Manifest`, `CallRecord`, topics), SDK (`Plugin`, `run`, `CallQueue`) |
 
 ### 1.2 Threads in the desktop process
 
@@ -55,16 +71,34 @@ runs in a desktop process and in a Web Worker and gives bit-identical calls on t
 | `plugin-<id>` + writer + stderr reader | per plugin process | Supervises one plugin child process, feeds its stdin, reads its stdout/stderr. `plugin-hold` keeps what plugin delays hold back. |
 | tokio runtime | pool | The axum web server; one task per WebSocket client, one listener per interface. |
 | `monitor`, `net-probe`, `spotlight` | one each | Samples the computer and plugins every 2 s; TCP connectivity checks every 15 s; the Spotlight check of the recordings folder. |
-| `stats-load`, `stats-store`, `history` | one each | Load/append stats rollups; fill the call list from disk at start. |
-| `survey`, `survey-source-N` | while surveying | The first-run survey and its radio (never with recording). |
+| `stats-load`, `stats-store` | one each | Load/append stats rollups. |
+| `db-writer`, `db-backfill` | one each | The store's one writer; bringing the store up to date with the capture folder. |
+| `recent` | at start | With the store off: fill the live call list from the newest calls on disk. |
+| `clock`, `update-check`, `store-sizes`, `share`, `tune`, `radio-open` | as needed | The clock checks (SNTP and the OS's time service); the daily look for a newer release; the store's sizes; sharing a system with the directory; a gain being tuned; a radio opening under its deadline. |
+| `iq-capture`, `iq-rules`, `iq-send`, `iq-watch`, `iq-N` | while capturing | IQ captures and their rules. |
+| `survey`, `survey-source-N` | while surveying | The first-run survey and its radio (on a spare radio when recording). |
 
 The browser build has no threads: `engine.worker.ts` pulls blocks from `WebRtl::next()` and
 calls `WebSession.push` / `poll` directly, and keeps call files in OPFS.
 
+**Ctx** (`runtime.rs`) is the shared state between the web server and the recorder: the config
+(and its version), the lifecycle, the call store, the plugins and interfaces, the hub, the
+registry, name book and monitor (`Ctx.shared`, so they outlive recordings), the stats history and
+the engine thread's commands. The `hub` is a `tokio::broadcast` channel. Every WebSocket task
+subscribes to it, drops topic messages the client didn't `subscribe` to and control-only messages
+a listen-only connection may not hear, and filters live audio by what it asked to `listen` to.
+
+**Logging** (`logging.rs`) uses the `log` facade with Trunk Recorder's line format. It writes to
+stderr, daily or 100 MB log files, and syslog. What the recorder logs also reaches the browsers as
+`log` lines with their clock time and level: warnings and errors to every connection, the rest
+only while someone watches the `log` topic. The decoder's own lines (`Output::Log`) reach the
+topic from the session instead, so none is sent twice.
+
 ### 1.3 The recorder's lifecycle
 
-`Ctx.lifecycle` (`runtime.rs`) is one `Mutex<Lifecycle>`: `Idle`, `Recording(Runner)`,
-`Surveying(SurveyRunner)` or `Quitting`. Only `Ctx`'s methods change it, each holding the lock
+`Ctx.lifecycle` (`runtime.rs`) is one `Mutex<Lifecycle>`: `recording: Option<Runner>`,
+`survey: Option<SurveyRunner>` and `quitting` (a survey can run beside recording, on a spare
+radio no source uses). Only `Ctx`'s methods change it, each holding the lock
 throughout (`begin_recording`, `begin_survey`, `with_radios` for profiling a source,
 `stop_recording`, `stop_survey`, `quit`), so two starts never interleave and nothing starts once
 quitting. The phase the browsers see (`state`: idle, starting, running, stopping) is the engine
@@ -76,6 +110,17 @@ thread), `Topics` (what the browsers watch), `Talkgroups` (a talkgroup file chan
 key container unlocked or locked). The plugin host is cloned once per loop
 (`Plugins::host()`), so a plugin reload never waits on the engine.
 
+**Stop.** `Runner::stop` sets a flag and joins every thread. Each dsp thread first decodes what
+its source had already queued; the engine then joins them, polls, runs `session.finish()`,
+delivers the last calls, joins the finish threads, gives each plugin 10 s from when it has read
+`shutdown` (after up to 30 s to work through its queue), and saves band plans, aliases, AutoTune
+scores and the radio registry. Ctrl-C, SIGTERM and the interface's **Quit** all go through this
+path.
+
+**Survey** (`trunk-pro/src/survey.rs`, `trunk-core/src/survey.rs`) has the same shape: one source
+thread (`runtime::spawn_source`) retuned on request, and one survey thread stepping through the
+bands.
+
 ---
 
 ## 2. How samples flow from the SDR to a saved call
@@ -83,8 +128,8 @@ key container unlocked or locked). The plugin host is cloned once per loop
 Stages in order. Thread in brackets.
 
 1. **SDR driver** [`source-N`]. Each driver is a `Radio` (`sdr.rs`: `BACKOFF`, `retune_to`,
-   `stream_once`), run by one loop, `sdr::run_with`, that reopens it after an error (RTL 2 s, the
-   others 3 s). `runtime::spawn_source` starts a source this way for recording, the survey and
+   `stream_once`), run by one loop, `sdr::run_with`, that reopens it after an error (RTL-SDR and
+   HackRF 2 s, the others 3 s). `runtime::spawn_source` starts a source this way for recording, the survey and
    profiling. Produces a block of IQ:
    - RTL-SDR (`radio/rtl.rs`, pure-Rust `rtlsdr-nusb`, our fork in `crates/rtlsdr-nusb` with
      settable transfers, `RxBuffers`): by default 16 KiB USB transfers (8,192 IQ samples, about
@@ -100,6 +145,11 @@ Stages in order. Thread in brackets.
      USB link speed (`radio/usb_speed.rs`); doubles a B2xx's master clock when UHD would run it at the rate.
    - Airspy (`radio/airspy.rs`): whatever libairspy hands its callback; by default real samples
      (`Block::Real16`), turned into IQ by the `Inbox` on the thread that takes them.
+   - HydraSDR (`radio/airspy.rs` too, `Lib::Hydrasdr`; libhydrasdr is libairspy's fork, and what
+     only it has, its device-info block and one gain call, is in `radio/airspy/hydrasdr.rs`):
+     libhydrasdr 1.1's float IQ (`Block::Iq`), converted and decimated on its own thread, apart
+     from the one draining the USB. Its `dropped_samples` is a running total; the driver passes on
+     the difference per buffer.
 
    What every radio shares lives in `sdr.rs` and `radio/mod.rs`. A radio sends through a `Sink`,
    which never blocks a live radio: if the queue to the decoding thread is full, the block is
@@ -115,6 +165,9 @@ Stages in order. Thread in brackets.
    `CAP_SYS_NICE`; a refusal is logged once with the `setcap` fix). `StreamCheck` watches raw-byte
    radios (RTL-SDR, HackRF) for a stuck stream, the same bytes repeating or a rate over 1.5× the
    nominal for 2 s, and reopens. A transfer refused for memory names Linux's `usbfs_memory_mb`.
+   - bladeRF (`radio/bladerf.rs`, libbladeRF loaded at run time): samples come through the
+     synchronous interface with metadata, so overruns show as gaps in the sample timestamps and are
+     reported as dropped.
    - SoapySDR (`radio/soapy.rs`): about 10 ms per block, float IQ.
    - File (`runtime::run_file`): 32,768 samples per chunk, paced to real time or as fast as the
      engine takes them. Captures played as fast as they go keep within 100 ms of air of each other
@@ -218,11 +271,12 @@ So each extra channel costs an M-point inverse FFT, not another full-rate filter
 | NXDN96 | 6,250 Hz |
 | SmartNet control channel | 5,000 Hz |
 | SmartNet analog voice | 7,000 Hz |
-| Conventional FM / AM | 7,000 Hz, widened or narrowed with the channel's `bandwidthKhz` |
+| Conventional FM / AM / auto | 7,000 Hz, widened or narrowed with the channel's `bandwidthKhz` (`AnalogTuning::head_cutoff_hz`: its passband + 1.5 kHz) |
 
 A trunked voice channel opens at `VoiceKind::cutoff_hz()`; a conventional channel's widths
 (detector band, head cutoff, carrier meter) are worked out once per frequency by
-`ChannelShape::of`, a digital one's head as a trunked channel of its kind.
+`ChannelShape::of`, a digital one's head as a trunked channel of its kind, an auto one's as its
+analog receiver's (the digital receivers' matched filters take the wider band).
 
 **Pre-roll.** Every block's full spectrum is kept in a ring holding
 `max(prerollS, conventional pre-roll 0.3 s, 0.1 s)` of history (1 s by default; about 196
@@ -400,6 +454,24 @@ learned and left out (`LineWatch`).
    call lifecycle (a call opens on energy or a tone and ends with its carrier), not a grant source
    for `CallManager`.
 
+
+**Modes.** A channel's `ConvMode` is the decoder it opens (`ConvMode::kind`), and what a row of
+it can say follows from that decoder's receivers (`VoiceKind::receivers`): analog or not, an FM
+receiver (tones), an analog one (bandwidth, `demod`), a talkgroup to match, a slot
+(`ConvMode::slotted`), and what tells its rows apart (`code_name`; none for AM and auto). Setup
+asks the same methods through trunk-web (`convModes`), and reads a row's code with
+`Access::parse` (`accessParse`).
+
+**Auto** (`voice::Auto`, mode `auto`): the five receivers decode the same IQ and their outputs
+are held. Each output scores by `TrackerOut::evidence`: a voice frame 1, a checked message (talker,
+cipher, position…) 9. A digital receiver reaching 18 is settled on (10 when the channel closes
+first); otherwise analog is, 2 s after the channel opened. Then the settled receiver's held
+outputs go on, the others are dropped, every `VoiceDecoder` call goes to it alone, and the call's
+start is when that receiver's voice began. Until then `carrier()` is the FM receiver's;
+afterwards the settled one's, or the carrier meter for a digital one. The channel reports its mode
+as `auto` until it settles (`Chan::mode`); an undecided channel that closes is flushed so a
+short key-up still settles.
+
 ### 4.8 Vocoders and saving
 
 - `mbe/`: IMBE 7200×4400 (P25 Phase 1) and AMBE+2 3600×2450 (Phase 2, DMR, NXDN), ported from
@@ -424,11 +496,23 @@ learned and left out (`LineWatch`).
   error. Voice goes in one way, `Recorded::push(samples, frames, now)`, which returns what the
   voice newly carried (section 4.9); `Recorded::trim` leaves out what the saved call won't have,
   moving its frames, tones and sources with the audio.
-- `record::save_call`: drops transmissions shorter than `minTransmissionS` and encrypted ones
-  that weren't decrypted,
-  refuses too-short or silent calls, normalises loudness (−12 dBFS speech, about −14 LUFS; gain
-  clamped −18..+24 dB; look-ahead limiter at −2.5 dBFS), writes the call JSON. `wav.rs`
-  writes 16-bit mono 8 kHz.
+
+**Saving a call.** `record::save_call` turns a finished call (a `Held`) into a `Concluded`:
+- it leaves out transmissions shorter than `minTransmissionS`, and encrypted ones that weren't
+  decrypted (`Transmissions` marks each), trimming the vocoder frames and error list to match
+  (`CallFrames::keep`);
+- it refuses a call that is too short or silent (`SaveRules`), except an encrypted one when
+  `recordEncrypted` keeps it;
+- it normalises loudness (`loudness.rs`, −12 dBFS speech, about −14 LUFS; gain clamped
+  −18..+24 dB; look-ahead limiter at −2.5 dBFS; `normalizeAudio`) and applies the digital /
+  analog level;
+- it makes the call's record (`record::call_record`): a `CallRecord`, the plugin SDK's type, with
+  Trunk Recorder's fields plus `signal`, `noise`, `snr` from `Reception`, `clean_voice_pct`,
+  `errorList`, `freq_error`. The same typed record goes to the file, the call store and the
+  plugins; the finish thread serialises it once (`CallRecord::to_json`), byte for byte as Trunk
+  Recorder's files have it (flags as 0 / 1).
+
+The engine only gathers the system's rules and names for it. `wav.rs` writes 16-bit mono 8 kHz.
 
 ### 4.9 In-band signalling (`dsp/inband/`, `trunk/inband.rs`)
 
@@ -465,6 +549,33 @@ and, for a signal, the event feed (`MonitorEvent::TonePattern`).
 ---
 
 ## 5. How trunking messages are processed
+
+`trunk::Engine` owns everything above the radio. It is a handle (clones share one engine), so
+each source can be fed from a thread of its own while another reads events and status. Its config
+is an `EngineConfig`: the sources (kept once, as one `Arc<[SourceConfig]>`), the systems
+(`EngineConfig.systems`, trunked and conventional), the conventional channels, and the settings
+every system shares (pre-roll, `maxRecorders`, the vocoder). Its parts:
+
+- **`Radio`** is shared by all systems: the sources, each behind a lock of its own (`SourceRx`),
+  the recordings and the recorder pool (section 6.1).
+- **`System`** is one per system, trunked or conventional (a `SystemConfig`): what it decides
+  about its calls (talkgroups, call and save rules, unit names, keys), kept once for all its
+  sites, its radios' talker aliases, and its saved calls. A trunked system lists its sites
+  (`SystemConfig::sites`); a conventional one has none, and its channels name it
+  (`ConvChannel::system`). `Engine::set_talkgroups` and `set_keys` change a system's for every
+  site at once.
+- **`Trunk`** is one per site of a trunked system (a `SiteConfig`, which holds only the site's
+  own fields: its name, control channels, receivers, site lock, protocol). Its system's rules are
+  handed to it where it needs them, never copied. It knows nothing of any protocol: its
+  `ControlChannel` (`control.rs`) decodes that, and the `Trunk` does what every protocol shares:
+  listening as the protocol's `CarrierPlan` says, the site lock (`identity.rs`), AutoTune, the
+  site's clock, its `CallManager` (`calls.rs`, à la Trunk Recorder's `monitor_systems.cc`;
+  standing patches in `patches.rs`), and the adjacent sites (`Neighbours` in `message.rs`, shared
+  with the survey).
+- **`Conventional`** (`conventional.rs`) covers energy-detected channels and their calls
+  (section 4.7).
+- **`MultiSite`** (`multisite.rs`) holds the copies of one call heard on several sites of one
+  system (section 6.6).
 
 ### 5.1 The path
 
@@ -504,9 +615,13 @@ channel, its source, head, clock and AutoTune state) or `Watching(Vec<Carrier>)`
 | SmartNet | one, hunted | `Fsk2` → OSW framer → `smartnet::Parser` | System ID, site |
 | DMR | every carrier, watched | `C4fm::dmr` per carrier → bursts → CSBK / LC | none (colour code gate) |
 | NXDN | every carrier, watched | `C4fm` (NXDN) → frames → CAC / SACCH → layer 3 | Type-C: System ID, site; Type-D: none |
+| EDACS | every carrier of the site, watched | `edacs::site::Site`: the control channel wherever it is, and each LCN's frequency checked (and learned) by which carrier keys when a call is assigned it | site |
 
 `CarrierPlan::Hunt` (P25, SmartNet) listens to one control channel at a time and moves through
-the list. `CarrierPlan::Watch` (DMR, NXDN) opens a head on every listed carrier at once.
+the list. `CarrierPlan::Watch` (DMR, NXDN, EDACS) opens a head on every listed carrier at once. The
+watched protocols each implement `WatchedSite` (`control.rs`), and one generic `Watched<S>` is
+their `ControlChannel`; `SystemKind::info` (`trunk-app`'s config, generated into
+`web/src/systemKinds.gen.ts`) says what each kind of system is.
 
 ### 5.3 `Message` and `MessageType`
 
@@ -612,6 +727,37 @@ protocol says whether it measures one.
 (SmartNet) expire; a patch with one member left is dropped. `members_of(tg)` fills
 `Call.patched_talkgroups`.
 
+### 5.8 Adding a protocol
+
+A new trunking protocol touches these places (NXDN, the latest, is the
+example to follow):
+
+1. **Decoding:** a module of its own (like `nxdn/`): receiver, framer, and a
+   parser that produces `trunk::Message`s.
+2. **Its control channel:** a `ControlChannel` implementation in
+   `control.rs` (`name`, `plan`, `push`, `counts`, `blocks`, `offset_hz`,
+   `modulation`, `status`, `quality`; the rest have defaults), or, for a
+   protocol that watches every carrier of its site, a `WatchedSite`
+   implementation (DMR, NXDN and EDACS do). It sets the `CarrierPlan` and the
+   identity fields its site lock can use. If the dashboard shows more of
+   it, a `ProtocolStatus` variant, its JSON in the `decodeDetail` sites
+   (`session::decode_sites`), and its type in `protocol.ts`.
+3. **Wiring it in:** a `Protocol` variant, and its line in `control::build`.
+4. **Its voice:** if the voice is new, a `Voice` variant (`calls.rs`, which
+   its parser sets on a grant's `Message.voice`), a `VoiceKind` (its arm in
+   `Voice::kind`, its width in `VoiceKind::cutoff_hz`), its `VoiceDecoder`,
+   and its line in `voice::build`. The compiler then points at each `match`
+   on `Voice` that needs an arm (`Voice::slot`, `decryptable`, the frame
+   capture in `record.rs`, conventional's `heard_code`).
+5. **Its site's identity:** if the site states facts no protocol states, an
+   `IdField` for each.
+6. **The config:** a `SystemKind` (`type`) in `trunk-app`'s config and Setup
+   (its `SystemKind::info` line, which is generated into
+   `web/src/systemKinds.gen.ts`), its arm in `Config::engine_config`, and its
+   `kind` in `Config::call_systems` (what plugins see).
+
+The call manager, multi-site, recording and plugins don't change.
+
 ---
 
 ## 6. How recorders are managed and assigned
@@ -680,6 +826,7 @@ times out and is not retried. The talkgroup CSV `Priority` column only matters w
 | `Nxdn(rate)` | `C4fm` (NXDN) → `NxdnVoice` → AMBE+2 |
 | `Analog` | `Nbfm` (its unit IDs and tones are found with the call's: section 4.9) |
 | `Am` | `Am` (conventional only) |
+| `Auto` | Each of `VoiceKind::Auto.receivers()` (`Analog`, `Fdma`, `Dmr`, `Nxdn(N48)`, `Nxdn(N96)`) on the same IQ, until one is settled on (section 4.7) |
 
 ### 6.4 While recording
 
@@ -688,7 +835,7 @@ queued in `radio.pending`, then applied after the block (`apply_pending`), at th
 control channel clock, so a voice channel never borrows a `Trunk` mutably. Each output finds its
 site, recording and call once, then:
 - `Audio` / `AnalogAudio` → appended to the `Recording`, `last_audio_s` moved, live
-  `Event::Audio` if this copy leads its multi-site conversation;
+  `Event::Audio` if this site leads the talkgroup's live audio (`MultiSite::audio_lead`);
 - `Info` → the source unit and its flags (merged into the source talking when it names none), the
   call's encrypted / emergency latches → `CallUpdate`;
 - `WrongKey` → a warning note, once a key;
@@ -724,10 +871,13 @@ removed and its number returned to `free_nums`.
 `trunk/multisite.rs`. Sites are twins when they are sites of one system (one `SystemConfig`'s
 `sites`); nothing is grouped from what the control channels announce. A call that starts on a twin
 site with the same talkgroup (or, unit to unit, the same radio called) within 3 s
-(`Span::starts_with`) is linked into one conversation, from the first grant (`Call::twin` marks
-the later copies). A conversation has one copy from each site (`MultiSite::link`), so copies never
-chain one into the next. **Every copy is recorded.** Live audio comes from one copy until it has
-been quiet 0.5 s. When the last copy ends, they're tried best first: the talkgroup's preferred site
+(`Span::starts_with`) is linked into one conversation, from the first grant, against the copies
+`MultiSite` already has. A conversation has one copy from each site (`Conversation::takes`), so copies never
+chain one into the next. Every call goes through `MultiSite`, which alone tells it to the world:
+`CallStart` when the first copy begins, `CallEnd` when the last ends, `CallUpdate` when what's told changes, all
+under the first copy's id and as one view of its copies (`Conversation::view`). `CopyStart` / `CopyEnd`
+are each site's own, for the log and voice channel counts. **Every copy is recorded.** Live audio comes from one site per talkgroup until it has
+been quiet 0.5 s, whether or not the sites' calls are linked. When the last copy ends, they're tried best first: the talkgroup's preferred site
 if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC
 errors, then earliest start. Each is saved unless one saved holds it (`Kept::holds`: another site,
 its whole `Span`, the same talkers where known, at least as much clean voice give or take 90 %);
@@ -833,7 +983,8 @@ copy's start (`SaveContext::first_s`).
 
 A plugin is a **separate executable** that only watches; nothing it does changes what is
 recorded. It speaks JSON lines: `HostMessage` on its stdin, `PluginMessage` on its stdout, and
-anything on stderr becomes a log line.
+anything on stderr becomes a log line. Lines are read lossily (bytes that aren't UTF-8 become
+U+FFFD), so a stray byte never stops the reading.
 
 - Location: `<data>/plugins/<id>/<id>[.exe]`, or `path` in the plugin's config entry.
 - Working folder: `<data>/plugin-data/<id>/` (its state, e.g. `queue.jsonl`).
@@ -864,6 +1015,10 @@ plugin is handed a call's files as the finish pool wrote them (`CallFiles`); the
 encodes nothing itself. A call decrypted with the recorder's keys goes only to plugins with
 `shareDecrypted`.
 
+**Delays** (`delay.rs`, `hold.rs`; `pluginDelays`). What a plugin is to have late goes to the
+hold instead of its queue, and is given to it when due (a finished call is kept on disk until
+then, across restarts).
+
 ### 8.3 Conversation
 
 1. Host → `hello` { api, host, config, systems [ {index, short_name, kind, name?, fcc? { "<Hz>": {call_sign, name?} }, fcc_call_sign?, fcc_name?, sites? [ {name} ], config, settings} ],
@@ -872,8 +1027,9 @@ encodes nothing itself. A call decrypted with the recorder's keys goes only to p
    plugin's own settings as a system's `override` changes them. A plugin asks for recorded
    calls with `calls.query` (answered `calls`, by request number), not by opening the store.
 2. Plugin → `ready` (or `status: error` and exit 78 for a config error).
-3. Host → events for subscribed topics: `call.start`, `call.end`, `call.concluded` (with
-   json / wav / m4a paths), `unit`, `audio`, `status` (every 5 s).
+3. Host → events for subscribed topics: `call.start`, `call.update`, `call.end`, `call.concluded`
+   (with json / wav / m4a paths), `unit`, `audio`, `voice`, `status` (every 5 s), `totals` (every
+   10 s), `tone_pattern` and `log`.
 4. Plugin → `log`, `status` { ok | warning | error }, `metrics`, and `call.result` { path,
    ok | skipped | failed, message, url } for each `call.concluded`.
 5. Host → `shutdown` { grace_s } behind whatever is queued; stdin closes after it. The plugin
@@ -884,7 +1040,9 @@ encodes nothing itself. A call decrypted with the recorder's keys goes only to p
 - Restart with back-off 1 s doubling to 60 s (reset after a run longer than 60 s).
 - Exit code 78 (config error): not restarted, and calls stop waiting on it.
 - Changed settings restart the plugins; new processes start once old ones have exited (they share
-  data folders); events wait meanwhile.
+  data folders); events wait meanwhile. The engine thread takes the host once a turn
+  (`Plugins::host`, an `Arc` clone), so a reload never waits on it; an old host is shut down once
+  nothing holds it.
 
 ### 8.5 Archive
 
@@ -896,11 +1054,41 @@ only a `failed` keeps the files (with `archiveFilesOnFailure`). An unsettled cal
 after 1 h. With no takers, `archive::plan` writes only what the Keep rules keep, and the call
 settles at once.
 
+Each `ok` times the delivery (`timing.rs`, #61): the call's age at delivery, split into held,
+waiting and the plugin's own upload (`took_ms`, when it says), per plugin as running totals
+(`plg/<id>/ageMs`, `heldMs`, `waitMs`, `uploadMs`, `delivered`, `uploads`) and each tick's longest
+(`age`, `upload`). It's the same for every plugin, so none measures it.
+
+**WAV only when needed.** A call's `Plan` (`plugins::plan`) is the one place that says which of
+its files are written. The WAV goes to the encoder on stdin (afconvert gets a temporary file), so
+it's written only when it's kept, a plugin takes WAV, or encoding failed; `call.concluded`'s `wav`
+path may not exist for a plugin that asked for M4A.
+
+**Folders** (`folder.rs`). Every file of a call goes into the recordings folder (or the spool)
+through its `Folder`: `write`, `prepare` (an encoder's output) and `move_in` (out of the spool).
+Each is also checked with a file of its own (`probe`: written, synced, deleted) at startup and when
+its path changes (`apply_config`, on a thread of its own, since a network share can hang); after
+that the calls' own writes are the check, and the first one that works says it's back. Checks and
+writes report to the same state, so the first failure is logged once with why (an io::Error turned
+into permission and who owns the folder, macOS privacy, read-only, full, not a folder, a drive not
+mounted) and becomes a `folderUnwritable` event; the files not written are counted (logged at most
+once a minute); and `folderWritable` is sent when it takes files again. The folder is made only
+when it's never been there at that path: a drive that goes isn't replaced by a folder on the disk
+beneath. A call the spool can't take goes to the recordings folder. `host.platform.folders`
+carries the state (the dashboard's light, Setup's field).
+
 ### 8.6 RAM spool
 
-With `recording.ramSpool.enabled`, files that will be deleted once the plugins are done go to a
-RAM disk (macOS: one made with `hdiutil`; Linux: `/dev/shm`) to save SSD wear. No room → the
-recordings folder. Files older than 2 h are moved out.
+With `recording.ramSpool.enabled` (`spool.rs`), files that will be deleted once the plugins are
+done (and the .m4a made only for them) are written to a RAM disk instead, to save SSD wear: on
+macOS one the app makes with `hdiutil` (mounted `nobrowse` at `<data>/spool`, kept across restarts
+so queued retries still find their files), on Linux a folder in /dev/shm. Kept files go to the
+recordings folder directly. `Archive` moves a failed upload's files there; the monitor moves
+anything older than 2 h there too, and reports the spool's room (a `spool` disk row, `spoolLow` /
+`spoolFull` / `spoolRecovered` events). With no room, calls go to the recordings folder. Gone
+while running (Linux: systemd's `RemoveIPC` at logout) it's made again (`Spool::revive`), with a
+`spoolRemoved` event and the row's `removed` / `missing`. Turned off, the spool is emptied into
+the recordings folder and removed.
 
 ### 8.7 Store
 
@@ -926,20 +1114,9 @@ result from every copy. The UI shows one row per plugin with the worst state and
 
 ### 8.9 SDK (`trunk-recorder-plugin`, feature `sdk`)
 
-- `CallRecord`: the call JSON as one typed record. The recorder makes one per call
-  (`record::call_record`), writes the `.json` from it (`CallRecord::to_json`, byte for byte as
-  the files always were) and hands the same record to the history and the plugins. Every field
-  the recorder writes is named; others are kept in `extra`; flags are written 0/1 and read as
-  0/1 or booleans.
-- `Plugin` trait: associated `Config` and `SystemConfig` types (serde + schemars), `manifest()`,
-  `start(Host, Setup)` (`Setup` has each system's settings, by index or `system_named`), optional
-  `call_start`, `call_end`, `call_concluded`, `unit`, `audio`, `status`, `shutdown`. `run::<P>()`
-  handles `--describe`, `--version`, the handshake and exit codes.
-- `CallQueue`: worker threads (default 2, per lane: a queue per server), retries after 10 s, 60 s,
-  300 s, 900 s, capacity 10,000, endpoint health (Up / Degraded / Down), metrics every 5–30 s, and
-  `queue.jsonl` persistence across restarts.
-- `TalkgroupFilter` (allow / deny globs), `schema.rs` (form hints such as `x-secret`,
-  `x-system`, `x-required`), `testing.rs` (drive a plugin with messages; HTTP mock server).
+The Rust SDK (`Plugin`, `run`, `CallQueue`, `TalkgroupFilter`, the form hints in `schema.rs`,
+`testing.rs`) is described for plugin authors in [Writing plugins](../plugins/writing-plugins.md),
+and every type on [docs.rs](https://docs.rs/trunk-recorder-plugin).
 
 ---
 
@@ -961,8 +1138,8 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `Tuned` | `center_hz` (survey only) |
 
 **`EngineCmd`** (`trunk-pro/src/runtime.rs`): what the engine thread is told, on its one channel:
-`Source(SourceMsg)` (an error or end), `Topics(Topics)`, `Talkgroups { short_name, csv }`,
-`Keys { short_name, ring }`.
+`Source(SourceMsg)` (an error or end), `Topics(Topics)`, `Talkgroups { system: SystemId, rows }`,
+`Keys { system: SystemId, ring }` (and `Talkgroup`, `UnitNames`, …).
 
 **`Symbol`** (`dsp/mod.rs`): `dibit: u8`, `sample: f64` (channel-sample instant),
 `rel_hi: f32`, `rel_lo: f32` (bit reliabilities; negative = hard only).
@@ -1030,7 +1207,6 @@ call JSON + WAV on disk → `HostMessage::CallConcluded` → plugin → `PluginM
 | `id` | `CallId` (u32) | one sequence for all systems |
 | `site` | `Option<u16>` | engine site index; none for a conventional call |
 | `system` | u16 | engine system index (trunked, then conventional) |
-| `twin` | bool | multi-site: a copy of a call another site of its system had first |
 | `talkgroup` | u32 | |
 | `freq_hz` | u64 | |
 | `voice` | `Voice` | what its voice is on |
@@ -1101,19 +1277,22 @@ wacn)>`, `nac: Option<u16>`. **`ChannelQuality`**: `sep`, `phase_err_deg` (what
 | `Message` | `site`, `msg: Message` | every decoded control message |
 | `Note` | `system`, `site: Option<u16>`, `level` (Info / Warning), `text` | log-worthy note |
 | `CallStart` / `CallUpdate` / `CallEnd` | `Call` | call lifecycle |
+| `CopyStart` / `CopyEnd` | `Call` | one site's copy of a call beginning or ending |
 | `Audio` | `call_id`, `system`, `talkgroup`, `samples: Vec<f32>`, `decrypted` | live audio, 8 kHz |
 | `UnitAlias` | `system`, `unit`, `alias`, `talkgroup` | talker alias heard |
 | `UnitPosition` | `system`, `unit`, `lat`, `lon`, `talkgroup` | a radio on a call gave a new GPS position |
+| `CallSign` | `system`, `freq_hz`, `call_sign` | a frequency is identified by an FCC call sign |
+| `TonePattern` | `PatternHeard` | a call's tones made a pattern |
 | `Concluded` | `Concluded` | a call to save |
-| `NotSaved` | `Call` | too short / silent |
+| `NotSaved` | `record::Unsaved` (`call`, `why`, …) | too short / silent |
 | `Duplicate` | `call`, `kept` | another site's copy kept |
 | `ConvSkipped` | `freq_hz`, `code` | conventional traffic no row took |
 
 Conventional channels report with these same events.
 
 **`Status`**: `now_s`, `sites: Vec<SiteStatus>`, `active_calls`, `recording`,
-`channels_open`, `conventional_open`, `calls_concluded`, `sources: Vec<SourceTune
-{ error_ppm, applied_ppm, seeded }>`.
+`channels_open`, `conventional_open`, `calls_concluded`, `systems: Vec<SystemStatus>`,
+`sources: Vec<SourceReport { error_ppm, applied_ppm, seeded, voice_channels }>`.
 
 **`SiteStatus`**: `site`, `system`, `short_name`, `site_name`, `now_s`, `control_channel_hz`,
 `identity`, `good`, `bad`, `modulation`, `active_calls`, `recording`, `calls_concluded`,
@@ -1126,6 +1305,21 @@ of each site; `adjacent`, the DMR and NXDN detail and `patches` go out in `decod
 `quality: ChannelQuality`, `calls`.
 
 ### 9.5 Session output (`trunk-app/src/session.rs`)
+
+`Session` wraps the `Engine` and is the only thing the recorder, desktop or browser, talks to (the
+`replay` CLI too: a headless `Session` over file sources):
+
+- `feeder(i)` hands out source `i`'s `Feeder`, which the desktop app's `dsp-N` thread pushes
+  samples into (`Feeder::push` / `push_iq`; `idle` fills a quiet spell with silence). `push` /
+  `push_iq` feed samples from the caller's own thread (the browser build). `source_error` /
+  `source_ended` report source trouble.
+- `poll(now_ms, &mut Vec<Output>)` drains the engine's events and turns them into `Output`s
+  (below); `finish(&mut out)` ends every call (stop / end of input).
+- `set_talkgroups` applies a system's talkgroup file edited while recording; `set_keys` its keys.
+  `attach` hands it the platform's `stats::Shared` (registry, `NameBook` and monitor). A
+  `radioQuery` is answered by `Shared::radio_query`, named from the `NameBook`, which the session
+  keeps as its engine has the talkgroups; both builds answer this way.
+- Its persistence hooks are in section 10.7.
 
 **`Output`**:
 
@@ -1145,58 +1339,31 @@ tag, encrypted, freq_hz }>`, `body: Body` (`Text`, `Recording`, `NotRecording`, 
 
 ### 9.6 Call JSON (`CallRecord`, made by `record::call_record`)
 
-Trunk Recorder's keys plus reception figures, in this order: `call_num`, `freq`,
-`freq_error`, `signal`, `noise`, `snr`, `clean_voice_pct`, `source_num` (always 0),
-`recorder_num`, `tdma_slot`, `phase2_tdma`, `start_time`, `stop_time`, `start_time_ms`,
-`stop_time_ms`, `emergency`, `priority`, `mode`, `duplex`, `encrypted`, `algid`, `key_id` (−1 if
-none), `decrypted`, `call_length`, `call_length_ms`, `talkgroup`, `talkgroup_ota`
-(conventional P25 / DMR / NXDN calls whose air named a talkgroup; this recorder's addition, absent
-otherwise), `talkgroup_tag`,
-`talkgroup_description`, `talkgroup_group_tag`, `talkgroup_group`, `color_code` (−1 if none),
-`ran` (−1 if none), `tone_mode`, `tone_detected`, `tone_confidence`, `audio_type` (analog |
-digital tdma | digital), `short_name`, `site` (the site's name; none for conventional),
-`patched_talkgroups` (only when more than one), `freqList` [{freq, time, pos, len, error_count,
-spike_count}], `errorList` [{pos, len, frames, error_count, bad_frames, max_frame_errors}],
-`srcList` [{src, time, pos, emergency, encrypted, duplex, mode, priority, signal_system, tag,
-tag_ota, lat?, lon?}] (each source's own flags: what its transmission said of itself). Flags are
-written 0/1; levels to a tenth of a dB (null when not measured). The fields are `CallRecord`'s,
-in its order: the finisher writes `<rel>.json` from it once (`CallRecord::to_json`).
+The fields are `CallRecord`'s, in its order: the finisher writes `<rel>.json` from it once
+(`CallRecord::to_json`), flags as 0/1. Every field is described in
+[The call JSON](../guides/recordings.md#the-call-json).
 
 ### 9.7 Plugin protocol (`trunk-recorder-plugin/src/protocol.rs`)
 
-Constants: `API_VERSION` = 1, `EXIT_CONFIG` = 78.
-
-**`Manifest`**: `id`, `name`, `version`, `description`, `api`, `subscribe`, `audio_formats`,
-`config` (JSON Schema), `system_config` (JSON Schema), `homepage`, `repository`, `authors`,
-`license`.
-
-**`HostMessage`** (tag `type`):
-
-| `type` | Payload fields |
-|---|---|
-| `hello` | `api`, `host { name, version }`, `config`, `systems: [SystemInfo { index, short_name, kind, name, fcc (by frequency), fcc_call_sign / fcc_name (the one that names it), sites: [SiteInfo { name }], config, settings }]` (name, FCC fields and sites left out when empty), `capture_dir`, `data_dir`, `store?` (the call store's absolute path, left out when the store didn't open; open it read-only, WAL, read `schema_version` first, never write; remote plugins use the HTTP API), `audio_formats` |
-| `call.start`, `call.end` | once per call, from its first copy: `CallInfo { id, system, short_name, site, talkgroup, talkgroup_ota, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources: [CallSource { unit, time, emergency, encrypted, duplex, packet, priority }], patched_talkgroups }` |
-| `call.concluded` | `path`, `system`, `call: CallRecord` (the call JSON), `files { json, wav, m4a }` |
-| `unit` | `system`, `short_name`, `site`, `kind` (registration, deregistration, affiliation, acknowledge, location, data_grant, answer_request, call_alert, emergency_alarm), `unit`, `talkgroup`, `emergency`, `time` |
-| `audio` | `call_id`, `system`, `short_name`, `talkgroup`, `sample_rate`, `pcm` (base64 i16 LE) |
-| `status` | `time`, `systems [{ index, short_name, site_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]` (one entry per site; the identity fields once the control channel has stated them) |
-| `shutdown` | `grace_s` |
-
-**`PluginMessage`** (tag `type`): `ready`; `log { level, message }`; `status { state: ok |
-warning | error, message }`; `call.result { path, outcome: ok | skipped | failed, message, url }`;
-`metrics { queued, retrying, inFlight, retries, bytesSent, latencyMs, lastOk, lastError,
-lastErrorText, endpoints [{ name, state, latencyMs, lastOk, lastError }], extra }` (camelCase,
-unlike the other messages).
+`HostMessage` (host → plugin) and `PluginMessage` (plugin → host), both tagged by `type`, and the
+`Manifest` a plugin prints for `--describe`; `API_VERSION` = 1, `EXIT_CONFIG` = 78. Every message
+and field is in [Writing plugins](../plugins/writing-plugins.md#how-a-plugin-runs) and on
+[docs.rs](https://docs.rs/trunk-recorder-plugin).
 
 ---
 
 ## 10. The configuration file
 
-### 10.1 Where it is
+Every key, its default and what it does is in [Configuration](../configuration/README.md):
+[sources](../configuration/sources.md), [trunked systems](../configuration/systems.md),
+[conventional systems](../configuration/conventional.md), [recording](../configuration/recording.md),
+[server and log](../configuration/server-and-log.md) and [plugins](../configuration/plugins.md).
+This section is how the code reads it, turns it into the engine's config, checks it and keeps what
+it learns. The command-line flags that override it for one run are in
+[Command line](../command-line.md#running-the-app-serve).
 
-- macOS `~/Library/Application Support/trunk-pro/config.json`; Windows `%APPDATA%\trunk-pro\`;
-  Linux `$XDG_CONFIG_HOME/trunk-pro/` or `~/.config/trunk-pro/`; Docker
-  `/data/config/trunk-pro/config.json`; browser `localStorage["trp.config"]`.
+### 10.1 Reading and saving it
+
 - `--config file.json` picks another file. Its folder becomes the data folder, holding every
   companion file, so two configs in different folders share nothing.
 - Versioned: `Ctx.config_version` goes up by one at every change (`Ctx::config_changed`, which
@@ -1204,11 +1371,12 @@ unlike the other messages).
   sends the whole config with the version it was edited from; one edited from an older version
   is refused (`configSaved` with an `error`), so another browser's change is never saved over.
   Saved through `write_atomic` (temporary file, `sync_all`, rename).
-- A system's talkgroup file (trunked or conventional) is not in it: `<shortName>.talkgroups.csv`
-  beside it (`config::talkgroups_path`; `TalkgroupFiles` by short name), written by
-  `setTalkgroups` and taken by a recording at once (`EngineCmd::Talkgroups`). An older config's
+- A system's talkgroups (trunked or conventional) are not in it: they are rows in the store
+  (`NameLists`, by `SystemId`), replaced by `setTalkgroups` and taken by a recording at once
+  (`EngineCmd::Talkgroups`). A `<shortName>.talkgroups.csv` beside it is only imported once
+  (`talkgroups_path`, migration). An older config's
   `talkgroupsCsv` / `talkgroupsName` are moved out into those files before it is read, by every
-  reader (`Config::load` → `migrate::move_talkgroups`). The browser keeps them in
+  reader (`Config::load` → `migrate::move_files_out`, which writes an older config's `unitNames.csv` out beside it too; `migrate::files_into_store` then takes both into the store). The browser keeps them in
   `localStorage["trp.talkgroups"]`.
 - Every upgrade of an older config is in `migrate.rs` (`migrate::config`, run by
   `Config::from_value`: key files named by systems, interfaces as a list and `server.home`, each
@@ -1221,64 +1389,10 @@ unlike the other messages).
   channel `mode`…): each is declared once by the `choice!` macro (`trunk-app/src/choice.rs`) with
   its names, read in any case (`"P25"`, `"QPSK"`), "" meaning the default. A source's `type` is the
   tag of `Source`, put in its own case by `Config::from_value` before it is read.
+- In code a `Source` (`trunk-app/src/config.rs`) holds the keys every type has plus a
+  `kind: SourceKind` (flattened, tagged by `type`) with the rest; the JSON stays flat.
 
-### 10.2 Top level
-
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `sources` | array | one RTL-SDR at 2.4 MSPS, auto centre | radios and capture files |
-| `systems` | array | `[]` | trunked systems, each with its `sites` |
-| `conventional` | array | `[]` | conventional systems |
-| `recording` | object | see 10.6 | where and how calls are saved |
-| `server` | object | see 10.8 | web server |
-| `plugins` | map id → `{enabled, settings, path, shareDecrypted}` | `{}` | plugins on/off and recorder-wide settings |
-| `pluginDelays` | array of `{plugins, talkgroups, delayS}` | `[]` | how long plugins wait for calls, every system (a system's own come first) |
-| `keys` | map name → `{file, passwordFile}` | `{}` | encryption key sources; a system names one in its `keys` |
-| `log` | object | see 10.9 | log options |
-| `monitor` | `{probeHosts, networkChecks, timeServer, clockWarnMs}` | `["1.1.1.1:443","dns.google:443"]`, `true`, `"pool.ntp.org"`, `250` | internet checks; `networkChecks: false` pauses them and the SNTP check; the clock's SNTP check and its warning threshold |
-
-### 10.3 `sources[]`
-
-`type` is `rtlsdr`, `hackrf`, `usrp`, `airspy`, `soapy` or `file`. In code a `Source` (`trunk-app/src/config.rs`) holds the keys every type has plus a `kind: SourceKind` (flattened, tagged by `type`) with the rest; the JSON stays flat. Every type has `centerHz` (required;
-0 = auto-centre), `rateHz` (required), `autoTune` (false) and `guardHz` (75,000).
-
-| Type | Other keys |
-|---|---|
-| `rtlsdr` | `serial` (required; "" = first free), `gainDb` 25.4, `agc` false, `ppm` (integer, required), `bufLen` 0 (= 16384), `buffers` 0 (= about 2 MiB) |
-| `hackrf` | `serial` "" = first, `centerHz`, `rateHz` (1–20 MSPS), `lnaDb` 16, `vgaDb` 20, `amp` false, `biasTee`, `ppm`, `autoTune`, `guardHz` |
-| `usrp` | `args` "", `gainDb` 40, `agc` false, `antenna` "", `ppm` 0 |
-| `airspy` | `serial` "", `gainMode` linearity / sensitivity / manual, `gainStep` 14, `lnaStep` / `mixerStep` / `vgaStep` 10, `agc`, `biasTee`, `packing` true, `ppm` |
-| `soapy` | `args` "", `agc` true, `gainDb` null, `gains` {}, `antenna` "", `settings` "", `ppm` 0 |
-| `file` | `path` (required), `realtime` (required), `format` cu8 / cs16 / cf32 (else from the extension) |
-
-### 10.4 `systems[]`
-
-| Key | Default | Meaning |
-|---|---|---|
-| `shortName` | `sys1` | identity: folder, companion files, plugin key; unique across all systems |
-| `name` | "" | display name |
-| `type` | `p25` | `p25`, `smartnet`, `dmr`, `nxdn` |
-| `enabled` | true | |
-| `unitNames` | — | `{csv, name, mode: user / ota / user_only / none}` |
-| `recording` | {} | per-system overrides (10.7) |
-| `plugins` | {} | per-system plugin settings (with `override` for the plugin's own settings it changes here); an array = several copies |
-| `pluginDelays`, `keys` | | plugin delays; the key source it decrypts with |
-| SmartNet / NXDN | | `defaultMode` (analog / digital); `nxdnType` (typeC / typeD) |
-| `sites` | [] | where it is recorded from, below |
-
-Each of `sites[]`:
-
-| Key | Default | Meaning |
-|---|---|---|
-| `name` | the system's `shortName` | unique in its system: Preferred Site, call JSON `site`, band plan file, its stats |
-| `enabled` | true | |
-| `controlChannelsHz` | [] | P25/SmartNet: hunted in order; DMR/NXDN: all watched |
-| `modulation` | `auto` | `auto`, `fsk4`, `qpsk` (P25 receiver bank) |
-| `expect` | {} | site lock: `nac`, `wacn`, `sysId`, `rfss`, `site` (decimal) |
-| `voiceChannelsHz` | [] | from the survey; only for auto-centring |
-| SmartNet | | `bandplan` (800_standard, 800_reband, 800_splinter, 900, 400_custom / obt), `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanOffset`, `bandplanHighHz` |
-| DMR | | `lcnTableHz` {LCN: Hz}, `dmrChannelsHz`, `colorCode` |
-| NXDN | | `nxdnRate` (nxdn48 / nxdn96), `nxdnChannelsHz`, `ran`, `lcnTableHz` |
+### 10.2 Active systems and sites
 
 A site is **active** when it is enabled and has at least one control channel; a system is
 active when it is enabled and has an active site. Active systems are numbered 0, 1, … in config
@@ -1289,82 +1403,18 @@ An older config (each system one site, joined by `siteGroup` or by site locks na
 system) is rewritten on load by `migrate::config`; the desktop app saves it upgraded
 (`migrate::save`), the old file kept as `config.json.before-sites`.
 
-### 10.5 `conventional[]`
+### 10.3 Per-system `recording`
 
-| Key | Default | Meaning |
-|---|---|---|
-| `shortName` | `conv` | unique identity |
-| `name`, `enabled` | "", true | |
-| `squelchDb` | 8 | open threshold above the noise floor |
-| `demod` | {} | analog: `fmDeemphasis`, `amLevel` (fast / slow), `amLowCutHz` (0–600), `squelchOpenMs` (0–500), `squelchHangMs` (0–1000) |
-| `channelFile` | "" | CSV path; when set, `channels` is read from it |
-| `channels[]` | [] | `{freqHz (required), mode: fm/am/p25/dmr/nxdn48/nxdn96, name, talkgroup, code, slot (DMR, 1/2), matchTalkgroup (P25/DMR/NXDN), description, tag, group, squelchDb, bandwidthKhz (analog, 4–20), enabled}` |
-| `recording`, `plugins`, `pluginDelays`, `unitNames`, `keys` | | as for systems |
-
-Its P25, DMR and NXDN channels name the talkgroups they hear by its own talkgroup file
-(`<shortName>.talkgroups.csv`); their P25 receivers are the default bank.
-
-`code` examples (bare): CTCSS `151.4`, DCS `D023N`, P25 NAC `293`, DMR colour code `1`, NXDN RAN
-`5`. A combined string such as `CC1 TS2 TG201` or `NAC 293 TG 1` is split into `code`, `slot` and
-`matchTalkgroup`. An older `tone` key is upgraded on load (P25 rows that shared a frequency with no
-talkgroup get their old default written in). A call's number is the row's `talkgroup`, else the
-talkgroup the air named, else the channel's kHz (then kHz×10 + k for more rows on the same
-frequency).
-
-### 10.6 `recording`
-
-| Key | Default | Per system? | Meaning |
-|---|---|---|---|
-| `captureDir` | `~/TrunkRecorderPro` | | recordings folder |
-| `prerollS` | 1.0 | | pre-roll for trunked calls |
-| `maxRecorders` | 32 | | recorder pool size |
-| `callTimeoutS` | 3 | yes | silence before a call ends |
-| `conversationMode` | true | yes | off: a call per transmission (§6.5) |
-| `recordUnknown` | true | yes | record talkgroups not in the file |
-| `recordEncrypted` | false | yes | |
-| `recordUnitToUnit` | true | yes | |
-| `keepSilentCalls` | false | yes | |
-| `minCallS` | 0 | yes | |
-| `maxCallS` | 0 | yes | split longer calls (0 = at 600 s) |
-| `minTransmissionS` | 0 | yes | drop shorter transmissions |
-| `captureFrames` | false | | save vocoder frames as `.sdr` |
-| `normalizeAudio` | true | yes | |
-| `digitalLevelDb`, `analogLevelDb` | 0 | yes | ±40 |
-| `archiveWav` | true | yes | keep the WAV once the plugins are done |
-| `archiveM4a` | false | yes | keep an M4A of each call |
-| `callLog` | true | yes | keep the JSON once the plugins are done |
-| `archiveFilesOnFailure` | true | yes | |
-| `filenameFormat` | "" | yes | "" = `<short>/<Y>/<M>/<D>/<tg>-<epoch>_<freq>` |
-| `dropDuplicateCalls` | true | | multi-site dedupe |
-| `vocoder` | `fixed` | | `fixed`, `enhanced`, `mbelib` (IMBE) |
-| `m4a` | `{encoder: auto, bitrateKbps: 32}` | | auto / ffmpeg / afconvert / fdkaac / none |
-| `ramSpool` | `{enabled: false, sizeMb: 256, dir}` | | see 8.6 |
-
-### 10.7 Per-system `recording`
-
-Any key marked "per system" above can be set in a system's or conventional system's own
+Any key marked per system in [Recording](../configuration/recording.md#per-system-rules) can be set in a system's or conventional system's own
 `recording`. They are declared once, in the `recording!` macro's `per_system` block, which makes
 `Recording`, `RecordingOverride` (each of them optional) and `Recording::with(override)` (the
 global settings with what is set replaced) from the same list. Other keys there are dropped.
 `Config::recordings()` resolves every system's rules once when recording starts (by the number
 calls give it): the session's file name formats and the runtime's file rules.
 
-### 10.8 `server`
+### 10.4 From config to engine
 
-`bind` 127.0.0.1, `port` 8080, `autoStart` false, `allowedOrigins` [], `interfaces` {} (by id:
-`port`, `enabled` true, `access` "listen", `path` ""; a port of 0 gets the next free one on load;
-the old list form `[{name, path}]` is read as this map, and `home` is dropped).
-
-### 10.9 `log`
-
-`level` info (trace, debug, info, warning, error, fatal), `console` true, `file` false, `dir`
-"" (`logs` beside the config), `syslogFriendly`, `syslog`, `color`, `frequencyFormat` mhz
-(exp, mhz, hz), `talkgroupDisplayFormat` id (id, id_tag, tag_id), `statusAsString` true,
-`controlWarnRatePerS` 10.
-
-### 10.10 From config to engine
-
-`Config::engine_config(epoch_ms, &TalkgroupFiles)` builds trunk-core's `EngineConfig`, whose
+`Config::engine_config(epoch_ms, &NameLists)` builds trunk-core's `EngineConfig`, whose
 `systems` are kept once for a whole system: each active system → a `SystemConfig` (short name,
 `CallConfig`, `SaveRules`, its talkgroup file, unit tags; keys are set by the app) with its active
 sites, each a `SiteConfig` (name, control channels, receiver bank, `expect`, protocol); then each
@@ -1378,7 +1428,30 @@ then active conventional systems (enabled, with an enabled channel). It is the o
 number is worked out; the engine, plugins, status (`status.systemNames`) and the interface all go
 by it. There is no limit on conventional systems.
 
-### 10.11 Validation at Start (`Config::problem`, first failure wins)
+**Edits while recording.** The recorder keeps the config a run started with (`Ctx.run`; the
+browser build's worker keeps its own), and what its radios have taken since. An edit is held
+against it, not against the edit before: `Ctx::live_sources` finds each source's radio in the run
+by its label (`Config::same_radio`), wherever Setup has moved it, sets a gain the radio takes live
+(`live_gain`), and the run then has it. `Config::needs_restart` compares what a run reads only
+when it starts — the sources as their radios take them (without a `name`), the systems and
+conventional systems without what applies live (plugins and delays, sharing and its link, FCC
+call signs, a channel file's status), the recording rules — and the `state` message carries the
+verdict as `restartNeeded`, with the phase (`idle`, `starting`, `running`, `stopping`). The
+interface shows it; it doesn't work it out.
+
+**Tuning a gain while recording** (`tuneGain`; `trunk-app/src/gain.rs`, `trunk-app/src/tune.rs`,
+`trunk-pro/src/tune.rs`). `GainPlan::of` is each radio kind's gain as something to search: its
+axes (a table step, the overall gain, or stages), the moves in order (front of the chain first, the
+VGA last, a HackRF's amp gated on its LNA) and the ranges config validation and Find my system
+read too. A tuning thread walks the plan (`Walk`), comparing each candidate with the best so far by
+turns; each candidate goes on the radio through `Ctx::trial_gain` (the radio's `Control`, as a
+live edit, but `Ctx.run` and the config keep what they had, so putting it back is setting the run's
+gain again). Each second's `stats` values reach it from `deliver` (`Slot::stats`), and the systems
+it scores are the engine's sites on that radio (`SiteStatus::source`, asked with
+`EngineCmd::Sites`). `apply` keeps the best: the run has it, and `edit_config` saves it. Stopping
+recording, or an edit of that radio (`Slot::edited`), stops the tuning.
+
+### 10.5 Validation at Start (`Config::problem`, first failure wins)
 
 1. No sources.
 2. A file source without a path.
@@ -1398,92 +1471,87 @@ by it. There is no limit on conventional systems.
 
 The interface runs this same code (section 13.3), so Setup says what Start will say.
 
-**Auto-centring** (`resolved_centers`, `auto_center`): sources with `centerHz` 0 are placed, in
-order, over the systems not yet covered. Start at the midpoint (rounded to 1 kHz), step to either
-side in widening 12.5 kHz steps until no channel is within 25 kHz of DC (`off_dc`), and accept if
-every frequency is inside half-width − 10 kHz. The first-run guide places sources for a system
-found on the air with `plan_centers`, through the same `off_dc`.
+### 10.6 Auto-centring, pins and advice
 
-### 10.12 Companion files (in the config's folder)
+**Auto-centring** (`trunk-app/src/place.rs`): one placement for Start's auto centres
+(`resolved_centers`), the first-run guide and the survey's suggested centre. Sources with
+`centerHz` 0 are placed in order (`place_sources`), each over the window (`busiest_window`) that
+takes in the most of what the ones before it don't reach: what a group needs and isn't reached yet
+outweighs everything — one of a P25 or SmartNet site's control channels, or (`Group::all`) every
+control and watched frequency of a DMR, NXDN or EDACS site and every channel of a conventional
+system — then each channel counts once (the guide: by the calls seen on it); of windows taking in as much, the one that leaves the
+rest the fewest windows. So a site wider than one radio gets every radio it needs. With
+everything reached, a spare radio goes alongside the others, on the side with more of the
+channels. Each centre is then centred on what it reaches and stepped to either side in widening
+12.5 kHz steps until no channel is within 25 kHz of DC (`off_dc`).
 
-| File | Contents |
-|---|---|
-| `<short>.talkgroups.csv` | the system's talkgroup file (trunked or conventional) |
-| `<short>.bandplan`, `<short>.<site>.bandplan` | learned P25 IDEN tables / DMR & NXDN channel maps, per site (`SiteKey::file_stem`); saved every 10 s on change and at stop |
-| `<short>.units.csv` | talker aliases heard over the air (Trunk Recorder's unitTagsOTA format) |
-| `conventional.heard.json` | codes heard per conventional frequency |
-| `tune.json` | AutoTune's scores per source, for the next run |
-| `radio/<short>.json` | the radio registry (units, talkgroups, affiliations); every 15 min and at stop |
+**Which source receives a frequency.** A system or a conventional channel may be kept on
+particular sources (`receiveOn`, by `Source::label`: the radio, not its place in the list;
+`Config::pins` turns it into the engine's `Pins` by position, none when the radio named is gone,
+which `problem` reports). `Pins::first` is the one choice: the first source allowed that reaches
+the frequency. The engine opens channels by it (`Radio::source_for`, `Conventional::new`), and
+the app asks the same of the centres Start places (`place::receiver`): placement's targets are
+groups (a site, a conventional system's channels on the same sources) carrying their pins, so a
+source is placed only for what it may receive; `Config::receivers` says the source of each
+listed frequency (Setup's coverage chips and to-dos, `configReceivers`); and `place::coverage`
+is the one account of what's received: per group whether its need is met and what's missed, per
+source how many listed frequencies it's the first to reach. `problem` reports what it misses
+(`Config::placed`: the sites' groups come first, in `active_sites` order), and `Config::placement`
+reads its counts. A source at 0 that has opened no voice channel this run is `unused` in its status,
+and the dashboard says it can probably be removed.
 
-The store keeps the talkgroup files (a line at a time, table `talkgroups`), band plans, talker
-aliases, conventional codes, AutoTune's scores, sharing's state, the radio registry (each save's
-changes, whole once a day) and the dashboard's history (`trunk-pro/src/kept.rs`,
-`statstore.rs`); there are no files for them. Low-write mode keeps no call index. A store of
-another schema version is set aside and made afresh (`db/schema.rs`).
+**Advice** (`place::advise`, `Config::advice`; research/source-advice.md): better centres and rates
+than the sources have, by re-running `place_sources`. A source's `Choices` say whether its set centre
+may move (not a capture file's) and its rates (`rates::offered`: its radio's, else its kind's from
+`rates::of_kind`, the one list the web's `SOURCE_KINDS` reads too). Sources are released to auto
+(none, each alone, all) and each one's rates tried in turn; ways are compared by `Score` (needs met,
+weight reached, radios needed, past the dependable rate, total rate, changes), and only a strict
+improvement is advice. `Config::targets_with` weighs it by what's heard (the registry's calls per
+frequency, out of band too). Setup's Radios tab and the RF page show it (`web/src/sourceAdvice.tsx`);
+`problem` appends the settings that reach what it found missed (`advice_fix`).
 
-| `stats/YYYY-MM-DD.jsonl` | a dashboard rollup per minute; gzipped after the day, kept 8 days (`files`; the store on: `stats_minutes` and `stats_hours`) |
-| `plugins/<id>/` | installed plugins |
-| `plugin-data/<id>/` | plugin state |
-| `plugin-hold/` | finished calls held back by plugin delays |
-| `interfaces/<id>/` | installed interfaces |
-| `plugin-registry.json`, `interface-registry.json` | cached store indexes |
-| `config.json.before-sites` | an older config as it was before the upgrade to sites |
-| `logs/` | log files |
+### 10.7 What is kept between runs
 
-Talkgroup CSV (`<short>.talkgroups.csv`, beside the config): headed (`Decimal, Hex, Mode, Alpha Tag,
-Description, Tag, Category, Priority, Preferred NAC, Preferred Site, Ignore`, any order) or Trunk
-Recorder's headerless form. Channel CSV: `TG Number, Frequency, Code, Slot, Match TG, Mode, Alpha Tag, Description,
-Tag, Category, Squelch dB, Bandwidth kHz, Enable` (`trunk-app/src/channels.rs`).
+- `config.json` is written by `setConfig` (the interface always sends the whole config, with the
+  version it edited).
+- Everything else kept between runs is the store's (`storage.backend` `sqlite` or `postgres`;
+  `trunk-pro/src/kept.rs`, `db/`), keyed by each system's id from `config.json`:
+  - each system's names (`SystemNames`): talkgroups as rows in `talkgroups` and its own radio
+    names in `unit_names`. A file load (`setTalkgroups`, `setUnitNames`) replaces a system's list
+    (`runtime::set_names`, one generic over both), an edit (`setTalkgroup`, `setUnitName`)
+    changes one row, all committed at once. Each row carries its origin
+    (`trunk-core/src/trunk/names.rs`: where its names came from, the last change only), set by
+    `replace_rows` and the edits, the same code in the browser build (through wasm);
+    `read_rows` / `rows_csv` and `read_unit_names` / `unit_names_csv` are the import and export;
+  - talker aliases in `units` (only those that changed are written);
+  - band plans, the Heard list, AutoTune's scores and sharing's state in `kept`, written within
+    10 s of a change (`Session::due`) and at stop;
+  - the radio registry in one shape, `RegistryChanges`: trunk-app hands over each 15 minutes'
+    changes (`Saved::Registry`), appended to `registry_changes`; once a day's have piled up
+    (`COMPACT_AFTER`) the store makes them over the whole copy in `registry` and lets them go
+    (the browser build writes each changed system whole instead);
+  - the dashboard's history in `stats_minutes` (2 days) and `stats_hours` (section 12.2).
+- `trunk-pro.sqlite` (`trunk-pro/src/db/`) is the call store: one row per finished call, written
+  in batches by the `db-writer` thread. The recording and its `.json` are still files; the row is
+  how `callsQuery` finds them without reading the folder. The live list (`Ctx::recent`, the last
+  500 calls) answers what's just happened and is merged into every query (`runtime::calls`), so
+  the store's batching never hides a call and the recorder lists calls with the store off.
+  Low-write mode keeps no call index. A store of another schema version is brought up to this
+  one when the change only adds to it (`schema::upgrade`), otherwise set aside and made afresh
+  (`db/schema.rs`).
+- An older install's `<short>.talkgroups.csv`, `<short>.bandplan`, `<short>.units.csv`,
+  `conventional.heard.json`, `tune.json` and `radio/<short>.json` are imported once and renamed
+  `.imported` or `.unused` (`migrate.rs`).
+- The files that are kept, installed plugins and plugin data all live beside the config file
+  (`paths::data_dir()`), so recorders with their own `--config` don't share them; the list is in
+  [Files kept beside the config](../configuration/README.md#files-kept-beside-the-config). Every
+  one of them is written atomically (`config::write_atomic`: a temporary file, then a rename), so
+  a crash never leaves half a file.
 
-### 10.13 Example
-
-```json
-{
-  "sources": [
-    { "type": "rtlsdr", "serial": "00000101", "centerHz": 0, "rateHz": 2400000,
-      "gainDb": 25.4, "agc": false, "ppm": 1, "autoTune": true, "guardHz": 75000 }
-  ],
-  "systems": [
-    {
-      "shortName": "county-p25", "name": "County Public Safety", "type": "p25", "enabled": true,
-      "sites": [
-        { "name": "site3", "controlChannelsHz": [851012500, 851262500], "modulation": "auto",
-          "expect": { "nac": 659, "wacn": 781824, "sysId": 989, "rfss": 1, "site": 3 } },
-        { "name": "site5", "controlChannelsHz": [852137500],
-          "expect": { "nac": 659, "wacn": 781824, "sysId": 989, "rfss": 1, "site": 5 } }
-      ],
-      "recording": { "minCallS": 1, "recordUnknown": false },
-      "plugins": { "openmhz": { "apiKey": "REPLACE_ME", "systemName": "countyp25" } }
-    },
-    {
-      "shortName": "city-smartnet", "type": "smartnet", "enabled": true, "defaultMode": "analog",
-      "sites": [{ "controlChannelsHz": [851637500], "bandplan": "800_reband", "expect": { "sysId": 18205 } }]
-    }
-  ],
-  "conventional": [
-    {
-      "shortName": "county-fire-conv", "enabled": true, "squelchDb": 8,
-      "channels": [
-        { "freqHz": 852087500, "mode": "fm", "name": "FG North", "code": "151.4" },
-        { "freqHz": 852087500, "mode": "fm", "name": "FG South", "code": "D023N" },
-        { "freqHz": 851812500, "mode": "p25", "name": "PD Tac 2", "code": "293", "squelchDb": 12 }
-      ]
-    }
-  ],
-  "recording": { "captureDir": "/home/me/TrunkRecorderPro", "maxRecorders": 32, "archiveM4a": true },
-  "server": { "bind": "127.0.0.1", "port": 8080, "autoStart": true },
-  "plugins": { "openmhz": { "enabled": true } },
-  "log": { "level": "info", "file": true }
-}
-```
-
-The source auto-centres at 851.55 MHz: the span 851.0125–852.0875 MHz fits in ±1.125 MHz
-and no channel is within 25 kHz of the centre.
-
-### 10.14 Command-line flags that override config
-
-`--config file`, `--port n`, `--bind addr`, `--start` (same as `autoStart`), `--log-level l`,
-`--ui folder`, `--no-open`. Overrides are for the run only and are not saved.
+The session's side of this is its persistence hooks: `due(now_ms, all)` returns what is due to
+keep as `Saved` items (units, sharing, band plans, heard codes, AutoTune scores, registry
+changes), and `new` (which takes the names, `&NameLists`) / `load_units` / `load_heard` /
+`load_tune` take it back next run. The platform decides where these are kept.
 
 ---
 
@@ -1544,20 +1612,48 @@ time.
 
 ### 11.3 Identifiers
 
-A system's identity is its `shortName`. The numbers below are per-run handles, never saved.
+A system's **short name** is unique: no two systems share one, trunked or conventional, on or off
+(`Config::name_problem`). It names the folder and is what users know a system by. Its identity,
+though, is its `id` (`SystemId`; a site's is its `SiteId`): given once in the config and never
+given again, the same across renames and runs. What's kept of a system outside a run (its calls in
+the store, its names, its plugins' delays) and plugin events (`system_id`, `site_id`) go by it;
+stats series, band plans and capture rules still go by short name. The interface's filters,
+`listen`, "now playing" and system colours go by short name. Every message that carries a
+system's number also carries its short name, except the live-audio frame, whose number `status`
+maps to a name.
 
-| Name | Indexes | Used by |
+The numbers below that aren't ids are handles for one run, never saved. Keep them apart: each
+indexes something different.
+
+| Name | What it indexes | Where it's used |
 |---|---|---|
-| Engine system index (`Call::system`) | active systems, trunked then conventional, from 0 | calls, events, live-audio frames, plugin `system`, `{sys_num}` in file names, `status.systems[].index` (`status.systemNames` maps them to short names) |
-| Engine site index (`Call::site`) | active sites, system by system | calls, control channel events, `status.systems[].sites[].index` |
-| A site's `name` | unique in its system | Preferred Site, call JSON `site`, control channel stats and band plan files (`SiteKey`) |
-| A Setup card's key (`cardKey`) | every configured system and site, in this browser | the Setup cards (seeded from the short name, site name or position; never sent) |
-| `shortName` | every system, unique | folders, files, plugin settings, what plugins key on |
-| `CallId` | one sequence for every system | `call_num` in the JSON |
+| Position in `config.systems` / `config.conventional` | Every configured system, including disabled ones and ones with no control channel | The config's own order; `channelFile`'s `index` (conventional) |
+| Engine system index (`Call::system`) | **Active** systems only, from 0: the trunked ones (`Config::active_systems()`: enabled, with an enabled site that has a control channel), then the conventional ones (`Config::active_conventional()`: enabled, with an enabled channel), in config order. It indexes `EngineConfig.systems` | Calls, events, live-audio frames, `{sys_num}` in file names, plugin `CallInfo.system` / `SystemInfo.index`, `status.systems[].index`, `status.systemNames` |
+| Engine site index (`Call::site: Option<u16>`) | Active sites of active trunked systems (`trunk::sites`), system by system; none for a conventional call | Calls, control channel events, `status.systems[].sites[].index` |
+| Position in `Status.sites` | Sites that currently have a control channel (can skip some) | Nothing: each `SiteStatus` carries its `site` and `system` |
+| A Setup card's key (`cardKey`) | Every configured system and site, in this browser | The Setup cards (seeded from the short name, site name or position; never sent) |
+| `SystemId` (`id`) / `SiteId` | Every system / site, given once in the config and never reused | The same across renames and runs: the store, names, plugin delays, plugin events (`system_id`, `site_id`) |
+| `shortName` | Every system, unique | Its folder and label: what users and the interface know it by, stats series, band plans |
+| A site's `name` | Each site of a system, unique there (absent: the system's short name) | The talkgroup file's Preferred Site, call JSON `site`, band plan files, control channel stats (`SiteKey`) |
+| `CallId` | One sequence for every system | `call_num` in the JSON |
 
-Frequencies are integer Hz (`u64`) in messages and `f64` Hz in config. TDMA/DMR slots are 0/1
-internally and +1 only in display strings. Engine times are seconds of sample time; JSON times
-are Unix seconds or milliseconds as the field name says.
+`Config::call_systems()` is the one place a config's systems are given their numbers (active
+trunked systems, then active conventional systems): the lookup from short name to number, and the
+order `Config::engine_config` lists them in for the engine. Plugins' `SystemInfo` and
+`status.systemNames` come from it.
+
+Outside the engine a site is named one way, by its `SiteKey { system, site }`
+(`SystemConfig::site_key`): `own_name` (its name when it isn't its system's), `stats_key`
+(`sys/<system>` or `sys/<system>/site/<site>`), `file_stem` (`<system>` or `<system>.<site>`) and
+`Display` (`<system>` or `<system>/<site>`, for log lines). Events about a site, such as
+`controlLost`, carry the system's short name and the site's own name apart.
+
+Other conventions:
+
+- Frequencies are integer Hz (`u64`) in messages and `f64` Hz in config.
+- TDMA / DMR slots are 0 / 1 internally and +1 only in display strings.
+- Times inside the engine are seconds of sample time (`f64`). Times in JSON are Unix seconds or
+  milliseconds, as the field name says.
 
 ---
 
@@ -1574,9 +1670,9 @@ asks.
 | Producer | Feeds | Output |
 |---|---|---|
 | `ControlChannel::report` (per protocol; default nothing), `Engine::report` (levels, ppm, calls), `SampleMeter` (headroom and clipping, 1 sample in 16), `Tally` (calls, airtime, reasons, voice errors, counted from events) | `Aggregator` | `stats` message every 1 s; a `Rollup` every minute |
-| `Rollup` | `History` (in memory: a week, or a day with the store) and `stats/YYYY-MM-DD.jsonl` or the store | `statsQuery` → `statsResult` |
-| Session events → `Stats::observe` | `Registry` | `radioQuery` → `radioResult` (`Shared::radio_query`, names from the `NameBook`); `radio/<short>.json` every 15 min and at stop |
-| Session events → `Stats::observe` | `Monitor` | watchers (the hook for alert rules; none yet) and `monitorEvent`; the frequent kinds only for subscribers to the topic `activity` |
+| `Rollup` | `History` (in memory: a week with no store, or a day with one) and the store | `statsQuery` → `statsResult` |
+| Session events → `Stats::observe` | `Registry` | `radioQuery` → `radioResult` (`Shared::radio_query`, names from the `NameBook`); the registry's changes go to the store every 15 min and at stop |
+| Session events → `Stats::observe` | `Monitor` | watchers (the hook for alert rules; none yet) and `monitorEvent` |
 | monitor thread (desktop, every 2 s): the computer and the plugins | its own aggregator | `host` message every 2 s; rollups into the same history |
 | `VoiceDecoder::quality()`, `ControlChannel::quality()` (`ChannelQuality`: eye opening, CQPSK phase error) | `Engine::channels()` | `rfDetail` / `decodeDetail`, only for subscribers |
 
@@ -1589,8 +1685,8 @@ asks.
   `sys/<shortName>/site/<site>/cc/good`); renaming one loses its history.
 - **`Aggregator`**: rates from counters; each series' value now; per minute its average, lowest
   and highest. A rollup line is `{"t": minute, "s": {key: [avg, min, max]}}`.
-- **`History`**: a minute grid per series in memory: a week with no store (the browser build,
-  `files`); with one, 26 hours (`statstore::memory_minutes`). `statsQuery` takes names or
+- **`History`**: a minute grid per series in memory: a week with no store (the browser build);
+  with one, 26 hours (`statstore::memory_minutes`). `statsQuery` takes names or
   prefixes ending in `*`, a range (10m, 1h, 6h, 24h, 7d, 30d, 90d, 1y) or from/to, and is
   answered downsampled (360 points by default) into a `Span`'s buckets. Within what memory keeps,
   from memory alone. Further back (the store on: `hello.capabilities` has `history`),
@@ -1601,9 +1697,8 @@ asks.
   read back into `History` at start) and, as each hour ends (two minutes late, for stragglers),
   each series' hour a row of `stats_hours` (`History::hour_rows`: avg, lo, hi, minutes), kept
   `storage.statsDays` (365; 0: all). `meta` `stats.hoursDone` is the last hour written; a start
-  writes the hours memory has after it. With `files`: UTC days of JSON lines, appended and never rewritten, a
-  finished day gzipped, days past 8 deleted. Either is read back in the background at start
-  (`statsResult.loading` meanwhile).
+  writes the hours memory has after it. With no store the history is memory alone, a week. The
+  history is read back in the background at start (`statsResult.loading` meanwhile).
 - **`Registry`**: per system, bounded maps of talkgroups (5,000), units (20,000), unit pairs,
   frequencies and affiliations, with a week of hourly activity.
 - **`Monitor`**: notable events (talkgroup or unit first seen, talkgroup active, call volume,
@@ -1659,7 +1754,7 @@ WebSocket, so the interface code is shared.
 | Config | `config.json`, talkgroup files beside it | `localStorage["trp.config"]`, `localStorage["trp.talkgroups"]` |
 | Files | recordings and data folders | OPFS |
 | Sources | RTL-SDR, USRP, Airspy, SoapySDR, files | RTL-SDR over WebUSB, picked files |
-| `hello.capabilities` | all: `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys` | none |
+| `hello.capabilities` | all: `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`, `tuneGain` (and `calls`, `history` while the store is open) | none |
 | Not available | | plugins, interfaces, M4A, channel files, `findRadios`, `listDir`, Trunk Recorder import from disk, key containers, `quit` |
 
 ### 13.3 The config rules in the interface
@@ -1669,7 +1764,8 @@ WebAssembly, in both builds (the desktop app's page too). `crates/trunk-web/src/
 exports, over trunk-app's `config.rs`: `configNormalize` (a config as the recorder reads it,
 an older one upgraded, with its `notes`), `configTalkgroups` (the talkgroup files an older
 config held), `configProblem` (`Config::problem`), `configNameProblem`, `configCenters`
-(`resolved_centers`), `autoCenter`, `planCenters`, `usableHalfWidth`, `channelsParse` /
+(`resolved_centers`), `configReceivers` (`Config::receivers`), `configSources` (each source's label and `Source::title`),
+`placeSources` (`place_sources`), `usableHalfWidth`, `channelsParse` /
 `channelsWrite` (the channel CSV) and `bandplanProblem`. `web/src/rules.ts` loads them before
 the page renders (`loadRules`) and keeps each answer for the store's config until it is replaced
 (`configReplaced`). So the dashboard needs a browser with WebAssembly SIMD (Safari 16.4,
@@ -1685,26 +1781,27 @@ One WebSocket, `/api/ws`: JSON text both ways plus binary frames for live audio.
 `web/src/protocol.ts` is the source of truth; `docs/api/protocol.schema.json` is generated from it
 (`npm run schema`). The Rust side is two enums in `trunk-app/src/protocol.rs`: `ToClient` (every
 message, serialized as `{"type": <variant>, …}`, with `audience()`) and `Command` (every command,
-read strictly by `Command::parse`, with `listen_may_send()`). `trunk-pro/src/protocol_tests.rs`
+read strictly by `Command::parse`, with `needs()`: the access it takes to send it). `trunk-pro/src/protocol_tests.rs`
 checks their variants against protocol.ts both ways and the messages against the schema. The
 full reference is `docs/api/README.md`.
 
 Every message to the browsers goes through `runtime::publish(hub, ToClient)`, which serializes it
 once as each kind of connection may hear it (`runtime::Out::of`: for everyone, control access
-only, or the config in two versions, the listen one without plugin settings and key sources).
+only, or the config in two versions, the listen one only what a View user's pages show: `access::view::listen_config`, where every
+config field is named as shown or withheld, so a new one doesn't compile until it's decided).
 Bodies still put together as JSON ride as a `Body`. A command that doesn't parse, or that the
 connection's access doesn't allow, is answered with an `error`. `hello.capabilities` says what a
 recorder can do beyond recording (`Capability`: `service`, `drivers`, `plugins`, `interfaces`,
-`host`, `keys`), so an interface shows what works rather than checking which build it is.
+`host`, `keys`, `calls`, `history`, `tuneGain`), so an interface shows what works rather than checking which build it is.
 
 ### 14.1 A typical conversation
 
 1. Client connects to `/api/ws` (the access guard runs first; see 14.5).
 2. Recorder → the greeting, as the ordinary messages it sends later: `state`, `config` (with its
-   `version`), `talkgroups` (each system's file), `units` (each system's saved aliases), `heard`,
-   `history` (the last 300 calls), `radios`, `survey`, `monitorEvent` (each recent event), `host`;
-   with control access also `devices`, `keys`, `plugins`, `interfaces`. Then `hello` (version,
-   platform, api, config path, survey bands, capabilities): caught up. An interface waits for
+   `version`), `talkgroups` and `unitNames` (each system's), `units` (each system's saved aliases), `mdcUnits`,
+   `heard`, `history` (the last 300 calls), `radios`, `survey`, `tune`, `monitorEvent` (each recent
+   event), `host`; with control access also `devices`, `keys`, `plugins`, `interfaces`. Then
+   `hello` (version, platform, api, config path, survey bands, capabilities, access, user): caught up. An interface waits for
    `hello` before treating something missing as missing.
 3. Recorder → everyone: `status` (about every 500 ms while recording), `stats` (every second),
    `host` (every 2 s, desktop).
@@ -1736,10 +1833,10 @@ hub skips the oldest without notice.
 
 | Area | Commands |
 |---|---|
-| Recording | `setConfig`, `setTalkgroups`, `start`, `stop`, `quit`, `channelFile` |
+| Recording | `setConfig`, `setTalkgroups`, `setUnitNames`, `setUnitName`, `setTalkgroup`, `start`, `stop`, `quit`, `channelFile`, `tuneGain`, `tuneStop` |
 | Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `callsQuery` |
-| Setup | `devices`, `findRadios`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop` |
-| Plugins and interfaces | `plugins`, `addPlugin`, `removePlugin`, `interfaces`, `addInterface`, `removeInterface`; their stores: `store {kind, refresh?}`, `install {kind, id}` or `{kind, repository, tag?}` (progress in `installProgress {kind, key, id, stage, message}`), `kind` `plugin` or `interface` |
+| Setup | `devices`, `findRadios`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop`, `licenseQuery`, `callSignQuery`, `iqCapture*`, `iqRuleCheck`, `dataSummary`, `deleteData`, `compactData`, `createToken` (docs/api/README.md lists them all) |
+| Plugins and interfaces | `plugins`, `addPlugin`, `removePlugin`, `pluginAction`, `interfaces`, `addInterface`, `removeInterface`; their stores: `store {kind, refresh?}`, `install {kind, id}` or `{kind, repository, tag?}` (progress in `installProgress {kind, key, id, stage, message}`), `kind` `plugin` or `interface` |
 | Keys | `unlockKeys {source, password}`, `lockKeys {source}` (key containers without a password file) |
 
 ### 14.4 Live audio frame
@@ -1758,7 +1855,9 @@ hub skips the oldest without notice.
 |---|---|
 | `/api/ws` | the WebSocket |
 | `/api/version`, `/api/schema`, `/api/protocol.ts`, `/api/docs`, `/api/*` | version (and interface API), schema, TypeScript types, API docs and examples |
-| `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/storage` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; 503 when the store is off |
+| `/api/login`, `/api/logout`, `/api/session`, `/api/passkey/register/{start,finish}`, `/api/passkey/login/{start,finish}`, `/signin` | signing in: set a browser's session cookie (answering who signed in) and clear it; who this request is and what it may do; adding a passkey and signing in with one; the sign-in page |
+| `/api/v1/calls`, `/api/v1/calls/<path>`, `/api/v1/storage` | the call store as JSON (`docs/api/calls.openapi.yaml`), with listen or control access; with the store off, `/storage` answers 503 and the calls routes answer from the recent calls |
+| `/api/v1/export/<table>` | a table of the store as a CSV file, streamed a page at a time (`data.rs`), control access only |
 | `/calls/<path>` | recordings (folder, then RAM spool), WAV ↔ M4A substitution, Range requests |
 | `/store/screenshots/<sha256>`, `/interfaces/<id>/screenshots/<n>` | store listings' screenshots (built-in port only) |
 | everything else | on `server.port` the embedded interface; on an interface's port, its folder (no hidden files) |
@@ -1772,8 +1871,29 @@ without plugin settings and key sources.
 
 Every request passes a guard. Programs that aren't browsers send no `Origin` and are let in. A
 browser page must be the recorder's own origin or listed in `server.allowedOrigins` (which also
-gets CORS headers); anything else gets 403. Bound to localhost, the `Host` must be localhost too,
-which defeats DNS rebinding.
+gets CORS headers, and its preflight an answer); anything else gets 403. Bound to localhost, the
+`Host` must be localhost too, which defeats DNS rebinding.
+
+With signing in on (`server.auth`), the guard also identifies the request (`access::identify`):
+the first valid secret of an `Authorization: Bearer` or a `?token=`, else a session in the
+recorder's cookie (cookies only from the recorder's own pages, by `Sec-Fetch-Site`, so another
+port's page can't borrow them). The secret is a user's access token (`server.auth.users`,
+`Who::User`). A session (`access::Sessions`, issued by `/api/login`) is `user.credential.expires.mac`:
+the credential is the token's hash, the MAC an HMAC-SHA256 under a 32-byte key kept in
+`session-key` beside the config (0600, never in the config); the cookie is named `trp_` + 8 hex of
+the key's SHA-256, so recorders on one host name keep apart, and it lasts 30 days. A request gets the
+lower of its port's access and its user's role (`Caller::access`, looked up in the config as it is
+now, so a removed user, or a token made again, gives nothing at once); with no token,
+`anonymous`'s. With nothing, only what `server::open` lets through answers: `/api/version`,
+`/api/login`, `/api/logout`, `/api/session`, `/signin`, and the API's static files (docs, schema,
+types, client.js, examples); a browser asking for any other page gets `signin.html` in its place,
+anything else 401 `WWW-Authenticate: Bearer`. What signing in changes isn't a setting, so it's kept
+beside the config, not in it (`access::state::State`, `access-state.json`, held by `Sessions`): when
+each user was last signed out everywhere and each passkey's record as last counted, so a sign-in
+changes no config and bumps no version. A WebSocket's access is checked again at each `config` message,
+each change of that state and each command; when it has changed, the socket is closed and the client reconnects to a new
+greeting. Secrets are 32 random bytes (`trp_` + hex), stored as SHA-256; `createToken` and
+`trunk-pro access` (`access/cli.rs`) make a user with one (`access::add_user`).
 
 ---
 
@@ -1782,31 +1902,48 @@ which defeats DNS rebinding.
 | Concern | File(s) |
 |---|---|
 | Channelizer | `trunk-core/src/dsp/channelizer.rs` |
-| Receivers | `trunk-core/src/dsp/{c4fm,cqpsk,msd,fm}.rs`, `smartnet/rx.rs` |
+| Receivers | `trunk-core/src/dsp/{c4fm,cqpsk,msd,fm,am}.rs`, `smartnet/rx.rs` |
+| Shared DSP / bit helpers | `trunk-core/src/dsp/filters.rs`, `bits.rs`, `ambe.rs` |
 | In-band signalling | `trunk-core/src/dsp/inband/` (detectors, patterns, signals, paging tables), `trunk/inband.rs` (a call's), `trunk/recorded.rs` (what a call recorded) |
 | P25 framer / FEC / bank | `trunk-core/src/p25/{frame,tsbk,voice,fec,diversity,phase2}.rs` |
 | DMR | `trunk-core/src/dmr/` |
 | NXDN | `trunk-core/src/nxdn/` |
 | SmartNet | `trunk-core/src/smartnet/` |
+| EDACS | `trunk-core/src/edacs/` |
 | Vocoders, loudness | `trunk-core/src/mbe/`, `loudness.rs` |
+| Generated tables (IMBE / AMBE) | `trunk-core/src/tables.rs` (op25 / mbelib values, copied mechanically) |
 | Engine, sources, recorder pool | `trunk-core/src/trunk/engine.rs` |
 | Control channels per protocol | `trunk-core/src/trunk/control.rs` |
 | Messages, P25 parsing (`P25Parser`) · typed P25 OSPs | `trunk-core/src/trunk/message.rs` · `trunk-core/src/p25/osp.rs` |
-| Calls, `RecorderHost`, ids | `trunk-core/src/trunk/calls.rs` |
+| Calls, the kind of voice (`Voice`), `RecorderHost`, call ids | `trunk-core/src/trunk/calls.rs` |
+| Patches | `trunk-core/src/trunk/patches.rs` |
 | Voice decoders | `trunk-core/src/trunk/{voice,tracker,tdma}.rs` |
-| Site lock | `trunk-core/src/trunk/identity.rs` |
-| Saving a call | `trunk-core/src/trunk/{record,frames}.rs` |
+| Site identity and the site lock | `trunk-core/src/trunk/identity.rs` |
+| Saving a call (cutting, levels, JSON) | `trunk-core/src/trunk/{record,frames}.rs` |
+| Call JSON (Trunk Recorder fields) | `trunk-core/src/trunk/record.rs` (`call_record`); the type, `CallRecord`: `trunk-recorder-plugin/src/protocol.rs` |
 | Multi-site | `trunk-core/src/trunk/multisite.rs` |
 | Conventional | `trunk-core/src/trunk/conventional.rs` |
-| Config, its upgrades, channel CSV | `trunk-app/src/config.rs`, `migrate.rs`, `channels.rs` |
+| Talkgroup CSV / unit names, talker aliases (`UnitAliases`) | `trunk-core/src/trunk/talkgroups.rs`, `units.rs` |
+| Where a row's names came from (`Origin`, `replace_rows`) | `trunk-core/src/trunk/names.rs` |
+| Config schema, defaults, validation (`problem()`) | `trunk-app/src/config.rs` |
+| Source auto-centring, pins, advice | `trunk-app/src/place.rs` |
+| Older configs upgraded when read | `trunk-app/src/migrate.rs` |
+| Conventional channel CSV | `trunk-app/src/channels.rs` |
+| Codes conventional frequencies carried | `trunk-app/src/heard.rs` |
+| File names and folders | `trunk-app/src/filename.rs` |
+| Each system's names beside the config (`SystemNames`, `NameLists`) | `trunk-app/src/config.rs`, `trunk-pro/src/runtime.rs` (`set_names`, `set_talkgroup`, `set_unit_name`), `trunk-pro/src/kept.rs` (`load_names`); in the page, `web/src/controller.ts` (one list machinery for both) |
 | Session, outputs | `trunk-app/src/session.rs` |
-| Interface protocol (Rust) | `trunk-app/src/protocol.rs`; checked by `trunk-pro/src/protocol_tests.rs` |
+| Dashboard measurements | `trunk-core/src/metrics.rs`, `trunk-app/src/stats/`, `trunk-pro/src/statstore.rs`, `monitor.rs`, `platform.rs` |
+| Interface protocol | `web/src/protocol.ts` → `docs/api/protocol.schema.json`; in Rust `trunk-app/src/protocol.rs` (`ToClient`, `Command`), checked against it by `trunk-pro/src/protocol_tests.rs` |
+| Who may hear and send what (listen / control access, signing in) | `trunk-app/src/protocol.rs` (`audience`, `needs`), `trunk-pro/src/access.rs`, `access/cli.rs`, `server.rs` (`guard`) |
 | Threads, lifecycle, deliver, finish | `trunk-pro/src/runtime.rs` |
 | SDR drivers | `trunk-pro/src/sdr.rs` (`Radio`, `run_with`), `trunk-pro/src/radio/` |
-| Web server, access | `trunk-pro/src/server.rs`, `access.rs` |
-| Logging | `trunk-pro/src/logging.rs` |
+| Web server | `trunk-pro/src/server.rs` |
+| What's kept between runs, the call store | `trunk-pro/src/kept.rs`, `db/`, `statstore.rs` |
+| Data folder | `trunk-pro/src/paths.rs` |
+| Log format | `trunk-app/src/log.rs`, `trunk-pro/src/logging.rs` |
+| Analysis tools (`trunk-pro tool` cc / voice / frames / p2 / snr / dmr / nxdn …) | `trunk-pro/src/tool.rs`, `toolkit.rs` (what they share), `snrtool.rs`, `dmrtool.rs`, `nxdntool.rs` |
 | Plugin host | `trunk-pro/src/plugins/` |
 | Stores (plugins and interfaces) | `trunk-pro/src/store.rs`, `plugins/store.rs`, `interfaces/` |
 | Plugin protocol and SDK | `trunk-recorder-plugin/src/` |
-| Config rules for the interface | `trunk-web/src/rules.rs` → `web/src/rules.ts` |
-| Interface protocol | `web/src/protocol.ts` → `docs/api/protocol.schema.json` |
+| Config in the UI, Trunk Recorder import | `web/src/config.ts`, `web/src/Setup.tsx`; the rules it applies are the recorder's, as WebAssembly: `trunk-web/src/rules.rs` → `web/src/rules.ts` |

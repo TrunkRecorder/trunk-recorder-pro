@@ -23,6 +23,112 @@ pub fn table_from_str<K: std::str::FromStr>(s: &str) -> impl Iterator<Item = (K,
     })
 }
 
+/// The priority a call takes where the air carries none: SmartNet and
+/// EDACS grants say nothing of it (SmartNet's talkgroup status bits are
+/// encrypted, emergency and patch), and Trunk Recorder gives them this
+/// (its SmartNet parser's TGID_DEFAULT_PRIO), so their call JSON reads the same.
+pub const UNSAID_PRIORITY: u8 = 3;
+
+/// Whether a carrier carrying code `got` (DMR colour code, NXDN RAN) is
+/// its site's: once the site's code `want` is known, the same code; before
+/// it is, a `control` carrier of the site's only (any, at a site with none:
+/// `has_control` false) — a neighbour on a listed frequency, a stray, isn't.
+pub fn site_code<T: PartialEq>(want: Option<T>, got: Option<T>, control: bool, has_control: bool) -> bool {
+    match want {
+        Some(w) => got == Some(w),
+        None => control || !has_control,
+    }
+}
+
+/// The call last reported on a voice channel (a DMR carrier's slot, an
+/// NXDN carrier): its link control or SACCH repeats while it goes on, so it's
+/// reported as a grant, then as an update at most each `refresh_s`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LastCall(Option<(u32, u32, f64)>);
+
+/// How long a voice channel's call stays on the dashboard after it was last heard, s.
+pub const CALL_SHOW_S: f64 = 3.0;
+
+impl LastCall {
+    /// Talkgroup `tg`, talker `src` (0: not said) heard at `t`: report it?
+    /// Some(update): yes — `update` when it's the call reported before (the
+    /// same talkgroup, its talker or none named) — None: a repeat within
+    /// `refresh_s`. The talker is kept when a repeat names none.
+    pub fn heard(&mut self, tg: u32, src: u32, t: f64, refresh_s: f64) -> Option<bool> {
+        let prev = self.0;
+        let repeat = prev.is_some_and(|(g, s, _)| g == tg && (s == src || src == 0));
+        if repeat && prev.is_some_and(|(_, _, at)| t - at < refresh_s) {
+            return None;
+        }
+        self.0 = Some((tg, if src != 0 { src } else { prev.map_or(0, |p| p.1) }, t));
+        Some(repeat)
+    }
+
+    /// The channel's call ended (a terminator, the carrier gone).
+    pub fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    /// Its call heard within [`CALL_SHOW_S`] of `now` (the dashboard's): (talkgroup, talker).
+    pub fn shown(&self, now: f64) -> Option<(u32, u32)> {
+        self.0.filter(|l| now - l.2 < CALL_SHOW_S).map(|l| (l.0, l.1))
+    }
+}
+
+/// A site's channel numbers' frequencies (DMR LCNs, NXDN channels): the
+/// config's, which stand, and what the air taught, kept between runs.
+#[derive(Clone, Debug, Default)]
+pub struct ChannelTable {
+    configured: BTreeMap<u32, u64>,
+    learned: BTreeMap<u32, u64>,
+}
+
+impl ChannelTable {
+    pub fn new(configured: BTreeMap<u32, u64>) -> Self {
+        ChannelTable { configured, learned: BTreeMap::new() }
+    }
+
+    /// Channel `n`'s frequency: the config's, else the air's.
+    pub fn resolve(&self, n: u32) -> Option<u64> {
+        self.configured.get(&n).or_else(|| self.learned.get(&n)).copied()
+    }
+
+    /// Channel `n`'s frequency was learned (the config doesn't have it).
+    pub fn is_learned(&self, n: u32) -> bool {
+        self.learned.contains_key(&n) && !self.configured.contains_key(&n)
+    }
+
+    /// What the air taught, beyond the config.
+    pub fn learned(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        self.learned.iter().filter(|(n, _)| !self.configured.contains_key(n)).map(|(&n, &hz)| (n, hz))
+    }
+
+    /// The air says channel `n` is on `hz` (a grant's voice came up there, a
+    /// channel announced): learned, unless the config has it or it already
+    /// is so. A frequency is one channel: what said otherwise is dropped.
+    /// Whether that's news.
+    pub fn learn(&mut self, n: u32, hz: u64) -> bool {
+        if self.configured.contains_key(&n) || self.learned.get(&n) == Some(&hz) {
+            return false;
+        }
+        self.learned.retain(|_, h| *h != hz);
+        self.learned.insert(n, hz);
+        true
+    }
+
+    /// What was learned, to keep: `channel=hz` lines ([`table_to_string`]).
+    pub fn saved(&self) -> String {
+        table_to_string(&self.learned)
+    }
+
+    /// A kept table read back, each entry learned as the air would teach it.
+    pub fn load(&mut self, s: &str) {
+        for (n, hz) in table_from_str(s) {
+            self.learn(n, hz);
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MessageType {
     Grant,
@@ -62,6 +168,19 @@ pub enum MessageType {
     BaseStationId,
     #[default]
     Unknown,
+}
+
+impl MessageType {
+    /// A voice call's grant (`update`: one repeated for a call going on),
+    /// for a talkgroup (`group`) or between two radios.
+    pub fn voice(group: bool, update: bool) -> MessageType {
+        match (group, update) {
+            (true, false) => MessageType::Grant,
+            (true, true) => MessageType::Update,
+            (false, false) => MessageType::UuVGrant,
+            (false, true) => MessageType::UuVUpdate,
+        }
+    }
 }
 
 impl MessageType {
@@ -137,6 +256,40 @@ pub struct Message {
     pub system_time_ms: Option<(i64, bool)>,
     /// Human-readable summary, as Trunk Recorder logs it.
     pub meta: String,
+}
+
+/// A neighbouring site a control channel announces, by its address: P25's
+/// WACN, System ID, RFSS and site (another system's, for a neighbouring
+/// system); NXDN's system and site (WACN and RFSS 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdjacentSite {
+    pub wacn: u32,
+    pub sys_id: u32,
+    pub rfss: u32,
+    pub site: u32,
+    pub freq_hz: u64,
+}
+
+/// The neighbouring sites a control channel has announced
+/// ([`MessageType::Adjacent`] with a channel), each once by its address.
+#[derive(Clone, Debug, Default)]
+pub struct Neighbours(BTreeMap<(u32, u32, u32, u32), AdjacentSite>);
+
+impl Neighbours {
+    /// Takes `m`'s neighbour, if it announces one whose channel resolved.
+    pub fn hear(&mut self, m: &Message) {
+        if m.kind == MessageType::Adjacent && m.freq_hz != 0 {
+            let a = AdjacentSite { wacn: m.wacn, sys_id: m.sys_id, rfss: m.rfss, site: m.site, freq_hz: m.freq_hz };
+            self.0.insert((a.wacn, a.sys_id, a.rfss, a.site), a);
+        }
+    }
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+    pub fn list(&self) -> Vec<AdjacentSite> {
+        self.0.values().copied().collect()
+    }
 }
 
 
@@ -288,18 +441,38 @@ pub struct P25Parser {
     /// The site's (WACN, System ID): a band plan for another system's
     /// channels (an extended IDEN_UP_TDMA naming it) isn't this one's.
     system: Option<(u32, u16)>,
+    /// Other systems' band plans, by (WACN, System ID): a site sends a
+    /// neighbouring system's so radios can find its control channel
+    /// (ADJ_STS_BCST_UNC names it in that system's plan). Until the site's
+    /// network status says which system it is, its own is here too.
+    others: BTreeMap<(u32, u16), BTreeMap<u8, Identifier>>,
 }
 
 impl P25Parser {
     /// A channel's carrier frequency (0: its band plan unknown yet) and, on a
     /// TDMA carrier, its slot.
     pub fn resolve(&self, ch: Channel) -> (u64, Option<u8>) {
-        match self.tables.get(&ch.iden()) {
+        Self::resolve_on(&self.tables, ch)
+    }
+
+    /// [`Self::resolve`] on `plan`: this system's or another's.
+    fn resolve_on(plan: &BTreeMap<u8, Identifier>, ch: Channel) -> (u64, Option<u8>) {
+        match plan.get(&ch.iden()) {
             Some(i) => {
                 let (hz, slot) = i.resolve(ch);
                 (hz, (i.slots > 1).then_some(slot))
             }
             None => (0, None),
+        }
+    }
+
+    /// The band plan of system (WACN, System ID), when heard: this one's, or
+    /// one the site sent for a neighbouring system.
+    fn plan(&self, system: (u32, u16)) -> Option<&BTreeMap<u8, Identifier>> {
+        if Some(system) == self.system {
+            Some(&self.tables)
+        } else {
+            self.others.get(&system)
         }
     }
 
@@ -483,6 +656,7 @@ impl P25Parser {
                 } else {
                     let (w, s) = i.system.unwrap_or_default();
                     m.meta += &format!(" for system {w:x}.{s:x}: not this one's");
+                    self.others.entry((w, s)).or_default().insert(i.iden, Identifier { system: None, ..*i });
                 }
             }
             Msg::RfssStatus { site: s, networked } => {
@@ -495,29 +669,41 @@ impl P25Parser {
                 // the site lock (and a band plan for this system) through.
                 let wacn = s.wacn.unwrap_or(0);
                 self.system = Some((wacn, s.sys_id));
+                // Its band plan, if sent before this said whose it was.
+                if let Some(t) = self.others.remove(&(wacn, s.sys_id)) {
+                    self.tables.extend(t);
+                }
                 self.on(&mut m, s.ch);
                 (m.kind, m.wacn, m.sys_id) = (MessageType::Status, wacn, s.sys_id as u32);
                 m.meta = format!("Network status wacn {wacn:x} sysid {:x} CC {} MHz", s.sys_id, mhz(m.freq_hz));
             }
             Msg::AdjacentStatus { site: s, own_plan, conventional, failed, valid, .. } => {
-                // A neighbour on another band plan (ADJ_STS_BCST_UNC) has a
-                // channel this one can't resolve.
+                // Its WACN: the extended forms say it; the short ADJ_STS_BCST
+                // is this site's, which its network status says.
+                let own = self.system.map(|(w, _)| w);
+                let wacn = s.wacn.or(own);
+                (m.wacn, m.sys_id, m.rfss, m.site) = (wacn.unwrap_or(0), s.sys_id as u32, s.rfss as u32, s.site as u32);
+                // Its channel: on this system's band plan, or (ADJ_STS_BCST_UNC)
+                // on its own system's, when the site has sent that.
                 if *own_plan {
                     self.on(&mut m, s.ch);
+                } else if let Some(plan) = wacn.and_then(|w| self.plan((w, s.sys_id))) {
+                    m.freq_hz = Self::resolve_on(plan, s.ch).0;
                 }
-                (m.sys_id, m.rfss, m.site) = (s.sys_id as u32, s.rfss as u32, s.site as u32);
-                m.wacn = s.wacn.or(self.system.map(|(w, _)| w)).unwrap_or(0);
                 let mut flags = String::new();
-                for (on, f) in [(*conventional, " conventional"), (*failed, " failed"), (!*valid, " unverified")] {
+                for (on, f) in [(*conventional, " conventional"), (*failed, " failed"), (!*valid, " unverified"), (wacn.is_none(), " (WACN not heard yet)")] {
                     if on {
                         flags += f;
                     }
                 }
-                // A site radios can move to: a trunked one that is up.
-                if !conventional && !failed {
+                // A site radios can move to: a trunked one that is up, by its
+                // whole address (not until its WACN is known: else it would be
+                // another neighbour once it is).
+                if !conventional && !failed && wacn.is_some() {
                     m.kind = MessageType::Adjacent;
                 }
-                m.meta = format!("Adjacent site {:x}.{} {} CC {} MHz{flags}", s.sys_id, s.rfss, s.site, mhz(m.freq_hz));
+                let of = wacn.filter(|&w| Some(w) != own).map_or(String::new(), |w| format!(" of WACN {w:x}"));
+                m.meta = format!("Adjacent site {:x}.{} {}{of} CC {} MHz{flags}", s.sys_id, s.rfss, s.site, mhz(m.freq_hz));
             }
             Msg::SecondaryControl { rfss, site, channels } => {
                 for c in channels {
@@ -599,6 +785,44 @@ fn mfid(o: &Osp) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One rule for a carrier being its site's: its code once known; before,
+    /// a control carrier only (any, at a site with none).
+    #[test]
+    fn a_carrier_is_the_sites_by_its_code() {
+        assert!(site_code(Some(5u8), Some(5), false, true) && !site_code(Some(5u8), Some(6), true, true));
+        assert!(site_code(None::<u8>, Some(6), true, true), "a control carrier, before the code is known");
+        assert!(!site_code(None::<u8>, Some(6), false, true), "not another carrier");
+        assert!(site_code(None::<u8>, Some(6), false, false), "at a site with no control channel, any");
+    }
+
+    /// A voice channel's call: a grant first, an update for it at most each
+    /// refresh, a repeat between dropped, its talker kept when unnamed.
+    #[test]
+    fn a_voice_channels_call_is_reported_once_and_refreshed() {
+        let mut l = LastCall::default();
+        assert_eq!(l.heard(100, 7, 0.0, 1.0), Some(false), "new: a grant");
+        assert_eq!(l.heard(100, 0, 0.5, 1.0), None, "a repeat");
+        assert_eq!(l.heard(100, 0, 1.2, 1.0), Some(true), "refreshed: an update");
+        assert_eq!(l.shown(2.0), Some((100, 7)), "its talker kept");
+        assert_eq!(l.heard(200, 8, 1.3, 1.0), Some(false), "another call");
+        assert_eq!(l.shown(1.3 + CALL_SHOW_S + 0.1), None);
+    }
+
+    /// One rule for a site's channel table: the config stands, a frequency
+    /// is one channel, and a kept table is read back by the same rule.
+    #[test]
+    fn a_channel_table_learns_one_frequency_per_channel() {
+        let mut t = ChannelTable::new([(1, 452_175_000)].into_iter().collect());
+        assert!(!t.learn(1, 460_000_000), "the config's stands");
+        assert!(t.learn(2, 452_275_000) && !t.learn(2, 452_275_000));
+        assert!(t.learn(3, 452_275_000), "the same frequency, another channel");
+        assert_eq!((t.resolve(2), t.resolve(3), t.is_learned(1)), (None, Some(452_275_000), false));
+        let mut kept = ChannelTable::new([(1, 452_175_000)].into_iter().collect());
+        kept.load("2=452275000\n3=452275000\n1=999\n");
+        assert_eq!(kept.learned().collect::<Vec<_>>(), [(3, 452_275_000)], "deduplicated as heard, the config's left alone");
+        assert_eq!(kept.saved(), "3=452275000\n");
+    }
 
     /// SYNC_BCST's time to the micro-slot, as Unix ms (checked against Python's UTC calendar).
     #[test]
@@ -687,6 +911,38 @@ mod tests {
         assert_eq!(p.channel_to_hz(Channel(0x1000)), 762_006_250);
     }
 
+    /// The band plan before the network status: kept aside, then taken
+    /// once the network status says it's this system's.
+    #[test]
+    fn the_band_plan_before_the_network_status() {
+        let mut p = P25Parser::default();
+        let mut h = crate::p25::mbt::tests::ambtc_header(0x33, [0x11, 0xbe, 0xe0], [0x09, 0xef]);
+        h[2] = 0;
+        p.parse(&crate::p25::osp::from_mbt(&crate::p25::mbt::Mbt { header: h, data: vec![0x09, 0x15, 0x75, 0x62, 0xcb, 0x00, 0x32, 0] }), 0x443, 0.0);
+        assert!(p.tables.is_empty(), "whose it is not known yet");
+        parse(&mut p, 0x3b, 0, [0x12, 0xbe, 0xe0, 0x09, 0xef, 0x10, 0x01, 0x70]);
+        assert_eq!(p.channel_to_hz(Channel(0x1000)), 762_006_250);
+    }
+
+    /// A neighbouring system's control channel (ADJ_STS_BCST_UNC) is in that
+    /// system's band plan, which the site sends too.
+    #[test]
+    fn a_neighbouring_systems_control_channel_by_its_band_plan() {
+        let mut p = P25Parser::default();
+        parse(&mut p, 0x3b, 0, [0x12, 0xbe, 0xe0, 0x03, 0xa9, 0x10, 0x01, 0x70]);
+        let mbt = |op: u8, addr: [u8; 3], tail: [u8; 2], data: Vec<u8>| {
+            let mut h = crate::p25::mbt::tests::ambtc_header(op, addr, tail);
+            h[2] = 0;
+            crate::p25::osp::from_mbt(&crate::p25::mbt::Mbt { header: h, data })
+        };
+        let unc = mbt(0x3e, [0x12, 0x29, 0x54], [1, 1], vec![0x10, 0x00, 0x10, 0x00, 0x70, 0xbe, 0xe0, 0x00, 0, 0, 0, 0]);
+        let m = p.parse(&unc, 0x443, 0.0).pop().unwrap();
+        assert_eq!((m.kind, m.wacn, m.sys_id, m.rfss, m.site, m.freq_hz), (MessageType::Adjacent, 0xbee00, 0x954, 1, 1, 0), "its band plan not heard yet");
+        p.parse(&mbt(0x33, [0x11, 0xbe, 0xe0], [0x09, 0x54], vec![0x09, 0x15, 0x75, 0x62, 0xcb, 0x00, 0x32, 0]), 0x443, 0.0);
+        assert!(p.tables.is_empty(), "not this system's");
+        assert_eq!(p.parse(&unc, 0x443, 0.0).pop().unwrap().freq_hz, 762_006_250);
+    }
+
     /// SCCB_EXP is one channel: Channel (T), then Channel (R), the FNE's receive (not another CC).
     #[test]
     fn sccb_exp_is_one_control_channel() {
@@ -703,12 +959,16 @@ mod tests {
         assert_eq!(msg(0x2b, 0, [0x03, 0x01, 0x01, 1, 7, 0x0a, 0x0b, 0x0c]).kind, MessageType::Unknown);
     }
 
-    /// A neighbour radios can move to; a failed or conventional one isn't.
+    /// A neighbour radios can move to; a failed or conventional one isn't,
+    /// nor (ADJ_STS_BCST names no WACN) one before the site's WACN is heard.
     #[test]
     fn adjacent_sites() {
         let mut p = with_band_plan();
-        let m = parse(&mut p, 0x3c, 0, [0x12, 0x33, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap();
-        assert_eq!((m.kind, m.sys_id, m.rfss, m.site, m.freq_hz), (MessageType::Adjacent, 0x3a9, 1, 7, 851_012_500));
+        let adj = [0x12, 0x33, 0xa9, 1, 7, 0x10, 0x01, 0x70];
+        assert_ne!(parse(&mut p, 0x3c, 0, adj).pop().unwrap().kind, MessageType::Adjacent, "its WACN not heard yet");
+        parse(&mut p, 0x3b, 0, [0x12, 0xbe, 0xe0, 0x03, 0xa9, 0x10, 0x01, 0x70]);
+        let m = parse(&mut p, 0x3c, 0, adj).pop().unwrap();
+        assert_eq!((m.kind, m.wacn, m.sys_id, m.rfss, m.site, m.freq_hz), (MessageType::Adjacent, 0xbee00, 0x3a9, 1, 7, 851_012_500));
         assert_ne!(parse(&mut p, 0x3c, 0, [0x12, 0x73, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap().kind, MessageType::Adjacent);
         assert_ne!(parse(&mut p, 0x3c, 0, [0x12, 0xb3, 0xa9, 1, 7, 0x10, 0x01, 0x70]).pop().unwrap().kind, MessageType::Adjacent);
     }

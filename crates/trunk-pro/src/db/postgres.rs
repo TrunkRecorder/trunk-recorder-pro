@@ -94,6 +94,14 @@ impl Backend for PostgresBackend {
         tx.commit().map_err(|e| format!("commit failed: {}", said(e)))
     }
 
+    /// Each table rewritten without its dead rows (`vacuum full` takes each
+    /// one's lock while it does: reads of it wait too).
+    fn compact(&self) -> Result<(), String> {
+        let mut w = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        let tables: Vec<&str> = super::schema::TABLES.iter().map(|t| t.name).collect();
+        w.client.batch_execute(&format!("vacuum (full, analyze) {}", tables.join(", "))).map_err(|e| format!("vacuum failed: {}", said(e)))
+    }
+
     /// `f` on a read connection from the pool (a new one when all are out,
     /// or the one taken had dropped).
     fn read(&self, f: &mut dyn FnMut(&mut dyn Exec) -> Result<(), String>) -> Result<(), String> {
@@ -243,6 +251,13 @@ fn prepare(c: &mut Client, location: &str) -> Result<(), String> {
     if have == Some(want) {
         return tx.commit().map_err(said);
     }
+    // (One that only lacks what this version adds is brought up to it: schema::upgrade.)
+    if let Some(sql) = have.and_then(|v| schema::upgrade(Dialect::Postgres, v as u32)) {
+        tx.batch_execute(&sql).map_err(said)?;
+        tx.execute("update schema_version set version = $1", &[&want]).map_err(said)?;
+        log::info!("Call store: {location} upgraded from schema version {} to {want}", have.unwrap_or_default());
+        return tx.commit().map_err(said);
+    }
     if let Some(v) = have {
         log::warn!("Call store: {location} has schema version {v}, not this build's {want}; its tables are made afresh");
     }
@@ -299,5 +314,22 @@ mod tests {
         let again = Store::new(Box::new(PostgresBackend::open_in(&url, Some("t_pg_lock".into())).unwrap()));
         assert_eq!(again.scalar("select max(version)::bigint from schema_version"), i64::from(SCHEMA_VERSION));
         assert_eq!(again.scalar("select count(*) from meta"), 0, "made afresh");
+    }
+
+    /// A version 8 store (v0.3.0's) is upgraded in place, its rows kept. (With `TRP_PG_URL`.)
+    #[test]
+    fn a_version_8_store_is_upgraded_in_place() {
+        let Ok(url) = std::env::var("TRP_PG_URL") else { return };
+        let first = open_fresh_schema(&url, "t_pg_v8").unwrap();
+        first.batch_for_test("insert into systems (id, short_name, kind) values (1, 'a', 'p25');
+            insert into talkgroups (system_id, number, alpha_tag, mode, description, tag, category, priority, preferred_nac, preferred_site, ignore, sort_order, comment, origin, origin_name, origin_at)
+              values (1, 101, 'Fire', 'D', '', '', '', 1, 0, '', false, 0, '', 'file', 'x.csv', 5);
+            drop table unit_names; alter table talkgroups drop column origin, drop column origin_name, drop column origin_at;
+            update schema_version set version = 8");
+        drop(first);
+        let again = Store::new(Box::new(PostgresBackend::open_in(&url, Some("t_pg_v8".into())).unwrap()));
+        assert_eq!(again.scalar("select max(version)::bigint from schema_version"), i64::from(SCHEMA_VERSION));
+        assert_eq!(again.talkgroups(1).unwrap().iter().map(|r| (r.tg.alpha_tag.as_str(), r.origin.is_none())).collect::<Vec<_>>(), [("Fire", true)]);
+        assert!(again.unit_names(1).unwrap().is_empty());
     }
 }

@@ -48,9 +48,10 @@ packet switches off).
 
 ## Settings
 
-simplestream has settings for the whole recorder only: a list of streams
-(`plugins.simplestream.settings.streams` in `config.json`). Each stream sends some of the audio to
-one place.
+simplestream's settings are a list of streams (`plugins.simplestream.settings.streams` in
+`config.json`), for the whole recorder. Each stream sends some of the audio to one place. A system can
+have streams of its own (**simplestream shared settings** on its card, `override.streams`): the
+recorder-wide streams then don't apply to that system.
 
 | Key | Required | Default | Type | Description |
 |---|---|---|---|---|
@@ -131,7 +132,7 @@ The **Health** tab lists each destination as up or down, and the bytes sent.
 
 ## Coming from Trunk Recorder
 
-**Import Trunk Recorder config…** brings over your simplestream `streams`: `TGID`, `shortName`,
+**Setup → Systems → Import…** brings over your simplestream `streams`: `TGID`, `shortName`,
 `sendTGID`, `sendJSON`, `sendCallStart` and `sendCallEnd` as they were, and the older `address`,
 `port` and `useTCP` turned into a **Send to** address (`udp://127.0.0.1:9123` when they're
 missing). The plugin also reads `address`, `port` and `useTCP` if you paste a Trunk Recorder

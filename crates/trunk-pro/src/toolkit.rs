@@ -1,10 +1,12 @@
 //! What the analysis tools (`tool.rs`, `dmrtool.rs`, `nxdntool.rs`, `snrtool.rs`) share:
 //! reading a capture named on the command line, feeding it through a channelizer,
-//! bytes as hex, and the file a tool writes decoded audio or IQ to.
+//! bytes as hex (and SHA-256 digests, which the recorder's own code checks and
+//! keeps that way too), and the file a tool writes decoded audio or IQ to.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
 
+use sha2::{Digest, Sha256};
 use trunk_core::dsp::Channelizer;
 
 use crate::{die, Args};
@@ -59,6 +61,41 @@ impl Capture {
 /// Bytes as lowercase hex.
 pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// Hex (either case) as bytes; None if it isn't.
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    // (Hex digits alone: from_str_radix takes "+f" for 0x0f, so one MAC could be written two ways.)
+    if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+}
+
+/// The SHA-256 of `b`, as lowercase hex.
+pub fn sha256_hex(b: &[u8]) -> String {
+    hex(&Sha256::digest(b))
+}
+
+/// `s` with every byte but letters, digits, `-`, `_` and `~` as `%XX`.
+pub fn percent_encode(s: &str) -> String {
+    s.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
+}
+
+/// "%20" → " "; None for bad escapes or bytes that aren't UTF-8.
+pub fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let (mut out, mut i) = (Vec::with_capacity(b.len()), 0);
+    while i < b.len() {
+        if b[i] == b'%' {
+            out.push(u8::from_str_radix(s.get(i + 1..i + 3)?, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// A file a tool writes samples to (`--audio out.f32`, `--iq out.cf32`).

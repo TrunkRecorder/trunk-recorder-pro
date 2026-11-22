@@ -12,10 +12,13 @@
 //! }
 //! ```
 //!
-//! A system can override some of a plugin's settings for itself (another
-//! server for it, say): `"openmhz": { "apiKey": "…", "override": { "server": "…" } }`.
-//! The plugin is told of each system's settings, the plugin's with its
-//! overrides, along with its own ([`host`] does the merging).
+//! A system can set again those of a plugin's settings the plugin offers
+//! (`system_overrides` in its manifest; another server for it, say):
+//! `"openmhz": { "apiKey": "…", "override": { "server": "…" } }`. The plugin
+//! is told of each system's settings, the plugin's with what it set again,
+//! along with its own ([`host`] does the merging). A plugin can be off for a
+//! system (`systemsOff`): nothing about it reaches the plugin ([`host`]'s
+//! one rule for that, `may_take`).
 //!
 //! A system can have several copies of a plugin (a list of settings in place
 //! of one, `"openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }]`, to upload it
@@ -41,7 +44,7 @@ mod timing;
 
 pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
-pub use host::{Calls, Note, PluginHost, Spec};
+pub use host::{Calls, Note, PluginHost, Saves, Spec};
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -50,6 +53,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use trunk_core::trunk::SystemId;
 use trunk_recorder_plugin::{Manifest, API_VERSION};
 
 use crate::config::{Config, PluginSetup};
@@ -75,8 +79,8 @@ pub fn copies(cfg: &Config, id: &str) -> usize {
 /// Copy `copy` (0: the first) of plugin `id`'s settings for each system
 /// calls can come from that has some, by short name (every system's own:
 /// [`Config::name_problem`]).
-pub fn system_settings(cfg: &Config, id: &str, copy: usize) -> BTreeMap<String, Value> {
-    cfg.call_systems().into_iter().filter_map(|s| Some((s.short_name.to_string(), copies_of(s.plugins.get(id)?).get(copy)?.clone()))).collect()
+pub fn system_settings(cfg: &Config, id: &str, copy: usize) -> BTreeMap<SystemId, Value> {
+    cfg.call_systems().into_iter().filter_map(|s| Some((s.id, copies_of(s.plugins.get(id)?).get(copy)?.clone()))).collect()
 }
 
 /// What a copy of plugin `id` goes by in its notes, process stats and data
@@ -175,57 +179,171 @@ pub fn executable_name(id: &str) -> String {
     }
 }
 
+/// How long `--describe` may take, try by try. The SDK prints the manifest
+/// straight away, but a busy machine (one just booted, its disk cold) can be
+/// slow to start a process, so one that runs out is asked again, for longer.
+const DESCRIBE_LIMITS: [Duration; 2] = [Duration::from_secs(10), Duration::from_secs(30)];
+
+/// Why an executable gave no manifest. `timed_out`: `--describe` didn't
+/// finish, which says more about the machine than the plugin: worth asking
+/// again later, not remembering.
+#[derive(Debug, Clone)]
+pub struct DescribeError {
+    pub text: String,
+    pub timed_out: bool,
+}
+
 /// Ask an executable for its manifest (`--describe`), and check that this
 /// recorder can run it.
 pub fn describe(exe: &Path) -> Result<Manifest, String> {
+    try_describe(exe).map_err(|e| e.text)
+}
+
+/// [`describe`], saying whether it failed by running out of time.
+pub fn try_describe(exe: &Path) -> Result<Manifest, DescribeError> {
+    let fail = |text: String| DescribeError { text, timed_out: false };
+    let mut late = Vec::new();
+    let (status, out, err) = loop {
+        match run_describe(exe, DESCRIBE_LIMITS[late.len()]) {
+            Ok(r) => break r,
+            Err(Run::Failed(e)) => return Err(fail(format!("{}: {e}", exe.display()))),
+            Err(Run::TimedOut(what)) => {
+                late.push(what);
+                if late.len() == DESCRIBE_LIMITS.len() {
+                    let text = format!("{}: --describe didn't finish ({}; {})", exe.display(), late.join("; asked again, "), machine_state());
+                    return Err(DescribeError { text, timed_out: true });
+                }
+            }
+        }
+    };
+    if !late.is_empty() {
+        log::warn!("{}: --describe didn't finish the first time ({}; {}); it did when asked again", exe.display(), late.join("; "), machine_state());
+    }
+    if !status.success() {
+        return Err(fail(format!("{}: --describe failed ({status}){}", exe.display(), said(&err))));
+    }
+    let m: Manifest = serde_json::from_str(&out).map_err(|e| fail(format!("{}: not a plugin manifest ({e}){}", exe.display(), said(&err))))?;
+    if m.id.is_empty() {
+        return Err(fail(format!("{}: its manifest has no id", exe.display())));
+    }
+    // The host speaks API_VERSION only. Plugins built for an older API are
+    // accepted because there is only one so far: when API_VERSION goes up,
+    // the host must speak each plugin's own `api` (or refuse older ones here).
+    if m.api == 0 {
+        return Err(fail(format!("{}: its manifest doesn't say which plugin API it speaks (\"api\"; this recorder has {API_VERSION})", m.id)));
+    }
+    if m.api > API_VERSION {
+        return Err(fail(format!("{} needs plugin API {}; this recorder has {API_VERSION} — update Trunk Recorder Pro", m.id, m.api)));
+    }
+    Ok(m)
+}
+
+/// How one run of `--describe` went wrong.
+enum Run {
+    /// It couldn't be started, or waited on.
+    Failed(String),
+    /// It ran past its limit and was killed: what it had done by then.
+    TimedOut(String),
+}
+
+/// Run `exe --describe` for at most `limit`: its exit status, stdout and stderr.
+fn run_describe(exe: &Path, limit: Duration) -> Result<(std::process::ExitStatus, String, String), Run> {
+    let t0 = Instant::now();
     let mut child = Command::new(exe)
         .arg("--describe")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("{}: {e}", exe.display()))?;
-    let mut out = String::new();
-    let reader = child.stdout.take().map(|mut o| {
-        std::thread::spawn(move || {
-            let _ = o.read_to_string(&mut out);
-            out
-        })
-    });
-    let t0 = Instant::now();
+        .map_err(|e| Run::Failed(e.to_string()))?;
+    let spawned = t0.elapsed();
+    // Both pipes are read as it goes, so neither can fill and stall it, and
+    // what came is there even if something it started keeps a pipe open.
+    type Pipe = (std::sync::Arc<std::sync::Mutex<Vec<u8>>>, std::sync::mpsc::Receiver<()>);
+    let read = |pipe: Option<Box<dyn Read + Send>>| -> Pipe {
+        let (buf, (tx, rx)) = (std::sync::Arc::new(std::sync::Mutex::new(Vec::new())), std::sync::mpsc::channel());
+        if let Some(mut p) = pipe {
+            let buf = buf.clone();
+            std::thread::spawn(move || {
+                let mut b = [0u8; 4096];
+                while let Ok(n @ 1..) = p.read(&mut b) {
+                    buf.lock().unwrap().extend_from_slice(&b[..n]);
+                }
+                let _ = tx.send(());
+            });
+        }
+        (buf, rx)
+    };
+    let out = read(child.stdout.take().map(|p| Box::new(p) as _));
+    let err = read(child.stderr.take().map(|p| Box::new(p) as _));
+    // (The end of each pipe, waited on until `by`: not for whatever still holds one.)
+    let got = |(buf, done): Pipe, by: Instant| {
+        let _ = done.recv_timeout(by.saturating_duration_since(Instant::now()));
+        let b = buf.lock().unwrap();
+        String::from_utf8_lossy(&b).into_owned()
+    };
     let status = loop {
-        if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
+        if let Some(s) = child.try_wait().map_err(|e| Run::Failed(e.to_string()))? {
             break s;
         }
-        if t0.elapsed() > Duration::from_secs(10) {
+        if t0.elapsed() > limit {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(format!("{}: --describe didn't finish", exe.display()));
+            let by = Instant::now() + Duration::from_secs(1);
+            let (out, err) = (got(out, by), got(err, by));
+            let printed = match out.len() {
+                0 => "it printed nothing".to_string(),
+                n => format!("it printed {n} bytes but didn't exit"),
+            };
+            return Err(Run::TimedOut(format!("killed after {:.1} s, started in {:.2} s, {printed}{}", limit.as_secs_f64(), spawned.as_secs_f64(), said(&err))));
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    let out = reader.and_then(|r| r.join().ok()).unwrap_or_default();
-    if !status.success() {
-        return Err(format!("{}: --describe failed ({status})", exe.display()));
+    let by = Instant::now() + Duration::from_secs(1);
+    Ok((status, got(out, by), got(err, by)))
+}
+
+/// What a plugin wrote to stderr, the end of it, to add to an error ("" for nothing).
+fn said(stderr: &str) -> String {
+    let s = stderr.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.is_empty() {
+        return String::new();
     }
-    let m: Manifest = serde_json::from_str(&out).map_err(|e| format!("{}: not a plugin manifest ({e})", exe.display()))?;
-    if m.id.is_empty() {
-        return Err(format!("{}: its manifest has no id", exe.display()));
+    let n = s.chars().count();
+    let tail: String = s.chars().skip(n.saturating_sub(300)).collect();
+    format!("; it said \"{}{tail}\"", if n > 300 { "…" } else { "" })
+}
+
+/// How busy the machine is, for errors that may be its fault: load and
+/// uptime where the system says (Linux), the CPU count everywhere.
+fn machine_state() -> String {
+    let cpus = std::thread::available_parallelism().map_or(0, |n| n.get());
+    let load = std::fs::read_to_string("/proc/loadavg").ok().map(|l| l.split_whitespace().take(3).collect::<Vec<_>>().join(" "));
+    let up = std::fs::read_to_string("/proc/uptime").ok().and_then(|u| u.split_whitespace().next()?.parse::<f64>().ok());
+    let mut s = format!("{cpus} CPUs");
+    if let Some(l) = load {
+        s += &format!(", load average {l}");
     }
-    // The host speaks API_VERSION only. Plugins built for an older API are
-    // accepted because there is only one so far: when API_VERSION goes up,
-    // the host must speak each plugin's own `api` (or refuse older ones here).
-    if m.api == 0 {
-        return Err(format!("{}: its manifest doesn't say which plugin API it speaks (\"api\"; this recorder has {API_VERSION})", m.id));
+    if let Some(u) = up {
+        let u = u as u64;
+        s += &match u {
+            0..=119 => format!(", the system up {u} s"),
+            120..=7199 => format!(", the system up {} min", u / 60),
+            _ => format!(", the system up {} h", u / 3600),
+        };
     }
-    if m.api > API_VERSION {
-        return Err(format!("{} needs plugin API {}; this recorder has {API_VERSION} — update Trunk Recorder Pro", m.id, m.api));
-    }
-    Ok(m)
+    s
+}
+
+/// A system calls can come from this run: its id, and as plugins know it.
+#[derive(Clone, Debug)]
+pub struct RunSystem {
+    pub id: SystemId,
+    pub info: trunk_recorder_plugin::SystemInfo,
 }
 
 /// Every system calls can come from, as plugins know them (settings not filled in).
-pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::SystemInfo> {
+pub fn systems_of(cfg: &crate::config::Config) -> Vec<RunSystem> {
     use crate::config::{fcc_primary, FccLicenses};
     cfg.call_systems()
         .into_iter()
@@ -239,33 +357,50 @@ pub fn systems_of(cfg: &crate::config::Config) -> Vec<trunk_recorder_plugin::Sys
                 _ => Default::default(),
             };
             let primary = fcc_primary(&fcc, &ccs).cloned().unwrap_or_default();
-            trunk_recorder_plugin::SystemInfo {
+            let info = trunk_recorder_plugin::SystemInfo {
                 index: s.index,
+                id: s.id.0,
                 short_name: s.short_name.to_string(),
                 kind: s.kind.into(),
                 name,
                 fcc: fcc.into_iter().map(|(k, l)| (k, trunk_recorder_plugin::FccLicense { call_sign: l.call_sign, name: l.name })).collect(),
                 fcc_call_sign: primary.call_sign,
                 fcc_name: primary.name,
-                sites: sys.map_or_else(Vec::new, |y| y.active_sites().map(|t| trunk_recorder_plugin::SiteInfo { name: y.site_name(t).to_string() }).collect()),
+                sites: sys.map_or_else(Vec::new, |y| y.active_sites().map(|t| trunk_recorder_plugin::SiteInfo { id: t.id.0, name: y.site_name(t).to_string(), config: Value::Null }).collect()),
                 ..Default::default()
-            }
+            };
+            RunSystem { id: s.id, info }
         })
         .collect()
 }
 
+/// A plugin's `settings.save` into its settings (`settings`, an object or null): each key given
+/// replaces that setting, a null removes it, the others stay. The keys that changed.
+pub fn merge_settings(settings: &mut serde_json::Value, given: serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    use serde_json::Value;
+    let mut have = match std::mem::take(settings) {
+        Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let mut changed = Vec::new();
+    for (k, v) in given {
+        let was = if v.is_null() { have.remove(&k) } else { have.insert(k.clone(), v.clone()) };
+        if was.as_ref() != Some(&v) && !(v.is_null() && was.is_none()) {
+            changed.push(k);
+        }
+    }
+    *settings = Value::Object(have);
+    changed
+}
+
 /// Plugin notes as log lines, which the log shows the browsers too
-/// ([`crate::logging::text`]; the plugins view follows each plugin's state
-/// and results in its `pluginRuntime`).
+/// ([`crate::logging::plugin_note`]; the plugins view follows each plugin's
+/// state and results in its `pluginRuntime`).
 pub fn notes_to_log() -> host::Notes {
     use trunk_recorder_plugin::{Level, Outcome, State};
     let log = |plugin: &str, error: bool, text: &str| {
-        let text = if plugin.is_empty() { format!("Plugins: {text}") } else { format!("[{plugin}] {text}") };
-        if error {
-            log::error!(target: "plugin", "{text}");
-        } else {
-            log::info!(target: "plugin", "{text}");
-        }
+        use trunk_app::log::Level as L;
+        crate::logging::plugin_note(plugin, if error { L::Error } else { L::Info }, text);
     };
     std::sync::Arc::new(move |n: Note| match n {
         Note::Log { plugin, level, text } => {
@@ -293,6 +428,20 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A plugin's save replaces the keys it gives, removes those it gives as null, keeps the rest.
+    #[test]
+    fn a_plugins_save_merges_into_its_settings() {
+        let mut s = json!({ "token": "t", "servers": [{ "id": "1" }], "old": 1 });
+        let given = json!({ "servers": [{ "id": "1", "name": "LolWut" }], "old": null, "gone": null, "token": "t" });
+        let mut changed = merge_settings(&mut s, given.as_object().unwrap().clone());
+        changed.sort();
+        assert_eq!(s, json!({ "token": "t", "servers": [{ "id": "1", "name": "LolWut" }] }));
+        assert_eq!(changed, ["old", "servers"], "only what changed is said");
+        let mut none = serde_json::Value::Null;
+        merge_settings(&mut none, json!({ "a": 1 }).as_object().unwrap().clone());
+        assert_eq!(none, json!({ "a": 1 }));
+    }
+
     /// Allowing a plugin decrypted calls, or no longer, restarts the plugins.
     #[test]
     fn a_change_to_share_decrypted_reloads_the_plugins() {
@@ -319,7 +468,7 @@ mod tests {
     /// conventional system's licenses too; left out, they're absent.
     #[test]
     fn plugins_are_told_a_systems_fcc_licenses_and_sites() {
-        let c: Config = serde_json::from_value(json!({
+        let mut c: Config = serde_json::from_value(json!({
             "systems": [
                 { "shortName": "dcfd", "name": "DC Fire",
                   "fcc": { "859087500": { "callSign": "KNJA391", "from": "air" }, "857987500": { "callSign": "WPXT459", "name": "DISTRICT OF COLUMBIA" } },
@@ -329,21 +478,22 @@ mod tests {
             "conventional": [{ "shortName": "county", "fcc": { "155475000": { "callSign": "KQX123" } }, "channels": [{ "freqHz": 155475000, "mode": "fm" }] }]
         }))
         .unwrap();
+        c.assign_system_ids();
         let s = systems_of(&c);
-        assert_eq!(s[0].name, "DC Fire");
-        assert_eq!((s[0].fcc_call_sign.as_str(), s[0].fcc_name.as_str()), ("WPXT459", "DISTRICT OF COLUMBIA"));
-        assert_eq!(s[0].fcc["859087500"], trunk_recorder_plugin::FccLicense { call_sign: "KNJA391".into(), name: String::new() });
-        assert_eq!(s[0].sites.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["dcfd", "south"]);
-        let wire = serde_json::to_value(&s[1]).unwrap();
+        assert_eq!(s[0].info.name, "DC Fire");
+        assert_eq!((s[0].info.fcc_call_sign.as_str(), s[0].info.fcc_name.as_str()), ("WPXT459", "DISTRICT OF COLUMBIA"));
+        assert_eq!(s[0].info.fcc["859087500"], trunk_recorder_plugin::FccLicense { call_sign: "KNJA391".into(), name: String::new() });
+        assert_eq!(s[0].info.sites.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["dcfd", "south"]);
+        let wire = serde_json::to_value(&s[1].info).unwrap();
         assert!(wire.get("fcc").is_none() && wire.get("fcc_call_sign").is_none() && wire.get("name").is_none(), "{wire}");
         assert_eq!(wire["sites"][0]["name"], "wmata");
-        let county = s.iter().find(|x| x.short_name == "county").unwrap();
-        assert_eq!(county.fcc_call_sign, "KQX123");
+        let county = s.iter().find(|x| x.info.short_name == "county").unwrap();
+        assert_eq!(county.info.fcc_call_sign, "KQX123");
     }
 
     #[test]
     fn what_plugins_get_from_the_config() {
-        let c: Config = serde_json::from_value(json!({
+        let mut c: Config = serde_json::from_value(json!({
             "systems": [
                 { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": { "apiKey": "k" } } },
                 { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }] }
@@ -355,11 +505,12 @@ mod tests {
             }
         }))
         .unwrap();
+        c.assign_system_ids();
         let specs = Spec::enabled(&c);
         assert_eq!(specs.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["openmhz"]);
         assert_eq!(specs[0].config, json!({ "server": "s" }));
-        assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "k" })));
-        assert!(!specs[0].systems.contains_key("wmata"), "wmata has no settings");
+        assert_eq!(specs[0].systems.get(&c.id_of("dcfd").unwrap()), Some(&json!({ "apiKey": "k" })));
+        assert!(!specs[0].systems.contains_key(&c.id_of("wmata").unwrap()), "wmata has no settings");
         assert_eq!(specs[0].systems.len(), 1, "no conventional channels, so no conventional system");
         assert_eq!(executable("mine", &c.plugins["mine"]), PathBuf::from("/builds/mine"));
         let mut with_delays = c.clone();
@@ -377,7 +528,7 @@ mod tests {
     /// control channel) isn't one of them.
     #[test]
     fn plugins_know_systems_by_short_name() {
-        let c: Config = serde_json::from_value(json!({
+        let mut c: Config = serde_json::from_value(json!({
             "systems": [
                 { "shortName": "old", "enabled": false, "sites": [{ "controlChannelsHz": [851000000] }], "plugins": { "openmhz": { "apiKey": "old" } } },
                 { "shortName": "draft", "plugins": { "openmhz": { "apiKey": "draft" } } },
@@ -387,13 +538,14 @@ mod tests {
             "plugins": { "openmhz": { "enabled": true } }
         }))
         .unwrap();
+        c.assign_system_ids();
         let systems = systems_of(&c);
-        assert_eq!(systems.iter().map(|s| (s.index, s.short_name.as_str(), s.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (1, "county", "conventional")]);
+        assert_eq!(systems.iter().map(|s| (s.info.index, s.info.short_name.as_str(), s.info.kind.as_str())).collect::<Vec<_>>(), [(0, "dcfd", "p25"), (1, "county", "conventional")]);
         let e = c.engine_config(0.0, &Default::default());
         assert_eq!(e.systems.iter().map(|s| s.short_name.as_str()).collect::<Vec<_>>(), ["dcfd", "county"], "the engine numbers them so too");
         let specs = Spec::enabled(&c);
-        assert_eq!(specs[0].systems.get("dcfd"), Some(&json!({ "apiKey": "dcfd" })));
-        assert_eq!(specs[0].systems.get("county"), Some(&json!({ "apiKey": "conv" })));
+        assert_eq!(specs[0].systems.get(&c.id_of("dcfd").unwrap()), Some(&json!({ "apiKey": "dcfd" })));
+        assert_eq!(specs[0].systems.get(&c.id_of("county").unwrap()), Some(&json!({ "apiKey": "conv" })));
         assert_eq!(specs[0].systems.len(), 2);
     }
 
@@ -401,7 +553,7 @@ mod tests {
     /// the systems with a second copy.
     #[test]
     fn a_second_copy_runs_for_its_systems_only() {
-        let c: Config = serde_json::from_value(json!({
+        let mut c: Config = serde_json::from_value(json!({
             "systems": [
                 { "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": [{ "apiKey": "a" }, { "apiKey": "b" }] } },
                 { "shortName": "wmata", "sites": [{ "controlChannelsHz": [489087500] }], "plugins": { "openmhz": { "apiKey": "w" } } }
@@ -409,14 +561,43 @@ mod tests {
             "plugins": { "openmhz": { "enabled": true, "settings": { "server": "s" } } }
         }))
         .unwrap();
+        c.assign_system_ids();
         assert_eq!(copies(&c, "openmhz"), 2);
         let specs = Spec::enabled(&c);
         assert_eq!(specs.iter().map(|s| (s.id.as_str(), s.copy)).collect::<Vec<_>>(), [("openmhz", 0), ("openmhz", 1)]);
-        assert_eq!(specs[0].systems, BTreeMap::from([("dcfd".to_string(), json!({ "apiKey": "a" })), ("wmata".to_string(), json!({ "apiKey": "w" }))]));
-        assert_eq!(specs[1].systems, BTreeMap::from([("dcfd".to_string(), json!({ "apiKey": "b" }))]));
+        assert_eq!(specs[0].systems, BTreeMap::from([(c.id_of("dcfd").unwrap(), json!({ "apiKey": "a" })), (c.id_of("wmata").unwrap(), json!({ "apiKey": "w" }))]));
+        assert_eq!(specs[1].systems, BTreeMap::from([(c.id_of("dcfd").unwrap(), json!({ "apiKey": "b" }))]));
         assert_eq!(specs[1].config, json!({ "server": "s" }), "every copy has the whole recorder's settings");
         assert_eq!(copy_label("openmhz", 1), "openmhz#2");
         assert_eq!(parse_label("openmhz#2"), ("openmhz", 1));
         assert_eq!(parse_label("openmhz"), ("openmhz", 0));
+    }
+
+    /// A plugin that hangs on `--describe` is killed at the limit, and the
+    /// error says what it had done (printed, said on stderr); one that fails
+    /// says what it said too.
+    #[cfg(unix)]
+    #[test]
+    fn describe_says_what_the_plugin_did() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-describe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+        let hangs = script("hangs", "echo '{\"id\":'; echo 'waiting on something' >&2; sleep 5");
+        let t0 = Instant::now();
+        let Err(Run::TimedOut(what)) = run_describe(&hangs, Duration::from_secs(2)) else { panic!("it should time out") };
+        assert!(t0.elapsed() < Duration::from_secs(4), "killed, not waited out");
+        assert!(what.contains("killed after") && what.contains("printed 7 bytes but didn't exit"), "{what}");
+        assert!(what.contains("it said \"waiting on something\""), "{what}");
+        let fails = script("fails", "echo 'no config here' >&2; exit 3");
+        let e = try_describe(&fails).unwrap_err();
+        assert!(!e.timed_out && e.text.contains("--describe failed") && e.text.contains("it said \"no config here\""), "{}", e.text);
+        assert!(machine_state().contains("CPUs"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

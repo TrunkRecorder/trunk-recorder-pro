@@ -197,6 +197,14 @@ impl History {
         }
     }
 
+    /// Let go of the series matching `patterns` (a name, or a prefix
+    /// ending in `*`); how many went.
+    pub fn forget(&mut self, patterns: &[String]) -> usize {
+        let before = self.series.len();
+        self.series.retain(|k, _| !patterns.iter().any(|p| matches(p, k)));
+        before - self.series.len()
+    }
+
     /// The series names kept.
     pub fn keys(&self) -> Vec<String> {
         let mut k: Vec<String> = self.series.keys().cloned().collect();

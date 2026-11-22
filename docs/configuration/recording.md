@@ -2,7 +2,8 @@
 
 The `recording` object says where calls are saved and which are kept. This page lists its keys, the
 per-system overrides and the `filenameFormat` tokens. For what a recording folder looks like, the
-call JSON, M4A files and the RAM spool, see the [recordings guide](../guides/recordings.md).
+file name editor, the call JSON, M4A files, the archive and the RAM spool, see the
+[recordings guide](../guides/recordings.md).
 
 ```json
 "recording": {
@@ -27,8 +28,8 @@ plugin fails**).
 | `prerollS` | | `1` | number | Seconds of air from before each grant added to the start of a trunked call. The interface allows 0–3 |
 | `maxRecorders` | | `32` | integer | Calls recorded at once, across all trunked systems. The interface allows 1–64 |
 | `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or update came in (or its last audio), s. Trunk Recorder checks once a second, so the same value there ends calls up to 2 s later. The interface allows 1–30 |
-| `conversationMode` | | `true` | bool | Per system (trunked). **Conversations**: a call holds a talkgroup's transmissions until it's quiet for `callTimeoutS`. `false`: each transmission is a call of its own, so on a system with several sites the best copy of each transmission is kept. Setup suggests `false` for a system with several sites. See [multi-site](../guides/multi-site.md#calls-heard-on-several-sites) |
-| `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway |
+| `conversationMode` | | `true` | bool | Per system (trunked and conventional). **Conversations**: a call holds a talkgroup's transmissions until it's quiet for `callTimeoutS`. `false`: each transmission is a call of its own, so on a system with several sites the best copy of each transmission is kept. Setup suggests `false` for a system with several sites. See [multi-site](../guides/multi-site.md#calls-heard-on-several-sites) |
+| `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway, and a conventional row with a name of its own counts as listed |
 | `recordEncrypted` | | `false` | bool | Per system. Keep calls flagged encrypted (by the grant or the talkgroup's `Mode`), with their radios, even with no audio. Encrypted transmissions are always left out of the audio, unless decrypted (see [systems.md](systems.md#encryption-keys-keys)). Config only: not in the interface |
 | `recordUnitToUnit` | | `true` | bool | Per system. Record P25 individual calls: unit-to-unit (private) and telephone interconnect |
 | `keepSilentCalls` | | `false` | bool | Per system. Keep calls with no audio (encrypted, or nothing decoded) |
@@ -53,11 +54,6 @@ If `archiveM4a` is on but no `.m4a` could be made (no encoder, or the encode fai
 kept in its place: a call whose audio is to be kept never loses all of it. The frames file
 (`captureFrames`) stays when either kind of audio is kept.
 
-Configs from before v0.2.4 with `audioArchive` and `compressWav` are upgraded automatically when
-read: `archiveWav` takes `audioArchive`'s value, and `archiveM4a` is on when both were on (a
-system's own override takes any value it didn't set from the top-level `recording`). The old keys
-are removed on save.
-
 When a call flagged encrypted at its grant isn't kept (`recordEncrypted` off), it isn't recorded at
 all, unless its system has [encryption keys](systems.md#encryption-keys-keys). One that turns
 encrypted part-way is kept with its clear transmissions.
@@ -70,7 +66,8 @@ encrypted part-way is kept with its clear transmissions.
 | `bitrateKbps` | | `32` | integer | AAC bitrate, 8–320 kb/s |
 
 Each call is encoded once, and the same `.m4a` serves `archiveM4a` and every plugin. Changing
-`m4a` while recording restarts the plugins.
+`m4a` while recording restarts the plugins with the new encoder; the `.m4a` that `archiveM4a` keeps
+uses it from the next Start.
 
 ### `ramSpool`
 
@@ -103,7 +100,7 @@ above. A rule left out follows the global `recording`.
 | Key | Type |
 |---|---|
 | `callTimeoutS`, `minCallS`, `maxCallS`, `minTransmissionS`, `digitalLevelDb`, `analogLevelDb` | number |
-| `recordUnknown`, `recordEncrypted`, `recordUnitToUnit`, `keepSilentCalls`, `normalizeAudio`, `archiveWav`, `archiveM4a`, `callLog`, `archiveFilesOnFailure` | bool |
+| `conversationMode`, `recordUnknown`, `recordEncrypted`, `recordUnitToUnit`, `keepSilentCalls`, `normalizeAudio`, `archiveWav`, `archiveM4a`, `callLog`, `archiveFilesOnFailure` | bool |
 | `filenameFormat` | string |
 
 Other keys in a system's `recording` (`captureDir`, `vocoder` and the like) are recorder-wide only;
@@ -121,8 +118,7 @@ With `filenameFormat` empty, calls are saved as Trunk Recorder saves them, in lo
 Month and day aren't zero-padded (`2026/10/4`). `<freq>` is in Hz. `.<slot>` is added for P25
 Phase 2 and DMR calls. With `conversationMode` off, `-call_<call_num>` is added too, as a format's
 names have it: two transmissions of a talkgroup on one channel can begin in the same second. A system's sites share its folder; the call JSON's `site` says which site's
-copy it is. Calls saved by an older version, when each site was a system, stay in each site's old
-folder and are still found.
+copy it is.
 
 Otherwise `filenameFormat` is a path template relative to `captureDir`, with `/` making folders,
 built from Trunk Recorder's tokens. The interface's **Folders and file names** editor shows a preview
@@ -138,24 +134,24 @@ message naming it.
 |---|---|
 | `{short_name}` | The system's short name |
 | `{site}` | The site the call was kept from, by name (a system of one site: its short name; none for a conventional system) |
-| `{sys_num}` | The system's number: 0, 1, 2… for the systems being recorded, trunked first, then conventional (before 0.2.0 a conventional system's was counted down from 65535) |
+| `{sys_num}` | The system's number: 0, 1, 2… for the systems being recorded, trunked first, then conventional |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
 | `{talkgroup_ota}` | A conventional P25, DMR or NXDN call's talkgroup as the air named it (its row may file it under another `{talkgroup}`); empty for other calls |
-| `{talkgroup_alpha_tag}` | The talkgroup's alpha tag |
+| `{talkgroup_alpha_tag}` | The talkgroup's alpha tag (`FD_Disp`) |
 | `{talkgroup_description}` | Its description |
 | `{talkgroup_tag}` | Its tag ("Fire Dispatch") |
 | `{talkgroup_group}` | Its category |
 | `{freq}` | The frequency, Hz |
-| `{freq_mhz}` | The frequency, MHz with 4 decimals |
+| `{freq_mhz}` | The frequency, MHz with 4 decimals (`858.4875`) |
 | `{epoch}` | The start time, Unix seconds |
-| `{time:FORMAT}` | The start time in local time, `FORMAT` being strftime's: `%Y %m %d %H %M %S`, `%j`, `%a`, `%b`, `%F`, `%T`, `%z` and so on, `%f` for milliseconds, `%-m` (or `%-d`…) without padding. Or `iso` / `iso_ms` |
+| `{time:FORMAT}` | The start time in local time, `FORMAT` being strftime's: `%Y %m %d %H %M %S`, `%j`, `%a`, `%b`, `%F`, `%T`, `%z` and so on, `%f` for milliseconds, `%-m` (or `%-d`…) without padding. Or `iso` / `iso_ms`. A time format can make folders (`{time:%Y/%m}`) |
 | `{ztime:FORMAT}` | The same in UTC (`iso` ends in `Z`) |
 | `{call_num}` | The call's number |
 | `{tdma_slot}` | The slot (Phase 2, DMR); empty when the call has none |
 | `{system_type}` | The kind of system: `p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional` |
 | `{voice_mode}` | What the call's voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm` or `am` |
 | `{nac}` | A P25 call's NAC, three hex digits (`293`); empty for other calls |
-| `{color_code}` | DMR colour code |
+| `{color_code}` | A DMR call's colour code; −1 otherwise |
 | `{ran}` | An NXDN call's RAN; −1 otherwise |
 | `{source_num}`, `{recorder_num}` | Which source and recorder |
 | `{audio_type}` | `analog`, `digital` or `digital_tdma` (the call JSON's `audio_type`, space made `_`) |

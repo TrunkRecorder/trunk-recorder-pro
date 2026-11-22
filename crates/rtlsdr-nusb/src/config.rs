@@ -41,8 +41,10 @@ impl SampleMode for F32Iq {
     const FORMAT: SampleFormat = SampleFormat::F32Iq;
 }
 
-/// Tuner gain policy. Manual gain is approximate, using the reference driver's
-/// measured 2.3 dB LNA and 1.2 dB mixer steps with a fixed VGA setting.
+/// Tuner gain policy. Manual gain is librtlsdr's nearest step, with a fixed
+/// VGA setting: on an R82xx its offered gains (0 to 49.6 dB) by its measured
+/// LNA and mixer steps, on an E4000 its LNA + mixer steps (-1 to 42 dB). What
+/// that is: [`crate::TunerKind::gain_db`], [`crate::Device::gain_db`].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum GainConfig {
     /// Let the tuner control LNA and mixer gain automatically.
@@ -52,8 +54,9 @@ pub enum GainConfig {
     Manual(f32),
 }
 
-/// Direct ADC input for frequencies below 28.8 MHz on non-V4 dongles.
-/// Requires appropriate board wiring. Blog V4 uses its own upconverter instead.
+/// Direct ADC input for frequencies below 28.8 MHz on dongles without an
+/// upconverter. Requires appropriate board wiring. The Blog V4 and V4L use
+/// their own upconverter instead (see [`Board`](crate::Board)).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DirectSampling {
     /// Use the RF tuner; reject frequencies below its supported range.

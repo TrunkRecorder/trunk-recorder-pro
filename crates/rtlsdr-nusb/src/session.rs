@@ -129,13 +129,13 @@ impl<C: ControlBackend + 'static> Session<C> {
                         .as_ref()
                         .and_then(|h| h.tuner.as_ref())
                         .expect("initialized tuner")
-                        .kind;
+                        .kind();
                     shared
                         .info
                         .set(DeviceInfo {
                             descriptor: shared.descriptor.clone(),
                             tuner,
-                            rtl_sdr_blog_v4: shared.descriptor.blog_v4(),
+                            board: shared.descriptor.board(),
                         })
                         .expect("metadata initialized once");
                     Either::left(ready(Ok((shared, applied))))

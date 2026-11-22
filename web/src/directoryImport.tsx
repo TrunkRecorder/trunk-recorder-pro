@@ -14,12 +14,13 @@
 // its kind of system chosen here, the sites far away left out.
 
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { fccPrimary, newSiteName, normalizeSite, normalizeSystem, sameSystem, trpBase, type SystemInput } from "./config.ts";
+import { Fig, Figs, Info } from "./charts.tsx";
+import { fccPrimary, kindLabel, newSiteName, normalizeSite, normalizeSystem, sameSystem, SYSTEM_KINDS, trpBase, type SystemInput } from "./config.ts";
 import { findOnAir, findPlaces, setTalkgroups, snapshot, updateConfig, useSelect } from "./controller.ts";
 import { bundleSiteName, lookForBundle } from "./lookFor.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { Modal } from "./Identify.tsx";
-import type { Config, Site, System, Talkgroup } from "./protocol.ts";
+import type { Config, OriginFrom, Site, System, Talkgroup } from "./protocol.ts";
 import { mergeTalkgroups, readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 
 export interface Bundle {
@@ -30,6 +31,8 @@ export interface Bundle {
   talkgroupsCsv: string;
   /** Where each site is (lat, lon), where known (a sites file says). */
   locations?: ([number, number] | null)[];
+  /** A sites file: each site's frequencies by where they are in its row, from 1 (what an EDACS site's LCNs are: asType). */
+  byPosition?: Record<string, number>[];
 }
 
 /** The page was opened to import a system (#import=…): the first-run guide waits. (Read as it loads: the import takes the link off.) */
@@ -50,6 +53,13 @@ export function parseBundle(x: unknown): Bundle | null {
  * channels (none marked: all of them; the rest as voice channels), RFSS,
  * site and NAC, and where they are. Its kind of system isn't in it: the
  * import asks. Null when `text` isn't one.
+ *
+ * RadioReference keeps an EDACS site's frequencies by LCN: the nth is LCN n,
+ * an unused LCN below the highest a placeholder (0.0, shown as N/A: its
+ * Database Administrator Handbook, "Logical Channel Numbering"). So each
+ * frequency's place in the row is kept too, a cell that isn't a frequency
+ * holding its place. A site named as of unconfirmed LCNs (the handbook keeps
+ * those apart) gives none.
  */
 export function sitesFileBundle(text: string, fileName: string): Bundle | null {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim());
@@ -61,14 +71,16 @@ export function sitesFileBundle(text: string, fileName: string): Bundle | null {
   const [cSite, cRfss, cNac, cName, cLat, cLon] = [col("site dec", "site", "site number"), col("rfss"), col("site nac", "nac"), col("description", "name", "site name"), col("lat", "latitude"), col("lon", "long", "longitude")];
   const sites: Partial<Site>[] = [];
   const locations: ([number, number] | null)[] = [];
+  const byPosition: Record<string, number>[] = [];
   for (const line of lines.slice(1)) {
     const f = splitCsvLine(line).map((x) => x.trim());
     const get = (c: number) => (c >= 0 && f[c] ? f[c] : undefined);
-    const freqs = f.slice(fcol).flatMap((v) => {
+    const freqs = f.slice(fcol).flatMap((v, k) => {
       const mhz = parseFloat(v.replace(/[ca]$/i, ""));
-      return mhz > 1 && /^\d+(\.\d+)?[ca]?$/i.test(v) ? [{ hz: Math.round((mhz * 1e6) / 50) * 50, control: /c$/i.test(v) }] : [];
+      return mhz > 1 && /^\d+(\.\d+)?[ca]?$/i.test(v) ? [{ hz: Math.round((mhz * 1e6) / 50) * 50, control: /c$/i.test(v), at: k + 1 }] : [];
     });
     if (!freqs.length) continue;
+    byPosition.push(/unconfirmed/i.test(get(cName) ?? "") ? {} : Object.fromEntries(freqs.filter((x) => x.at <= 25).map((x) => [x.at, x.hz])));
     const control = freqs.filter((x) => x.control).map((x) => x.hz);
     const num = (c: number, radix = 10) => (get(c) && !isNaN(parseInt(get(c)!, radix)) ? parseInt(get(c)!, radix) : undefined);
     const expect = Object.fromEntries(Object.entries({ rfss: num(cRfss), site: num(cSite), nac: num(cNac, 16) }).filter(([, v]) => v !== undefined));
@@ -83,13 +95,25 @@ export function sitesFileBundle(text: string, fileName: string): Bundle | null {
   }
   if (!sites.length) return null;
   const id = fileName.replace(/\.csv$/i, "");
-  return { format: "trp-system", v: 1, source: { directory: "", id, rev: 0 }, system: { shortName: id.replace(/^trs_sites_/, "rr-"), sites }, talkgroupsCsv: "", locations };
+  return { format: "trp-system", v: 1, source: { directory: "", id, rev: 0 }, system: { shortName: id.replace(/^trs_sites_/, "rr-"), sites }, talkgroupsCsv: "", locations, byPosition };
 }
 
-/** A bundle's system as `type`: a sites file's sites keep their site lock only as P25 (its other kinds' numbers aren't what their air says). */
+/**
+ * A bundle's system as `type`: a sites file's sites keep their site lock only as P25 (its other kinds' numbers aren't what
+ * their air says), and their other frequencies go where that kind is watched on them (DMR's and NXDN's channels; an EDACS
+ * site's LCNs, each frequency's place in its row: sitesFileBundle).
+ */
 export function asType(b: Bundle, type: NonNullable<SystemInput["type"]>): Bundle {
   if (b.system.type) return b;
-  return { ...b, system: { ...b.system, type, sites: b.system.sites.map((x) => (type === "p25" ? x : { ...x, expect: {} })) } };
+  const site = (x: Partial<Site>, k: number): Partial<Site> => {
+    if (type === "p25") return x;
+    const rest = x.voiceChannelsHz ?? [];
+    const lcns = b.byPosition?.[k] ?? {};
+    const watched: Partial<Site> =
+      type === "dmr" ? { dmrChannelsHz: rest, voiceChannelsHz: [] } : type === "nxdn" ? { nxdnChannelsHz: rest, voiceChannelsHz: [] } : type === "edacs" ? { lcnTableHz: lcns, voiceChannelsHz: [] } : {};
+    return { ...x, expect: {}, ...watched };
+  };
+  return { ...b, system: { ...b.system, type, sites: b.system.sites.map(site) } };
 }
 
 /** How far apart two places are, miles (haversine). */
@@ -143,6 +167,16 @@ export function freeShortName(c: Config, wanted: string): string {
 /** The bundle's talkgroups (its talkgroup file, read). */
 const bundleTalkgroups = (b: Bundle): Talkgroup[] => (b.talkgroupsCsv.trim() ? readTalkgroupFile(b.talkgroupsCsv).talkgroups : []);
 
+/** Where the bundle's talkgroups came from: its directory (by its host), else the file it was read from. */
+function bundleOrigin(b: Bundle): OriginFrom {
+  if (!b.source.directory) return { kind: "file", name: b.source.id };
+  try {
+    return { kind: "directory", name: new URL(b.source.directory).host };
+  } catch {
+    return { kind: "directory", name: b.source.directory };
+  }
+}
+
 /** Add the bundle's system (these sites of it) as `shortName`, with its talkgroups. */
 export function addSystem(b: Bundle, shortName: string, sites: number[], talkgroups: Record<string, Talkgroup[]>): void {
   updateConfig((x) => {
@@ -150,7 +184,7 @@ export function addSystem(b: Bundle, shortName: string, sites: number[], talkgro
     x.systems.push(sys);
   });
   const theirs = bundleTalkgroups(b);
-  if (theirs.length) setTalkgroups(shortName, mergeTalkgroups(talkgroups[shortName] ?? [], theirs).talkgroups);
+  if (theirs.length) setTalkgroups(shortName, mergeTalkgroups(talkgroups[shortName] ?? [], theirs).talkgroups, bundleOrigin(b));
 }
 
 /**
@@ -186,7 +220,7 @@ export function updateSystem(b: Bundle, i: number, sites: number[], talkgroups: 
     }
   });
   const m = mergeTalkgroups(talkgroups[shortName] ?? [], bundleTalkgroups(b));
-  if (m.added) setTalkgroups(shortName, m.talkgroups);
+  if (m.added) setTalkgroups(shortName, m.talkgroups, bundleOrigin(b));
   return m.added;
 }
 
@@ -257,7 +291,6 @@ export function DirectoryImport() {
 /** FCC licensees are in capitals: "DISTRICT OF COLUMBIA" → "District of Columbia". */
 const titleCase = (s: string) => (s !== s.toUpperCase() ? s : s.toLowerCase().replace(/\b([a-z])([a-z']*)/g, (w, a: string, r: string, i: number) => (i > 0 && ["of", "and", "the", "for", "in", "on", "at", "to"].includes(w) ? w : a.toUpperCase() + r)));
 const mhz = (hz: number) => (hz / 1e6).toFixed(5).replace(/0{1,2}$/, "");
-const TYPES: Record<string, string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS" };
 /** What a bundle's system is called: its name, else who holds its licenses. */
 export const nameOf = (b: Bundle) => b.system.name || (b.source.licensee ? titleCase(b.source.licensee) : "") || b.system.shortName || "a system";
 
@@ -316,33 +349,46 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
         <>
           {find ? (
             <>
-              <p className="small muted">
-                {`${fccPrimary(b.system.fcc, [])?.callSign ?? ""} · ${licenses} licensed frequenc${licenses === 1 ? "y" : "ies"} · from `}
-                {source}
-              </p>
+              <div className="row">
+                <Figs inline items={[{ k: "Call sign", v: fccPrimary(b.system.fcc, [])?.callSign || "—" }, { k: "Licensed", v: licenses, u: licenses === 1 ? "frequency" : "frequencies" }]} />
+                <span className="small muted">from {source}</span>
+              </div>
               <p>
-                No one has shared it yet, so all that's known is its licenses. They don't say which frequency is its control channel, so the survey looks for it: it listens to these frequencies, the signals on them are marked as its own, and the
-                control channel it listens to sets it up.
+                Not shared yet: the survey finds its control channel{" "}
+                <Info>
+                  All that's known is its licenses, and they don't say which frequency is its control channel. The survey listens to these frequencies, the signals on
+                  them are marked as its own, and the control channel it hears sets it up.
+                </Info>
               </p>
             </>
           ) : (
-          <p className="small muted">
-            {`${fromFile ? "RadioReference sites" : (TYPES[b.system.type ?? ""] ?? b.system.type)} · ${b.system.sites.length} site${b.system.sites.length === 1 ? "" : "s"}${fromFile ? "" : ` · ${tgCount} named talkgroup${tgCount === 1 ? "" : "s"}`}${licenses ? ` · ${licenses} FCC license${licenses === 1 ? "" : "s"}` : ""} · from `}
-            {source}
-            {!fromFile && ` (version ${b.source.rev})`}
-          </p>
+          <div className="row">
+            <Figs
+              inline
+              items={[
+                { k: "Type", v: fromFile ? "RadioReference sites" : (b.system.type ? kindLabel(b.system.type) : "—") },
+                { k: "Sites", v: b.system.sites.length },
+                !fromFile && { k: "Talkgroups", v: tgCount, title: "Named talkgroups" },
+                licenses > 0 && { k: "FCC licenses", v: licenses },
+              ]}
+            />
+            <span className="small muted">
+              from {source}
+              {!fromFile && ` (version ${b.source.rev})`}
+            </span>
+          </div>
           )}
           {!props.bundle.system.type && (
             <label className="field">
               <span className="field-label">Kind of system</span>
               <select value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
-                {Object.entries(TYPES).map(([k, label]) => (
+                {Object.entries(SYSTEM_KINDS).map(([k, { label }]) => (
                   <option key={k} value={k}>
                     {label}
                   </option>
                 ))}
               </select>
-              <span className="field-hint">A sites file doesn't say: as RadioReference lists the system.</span>
+              <span className="field-hint">{kind === "edacs" ? "LCNs: each frequency's place in the file — check them against RadioReference" : "As RadioReference lists it"}</span>
             </label>
           )}
           {!find && b.locations?.some(Boolean) && <Near b={b} onPick={setSites} />}
@@ -364,7 +410,8 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
               <legend className="small">You have it already: {existing.shortName}</legend>
               <label className="toggle small">
                 <input type="radio" name="import-mode" checked={mode === "update"} onChange={() => setMode("update")} />
-                Update {existing.shortName}: add what it lacks ({find ? "licenses" : "sites, licenses, talkgroups"}). Nothing of yours is replaced.
+                Update {existing.shortName}{" "}
+                <span className="muted">· adds missing {find ? "licenses" : "sites, licenses, talkgroups"}; replaces nothing</span>
               </label>
               <label className="toggle small">
                 <input type="radio" name="import-mode" checked={mode === "add"} onChange={() => setMode("add")} />
@@ -376,11 +423,8 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
             <label className="field">
               <span className="field-label">Short name</span>
               <input className="search" value={name} onChange={(e) => setName(cleanShortName(e.target.value))} />
-              <span className="field-hint">{taken ? "Already used: each needs its own." : "Its folder for calls, and how plugins know it."}</span>
+              <span className="field-hint">{taken ? "Already used: each needs its own" : "Its calls' folder; plugins know it by it"}</span>
             </label>
-          )}
-          {!find && (
-            <p className="small muted">Not sure which sites reach you? Check them on the air first: the survey listens to each one's control channels and keeps the ones it hears ticked.</p>
           )}
           <div className="row">
             <span className="spacer" />
@@ -388,7 +432,7 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
               Cancel
             </button>
             {!find && (
-              <button className="btn" disabled={!sites.length} onClick={() => look(sites)} title="Listen to each ticked site's control channels">
+              <button className="btn" disabled={!sites.length} onClick={() => look(sites)} title="Not sure which sites reach you? The survey listens to each ticked site's control channels and keeps the ones it hears ticked">
                 Check which I can hear
               </button>
             )}
@@ -406,14 +450,18 @@ export function ImportDialog(props: { bundle: Bundle; sites?: number[]; onClose:
 function Near(props: { b: Bundle; onPick: (sites: number[]) => void }) {
   const [q, setQ] = useState("");
   const [within, setWithin] = useState(40);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<React.ReactNode>(null);
   const pick = async () => {
     const at = (await findPlaces(q.trim()))[0];
-    if (!at) return setNote("No such place found (or the directory couldn't be reached).");
+    if (!at) return setNote("No such place (or the directory couldn't be reached)");
     const locs = props.b.locations ?? [];
     const near = props.b.system.sites.map((_, k) => k).filter((k) => locs[k] && miles([at.lat, at.lon], locs[k]!) <= within);
     props.onPick(near);
-    setNote(`${near.length} of ${props.b.system.sites.length} sites within ${within} miles of ${at.name}, ${at.state}.`);
+    setNote(
+      <>
+        <Fig v={`${near.length}/${props.b.system.sites.length}`} u="sites" /> within {within} mi of {at.name}, {at.state}
+      </>,
+    );
   };
   return (
     <div className="stack">

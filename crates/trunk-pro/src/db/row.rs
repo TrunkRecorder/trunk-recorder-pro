@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SrcEntry, StoredCall, ToneEntry, TonePattern};
+use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SiteRef, SrcEntry, StoredCall, ToneEntry, TonePattern};
 
 use super::sql::{Row, V};
 
@@ -19,7 +19,7 @@ pub struct CallRow {
     pub path: String,
     /// The system it's filed under, as the record names it…
     pub short_name: String,
-    /// …and as the store keeps it (`systems.id`): set by `Db::send`.
+    /// …and as the store keeps it (`systems.id`): the run's, else set by `Db::send` from the name.
     pub system_id: i64,
     pub record: CallRecord,
     /// The call's audio file exists.
@@ -46,6 +46,10 @@ pub fn call_row(rel: &str, record: &CallRecord, audio: bool, json: bool, recorde
     }
 }
 
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
 /// The record's lists nothing queries: `calls.detail`.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -62,6 +66,10 @@ struct Detail {
     signals: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     patched_talkgroups: Vec<u32>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sites: Vec<SiteRef>,
+    #[serde(skip_serializing_if = "is_zero")]
+    site_id: u32,
     /// Fields of the record this version doesn't know.
     #[serde(skip_serializing_if = "Map::is_empty")]
     extra: Map<String, Value>,
@@ -85,6 +93,8 @@ pub fn call_values(row: &CallRow) -> Vec<V> {
         tone_patterns: r.tone_patterns.clone(),
         signals: r.signals.clone(),
         patched_talkgroups: r.patched_talkgroups.clone(),
+        sites: r.sites.clone(),
+        site_id: r.site_id,
         extra: r.extra.clone(),
     };
     vec![
@@ -242,7 +252,10 @@ pub fn stored_call(r: &Row, at: usize, short_name: String, src_list: Vec<SrcEntr
         system_type: r.text(i(41)),
         voice_mode: r.text(i(42)),
         short_name,
+        system_id: r.int(i(1)) as u32,
         site: r.text(i(2)),
+        site_id: detail.site_id,
+        sites: detail.sites,
         patched_talkgroups: detail.patched_talkgroups,
         freq_list: detail.freq_list,
         error_list: detail.error_list,

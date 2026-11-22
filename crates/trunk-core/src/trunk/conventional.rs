@@ -54,14 +54,17 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallIds, CallManager, Flags, Voice, STUCK_CALL_S};
-use super::engine::{Event, SystemConfig, Tuning};
+use super::calls::{Call, CallConfig, CallEvent, CallIds, CallManager, CallSource, CarriesOn, Flags, Policy, Voice};
+use super::engine::{Event, LiveAudio, Pins, SystemConfig, Tuning};
 use super::inband::InBandSpec;
+use super::record::RecordedOn;
 use super::recorded::Recorded;
+use super::tally::{CopyTally, FrameCount};
+use super::tape::{Tapes, VoiceTape};
 use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
-use super::voice::{self, VoiceDecoder, VoiceKind, VoiceSpec};
+use super::voice::{self, VoiceDecoder, VoiceKind, VoiceOut, VoiceParams, VoiceSpec};
 use super::frames::VoiceFrame;
 use crate::dsp::am;
 use crate::dsp::fm::{self, ChannelFilter};
@@ -77,8 +80,6 @@ use crate::p25::diversity::BankConfig;
 
 /// Half-width of the band the detector sums, Hz (a 12.5 kHz channel's signal).
 const DETECT_HALF_BW: f64 = 5000.0;
-/// Head filter cutoff (the carrier meter narrows it further), Hz.
-const HEAD_CUTOFF_HZ: f64 = 7000.0;
 /// Band power smoothing, s.
 const DETECT_TAU_S: f64 = 0.02;
 /// Noise floor refresh, s, and its smoothing per refresh.
@@ -94,9 +95,13 @@ const CLOSE_HANG_S: f64 = 0.5;
 /// A held transmission with no tone yet goes to the row without one after this, s.
 const TONE_WAIT_S: f64 = 1.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A conventional channel's mode: the decoder it opens ([`ConvMode::kind`]), from which every question
+/// of what a row of it can say is answered (the predicates below; Setup asks them through trunk-web).
+/// The config and channel files name it as [`ConvMode::as_str`] does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ConvMode {
     /// Analog FM (12.5 kHz, or 25 kHz wide).
+    #[default]
     Fm,
     /// Analog AM (airband).
     Am,
@@ -106,20 +111,30 @@ pub enum ConvMode {
     Dmr,
     /// NXDN at either rate.
     Nxdn(Rate),
+    /// Any of the above but AM: every receiver listens until one hears its protocol
+    /// ([`VoiceKind::Auto`]); the call is the one it settled on. For a channel that may carry
+    /// analog and digital both, FRS and GMRS's, say.
+    Auto,
 }
 
 impl ConvMode {
+    /// Every mode, in the order Setup lists them.
+    pub const ALL: [ConvMode; 7] = [ConvMode::Fm, ConvMode::Am, ConvMode::P25, ConvMode::Dmr, ConvMode::Nxdn(Rate::N48), ConvMode::Nxdn(Rate::N96), ConvMode::Auto];
+
     /// What a call on a channel of this mode is on: slot `slot` (DMR), its colour code once heard.
-    fn voice(self, slot: u8, color_code: Option<u8>) -> Voice {
-        match self {
+    /// None for auto, which is nothing in particular until a channel settles ([`Chan::mode`]).
+    fn voice(self, slot: u8, color_code: Option<u8>) -> Option<Voice> {
+        Some(match self {
             ConvMode::Fm => Voice::Fm,
             ConvMode::Am => Voice::Am,
             ConvMode::P25 => Voice::P25,
             ConvMode::Dmr => Voice::Dmr { slot, color_code },
             ConvMode::Nxdn(r) => Voice::Nxdn(r),
-        }
+            ConvMode::Auto => return None,
+        })
     }
 
+    /// As the config and a channel file name it.
     pub fn as_str(self) -> &'static str {
         match self {
             ConvMode::Fm => "fm",
@@ -127,25 +142,116 @@ impl ConvMode {
             ConvMode::P25 => "p25",
             ConvMode::Dmr => "dmr",
             ConvMode::Nxdn(r) => r.name(),
+            ConvMode::Auto => "auto",
+        }
+    }
+
+    /// The mode [`ConvMode::as_str`] names, in any case; empty is the default (FM).
+    pub fn parse(text: &str) -> Option<ConvMode> {
+        if text.trim().is_empty() {
+            return Some(ConvMode::default());
+        }
+        Self::ALL.into_iter().find(|m| m.as_str().eq_ignore_ascii_case(text.trim()))
+    }
+
+    /// Every mode's name, for a message ("fm, am, … or auto").
+    pub fn names() -> String {
+        let names = Self::ALL.map(Self::as_str);
+        format!("{} or {}", names[..names.len() - 1].join(", "), names[names.len() - 1])
+    }
+
+    /// As a message names it ("AM channels carry no tone or code").
+    pub fn name(self) -> &'static str {
+        match self {
+            ConvMode::Fm => "FM",
+            ConvMode::Am => "AM",
+            ConvMode::P25 => "P25",
+            ConvMode::Dmr => "DMR",
+            ConvMode::Nxdn(_) => "NXDN",
+            ConvMode::Auto => "auto",
         }
     }
 
     /// The decoder a channel of this mode opens with.
-    fn kind(self) -> VoiceKind {
+    pub fn kind(self) -> VoiceKind {
         match self {
             ConvMode::Fm => VoiceKind::Analog,
             ConvMode::Am => VoiceKind::Am,
             ConvMode::P25 => VoiceKind::Fdma,
             ConvMode::Dmr => VoiceKind::Dmr,
             ConvMode::Nxdn(r) => VoiceKind::Nxdn(r),
+            ConvMode::Auto => VoiceKind::Auto,
         }
     }
 
-    /// Analog (FM or AM): demodulated as [`ConvChannel::analog`] says.
+    /// The mode whose decoder is of `kind` (none: not a conventional kind).
+    fn of(kind: VoiceKind) -> Option<ConvMode> {
+        Self::ALL.into_iter().find(|m| m.kind() == kind)
+    }
+
+    /// The receivers its decoder runs ([`VoiceKind::receivers`]).
+    fn receivers(self) -> &'static [VoiceKind] {
+        self.kind().receivers()
+    }
+
+    /// Analog (FM or AM) and nothing else: demodulated as [`ConvChannel::analog`] says, metered by its receiver.
     pub fn analog(self) -> bool {
-        matches!(self, ConvMode::Fm | ConvMode::Am)
+        self.receivers().iter().all(|k| k.analog())
+    }
+
+    /// Has an analog receiver: analog, or auto, which has one among others. [`ConvChannel::analog`]
+    /// (bandwidth, de-emphasis, squelch timing) is its.
+    pub fn has_analog_receiver(self) -> bool {
+        self.receivers().iter().any(|k| k.analog())
+    }
+
+    /// Has an FM receiver, which hears a call's tone and unit IDs.
+    pub fn has_fm(self) -> bool {
+        self.receivers().contains(&VoiceKind::Analog)
+    }
+
+    /// What tells its rows on a frequency apart (none: AM has no code, and auto's receivers none in common).
+    pub fn code_name(self) -> Option<&'static str> {
+        match self {
+            ConvMode::Fm => Some("tone"),
+            ConvMode::P25 => Some("NAC or talkgroup"),
+            ConvMode::Dmr => Some("colour code, slot or talkgroup"),
+            ConvMode::Nxdn(_) => Some("RAN or talkgroup"),
+            ConvMode::Am | ConvMode::Auto => None,
+        }
+    }
+
+    /// Its rows can be told apart by a tone or code ([`ConvMode::code_name`]).
+    pub fn takes_code(self) -> bool {
+        self.code_name().is_some()
+    }
+
+    /// Every transmission names its talkgroup, which a row can match: the digital modes.
+    pub fn matches_talkgroup(self) -> bool {
+        !self.has_analog_receiver()
+    }
+
+    /// A call's talkgroup may be the air's: the digital modes, and auto when it settles on one.
+    pub fn air_names_talkgroup(self) -> bool {
+        !self.analog()
+    }
+
+    /// Its calls are on one of two slots, which a row can pick: DMR's.
+    pub fn slotted(self) -> bool {
+        self.kind().slotted()
+    }
+
+    /// Trunk Recorder's talkgroup Mode for its calls: A (analog), D (digital), M (either).
+    pub fn talkgroup_mode(self) -> &'static str {
+        match (self.analog(), self.has_analog_receiver()) {
+            (true, _) => "A",
+            (false, false) => "D",
+            (false, true) => "M",
+        }
     }
 }
+
+serde_by_name!(ConvMode, as_str, parse, format!("mode: use {}", ConvMode::names()));
 
 #[derive(Clone, Debug)]
 pub struct ConvChannel {
@@ -172,6 +278,8 @@ pub struct ConvChannel {
     /// Its calls' carrier offsets score its source's AutoTune (digital
     /// rows: a repeater output to trust, not radios on simplex).
     pub tune_ref: bool,
+    /// The sources it may be received on. Rows sharing a frequency share them.
+    pub pins: Pins,
 }
 
 /// How a row picks its transmissions out of a frequency's (the channel's
@@ -186,6 +294,19 @@ pub enum Access {
     Dmr { cc: Option<u8>, slot: Option<u8>, tg: Option<u32> },
     /// NXDN: whichever of RAN and group (or unit) are given.
     Nxdn { ran: Option<u8>, tg: Option<u32> },
+}
+
+impl Access {
+    /// As a node health report gives a conventional channel's `access`:
+    /// `CTCSS 151.4`, `DCS 023N`, `NAC 293`, `CC 1 TS 2`, `RAN 1`, with a
+    /// talkgroup when the row records by one.
+    pub fn report_label(&self) -> String {
+        match *self {
+            Access::Tone(Tone::Ctcss(_)) => format!("CTCSS {self}"),
+            Access::Tone(Tone::Dcs(c, inv)) => format!("DCS {c:03}{}", if inv { 'I' } else { 'N' }),
+            _ => self.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for Access {
@@ -228,8 +349,8 @@ impl Access {
         if ["", "0", "S", "ANY", "NONE", "SEARCH"].contains(&up.as_str()) {
             return Ok(None);
         }
-        if mode == ConvMode::Am {
-            return Err(format!("\"{}\": AM channels carry no tone or code — leave it empty", text.trim()));
+        if !mode.takes_code() {
+            return Err(format!("\"{}\": {} channels carry no tone or code — leave it empty", text.trim(), mode.name()));
         }
         if mode == ConvMode::P25 {
             let bad = || format!("\"{}\" isn't a NAC (up to 3 hex digits, like 293) or talkgroup (TG 1)", text.trim());
@@ -309,17 +430,16 @@ impl Access {
             return Err(format!("\"{}\" names another slot or talkgroup than its own columns", code.trim()));
         }
         let (slot, tg) = (slot.or(s), tg.or(t));
-        if slot.is_some() && mode != ConvMode::Dmr {
+        if slot.is_some() && !mode.slotted() {
             return Err(format!("Slot {}: only DMR has slots — leave it empty", slot.unwrap()));
         }
         if slot.is_some_and(|s| !(1..=2).contains(&s)) {
             return Err(format!("Slot {}: the slot is 1 or 2", slot.unwrap()));
         }
-        let max = match mode {
-            ConvMode::Fm | ConvMode::Am => return Err(format!("Match TG {}: {} names no talkgroup — leave it empty", tg.unwrap(), if mode == ConvMode::Fm { "FM" } else { "AM" })),
-            ConvMode::Dmr => 1 << 24,
-            _ => 1 << 16,
-        };
+        if tg.is_some() && !mode.matches_talkgroup() {
+            return Err(format!("Match TG {}: {} names no talkgroup — leave it empty", tg.unwrap(), mode.name()));
+        }
+        let max = if mode == ConvMode::Dmr { 1 << 24 } else { 1 << 16 };
         if tg.is_some_and(|t| t == 0 || t >= max) {
             return Err(format!("Match TG {}: not a talkgroup (1–{})", tg.unwrap(), max - 1));
         }
@@ -343,7 +463,7 @@ impl Access {
     }
 
     /// Two rows can't tell these apart.
-    fn same(self, other: Access) -> bool {
+    pub fn same(self, other: Access) -> bool {
         match (self, other) {
             (Access::Tone(a), Access::Tone(b)) => a.matches(b),
             _ => self == other,
@@ -381,14 +501,14 @@ impl ConvChannel {
     pub fn new(freq_hz: f64, mode: ConvMode) -> Self {
         let analog = if mode == ConvMode::Am { AnalogTuning::am(freq_hz) } else { AnalogTuning::default() };
         let default_talkgroup = Self::default_talkgroup(freq_hz);
-        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog, tune_ref: false }
+        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog, tune_ref: false, pins: Pins::any() }
     }
 
     /// Its names, when the number they go with is known before a call is
     /// heard: its TG Number, or an analog row's default (the air names
     /// none). None when the number comes from the air, or it has no names.
     pub fn names_ahead(&self) -> Option<&Talkgroup> {
-        let known = self.talkgroup.is_some() || matches!(self.mode, ConvMode::Fm | ConvMode::Am);
+        let known = self.talkgroup.is_some() || !self.mode.air_names_talkgroup();
         self.info.as_ref().filter(|_| known)
     }
 
@@ -424,13 +544,14 @@ impl Default for ConvConfig {
 /// What the conventional channels did: the engine's events as they are,
 /// and what the engine itself acts on.
 pub enum ConvOut {
-    /// A call started or changed, its audio, a radio's position, a
-    /// transmission no row took ([`Event::ConvSkipped`]).
+    /// A call started or changed.
+    Call(CallEvent),
+    /// Its audio, a radio's position, a transmission no row took ([`Event::ConvSkipped`]).
     Event(Event),
     /// A call is over: the engine saves it. `recorder_num`: the index of the
     /// channel (frequency) it came on.
     /// `tune_source`: its frequency scores this source's AutoTune ([`ConvChannel::tune_ref`]).
-    End { call: Call, rec: Recorded, recorder_num: u32, tune_source: Option<usize> },
+    End { call: Call, rec: Recorded, on: RecordedOn, tune_ref: bool },
     /// A radio's talker alias, heard on a P25 channel of system `.0` ([`Call::system`]).
     Alias(u16, Alias),
     /// A key of system `.0` that decrypts its voice to noise.
@@ -438,6 +559,17 @@ pub enum ConvOut {
     /// Tone patterns a call's tones made, each with who sent it
     /// ([`super::inband::News::patterns`]): the engine names them by the system's signals.
     Patterns { call: Call, heard: Vec<(crate::dsp::inband::pattern::Pattern, u32)>, decrypted: bool, now_s: f64 },
+}
+
+/// A conventional channel as [`CallManager::admit`] sees it: always open, so
+/// a call it admits is recorded (there's no recorder to take, or give back).
+struct Channel;
+
+impl super::calls::RecorderHost for Channel {
+    fn record(&mut self, _call: &Call) -> Result<(), super::calls::Reason> {
+        Ok(())
+    }
+    fn release(&mut self, _call: &Call) {}
 }
 
 /// What a conventional call carried, as a row's code would say it: the
@@ -487,6 +619,11 @@ struct Heard {
 }
 
 impl Heard {
+    /// Nothing to tell a call: no voice, no link control.
+    fn is_empty(&self) -> bool {
+        self.audio.is_empty() && self.infos.is_empty()
+    }
+
     /// FM: take `other`'s audio and unit IDs after this one's.
     fn append(&mut self, other: &mut Heard) {
         self.audio.append(&mut other.audio);
@@ -512,13 +649,13 @@ struct Tx {
 struct Live {
     call: Call,
     rec: Recorded,
-    /// The talkgroup the air named, once it has ([`Call::talkgroup_ota`]).
-    air_tg: Option<u32>,
     /// The row it is filed by.
     row: usize,
 }
 
 struct Open {
+    /// What it received ([`super::engine::EngineConfig::tapes`]).
+    tape: Option<VoiceTape>,
     head: HeadId,
     /// Its decoder ([`super::voice`]: the same as trunked calls').
     voice: Box<dyn VoiceDecoder>,
@@ -535,15 +672,27 @@ struct Open {
     cipher_ahead: [Option<CipherId>; 2],
 }
 
+/// A channel that closed: its tape to the host.
+fn keep_tape(sink: &Tapes, o: &mut Open) {
+    sink.keep(o.tape.take());
+}
+
 /// A conventional frequency as the dashboard shows it ([`Conventional::channels`]).
 pub struct ConvNow<'a> {
     pub freq_hz: f64,
     pub system: usize,
     pub mode: ConvMode,
+    /// The source it is received on (its position in the engine's sources).
+    pub source: usize,
     /// Its rows' names (alpha tags), each once, in order.
     pub names: Vec<&'a str>,
+    /// The code its rows record by, when every row has the same one
+    /// ([`Access::report_label`]); None when they differ or have none.
+    pub access: Option<String>,
     /// A signal is on it now.
     pub open: bool,
+    /// What became of its transmissions.
+    pub tally: &'a CopyTally,
     /// Calls in progress on it.
     pub calls: usize,
     /// While open: how far above the channel its carrier is, Hz, and how
@@ -555,7 +704,8 @@ pub struct ConvNow<'a> {
 /// One frequency, and the rows on it (what they share is checked: [`Conventional::check`]).
 struct Chan {
     freq_hz: f64,
-    mode: ConvMode,
+    /// The mode it was given: [`Chan::mode`] says what it is now.
+    chosen: ConvMode,
     /// The system its rows belong to ([`ConvChannel::system`]).
     system: usize,
     analog: AnalogTuning,
@@ -570,6 +720,8 @@ struct Chan {
     /// worth (a pause shorter than the call timeout continues it), as a
     /// recorded call would be counted.
     skipped: [Option<(String, f64)>; 2],
+    /// What became of its transmissions, since the start.
+    tally: CopyTally,
     source: usize,
     /// Where it is placed in its source (`offset_hz`): AutoTune's
     /// correction is taken up between calls ([`Conventional::on_block`]).
@@ -588,6 +740,20 @@ struct Chan {
 }
 
 impl Chan {
+    /// Its mode: the one it was given, or for an auto channel the one its receiver has settled on
+    /// (auto until then, when no call has begun).
+    fn mode(&self) -> ConvMode {
+        match (self.chosen, self.open.as_ref().and_then(|o| o.voice.resolved())) {
+            (ConvMode::Auto, Some(kind)) => ConvMode::of(kind).unwrap_or(ConvMode::Auto),
+            (chosen, _) => chosen,
+        }
+    }
+
+    /// Where a call on it (channel `idx`) is recorded.
+    fn on(&self, idx: usize) -> RecordedOn {
+        RecordedOn { recorder: idx as u32, source: self.source }
+    }
+
     fn base_db(&self, dflt: f64) -> f64 {
         self.squelch_db.unwrap_or(dflt)
     }
@@ -601,6 +767,8 @@ struct Floor {
 }
 
 pub struct Conventional {
+    /// Where closed channels' tapes go ([`super::engine::EngineConfig::tapes`]).
+    pub(super) tape_sink: Tapes,
     cfg: ConvConfig,
     bank_cfg: BankConfig,
     /// Keep each call's vocoder frames (see [`super::frames`]).
@@ -622,12 +790,16 @@ struct ChannelShape {
 
 impl ChannelShape {
     fn of(mode: ConvMode, analog: &AnalogTuning) -> Self {
-        // An analog channel's widths follow its bandwidth, from the 12.5 kHz FM channel's.
+        // An analog receiver's widths follow its bandwidth, from the 12.5 kHz FM channel's.
         let wider = |base: f64| analog.half_bw_hz + (base - fm::CHANNEL_HALF_BW);
-        match mode {
-            m if m.analog() => ChannelShape { detect_half_bw: wider(DETECT_HALF_BW), head_cutoff_hz: wider(HEAD_CUTOFF_HZ), meter_bw: 2.0 * analog.half_bw_hz },
+        let digital = |k: VoiceKind| ChannelShape { detect_half_bw: if k == VoiceKind::Nxdn(Rate::N48) { 3125.0 } else { DETECT_HALF_BW }, head_cutoff_hz: k.cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() };
+        match mode.kind() {
+            _ if mode.analog() => ChannelShape { detect_half_bw: wider(DETECT_HALF_BW), head_cutoff_hz: analog.head_cutoff_hz(), meter_bw: 2.0 * analog.half_bw_hz },
             // Digital: the head as a trunked channel of its kind opens.
-            m => ChannelShape { detect_half_bw: if m == ConvMode::Nxdn(Rate::N48) { 3125.0 } else { DETECT_HALF_BW }, head_cutoff_hz: m.kind().cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() },
+            k if !mode.has_analog_receiver() => digital(k),
+            // Auto: as its analog receiver, which its digital ones each narrow ([`VoiceKind::Auto`]); the meter
+            // is for a digital receiver, which can't say.
+            _ => ChannelShape { detect_half_bw: wider(DETECT_HALF_BW), head_cutoff_hz: analog.head_cutoff_hz(), meter_bw: ChannelFilter::noise_bandwidth() },
         }
     }
 }
@@ -639,9 +811,9 @@ pub fn check_channels(channels: &[ConvChannel]) -> Result<(), String> {
 
 /// What a channel's calls need from their system's configuration.
 struct CallRules<'a> {
-    call_timeout_s: f64,
-    /// A call longer than this is concluded and a new one started (0: never), s.
-    max_call_s: f64,
+    /// When a call is over, split, a transmission of its own, and recorded
+    /// at all: the system's, as its trunked calls' ([`CallConfig::quiet`], [`CallConfig::gate`]).
+    calls: &'a CallConfig,
     /// Keep each call's vocoder frames (see [`super::frames`]).
     capture_frames: bool,
     /// The system's talkgroup names.
@@ -652,7 +824,12 @@ struct CallRules<'a> {
 
 impl<'a> CallRules<'a> {
     fn of(sys: &'a SystemConfig, capture_frames: bool) -> Self {
-        CallRules { call_timeout_s: sys.calls.call_timeout_s, max_call_s: sys.calls.max_call_s, capture_frames, talkgroups: &sys.talkgroups, keys: sys.keys.as_ref() }
+        CallRules { calls: &sys.calls, capture_frames, talkgroups: &sys.talkgroups, keys: sys.keys.as_ref() }
+    }
+
+    /// What its calls are recorded by ([`CallConfig::gate`]).
+    fn policy(&self) -> Policy<'a> {
+        Policy { talkgroups: self.talkgroups, can_decrypt: self.keys.is_some() }
     }
 }
 
@@ -674,7 +851,7 @@ impl Conventional {
             let c = &rows[0];
             let squelch_db = rows.iter().filter_map(|r| r.squelch_db).reduce(f64::min);
             let routed = rows.len() > 1 || c.access.is_some();
-            let Some(src) = sources.iter().position(|&(center, _, half)| (c.freq_hz - center).abs() <= half) else {
+            let Some(src) = c.pins.first(sources.len(), |i| (c.freq_hz - sources[i].0).abs() <= sources[i].2) else {
                 outside.push(format!("{:.5}", c.freq_hz / 1e6));
                 continue;
             };
@@ -686,7 +863,7 @@ impl Conventional {
             let bar = squelch_db.unwrap_or(cfg.squelch_db);
             let (freq_hz, mode, system, analog, shape) = (c.freq_hz, c.mode, c.system, c.analog, ChannelShape::of(c.mode, &c.analog));
             let tune_ref = !mode.analog() && rows.iter().any(|r| r.tune_ref);
-            chans.push(Chan { freq_hz, mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], source: src, tuning, tune_ref, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
+            chans.push(Chan { freq_hz, chosen: mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], tally: CopyTally::default(), source: src, tuning, tune_ref, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
         }
         if !outside.is_empty() {
             return Err(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
@@ -698,7 +875,7 @@ impl Conventional {
                 Floor { slices: vec![0.0; n], scratch: vec![0.0; n], next_s: 0.0, primed: false }
             })
             .collect();
-        Ok(Conventional { cfg, bank_cfg, capture_frames, chans, floors })
+        Ok(Conventional { cfg, bank_cfg, capture_frames, chans, floors, tape_sink: Tapes::default() })
     }
 
     /// Whether `channels` can run together: rows on one frequency have one
@@ -723,18 +900,17 @@ impl Conventional {
         if rows.iter().any(|r| r.mode != rows[0].mode) {
             return Err(format!("Conventional channel {mhz} MHz is listed with different modes — rows sharing a frequency need the same one."));
         }
+        if rows.iter().any(|r| r.pins != rows[0].pins) {
+            return Err(format!("Conventional channel {mhz} MHz is listed with different sources — rows sharing a frequency need the same ones."));
+        }
         if rows.iter().any(|r| r.analog.half_bw_hz != rows[0].analog.half_bw_hz) {
             return Err(format!("Conventional channel {mhz} MHz is listed with different bandwidths — rows sharing a frequency need the same one."));
         }
-        if rows[0].mode == ConvMode::Am && rows.len() > 1 {
-            return Err(format!("Conventional channel {mhz} MHz is listed twice — AM has no tone or code to split a frequency by."));
-        }
-        let what = match rows[0].mode {
-            ConvMode::Fm => "tone",
-            ConvMode::Am => "code",
-            ConvMode::P25 => "NAC or talkgroup",
-            ConvMode::Dmr => "colour code, slot or talkgroup",
-            ConvMode::Nxdn(_) => "RAN or talkgroup",
+        let Some(what) = rows[0].mode.code_name() else {
+            if rows.len() > 1 || rows[0].access.is_some() {
+                return Err(format!("Conventional channel {mhz} MHz is {} — it has no tone or code to split a frequency by, so it is one row without one.", rows[0].mode.name()));
+            }
+            return Ok(());
         };
         for (i, a) in rows.iter().enumerate() {
             for b in &rows[..i] {
@@ -780,17 +956,29 @@ impl Conventional {
                 }
             }
             let open = c.open.as_ref();
+            let first = c.rows.first().and_then(|r| r.access);
+            let access = first.filter(|a| c.rows.iter().all(|r| r.access.as_ref() == Some(a))).map(|a| a.report_label());
             ConvNow {
                 freq_hz: c.freq_hz,
                 system: c.system,
-                mode: c.mode,
+                mode: c.mode(),
+                source: c.source,
                 names,
+                access,
                 open: open.is_some(),
+                tally: &c.tally,
                 calls: open.map_or(0, |o| o.live.iter().flatten().count()),
                 offset_hz: open.and_then(|o| o.voice.offset_hz()),
                 quality: open.map(|o| o.voice.quality()).unwrap_or_default(),
             }
         })
+    }
+
+    /// Copy `c` of a call on one of its channels ended, having decoded `frames` ([`CopyTally::copy_end`]).
+    pub fn copy_end(&mut self, c: &Call, frames: FrameCount) {
+        if let Some(ch) = self.chans.iter_mut().find(|h| h.system == c.system as usize && h.freq_hz.round() as u64 == c.freq_hz) {
+            ch.tally.copy_end(c, frames);
+        }
     }
 
     /// Calls in progress.
@@ -857,7 +1045,7 @@ impl Conventional {
                     ch.bar_db = base;
                 }
                 if snr_db >= ch.bar_db {
-                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
+                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.tape_sink.on(), self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
                 }
                 continue;
             }
@@ -870,8 +1058,7 @@ impl Conventional {
                     ch.ignored = ignore;
                 }
             }
-            let max_call_s = if rules.max_call_s > 0.0 { rules.max_call_s } else { STUCK_CALL_S };
-            Self::run(ch, &iq, now_s, meter_thr, idx as u32, ids, rules, max_call_s, out);
+            Self::run(ch, &iq, now_s, meter_thr, idx as u32, ids, rules, out);
             // Reception: the channel's power while its carrier is up, against the floor (both as a channel's head would see them).
             if snr_db >= base {
                 let bw = ch.shape.meter_bw;
@@ -884,11 +1071,11 @@ impl Conventional {
                 }
             }
             // Wind down.
-            let tune = ch.tune_ref.then_some(ch.source);
+            let (on, tune) = (ch.on(idx), ch.tune_ref);
             let o = ch.open.as_mut().unwrap();
             for live in o.live.iter_mut() {
-                if live.as_ref().is_some_and(|l| now_s - l.call.last_audio_s > rules.call_timeout_s) {
-                    Self::end(live.take().unwrap(), idx as u32, tune, out);
+                if live.as_ref().is_some_and(|l| rules.calls.quiet(&l.call, now_s)) {
+                    Self::end(live.take().unwrap(), on, tune, out);
                 }
             }
             let o = ch.open.as_ref().unwrap();
@@ -899,21 +1086,42 @@ impl Conventional {
                     ch.bar_db = snr_db + FALSE_OPEN_RAISE_DB;
                     ch.raised = true;
                 }
-                let o = ch.open.take().unwrap();
+                if ch.open.as_ref().unwrap().voice.resolved().is_none() {
+                    // An auto channel that closes undecided (a call shorter than its wait) settles now, its call ending with it
+                    // (as of when the carrier went, not the hang after).
+                    let ended_s = ch.open.as_ref().unwrap().last_carrier_s;
+                    Self::flush_open(ch, ended_s, idx as u32, ids, rules, out);
+                    for l in ch.open.as_mut().unwrap().live.iter_mut().filter_map(Option::take) {
+                        Self::end(l, on, tune, out);
+                    }
+                }
+                let mut o = ch.open.take().unwrap();
                 chz.remove_head(o.head);
+                keep_tape(&self.tape_sink, &mut o);
             }
         }
     }
 
+    /// Flush the open channel's receiver, what it still holds taken as any other voice
+    /// ([`Self::collect`], [`Self::slot_call`]).
+    fn flush_open(ch: &mut Chan, now_s: f64, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
+        let mut vout = Vec::new();
+        ch.open.as_mut().unwrap().voice.flush(&mut vout);
+        let heard = Self::collect(ch, vout, false, now_s, rules, out);
+        for (slot, h) in heard.into_iter().enumerate() {
+            Self::slot_call(ch, slot, h, now_s, num, ids, rules, out);
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
-    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, tapes: bool, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
         if let Some(w) = &ch.watch {
             ch.ignored = w.ignored();
         }
         let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.shape.head_cutoff_hz, preroll_s);
         let rate = chz.output_rate();
-        let kind = ch.mode.kind();
-        let voice = voice::build(&VoiceSpec {
+        let kind = ch.mode().kind();
+        let spec = VoiceSpec {
             kind,
             rate,
             // (On the engine's clock: `now_s` is this source's, offset included.)
@@ -924,33 +1132,57 @@ impl Conventional {
             // (FM: set on every run, from the noise floor.)
             squelch: meter_thr,
             // For the tone detector.
-            subaudible: ch.mode == ConvMode::Fm,
+            subaudible: ch.mode().has_fm(),
             analog: ch.analog,
             ignore_hz: ch.ignored.clone(),
             keys: rules.keys.cloned(),
-        });
-        let meter = (!ch.mode.analog()).then(|| ChannelFilter::new(rate));
-        ch.open = Some(Open { head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None, cipher_ahead: [None; 2] });
-        Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, 0.0, out);
+        };
+        let voice = voice::build(&spec);
+        let tape = tapes.then(|| VoiceTape::new(spec, ch.freq_hz));
+        let meter = (!ch.mode().analog()).then(|| ChannelFilter::new(rate));
+        ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None, cipher_ahead: [None; 2] });
+        Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, out);
     }
 
     /// Run the open channel's receiver over `iq` (air up to `now_s`).
     #[allow(clippy::too_many_arguments)]
-    fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
+    fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
         let o = ch.open.as_mut().unwrap();
-        let mut heard: [Heard; 2] = Default::default();
         // Digital: the carrier by the meter; analog: by the decoder's squelch, at the same threshold.
         let metered = o.meter.as_mut().map(|m| m.meter(iq) > meter_thr);
+        let slots = o.live.each_ref().map(|l| l.is_some());
+        if let Some(t) = &mut o.tape {
+            t.run(iq, VoiceParams::default(), slots, meter_thr);
+        }
         o.voice.set_squelch(meter_thr);
         let mut vout = Vec::new();
         o.voice.push(iq, &mut vout);
-        let carrier = metered.or(o.voice.carrier()).unwrap_or(false);
+        // (A decoder that can tell says; auto's analog receiver does, its digital ones leave it to the meter.)
+        let carrier = o.voice.carrier().or(metered).unwrap_or(false);
         // Its calls' frequency error, while the carrier is up and the receiver can tell.
         if let Some(off) = o.voice.offset_hz().filter(|_| carrier) {
             for l in o.live.iter_mut().flatten() {
                 l.rec.freq_error(ch.tuning.error_hz(ch.freq_hz, off as f64));
             }
         }
+        if carrier {
+            o.carrier_seen = true;
+            o.last_carrier_s = now_s;
+        }
+        let heard = Self::collect(ch, vout, carrier, now_s, rules, out);
+        for (slot, h) in heard.into_iter().enumerate() {
+            Self::slot_call(ch, slot, h, now_s, num, ids, rules, out);
+        }
+    }
+
+    /// What the channel's receiver put out, gathered for each slot's call
+    /// ([`Self::slot_call`]): its voice and what came with it, the air's
+    /// codes, and (a frequency with codes) the row it is for. Live and at the
+    /// end of input alike.
+    fn collect(ch: &mut Chan, vout: Vec<VoiceOut>, carrier: bool, now_s: f64, rules: &CallRules, out: &mut Vec<ConvOut>) -> [Heard; 2] {
+        let mode = ch.mode();
+        let o = ch.open.as_mut().unwrap();
+        let mut heard: [Heard; 2] = Default::default();
         for v in vout {
             let h = &mut heard[v.slot as usize & 1];
             match v.out {
@@ -966,7 +1198,8 @@ impl Conventional {
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(ch.system as u16, a)),
                 TrackerOut::Position(p) => h.positions.push(p),
                 TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.system as u16, c)),
-                TrackerOut::AliasLc(_) => {}
+                // (A conventional channel has no grants: the air's talkgroup is its own.)
+                TrackerOut::AliasLc(_) | TrackerOut::Talkgroup(_) => {}
                 TrackerOut::BaseStationId(call_sign) => out.push(ConvOut::Event(Event::CallSign { system: ch.system as u16, freq_hz: ch.freq_hz.round() as u64, call_sign })),
             }
         }
@@ -976,7 +1209,7 @@ impl Conventional {
             // A run with nothing but the cipher is dropped (no voice, no
             // link control): keep the cipher for the voice after it.
             let ahead = &mut o.cipher_ahead[slot];
-            if h.audio.is_empty() && h.infos.is_empty() {
+            if h.is_empty() {
                 *ahead = h.cipher.or(*ahead);
             } else {
                 h.cipher = h.cipher.or(ahead.take());
@@ -985,25 +1218,19 @@ impl Conventional {
                 *ahead = None;
             }
         }
-        if ch.routed && ch.mode == ConvMode::Fm {
+        if ch.routed && mode == ConvMode::Fm {
             if let Some(code) = Self::route(&ch.rows, &mut o.tx, &mut heard[0], carrier) {
-                Self::skip(&mut ch.skipped[0], ch.freq_hz, code, now_s, rules, out);
+                Self::skip(&mut ch.skipped[0], &mut ch.tally, ch.freq_hz, code, now_s, rules, out);
             }
         }
-        if carrier {
-            o.carrier_seen = true;
-            o.last_carrier_s = now_s;
-        }
-        if ch.routed && ch.mode != ConvMode::Fm {
+        if ch.routed && mode != ConvMode::Fm {
             for (slot, h) in heard.iter_mut().enumerate() {
                 if let Some(code) = Self::route_digital(&ch.rows, slot, h) {
-                    Self::skip(&mut ch.skipped[slot], ch.freq_hz, code, now_s, rules, out);
+                    Self::skip(&mut ch.skipped[slot], &mut ch.tally, ch.freq_hz, code, now_s, rules, out);
                 }
             }
         }
-        for (slot, h) in heard.into_iter().enumerate() {
-            Self::slot_call(ch, slot, h, now_s, num, ids, rules, max_call_s, out);
-        }
+        heard
     }
 
     /// FM with tones: hold the transmission until its tone names its row (or
@@ -1011,7 +1238,7 @@ impl Conventional {
     /// held, or when no row takes it). A transmission ends with the carrier.
     /// Returns the code of a transmission no row takes, on each run of it.
     fn route(rows: &[ConvChannel], tx: &mut Option<Box<Tx>>, h: &mut Heard, carrier: bool) -> Option<String> {
-        if h.audio.is_empty() && h.infos.is_empty() {
+        if h.is_empty() {
             if !carrier {
                 // Over before it could be told: by what was heard, else no tone.
                 if let Some(mut t) = tx.take().filter(|t| t.row.is_none()) {
@@ -1051,8 +1278,9 @@ impl Conventional {
 
     /// Report traffic no row took: once for a new code, or for the same
     /// after a pause longer than the call timeout.
-    fn skip(last: &mut Option<(String, f64)>, freq_hz: f64, code: String, now_s: f64, rules: &CallRules, out: &mut Vec<ConvOut>) {
-        if last.as_ref().is_none_or(|(c, t)| *c != code || now_s - t > rules.call_timeout_s) {
+    fn skip(last: &mut Option<(String, f64)>, tally: &mut CopyTally, freq_hz: f64, code: String, now_s: f64, rules: &CallRules, out: &mut Vec<ConvOut>) {
+        if last.as_ref().is_none_or(|(c, t)| *c != code || now_s - t > rules.calls.call_timeout_s) {
+            tally.skipped += 1;
             out.push(ConvOut::Event(Event::ConvSkipped { freq_hz: freq_hz.round() as u64, code: code.clone() }));
         }
         *last = Some((code, now_s));
@@ -1065,7 +1293,7 @@ impl Conventional {
     /// P25 / DMR / NXDN: the row this run's traffic on `slot` is for (none:
     /// it is dropped, and its code returned).
     fn route_digital(rows: &[ConvChannel], slot: usize, h: &mut Heard) -> Option<String> {
-        if h.audio.is_empty() && h.infos.is_empty() {
+        if h.is_empty() {
             return None;
         }
         let best = rows
@@ -1108,82 +1336,87 @@ impl Conventional {
 
     /// Start, relabel, split or feed the call on one slot with what it heard.
     #[allow(clippy::too_many_arguments)]
-    fn slot_call(ch: &mut Chan, slot: usize, h: Heard, now_s: f64, num: u32, ids: &CallIds, rules: &CallRules, max_call_s: f64, out: &mut Vec<ConvOut>) {
-        if h.audio.is_empty() && h.infos.is_empty() {
+    fn slot_call(ch: &mut Chan, slot: usize, h: Heard, now_s: f64, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
+        if h.is_empty() {
             return;
         }
+        let (on, tune) = (ch.on(num as usize), ch.tune_ref);
+        // FM: who is talking by its unit IDs, and its CTCSS tone or DCS code.
+        let mode = ch.mode();
+        // (An auto decoder puts nothing out before it settles, so what was heard is a settled mode's.)
+        let Some(voice) = mode.voice(slot as u8, h.color_code) else { return };
+        let fm = (mode == ConvMode::Fm).then_some(ch.analog.deemph_tau_s);
+        let spec = InBandSpec { units: fm, subaudible: fm.is_some() };
         let o = ch.open.as_mut().unwrap();
         // The talkgroup: the row's, else the air's, else the row's default.
         let r = h.row.unwrap_or(0);
         let row = &ch.rows[r];
         let air_tg = h.tg;
         let tg = row.talkgroup.or(air_tg).unwrap_or(row.default_talkgroup);
-        if let Some(l) = &o.live[slot] {
-            let too_long = max_call_s > 0.0 && now_s - l.call.start_s > max_call_s;
+        let dur = h.audio.len() as f64 / fm::AUDIO_RATE;
+        // When what's heard began: on the air, or (analog) its audio's length ago.
+        let from_s = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
+        if let Some(l) = o.live[slot].as_mut() {
             // A different talkgroup on the air, or another row's
             // transmission, is a new call (digital traffic that hasn't named
             // its talkgroup yet stays with the call it follows); the first
-            // talkgroup named just labels the call it arrived in.
-            let new_tg = l.air_tg.is_some() && air_tg.is_some_and(|t| Some(t) != l.air_tg);
-            let new_row = l.row != r && (ch.mode.analog() || air_tg.is_some());
-            if too_long || new_tg || new_row {
+            // talkgroup named just labels the call it arrived in. One that ran
+            // as long as a call may, or (conversation off) a new
+            // transmission, carries on in a new call: the same talkgroup, its
+            // talker with it, as a trunked call does.
+            let ota = l.call.talkgroup_ota;
+            let new_tg = ota.is_some() && air_tg.is_some_and(|t| Some(t) != ota);
+            let new_row = l.row != r && (mode.analog() || air_tg.is_some());
+            let carry_on: Option<(Vec<CallSource>, CarriesOn)> = if rules.calls.too_long(&l.call, now_s) {
+                let talking = l.call.talker().map(|s| CallSource { time_s: now_s, ..s.clone() });
+                Some((talking.into_iter().collect(), CarriesOn::TooLong))
+            } else {
+                rules.calls.new_transmission(&l.call, from_s).map(|i| (l.call.sources.split_off(i), CarriesOn::NewTransmission))
+            };
+            if new_tg || new_row || carry_on.is_some() {
                 let l = o.live[slot].take().unwrap();
-                Self::end(l, num, ch.tune_ref.then_some(ch.source), out);
-            } else if air_tg.is_some() && l.air_tg.is_none() {
+                let next = carry_on.filter(|_| !(new_tg || new_row)).map(|(talking, how)| {
+                    let call = Call { recording: l.call.recording, reason: l.call.reason, ..l.call.continued(ids.next(), from_s, talking, how) };
+                    Live { rec: Recorded::new(rules.capture_frames, spec), call, row: l.row }
+                });
+                Self::end(l, on, tune, out);
+                if let Some(n) = next {
+                    out.push(ConvOut::Call(CallEvent::Start(n.call.clone())));
+                    o.live[slot] = Some(n);
+                }
+            } else if air_tg.is_some() && ota.is_none() {
                 let info = Self::names(row, tg, rules.talkgroups);
-                let l = o.live[slot].as_mut().unwrap();
-                l.air_tg = air_tg;
                 l.call.talkgroup_ota = air_tg;
                 if l.call.talkgroup != tg {
                     l.call.talkgroup = tg;
+                    l.call.encrypted |= info.as_ref().is_some_and(|t| t.encrypted_mode());
                     l.call.talkgroup_info = info;
+                    // Gated again as the talkgroup it turned out to be (as a trunked call
+                    // is when a patch names it): an ignored one stops being recorded, and
+                    // one skipped as unknown is recorded from here.
+                    CallManager::admit(&mut l.call, rules.calls, rules.policy(), &mut Channel);
                 }
-                out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
+                out.push(ConvOut::Call(CallEvent::Update(l.call.clone())));
             }
         }
         if o.live[slot].is_none() {
-            let dur = h.audio.len() as f64 / fm::AUDIO_RATE;
-            let start = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
-            let call = Call {
-                site: None,
-                system: ch.system as u16,
-                twin: false,
-                id: ids.next(),
-                talkgroup: tg,
+            let talkgroup_info = Self::names(row, tg, rules.talkgroups);
+            let mut call = Call {
                 talkgroup_ota: air_tg,
-                freq_hz: ch.freq_hz.round() as u64,
-                voice: ch.mode.voice(slot as u8, h.color_code),
-                unit_to_unit: false,
-                recording: true,
-                followed: false,
-                reason: None,
-                encrypted: false,
-                cipher: None,
-                decrypted: false,
-                emergency: false,
-                priority: 0,
-                duplex: false,
-                mode: false,
-                start_s: start,
                 last_update_s: now_s,
-                heard_s: now_s,
                 last_audio_s: now_s,
-                sources: Vec::new(),
-                talkgroup_info: Self::names(row, tg, rules.talkgroups),
-                patched_talkgroups: Vec::new(),
                 ran: h.ran,
                 nac: h.nac,
-                tone: None,
                 tone_set: match row.access {
                     Some(Access::Tone(t)) => Some(t),
                     _ => None,
                 },
+                ..Call::begin(ids.next(), ch.system as u16, None, tg, talkgroup_info, ch.freq_hz.round() as u64, voice, from_s, now_s)
             };
-            out.push(ConvOut::Event(Event::CallStart(call.clone())));
-            // FM: who is talking by its unit IDs, and its CTCSS tone or DCS code.
-            let fm = (ch.mode == ConvMode::Fm).then_some(ch.analog.deemph_tau_s);
-            let rec = Recorded::new(rules.capture_frames, InBandSpec { units: fm, subaudible: fm.is_some() });
-            o.live[slot] = Some(Live { call, rec, air_tg, row: r });
+            // Recorded as a trunked call is: not an ignored talkgroup, nor (asked so) an unknown or encrypted one.
+            CallManager::admit(&mut call, rules.calls, rules.policy(), &mut Channel);
+            out.push(ConvOut::Call(CallEvent::Start(call.clone())));
+            o.live[slot] = Some(Live { call, rec: Recorded::new(rules.capture_frames, spec), row: r });
         }
         let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
@@ -1217,10 +1450,11 @@ impl Conventional {
                 changed = true;
             }
         }
-        // Its voice, and what that carried besides speech: who is talking, its tone or code, tone patterns.
+        // Its voice, and what that carried besides speech: who is talking, its tone or code, tone patterns
+        // (none taken in for a call not recorded).
         let mut patterns = Vec::new();
-        if !h.audio.is_empty() {
-            let news = l.rec.push(&h.audio, h.frames, now_s);
+        if !h.audio.is_empty() && l.call.recording {
+            let news = l.rec.push(&h.audio, &h.frames, now_s);
             changed |= CallManager::note_units(&mut l.call, &mut l.rec.tx, &news.units, now_s);
             // A new tone or code is news; a firmer reading of the same one isn't.
             changed |= l.rec.subaudible(&h.low).code.is_some();
@@ -1228,54 +1462,58 @@ impl Conventional {
             patterns = news.patterns;
         }
         if changed {
-            out.push(ConvOut::Event(Event::CallUpdate(l.call.clone())));
+            out.push(ConvOut::Call(CallEvent::Update(l.call.clone())));
         }
-        if !patterns.is_empty() {
-            let heard = l.rec.talkers(&l.call.sources, patterns);
-            out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.encrypted || l.call.decrypted, now_s });
-        }
+        Self::patterns_out(l, patterns, now_s, out);
         // (An encrypted transmission's audio, unless decrypted, is left out
         // when the call is saved, as a trunked call's is; it isn't played live.)
-        if !h.audio.is_empty() && !l.rec.tx.current_dropped() {
-            out.push(ConvOut::Event(Event::Audio { call_id: l.call.id, system: l.call.system, talkgroup: l.call.talkgroup, samples: h.audio, decrypted: l.call.encrypted || l.call.decrypted }));
+        if !h.audio.is_empty() && l.call.recording && !l.rec.tx.current_dropped() {
+            let c = &l.call;
+            out.push(ConvOut::Event(Event::Audio(LiveAudio { call_id: c.id, system: c.system, talkgroup: c.talkgroup, unit: c.talker().map_or(0, |s| s.src), samples: h.audio, frames: h.frames, decrypted: c.decrypted_voice(false) })));
         }
     }
 
-    /// The call's names: the row's, if it has any (filed under `tg`); else
+    /// The call's names: the row's, if it has any (filed under `tg`, over
+    /// the talkgroup file's row for it: [`Talkgroup::named_by_row`]); else
     /// the system's talkgroup file's for `tg`.
     fn names(row: &ConvChannel, tg: u32, talkgroups: &Talkgroups) -> Option<Talkgroup> {
-        row.info.clone().map(|t| Talkgroup { number: tg, ..t }).or_else(|| talkgroups.get(&tg).cloned())
+        let file = talkgroups.get(&tg);
+        match &row.info {
+            Some(r) => Some(Talkgroup::named_by_row(r, tg, file)),
+            None => file.cloned(),
+        }
     }
 
-    fn end(mut l: Live, num: u32, tune_source: Option<usize>, out: &mut Vec<ConvOut>) {
-        // What it ended on.
-        let patterns = l.rec.finish().patterns;
+    /// Tone patterns call `l` heard by `now_s`, with who sent them.
+    fn patterns_out(l: &Live, patterns: Vec<crate::dsp::inband::pattern::Pattern>, now_s: f64, out: &mut Vec<ConvOut>) {
         if !patterns.is_empty() {
             let heard = l.rec.talkers(&l.call.sources, patterns);
-            out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.encrypted || l.call.decrypted, now_s: l.call.last_audio_s });
+            out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.decrypted_voice(false), now_s });
         }
-        out.push(ConvOut::End { call: l.call, rec: l.rec, recorder_num: num, tune_source });
     }
 
-    /// End of input: flush the receivers and end every call.
-    pub fn finish(&mut self, out: &mut Vec<ConvOut>) {
+    fn end(mut l: Live, on: RecordedOn, tune_ref: bool, out: &mut Vec<ConvOut>) {
+        // What it ended on.
+        let patterns = l.rec.finish().patterns;
+        let at = l.call.last_audio_s;
+        Self::patterns_out(&l, patterns, at, out);
+        out.push(ConvOut::End { call: l.call, rec: l.rec, on, tune_ref });
+    }
+
+    /// End of input (at `now_s`): flush the receivers, their last voice
+    /// taken as any other ([`Self::collect`], [`Self::slot_call`]), and end
+    /// every call.
+    pub fn finish<'s>(&mut self, now_s: f64, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
         for (idx, ch) in self.chans.iter_mut().enumerate() {
-            let Some(o) = ch.open.as_mut() else { continue };
-            let mut vout = Vec::new();
-            o.voice.flush(&mut vout);
-            for v in vout {
-                let Some(l) = o.live[v.slot as usize & 1].as_mut() else { continue };
-                if let TrackerOut::Audio(a, f) = v.out {
-                    let patterns = l.rec.push(&a, [f], l.call.last_audio_s).patterns;
-                    if !patterns.is_empty() {
-                        let heard = l.rec.talkers(&l.call.sources, patterns);
-                        out.push(ConvOut::Patterns { call: l.call.clone(), heard, decrypted: l.call.encrypted || l.call.decrypted, now_s: l.call.last_audio_s });
-                    }
-                }
+            if ch.open.is_none() {
+                continue;
             }
-            let o = ch.open.take().unwrap();
+            let rules = &CallRules::of(system(ch.system), self.capture_frames);
+            Self::flush_open(ch, now_s, idx as u32, ids, rules, out);
+            let mut o = ch.open.take().unwrap();
+            keep_tape(&self.tape_sink, &mut o);
             for l in o.live.into_iter().flatten() {
-                Self::end(l, idx as u32, ch.tune_ref.then_some(ch.source), out);
+                Self::end(l, ch.on(idx), ch.tune_ref, out);
             }
         }
     }
@@ -1284,6 +1522,15 @@ impl Conventional {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn access_is_labelled_as_node_health_reports_give_it() {
+        assert_eq!(Access::Tone(Tone::Ctcss(1514)).report_label(), "CTCSS 151.4");
+        assert_eq!(Access::Tone(Tone::Dcs(23, false)).report_label(), "DCS 023N");
+        assert_eq!(Access::Tone(Tone::Dcs(754, true)).report_label(), "DCS 754I");
+        assert_eq!(Access::P25 { nac: Some(0x293), tg: None }.report_label(), "NAC 293");
+        assert_eq!(Access::Dmr { cc: Some(1), slot: None, tg: None }.report_label(), "CC 1");
+    }
     use crate::trunk::engine::{Engine, EngineConfig, Event, SourceConfig};
     use crate::trunk::{CallConfig, SystemConfig};
     use std::f64::consts::PI;
@@ -1319,10 +1566,15 @@ mod tests {
 
     /// [`run_systems`], with `gap` = (air time, seconds): that long of
     /// samples that never came ([`Engine::push_gap`]) at that point of the air.
-    fn run_gapped(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, mut gap: Option<(f64, f64)>) -> Run {
+    fn run_gapped(fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, gap: Option<(f64, f64)>) -> Run {
+        run_on(1, fs, secs, txs, channels, systems, gap)
+    }
+
+    /// [`run_gapped`] with `n` sources, all tuned alike and fed the same air.
+    fn run_on(sources: usize, fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, mut gap: Option<(f64, f64)>) -> Run {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }; sources],
             conventional: channels,
             systems,
             ..Default::default()
@@ -1361,10 +1613,14 @@ mod tests {
                 }
                 *v = x;
             }
-            e.push_iq(0, &buf[..n]);
+            for src in 0..sources {
+                e.push_iq(src, &buf[..n]);
+            }
             i0 += n;
             if let Some((_, len)) = gap.filter(|&(at, _)| i0 as f64 / fs >= at) {
-                e.push_gap(0, (len * fs) as u64);
+                for src in 0..sources {
+                    e.push_gap(src, (len * fs) as u64);
+                }
                 gap = None;
             }
             for ev in e.drain_events() {
@@ -1448,6 +1704,123 @@ mod tests {
         assert_eq!(c.cipher, Some(CipherId { algid: ALGID_AES_256, keyid: 0x4319 }));
     }
 
+    /// Plain P25 voice on a channel given as `mode`: its calls.
+    fn p25_call_on(mode: ConvMode) -> Vec<Call> {
+        p25_call_on_channel(ConvChannel::new(155_100_000.0, mode))
+    }
+
+    fn p25_call_on_channel(ch: ConvChannel) -> Vec<Call> {
+        use crate::p25::synth::{dibits, imbe, modulate, Tx};
+        let (fs, center, freq) = (1_200_000.0, 155_000_000.0, 155_100_000.0);
+        let tx = Tx { nac: 0x293, talkgroup: 716, source: 42, cipher: None, voice: (0..72).map(imbe).collect() };
+        let mut d = vec![0u8; 2400];
+        d.extend(dibits(&tx.frames()));
+        d.extend(vec![0u8; 2400]);
+        let mut ph = 0.0;
+        let mut iq = vec![Complex32::default(); (fs * 0.5) as usize];
+        iq.extend(modulate(&d, fs, freq - center, 0.3, &mut ph));
+        iq.extend(vec![Complex32::default(); (fs * 3.0) as usize]);
+        crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
+        let cfg = EngineConfig {
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            conventional: vec![ch],
+            systems: vec![conv_system("conv")],
+            ..Default::default()
+        };
+        let e = Engine::new(cfg).unwrap();
+        for c in iq.chunks(32_768) {
+            e.push_iq(0, c);
+        }
+        e.finish();
+        e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k.call) } else { None }).collect()
+    }
+
+    #[test]
+    fn an_auto_channel_settles_on_p25() {
+        let auto = p25_call_on(ConvMode::Auto);
+        let p25 = p25_call_on(ConvMode::P25);
+        let [a] = &auto[..] else { panic!("{} calls on auto: {auto:?}", auto.len()) };
+        let [p] = &p25[..] else { panic!("{} calls on p25", p25.len()) };
+        assert_eq!((a.voice, a.talkgroup, a.talkgroup_ota, a.nac), (Voice::P25, 716, Some(716), Some(0x293)));
+        // As P25 hears it, from the same frames: the wait before settling costs it nothing.
+        assert_eq!((a.sources.iter().map(|s| s.src).collect::<Vec<_>>(), a.voice, a.nac), (p.sources.iter().map(|s| s.src).collect::<Vec<_>>(), p.voice, p.nac));
+        assert!((a.last_audio_s - p.last_audio_s).abs() < 0.05 && (a.start_s - p.start_s).abs() < 0.05, "{:.2}..{:.2} against {:.2}..{:.2}", a.start_s, a.last_audio_s, p.start_s, p.last_audio_s);
+    }
+
+    #[test]
+    fn a_wide_auto_channel_opens_as_its_analog_receiver_and_still_hears_p25() {
+        let mut wide = ConvChannel::new(155_100_000.0, ConvMode::Auto);
+        wide.analog.half_bw_hz = 10_000.0;
+        assert_eq!(ChannelShape::of(ConvMode::Auto, &wide.analog).head_cutoff_hz, ChannelShape::of(ConvMode::Fm, &wide.analog).head_cutoff_hz);
+        let calls = p25_call_on_channel(wide);
+        let [a] = &calls[..] else { panic!("{} calls: {calls:?}", calls.len()) };
+        assert_eq!((a.voice, a.talkgroup, a.nac), (Voice::P25, 716, Some(0x293)));
+    }
+
+    #[test]
+    fn a_mode_reads_and_writes_as_the_config_names_it() {
+        for m in ConvMode::ALL {
+            assert_eq!(ConvMode::parse(m.as_str()), Some(m));
+        }
+        assert_eq!((ConvMode::parse(" AUTO "), ConvMode::parse("tdma")), (Some(ConvMode::Auto), None));
+        assert_eq!(ConvMode::ALL.map(ConvMode::talkgroup_mode), ["A", "A", "D", "D", "D", "D", "M"]);
+    }
+
+    #[test]
+    fn an_auto_channel_records_analog_whole() {
+        let (fs, c) = (2_400_000.0, 155_000_000.0);
+        let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.5), (5.0, 5.25)], ph: 0.0, am: false, audio: Vec::new() }];
+        let (calls, _, _) = run(fs, 8.0, &mut txs, vec![ConvChannel::new(c + 200_000.0, ConvMode::Auto)]);
+        let secs = |n: usize| n as f64 / 8000.0;
+        let [long, blip] = &calls[..] else { panic!("{} calls: {:?}", calls.len(), calls.iter().map(|(c, n, _)| (c.start_s, *n)).collect::<Vec<_>>()) };
+        // The audio from the start, though what it was waited a second to be sure it wasn't digital.
+        assert!((secs(long.1) - 2.0).abs() < 0.15, "{:.2} s of audio", secs(long.1));
+        assert_eq!(long.0.voice, Voice::Fm);
+        assert!(long.2.contains("\"audio_type\":\"analog\""), "{}", long.2);
+        assert!((long.0.start_s - 0.5).abs() < 0.1, "starts at {:.2} s", long.0.start_s);
+        // A key-up shorter than the wait is a call too.
+        assert!(secs(blip.1) > 0.15, "{:.2} s of audio", secs(blip.1));
+        assert_eq!(blip.0.voice, Voice::Fm);
+        assert!((blip.0.start_s - 5.0).abs() < 0.1, "starts at {:.2} s", blip.0.start_s);
+    }
+
+    #[test]
+    fn what_each_mode_can_say() {
+        use ConvMode::*;
+        let modes = [Fm, Am, P25, Dmr, Nxdn(Rate::N48), Nxdn(Rate::N96), Auto];
+        let row = |f: fn(ConvMode) -> bool| modes.map(f);
+        assert_eq!(row(ConvMode::takes_code), [true, false, true, true, true, true, false]);
+        assert_eq!(row(ConvMode::matches_talkgroup), [false, false, true, true, true, true, false]);
+        assert_eq!(row(ConvMode::air_names_talkgroup), [false, false, true, true, true, true, true]);
+        assert_eq!(row(ConvMode::has_fm), [true, false, false, false, false, false, true]);
+        assert_eq!(row(ConvMode::has_analog_receiver), [true, true, false, false, false, false, true]);
+        // Each mode is what its decoder decodes, and says so; auto's is not any one's.
+        for m in modes {
+            assert_eq!(ConvMode::of(m.kind()), Some(m));
+        }
+        assert!(Auto.voice(0, None).is_none() && Fm.voice(0, None).is_some());
+    }
+
+    #[test]
+    fn an_auto_channel_is_auto_until_it_settles() {
+        let ch = ConvChannel::new(155_100_000.0, ConvMode::Auto);
+        let c = Conventional::new(&[ch], &[(155_000_000.0, 1_200_000.0, 500_000.0)], ConvConfig::default(), BankConfig::default(), false).unwrap();
+        assert_eq!(c.channels().map(|n| n.mode).collect::<Vec<_>>(), [ConvMode::Auto]);
+        // (Nothing is known of what its calls will be until it has heard one: no talkgroup names are assumed.)
+        assert!(ConvChannel::new(155_100_000.0, ConvMode::Auto).names_ahead().is_none());
+    }
+
+    #[test]
+    fn auto_channels_have_no_codes_to_share_by() {
+        let auto = |f: f64| ConvChannel::new(f, ConvMode::Auto);
+        assert!(Conventional::check(&[auto(462.55e6)]).is_ok());
+        assert!(Conventional::check(&[auto(462.55e6), auto(462.55e6)]).unwrap_err().contains("is auto"));
+        let mut toned = auto(462.55e6);
+        toned.access = Access::parse(ConvMode::Fm, "100.0").unwrap();
+        assert!(Conventional::check(&[toned]).unwrap_err().contains("is auto"));
+        assert!(Conventional::check(&[auto(462.55e6), ConvChannel::new(462.55e6, ConvMode::Fm)]).unwrap_err().contains("different modes"));
+    }
+
     #[test]
     fn conventional_systems_keep_their_own_names_and_rules() {
         let (fs, c) = (2_400_000.0, 155_000_000.0);
@@ -1469,11 +1842,68 @@ mod tests {
         assert!(calls.iter().all(|(k, _, _)| k.site.is_none()), "a conventional call has no site");
     }
 
+    /// Conventional calls go by the system's recording rules as its trunked
+    /// calls do (CallConfig::gate, new_transmission, too_long): a talkgroup
+    /// the file says to ignore isn't recorded (its call is still told),
+    /// conversation off makes each transmission a call of its own, and a
+    /// call past the length limit carries on in the next.
+    #[test]
+    fn conventional_calls_follow_the_systems_recording_rules() {
+        let (fs, c) = (2_400_000.0, 155_000_000.0);
+        let tx = |on: Vec<(f64, f64)>| Tx { offset_hz: 200_000.0, snr_db: 30.0, on, ph: 0.0, am: false, audio: Vec::new() };
+        let ch = || vec![fm(c + 200_000.0, 1)];
+        let with = |f: &dyn Fn(&mut SystemConfig)| {
+            let mut s = conv_system("conv");
+            f(&mut s);
+            vec![s]
+        };
+        let ignored = with(&|s| {
+            s.talkgroups.insert(1, Talkgroup { number: 1, ignore: true, ..Default::default() });
+        });
+        let (calls, starts, _) = run_systems(fs, 3.5, &mut [tx(vec![(0.5, 2.5)])], ch(), ignored);
+        assert_eq!((calls.len(), starts), (0, 1), "told, not recorded");
+        // Two transmissions 0.7 s apart, under the 1 s call timeout.
+        let two = || [tx(vec![(0.5, 1.5), (2.2, 3.2)])];
+        assert_eq!(run(fs, 4.5, &mut two(), ch()).0.len(), 1, "a conversation");
+        let (calls, _, _) = run_systems(fs, 4.5, &mut two(), ch(), with(&|s| s.calls.conversation = false));
+        assert_eq!(calls.len(), 2, "conversation off: a call each");
+        let (calls, _, _) = run_systems(fs, 4.5, &mut [tx(vec![(0.5, 3.8)])], ch(), with(&|s| s.calls.max_call_s = 1.5));
+        assert!(calls.len() >= 2, "{} call(s): past 1.5 s it carries on in another", calls.len());
+    }
+
+    #[test]
+    fn a_channel_is_received_on_the_sources_it_is_pinned_to() {
+        // Two sources overlap around 155.1 MHz.
+        let spans = [(155.0e6, 2.4e6, 1.0e6), (155.2e6, 2.4e6, 1.0e6)];
+        let new = |channels: &[ConvChannel]| Conventional::new(channels, &spans, ConvConfig::default(), BankConfig::default(), false);
+        let on = |channels: &[ConvChannel]| new(channels).unwrap().channels().map(|c| c.source).collect::<Vec<_>>();
+        assert_eq!(on(&[fm(155.1e6, 1), fm(155.15e6, 2)]), [0, 0], "unpinned: the first that covers it");
+        let pinned = |hz, pins: Vec<usize>| ConvChannel { pins: Pins::only(pins), ..fm(hz, 3) };
+        assert_eq!(on(&[fm(155.1e6, 1), pinned(155.15e6, vec![1])]), [0, 1], "pinned to the second");
+        assert!(new(&[pinned(156.1e6, vec![0])]).is_err(), "pinned to a source that doesn't reach it");
+        let mixed = Conventional::check(&[pinned(155.1e6, vec![0]), pinned(155.1e6, vec![1])]).unwrap_err();
+        assert!(mixed.contains("different sources"), "{mixed}");
+    }
+
     /// Airband: AM calls on 25 kHz channels beside each other, one 2 kHz off
     /// frequency, one weak, an FM call beside them, and a strong AM neighbour
     /// that isn't a channel. (The source's centre is 155 MHz, so the AM
     /// channels take the VHF filter, as 118–137 MHz would. AM channels open
     /// from 3 s, once they know the spurs.)
+    /// A call's `source_num` is the source its channel is received on: the
+    /// second, for a channel kept on it, though the first reaches it too.
+    #[test]
+    fn a_call_names_the_source_it_was_heard_on() {
+        let tx = || Tx { offset_hz: 200_000.0, snr_db: 30.0, on: vec![(0.5, 2.0)], ph: 0.0, am: false, audio: Vec::new() };
+        let num = |pins: Pins| {
+            let (calls, _, _) = run_on(2, 2_400_000.0, 3.5, &mut [tx()], vec![ConvChannel { pins, ..fm(155_200_000.0, 1) }], vec![conv_system("conv")], None);
+            assert_eq!(calls.len(), 1);
+            calls[0].2.split("\"source_num\":").nth(1).and_then(|x| x.split(',').next()).unwrap().to_string()
+        };
+        assert_eq!(num(Pins::any()), "0", "the first that reaches it");
+        assert_eq!(num(Pins::only(vec![1])), "1");
+    }
+
     #[test]
     fn am_calls_detected_beside_fm_and_neighbours() {
         let fs = 2_400_000.0;
@@ -1548,7 +1978,7 @@ mod tests {
         assert_eq!(a.analog.half_bw_hz, crate::dsp::am::HALF_BW_VHF);
         assert_eq!(ConvChannel::new(243e6, ConvMode::Am).analog.half_bw_hz, crate::dsp::am::HALF_BW_UHF);
         let twice = Conventional::check(&[a.clone(), ConvChannel { talkgroup: Some(9), ..a.clone() }]).unwrap_err();
-        assert!(twice.contains("AM has no tone"), "{twice}");
+        assert!(twice.contains("is AM — it has no tone"), "{twice}");
         let mut narrow = ConvChannel::new(f, ConvMode::Fm);
         narrow.access = Access::parse(ConvMode::Fm, "100.0").unwrap();
         let mut wide = ConvChannel::new(f, ConvMode::Fm);
@@ -1651,11 +2081,14 @@ mod tests {
         let mut txs = vec![Tx { offset_hz: 200_000.0, snr_db: 25.0, on: vec![(0.5, 0.5 + secs)], ph: 0.0, am: false, audio }];
         let page = Signal { id: "FD_PAGE".into(), pattern: PatternKind::TwoTone, hz: vec![470.5, 1034.7], digits: String::new(), knox: false, extra_pct: 0.0, talkgroups: vec!["1".into()] };
         let sys = SystemConfig { signals: vec![page], ..conv_system("wood") };
-        let (calls, _, _) = run_systems(2_400_000.0, secs + 3.0, &mut txs, vec![fm(c + 200_000.0, 1)], vec![sys]);
+        // (The channel's row names it: a conventional system's talkgroup list doesn't.)
+        let row = ConvChannel { info: Some(crate::trunk::Talkgroup { alpha_tag: "Fire Dispatch".into(), ..Default::default() }), ..fm(c + 200_000.0, 1) };
+        let (calls, _, _) = run_systems(2_400_000.0, secs + 3.0, &mut txs, vec![row], vec![sys]);
         let tones = TONES.with(|v| v.borrow().clone());
         let pages: Vec<_> = tones.iter().filter(|t| t.pattern.kind == PatternKind::TwoTone).collect();
         assert_eq!(pages.len(), 1, "{tones:?}");
         assert_eq!((pages[0].signals.clone(), pages[0].talkgroup), (vec!["FD_PAGE".to_string()], 1));
+        assert_eq!(pages[0].alpha_tag, "Fire Dispatch", "the tone names its talkgroup as the call does");
         assert_eq!(pages[0].pattern.format, Some("Quick Call II"));
         assert!((pages[0].pattern.hz[0] - 467.2).abs() < 3.0 && (pages[0].pattern.hz[1] - 1032.3).abs() < 5.0, "{:?}", pages[0].pattern);
         assert_eq!(calls.len(), 1);
@@ -1858,6 +2291,11 @@ mod tests {
     }
 
     fn p25_calls(txs: &[(f64, u16, u16)], rows: Vec<ConvChannel>, secs: f64) -> (Vec<(Call, String)>, Vec<String>) {
+        p25_calls_of(txs, rows, secs, Talkgroups::new())
+    }
+
+    /// [`p25_calls`], with the system's talkgroup file.
+    fn p25_calls_of(txs: &[(f64, u16, u16)], rows: Vec<ConvChannel>, secs: f64, talkgroups: Talkgroups) -> (Vec<(Call, String)>, Vec<String>) {
         use crate::p25::synth::{dibits, imbe, modulate, Tx};
         let (fs, center, freq) = (480_000.0, 155_000_000.0, 155_050_000.0);
         let mut x = 3u32;
@@ -1886,7 +2324,7 @@ mod tests {
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             conventional: rows.into_iter().map(|r| ConvChannel { freq_hz: freq, ..r }).collect(),
-            systems: vec![conv_system("conv")],
+            systems: vec![SystemConfig { talkgroups, ..conv_system("conv") }],
             ..Default::default()
         };
         let e = Engine::new(cfg).unwrap();
@@ -1940,6 +2378,20 @@ mod tests {
             [(45351, Some(1), "Townville PW".into()), (45353, Some(2), "Townville Parks".into()), (7, Some(7), "Townville (other)".into())]
         );
         assert_eq!(skipped, ["NAC 4F1 TG 1"]);
+    }
+
+    /// The talkgroup file's Ignore holds for a row with names of its own, and
+    /// for a talkgroup only the air names.
+    #[test]
+    fn an_ignored_talkgroup_is_not_recorded_whatever_names_it() {
+        let file = |tg: u32, ignore: bool| Talkgroups::from([(tg, Talkgroup { number: tg, alpha_tag: "File".into(), ignore, ..Default::default() })]);
+        let named = || vec![p25_row("", Some(46012), "Townville PD")];
+        let (calls, _) = p25_calls_of(&[(0.3, 0x293, 1)], named(), 3.0, file(46012, false));
+        assert_eq!(filed(&calls), [(46012, Some(1), "Townville PD".into())]);
+        let (calls, _) = p25_calls_of(&[(0.3, 0x293, 1)], named(), 3.0, file(46012, true));
+        assert_eq!(filed(&calls), []);
+        let (calls, _) = p25_calls_of(&[(0.3, 0x293, 1)], vec![p25_row("", None, "")], 3.0, file(1, true));
+        assert_eq!(filed(&calls), []);
     }
 
     #[test]

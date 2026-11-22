@@ -3,7 +3,7 @@
 // Import it before anything of the app's.
 
 const g = globalThis as Record<string, unknown>;
-g.location ??= { protocol: "http:", host: "localhost", hash: "", pathname: "/", search: "" };
+g.location ??= { protocol: "http:", host: "localhost", hostname: "localhost", origin: "http://localhost", hash: "", pathname: "/", search: "" };
 g.WebSocket = class {
   binaryType = "";
   onopen: (() => void) | null = null;

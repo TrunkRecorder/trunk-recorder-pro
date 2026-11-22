@@ -24,14 +24,14 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 use serde_json::{json, Value};
 use trunk_core::metrics::{key_part, Sink};
-use trunk_recorder_plugin::{Level, Manifest, Metrics, Outcome, State, SystemInfo};
+use trunk_recorder_plugin::{Level, Manifest, Metrics, Outcome, State};
 
 use super::delay::Delays;
 use super::hold::Hold;
 use super::host::Notes;
 use super::store::{self, Catalog};
 use crate::store::Shelf;
-use super::{describe, executable, plugins_dir, Archive, Encoder, Note, PluginHost, Spec};
+use super::{executable, plugins_dir, try_describe, DescribeError, Archive, Encoder, Note, PluginHost, Spec};
 use crate::config::{Config, PluginSetup};
 use crate::runtime::{publish, Hub};
 
@@ -202,8 +202,8 @@ fn alone(mut h: Arc<PluginHost>) -> PluginHost {
 }
 
 /// What a recording's plugins start with: the systems, the capture folder,
-/// and what answers their `calls.query`.
-type StartEnv = (Vec<SystemInfo>, PathBuf, super::Calls);
+/// what answers their `calls.query` and what saves their `settings.save`.
+type StartEnv = (Vec<super::RunSystem>, PathBuf, super::Calls, super::Saves);
 
 /// The plugins' part of the app's shared state.
 pub struct Plugins {
@@ -281,9 +281,12 @@ impl Plugins {
                 return m.clone();
             }
         }
-        let m = if exe.is_file() { describe(exe) } else { Err(format!("{} isn't there", exe.display())) };
-        self.manifests.lock().unwrap().insert(exe.to_path_buf(), (mtime, m.clone()));
-        m
+        let m = if exe.is_file() { try_describe(exe) } else { Err(DescribeError { text: format!("{} isn't there", exe.display()), timed_out: false }) };
+        // (Not finishing in time is the machine's state, not the build's: asked again next time.)
+        if !matches!(&m, Err(e) if e.timed_out) {
+            self.manifests.lock().unwrap().insert(exe.to_path_buf(), (mtime, m.clone().map_err(|e| e.text)));
+        }
+        m.map_err(|e| e.text)
     }
 
     /// The `plugins` message: what's installed and what each is. (Their
@@ -299,6 +302,8 @@ impl Plugins {
                     Ok(m) => (Some(m), None),
                     Err(p) => (None, Some(p)),
                 };
+                // It can be off for a system ([`trunk_recorder_plugin::Manifest::per_system`]).
+                let per_system = manifest.as_ref().is_some_and(Manifest::per_system);
                 json!({
                     "id": id,
                     "path": exe,
@@ -307,6 +312,7 @@ impl Plugins {
                     // Installed from this GitHub repository, not the registry.
                     "unlistedFrom": if e.path.is_empty() { store::unlisted_from(id) } else { None },
                     "manifest": manifest,
+                    "perSystem": per_system,
                     "problem": problem,
                     "runtime": runtime.get(id).cloned().unwrap_or_default(),
                 })
@@ -317,9 +323,9 @@ impl Plugins {
     }
 
     /// Start the config's enabled plugins for a recording.
-    /// `calls`: answers the plugins' `calls.query`.
-    pub fn start(&self, cfg: &Config, calls: super::Calls) {
-        *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir), calls));
+    /// `calls`: answers the plugins' `calls.query`; `saves`: saves their `settings.save`.
+    pub fn start(&self, cfg: &Config, calls: super::Calls, saves: super::Saves) {
+        *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir), calls, saves));
         self.set_delays(cfg);
         let host = self.new_host(cfg, true, Arc::new(AtomicBool::new(true)));
         self.hold.attach(host.as_ref().map(PluginHost::outlet));
@@ -391,7 +397,7 @@ impl Plugins {
     /// `fresh`: a new recording (counts start over); else a restart within one.
     /// `go`: when the processes may start (`PluginHost::start_when`).
     fn new_host(&self, cfg: &Config, fresh: bool, go: Arc<AtomicBool>) -> Option<PluginHost> {
-        let (systems, capture_dir, calls) = self.env.lock().unwrap().clone()?;
+        let (systems, capture_dir, calls, saves) = self.env.lock().unwrap().clone()?;
         let notes = self.notes();
         let specs = Spec::enabled(cfg);
         {
@@ -411,7 +417,7 @@ impl Plugins {
         if specs.is_empty() {
             return None;
         }
-        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go, Some(self.hold.clone()), Some(calls));
+        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go, Some(self.hold.clone()), Some(calls), Some(saves));
         (!host.is_empty()).then_some(host)
     }
 
@@ -534,8 +540,7 @@ impl Plugins {
                         // A change of health is an event (not every "ok" of a starting plugin).
                         if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
                             let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: message.clone() };
-                            // (Never a frequent one: it's for the feed.)
-                            if let Some(trunk_app::stats::Emitted::Feed(v)) = monitor.emit(crate::clock::unix_s(), e) {
+                            if let Some(v) = monitor.emit(crate::clock::unix_s(), e) {
                                 publish(&hub, ToClient::MonitorEvent(body(v)));
                             }
                         }

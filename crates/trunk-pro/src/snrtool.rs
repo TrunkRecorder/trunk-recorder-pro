@@ -131,6 +131,8 @@ pub struct Variant {
     pub c4fm_only: bool,
     /// P25: the CQPSK receivers alone (no C4FM receiver).
     pub cqpsk_only: bool,
+    /// P25: no equalised CQPSK receiver (`noeq`; Phase 2: the plain receiver alone).
+    pub no_eq: bool,
     /// P25: settle on the kind of receiver the channel needs (`nodetect`: every receiver always).
     pub detect: bool,
     /// DMR: no soft combining of repeated blocks.
@@ -151,20 +153,22 @@ fn variant(name: &str, kind: &str) -> Variant {
     let mut o = if kind == "dmr" { C4fmOptions::dmr() } else { C4fmOptions::default() };
     let mut c4fm_only = false;
     let mut cqpsk_only = false;
+    let mut no_eq = false;
     let mut detect = true;
     let mut no_combining = false;
     let mut fsk2 = smartnet::Fsk2Options::default();
     let mut grid_errs = None;
     let mut hard_sig = false;
     let mut list = (0, f32::INFINITY);
-    // Phase 2 voice's receiver as the engine runs it.
-    let mut cq = trunk_core::dsp::cqpsk::Options { baud: trunk_core::p25::phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() };
+    // Phase 2 voice's plain receiver as the engine runs it.
+    let mut cq = Bank::phase2_cqpsk();
 
     for part in name.split('+') {
         match part {
             "base" | "" => {}
             "c4fm-only" => c4fm_only = true,
             "cqpsk-only" => cqpsk_only = true,
+            "noeq" => no_eq = true,
             "nodetect" => detect = false,
             "nocombine" => no_combining = true,
             "hardsig" => hard_sig = true,
@@ -184,7 +188,7 @@ fn variant(name: &str, kind: &str) -> Variant {
             }
         }
     }
-    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, detect, no_combining, fsk2, grid_errs, cqpsk: cq, hard_sig, list }
+    Variant { name: name.into(), c4fm: o, c4fm_only, cqpsk_only, no_eq, detect, no_combining, fsk2, grid_errs, cqpsk: cq, hard_sig, list }
 }
 
 /// What a decode of the channel got: each message's time (s) and content,
@@ -260,9 +264,9 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     let cfg = if v.c4fm_only {
         BankConfig { cqpsk: false, cqpsk_eq: false, ..Default::default() }
     } else if v.cqpsk_only {
-        BankConfig { c4fm: false, ..Default::default() }
+        BankConfig { c4fm: false, cqpsk_eq: !v.no_eq, ..Default::default() }
     } else {
-        BankConfig { detect: v.detect, ..Default::default() }
+        BankConfig { detect: v.detect, cqpsk_eq: !v.no_eq, ..Default::default() }
     };
     let mut bank = Bank::with_c4fm(rate, cfg, v.c4fm);
     let mut groups = Vec::new();
@@ -301,30 +305,29 @@ fn run_p25(iq: &[Complex32], rate: f64, v: &Variant) -> Count {
     n
 }
 
-/// P25 Phase 2 TDMA: H-DQPSK receiver → slot framer → tracker (descrambled
+/// Phase 2 voice's receiver bank as the engine runs it, with the variant's
+/// plain receiver (and without the equalised one, `noeq`).
+fn p2_bank(rate: f64, v: &Variant) -> Bank<trunk_core::p25::phase2::Framer> {
+    Bank::phase2_with(rate, BankConfig { cqpsk_eq: !v.no_eq, ..Default::default() }, v.cqpsk)
+}
+
+/// P25 Phase 2 TDMA: H-DQPSK receivers → slot framers → tracker (descrambled
 /// with `key`: NAC, System ID, WACN) → AMBE codewords of both slots.
 fn run_p2(iq: &[Complex32], rate: f64, v: &Variant, key: (u32, u32, u32)) -> Count {
-    use trunk_core::dsp::cqpsk::Cqpsk;
-    use trunk_core::p25::phase2;
     use trunk_core::trunk::tdma::TdmaTracker;
     use trunk_core::trunk::voice::TrackerOut;
-    let mut rx = Cqpsk::new(rate, v.cqpsk);
-    let mut fr = phase2::Framer::new();
+    let mut bank = p2_bank(rate, v);
     let mut tr = TdmaTracker::new(1, None);
     tr.set_key(key.0, key.1, key.2);
-    let (mut syms, mut pkts, mut out) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut groups, mut out) = (Vec::new(), Vec::new());
     let mut n = Count::default();
     for c in iq.chunks(4096) {
-        syms.clear();
-        pkts.clear();
-        rx.push(c, &mut syms);
-        for s in &syms {
-            fr.push(s, &mut pkts);
-        }
-        for p in &pkts {
+        groups.clear();
+        bank.push(c, &mut groups);
+        for g in &groups {
             out.clear();
-            let t = p.sample / rate;
-            tr.packet(p, t, &mut out);
+            let t = g[0].sample / rate;
+            tr.group(g, t, &mut out);
             for (slot, o) in out.drain(..) {
                 if let TrackerOut::Audio(_, f) = o {
                     n.voice.push((t, format!("{slot}{}", hex(&f.bits))));
@@ -397,7 +400,7 @@ pub fn run(a: &Args) {
     println!("{} s of {kind} at {:.0} Hz; clean counts (blocks/voice, P25 voice: blocks/signalling/voice) in the header; (n): blocks and signalling decoded that the clean run didn't get", iq.len() as f64 / rate, a.num("freq", 0.0));
     println!("{head}");
     let seeds: Vec<u64> = (0..a.num("trials", 1.0) as u64).map(|k| 0x9e37_79b9_7f4a_7c15 ^ k.wrapping_mul(0x1234_5678_9abc)).collect();
-    let kinds = a.get("kinds").is_some();
+    let kinds = a.flag("kinds");
     if a.flag("repeat") {
         return repeat_rules(&clean[0], &snrs, &seeds, |x| run(x, &variants[0]), |sd, snr| add_noise(&iq, rate, s, snr, &taps, sd));
     }
@@ -445,30 +448,23 @@ pub fn run(a: &Args) {
 /// `tool snr … --kind p2 --quality`: a real channel as it is, per variant —
 /// the share of AMBE codewords with ≤ 1 bit error, and MAC PDUs failing.
 pub fn quality(a: &Args) {
-    use trunk_core::dsp::cqpsk::Cqpsk;
-    use trunk_core::p25::phase2;
     use trunk_core::trunk::tdma::TdmaTracker;
     use trunk_core::trunk::voice::TrackerOut;
     let (iq, rate) = channel(a, a.num("cutoff", 7000.0));
     let hexarg = |k: &str| a.get(k).and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
     for name in a.get("variant").unwrap_or("base").split(',') {
         let v = variant(name, "p2");
-        let mut rx = Cqpsk::new(rate, v.cqpsk);
-        let mut fr = phase2::Framer::new();
+        let mut bank = p2_bank(rate, &v);
         let mut tr = TdmaTracker::new(1, None);
         tr.set_key(hexarg("nac"), hexarg("sysid"), hexarg("wacn"));
-        let (mut syms, mut pkts, mut out) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut groups, mut out) = (Vec::new(), Vec::new());
         let (mut n, mut clean, mut errs) = (0u64, 0u64, 0u64);
         for c in iq.chunks(4096) {
-            syms.clear();
-            pkts.clear();
-            rx.push(c, &mut syms);
-            for s in &syms {
-                fr.push(s, &mut pkts);
-            }
-            for p in &pkts {
+            groups.clear();
+            bank.push(c, &mut groups);
+            for g in &groups {
                 out.clear();
-                tr.packet(p, p.sample / rate, &mut out);
+                tr.group(g, g[0].sample / rate, &mut out);
                 for (_, o) in out.drain(..) {
                     if let TrackerOut::Audio(_, f) = o {
                         n += 1;

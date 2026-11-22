@@ -217,7 +217,14 @@ impl Writer {
 /// backups too, so this is what the store costs the disk. None: this OS
 /// doesn't count a thread's writes (macOS), or PostgreSQL's server writes.
 fn thread_written() -> Option<u64> {
-    let io = std::fs::read_to_string("/proc/thread-self/io").ok()?;
+    io_written("/proc/thread-self/io")
+}
+
+/// The bytes a Linux `io` file (`/proc/self/io`: the process's,
+/// `/proc/thread-self/io`: a thread's) says were written to storage: what
+/// reached the disk, so 0 on tmpfs, or before the kernel writes it back.
+pub(crate) fn io_written(file: &str) -> Option<u64> {
+    let io = std::fs::read_to_string(file).ok()?;
     io.lines().find_map(|l| l.strip_prefix("write_bytes: ")).and_then(|v| v.trim().parse().ok())
 }
 

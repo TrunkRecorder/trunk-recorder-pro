@@ -4,11 +4,12 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { startProblem } from "./config.ts";
 import { ARRIVED_TO_IMPORT, DirectoryImport } from "./directoryImport.tsx";
-import { can, closeGuide, dismissError, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
+import { isRecording, can, closeGuide, dismissError, mayEdit, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { PluginPage, PluginsPage, usePluginPages } from "./Plugins.tsx";
 import { Setup } from "./Setup.tsx";
+import { SignedInAs } from "./Passkeys.tsx";
 import { Light } from "./charts.tsx";
 import { ListenPage } from "./dash/Listen.tsx";
 import { pageHealth, type Health } from "./dash/data.ts";
@@ -46,11 +47,15 @@ const LABEL: Record<View, string> = {
   setup: "Setup",
 };
 
+/** The pages that change the recorder: not shown to a connection that may only look (one asked for shows the Overview). */
+const EDITING: View[] = ["plugin", "plugins", "interfaces", "setup"];
+const shownView = (v: View): View => (EDITING.includes(v) && !mayEdit() ? "overview" : v);
+
 function Nav({ view, health }: { view: View; health: Record<string, Health> }) {
-  const pages: View[] = ["overview", "listen", "rf", "decode", "radio", ...((["platform", "plugins", "interfaces"] as const).filter((v) => can(v === "platform" ? "host" : v)) as View[]), "setup"];
+  const pages: View[] = (["overview", "listen", "rf", "decode", "radio", ...((["platform", "plugins", "interfaces"] as const).filter((v) => can(v === "platform" ? "host" : v)) as View[]), "setup"] as View[]).filter((v) => shownView(v) === v);
   // Plugins with a page of their own go under Plugins (in a row: between two thin rules).
   const plugins = usePluginPages();
-  const own = can("plugins") ? plugins : [];
+  const own = can("plugins") && mayEdit() ? plugins : [];
   const at = useSelect((x) => (x.view === "plugin" ? (x.path[0] ?? "") : ""));
   const item = (key: string, on: boolean, icon: ReactNode, label: string, go: () => void, h?: Health, extra = "") => (
     <button key={key} className={`${on ? "on" : ""}${extra}`} aria-current={on ? "page" : undefined} onClick={go} title={h && h.level !== "ok" && h.level !== "idle" ? h.why : label}>
@@ -104,7 +109,7 @@ function Page({ view }: { view: View }) {
 }
 
 export function App() {
-  const s = useSelect((x) => ({
+  const s0 = useSelect((x) => ({
     connected: x.connected,
     quit: x.quit,
     restartNeeded: x.restartNeeded,
@@ -112,16 +117,24 @@ export function App() {
     config: x.config,
     version: x.version,
     error: x.error,
+    runError: x.runError,
     notice: x.notice,
     ended: x.ended,
     guide: x.guide,
     view: x.view,
     path: x.path,
+    access: x.access,
+    user: x.user,
+    signingIn: x.signingIn,
   }));
+  const s = { ...s0, view: shownView(s0.view) };
+  const edit = mayEdit();
   const own = usePluginPages();
   // The lights: recomputed with what they depend on, a few times a second at most.
   const health = useSelect((x) => pageHealth(x), (a, b) => Object.keys(a).every((k) => a[k].level === b[k].level && a[k].why === b[k].why));
-  const running = s.phase === "running" || s.phase === "starting";
+  // Only re-renders when a release actually shows up (or goes away), not every `host` tick.
+  const update = useSelect((x) => x.host?.platform.update ?? null, (a, b) => a?.version === b?.version);
+  const running = isRecording(s.phase);
   // The browser build records in this tab: keep the screen (and so the tab) awake.
   useWakeLock(!!web && running);
   const problem = s.config ? startProblem(s.config) : "Connecting to the recorder…";
@@ -129,11 +142,11 @@ export function App() {
   // The setup guide: offered once, when the recorder first reports an empty config.
   const offered = useRef(false);
   useEffect(() => {
-    if (offered.current || !s.config || !s.connected) return;
+    if (offered.current || !s.config || !s.connected || !s.access) return;
     offered.current = true;
     // (Not over a system being imported from the directory: that's what they came for.)
-    if (s.phase === "idle" && guideWanted(s.config) && !ARRIVED_TO_IMPORT) openGuide("start");
-  }, [s.config, s.connected]);
+    if (edit && s.phase === "idle" && guideWanted(s.config) && !ARRIVED_TO_IMPORT) openGuide("start");
+  }, [s.config, s.connected, s.access]);
 
   if (s.quit) {
     return (
@@ -149,14 +162,21 @@ export function App() {
 
   return (
     <div className="shell">
-      {s.guide && <SetupGuide key={s.guide} mode={s.guide} onClose={closeGuide} />}
-      <DirectoryImport />
+      {edit && s.guide && <SetupGuide key={s.guide} mode={s.guide} onClose={closeGuide} />}
+      {edit && <DirectoryImport />}
       <aside className="rail">
         <div className="brand">
           <span className="logo" aria-hidden="true" />
           <div className="brand-text">
             <b>Trunk Recorder Pro</b>
-            <span className="muted small">{s.version ? `v${s.version}` : ""}</span>
+            <span className="muted small">
+              {s.version ? `v${s.version}` : ""}
+              {update && (
+                <a className="badge update" href={update.url} target="_blank" rel="noreferrer" title="A newer release, on GitHub">
+                  v{update.version} available
+                </a>
+              )}
+            </span>
           </div>
         </div>
         <Nav view={s.view} health={health} />
@@ -167,7 +187,16 @@ export function App() {
             <h1>{s.view === "plugin" ? (own.find((o) => o.id === s.path[0])?.title ?? LABEL.plugin) : LABEL[s.view]}</h1>
           </div>
           <div className="row">
-            {!running && s.connected && (
+            {s.user ? (
+              <SignedInAs />
+            ) : (
+              s.signingIn && (
+                <a className="btn ghost small" href="/signin">
+                  Sign in
+                </a>
+              )
+            )}
+            {edit && !running && s.connected && (
               <button className="btn ghost" onClick={() => openGuide("start")} title="Set up a new system step by step">
                 Setup guide
               </button>
@@ -175,7 +204,7 @@ export function App() {
             <span className={`pill pill-${s.phase}`}>
               {!s.connected ? "Disconnected" : s.phase === "running" ? (liveDongle ? "Recording" : "Replaying") : s.phase === "idle" ? "Stopped" : s.phase === "starting" ? "Starting…" : "Stopping…"}
             </span>
-            {running ? (
+            {!edit ? null : running ? (
               <>
                 {s.restartNeeded && (
                   <button className="btn ghost" onClick={start} title="Stop and start again, with the settings as they are now">
@@ -191,7 +220,7 @@ export function App() {
                 Start
               </button>
             )}
-            {can("service") && s.connected && (
+            {edit && can("service") && s.connected && (
               <button className="btn ghost" onClick={quitApp} title="Stop recording and quit the app">
                 Quit
               </button>
@@ -199,10 +228,10 @@ export function App() {
           </div>
         </header>
         <div className="banners">
-          {!s.connected && <div className="banner bad">Not connected to trunk-pro. Retrying…</div>}
-          {s.error && (
+          {!s.connected && <div className="banner bad">Not connected to trunk-pro — retrying…</div>}
+          {(s.error ?? s.runError) && (
             <div className="banner bad" role="alert">
-              <span>{s.error}</span>
+              <span>{s.error ?? s.runError}</span>
               <button className="btn ghost small" onClick={dismissError}>
                 Dismiss
               </button>
@@ -218,11 +247,13 @@ export function App() {
           )}
           {running && s.restartNeeded && (
             <div className="banner" role="status">
-              Change requires restart — some settings you changed only apply when recording starts again.
+              <span>
+                <b>Restart to apply</b> <span className="muted">— some changes take effect on the next Start</span>
+              </span>
             </div>
           )}
-          {s.ended && s.phase === "idle" && <div className="banner">Replay finished.</div>}
-          {!running && problem && s.connected && !s.error && s.view !== "setup" && (
+          {s.ended && s.phase === "idle" && <div className="banner">Replay finished</div>}
+          {edit && !running && problem && s.connected && !s.error && !s.runError && s.view !== "setup" && (
             <div className="banner subtle">
               <span>{problem}</span>
               <button className="btn ghost small" onClick={() => setView("setup")}>

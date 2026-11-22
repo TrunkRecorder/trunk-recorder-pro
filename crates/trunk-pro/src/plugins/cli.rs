@@ -243,7 +243,7 @@ fn run_calls(a: &Args) {
         None => std::env::temp_dir().join(format!("trunk-pro-plugin-run-{id}")),
     };
     eprintln!("Data folder: {}", data_dir.display());
-    let mut spec = Spec { id, copy: 0, exe, config, systems, data_dir: Some(data_dir), share_decrypted };
+    let mut spec = Spec { id, copy: 0, exe, config, systems, data_dir: Some(data_dir), share_decrypted, off: Default::default(), sites_off: Default::default() };
     if let Some(s) = a.get("settings") {
         let v: Value = std::fs::read_to_string(s).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| die(&format!("{s}: not JSON")));
         spec.config = v.get("config").cloned().unwrap_or(Value::Null);
@@ -267,8 +267,10 @@ fn run_calls(a: &Args) {
     for (_, j) in &loaded {
         let v: Value = serde_json::from_str(j).unwrap_or_default();
         let name = v["short_name"].as_str().unwrap_or("").to_string();
-        if !systems.iter().any(|s| s.short_name == name) {
-            systems.push(SystemInfo { index: systems.len() as u16, short_name: name, kind: "p25".into(), ..Default::default() });
+        if !systems.iter().any(|s| s.info.short_name == name) {
+            // (An id no system of the config has.)
+            let id = trunk_core::trunk::SystemId(cfg.next_system_id.max(1) + systems.len() as u32);
+            systems.push(super::RunSystem { id, info: SystemInfo { index: systems.len() as u16, short_name: name, kind: "p25".into(), ..Default::default() } });
         }
     }
     let notes: super::host::Notes = Arc::new(print_note);
@@ -281,21 +283,22 @@ fn run_calls(a: &Args) {
     eprintln!("M4A: {}", host.encoder().unwrap_or("none"));
     for (p, json) in &loaded {
         let record = serde_json::from_str::<trunk_recorder_plugin::CallRecord>(json);
-        let system = record.as_ref().ok().and_then(|r| systems.iter().find(|s| s.short_name == r.short_name)).map_or(0, |s| s.index);
+        let system = record.as_ref().ok().and_then(|r| systems.iter().find(|s| s.info.short_name == r.short_name)).map_or(0, |s| s.info.index);
         // Its key: relative to the capture folder (absolute when it isn't in there).
         let base = p.with_extension("");
         let rel = base.strip_prefix(&capture_dir).map(Path::to_path_buf).unwrap_or(base.clone());
         // (A call JSON that can't be read is taken for a decrypted one.)
         let decrypted = record.as_ref().map_or(true, |r| r.decrypted);
+        let record = record.unwrap_or_default();
         // (An .m4a made here for a plugin that wants one, as the recorder's finish thread would.)
         let mut files = super::host::files_on_disk(&base);
-        if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(decrypted).m4a) {
+        if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(system, &record, decrypted).m4a) {
             let to = PathBuf::from(format!("{}.m4a", base.display()));
             if e.m4a(&std::fs::read(&files.wav).unwrap_or_default(), &to, *kbps).is_ok() {
                 files.m4a = Some(to);
             }
         }
-        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), record.unwrap_or_default(), files, decrypted);
+        host.concluded(system, &rel.to_string_lossy().replace('\\', "/"), record, files, decrypted);
     }
     let grace: f64 = a.get("grace").and_then(|s| s.parse().ok()).unwrap_or(30.0);
     host.shutdown(Duration::from_secs_f64(grace));

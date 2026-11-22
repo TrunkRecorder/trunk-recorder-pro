@@ -20,6 +20,11 @@ release, or from a folder of your own.
 
 ## The Interfaces page
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/interfaces-dark.png">
+  <img src="../img/shots/interfaces-light.png" alt="The Interfaces page">
+</picture>
+
 In the desktop app, **Interfaces** in the list of pages on the left. It has four parts:
 
 **Interfaces**: each interface the recorder serves, with:
@@ -67,10 +72,11 @@ By default the recorder listens on `127.0.0.1`: every interface, its own include
 from this computer only. To reach them from your network, set `server.bind` to `0.0.0.0` (or
 start with `--bind 0.0.0.0`), and let the interfaces' ports through the computer's firewall.
 
-That reaches the recorder's own interface too, and **it has no login**. To share the recorder
+That reaches the recorder's own interface too, which has **no login unless you turn
+[signing in](../guides/remote-access.md#signing-in) on**. To share the recorder
 with listeners without handing them the controls, give them a listen-access interface's address
 (`http://recorder.local:8081/`) and keep the recorder's own port (8080) closed to them: on the
-firewall, or with an SSH tunnel for yourself ([Remote access](../guides/interface.md#remote-access)).
+firewall, or with an SSH tunnel for yourself ([Remote access and signing in](../guides/remote-access.md)).
 A listen-access interface can't change anything, and its connection can't reach the recorder's
 port to borrow its access: the recorder refuses a page from another port.
 
@@ -80,10 +86,14 @@ port to borrow its access: the recorder refuses a page from another port.
 |---|:---:|:---:|
 | See status, systems, calls on the air, recorded calls, the dashboard's figures | ✓ | ✓ |
 | Play live audio and recorded calls | ✓ | ✓ |
-| See the config | without plugin settings and key sources | ✓ |
+| See the config | only what its pages show ([what View is sent](../configuration/server-and-log.md#what-view-is-sent)) | ✓ |
 | Change settings, start and stop recording, quit | | ✓ |
 | Install, set up or remove plugins and interfaces | | ✓ |
 | Unlock encryption keys, browse the recorder's folders, scan for systems | | ✓ |
+
+With [signing in](../guides/remote-access.md#signing-in) on, an interface's page also needs
+the browser to be signed in, and gets no more than the user's role allows: a `listen` user on a
+`control` interface listens. One sign-in covers every interface's port on that host name.
 
 ## From the command line
 
@@ -92,7 +102,9 @@ On a recorder with no browser nearby:
 ```bash
 trunk-pro interface search                # what the store has
 trunk-pro interface install trunkamp      # install one, on the next free port
+trunk-pro interface update                # newer versions of what's installed
 trunk-pro interface add ~/wall --port 8090
+trunk-pro interface uninstall trunkamp    # stop serving it; an installed copy is deleted
 trunk-pro interface list                  # ports, access, addresses
 ```
 

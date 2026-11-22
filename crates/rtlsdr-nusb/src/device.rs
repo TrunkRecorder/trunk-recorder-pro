@@ -1,6 +1,6 @@
 //! Device discovery, configuration and shared hardware ownership.
 use crate::{
-    DeviceDescriptor, DirectSampling, GainConfig, Result, TunerKind,
+    Board, DeviceDescriptor, DirectSampling, GainConfig, Result, TunerKind,
     config::{Config, ConfigBuilder, F32Iq, RawIq, SampleMode},
     discovery::Selector,
     maybe_future::{MaybeFutureExt, ready},
@@ -19,8 +19,8 @@ pub struct DeviceInfo {
     pub descriptor: DeviceDescriptor,
     /// Detected tuner family.
     pub tuner: TunerKind,
-    /// Whether USB branding identifies an RTL-SDR Blog V4.
-    pub rtl_sdr_blog_v4: bool,
+    /// The board its USB strings name.
+    pub board: Board,
 }
 
 /// Owned device handle with a separately owned receive stream.
@@ -67,6 +67,13 @@ impl<M: SampleMode> Device<M> {
     /// What the control pipe has counted since the device opened.
     pub fn link_stats(&self) -> crate::LinkStats {
         self.session.link_stats()
+    }
+    /// The tuner gain set, dB: a manual gain's nearest step (None: automatic).
+    pub fn gain_db(&self) -> Option<f32> {
+        match self.config.settings.gain {
+            GainConfig::Manual(db) => Some(self.info().tuner.gain_db(db)),
+            GainConfig::Auto => None,
+        }
     }
     /// Last successfully programmed center frequency after divider quantization.
     pub fn actual_frequency_hz(&self) -> u64 {

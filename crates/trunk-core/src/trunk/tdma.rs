@@ -9,23 +9,61 @@
 
 use super::frames::{Codec, VoiceFrame};
 use super::calls::Flags;
-use super::voice::{CipherId, Encryption, TrackerOut};
+use super::voice::{CipherId, Crypt, Encryption, TrackerOut};
 use crate::ambe::decode_vcw;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_msg, AliasLc, MacAliases};
-use crate::p25::crypt::{next_mi, prev_mi, Keyring, Keystream, Phase, SyncCheck};
+use crate::p25::crypt::{next_mi, prev_mi, Keyring, Phase};
 use crate::p25::gps;
 use crate::p25::mac::{parse_mac_end_ptt, parse_mac_ptt, Mac, MacPdu, MAC_END_PTT, MAC_HANGTIME, MAC_IDLE, MAC_PTT};
+use crate::p25::diversity::{best_ambe, best_burst_kind};
 use crate::p25::phase2::{
     decode_acch, decode_ess, duid_decode, duid_decode_soft, read_ess_a, read_ess_b, xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, BURST_FACCH_S,
-    BURST_FACCH_U, BURST_LCCH_S, BURST_SACCH_S, BURST_SACCH_U, SLOT_CHANNEL, SLOT_DIBITS,
+    BURST_FACCH_U, BURST_LCCH_S, BURST_SACCH_S, BURST_SACCH_U, SLOT_CHANNEL, SLOT_DIBITS, VCW_AT_2V, VCW_AT_4V, VCW_DIBITS,
 };
 use crate::p25::voice::{EncryptionSync, ALGID_CLEAR};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// A logical channel's voice bursts more than this far apart (s) have a
 /// whole superframe, and so a 2V burst, between them.
 const SUPERFRAME_GAP_S: f64 = 0.3;
+
+/// Slot packets heard before the scrambling (NAC, System ID, WACN) is known
+/// wait this long (s) for it: the control channel's, or the voice channel's
+/// own Network Status Broadcast among them. A voice channel opened as the
+/// recorder starts is often heard first. After that they go on without it,
+/// their scrambled bursts undecodable.
+const KEY_WAIT_S: f64 = 2.0;
+
+/// A copy's burst's bit reliabilities (`soft`: when they are used).
+fn burst_rel(soft: bool, p: &Packet) -> Option<&[f32]> {
+    (soft && p.rel.len() >= 2 * (10 + BURST_DIBITS)).then(|| &p.rel[20..20 + 2 * BURST_DIBITS])
+}
+
+/// A copy's burst type.
+fn burst_kind(soft: bool, p: &Packet) -> i8 {
+    match burst_rel(soft, p) {
+        Some(r) => duid_decode_soft(&p.dibits[10..], r),
+        None => duid_decode(&p.dibits[10..]),
+    }
+}
+
+/// The scrambling a Network Status Broadcast among a group's copies names
+/// (it is sent unscrambled, BBAC Figure 8-47): NAC, System ID, WACN.
+fn network_status(soft: bool, g: &[Packet]) -> Option<(u32, u32, u32)> {
+    g.iter().find_map(|p| {
+        let kind = burst_kind(soft, p);
+        if !matches!(kind, BURST_FACCH_U | BURST_SACCH_U) {
+            return None;
+        }
+        let pdu = decode_acch(&p.dibits[10..10 + BURST_DIBITS], burst_rel(soft, p), kind == BURST_FACCH_U)?;
+        pdu.messages().iter().find_map(|m| match m.decode() {
+            Mac::NetworkStatus { wacn, sys_id, color_code } => Some((color_code as u32, sys_id as u32, wacn)),
+            _ => None,
+        })
+    })
+}
 
 /// A unit address that names a radio: not "no one" or "everyone" (BAAC-C §2.4).
 fn radio(id: u32) -> Option<u32> {
@@ -35,7 +73,8 @@ fn radio(id: u32) -> Option<u32> {
 struct Slot {
     dec: mbe::Decoder,
     active: bool,
-    voice: Encryption,
+    /// Its encryption: the syncs the MAC_PTT and each 2V burst's ESS bring.
+    crypt: Crypt,
     /// Where the slot's voice frames fall: the position (0..5 among its
     /// non-SACCH bursts) of the superframe's first 4V, once a MAC PDU's
     /// offset or a 2V said.
@@ -44,20 +83,6 @@ struct Slot {
     burst_id: i32,
     /// This superframe's ESS-B segments as they came (none: not heard).
     ess_b: [Option<([u8; 4], [f32; 4])>; 4],
-    /// The encryption sync the current superframe's voice is under (the
-    /// MAC_PTT's, then each 2V burst's ESS for the superframe after it), and
-    /// the one the last ESS brought.
-    es: Option<EncryptionSync>,
-    es_next: Option<EncryptionSync>,
-    /// Each ESS checked against the MI LFSR's prediction.
-    chain: SyncCheck,
-    /// The cipher last reported for this transmission.
-    cipher: Option<CipherId>,
-    /// The keystream of the superframe `es` is for, when the system has the key.
-    ks: Option<Keystream>,
-    /// Some voice of this transmission was decrypted: voice that can't be
-    /// now (its sync lost) is muted, not dropped.
-    decrypting: bool,
     /// The last voice burst heard (burst 0..4 of its superframe) and when,
     /// to notice a 2V that never arrived.
     last_vb: Option<(i32, f64)>,
@@ -76,8 +101,6 @@ struct Slot {
     /// key by talkgroup is found with them.
     talkgroup: Option<u32>,
     granted: Option<u32>,
-    /// Someone records this slot: its voice is vocoded.
-    listened: bool,
     aliases: MacAliases,
 }
 
@@ -86,16 +109,10 @@ impl Slot {
         Slot {
             dec: mbe::Decoder::new(rng, mbe::Profile::Enhanced),
             active: false,
-            voice: Encryption::Unknown,
+            crypt: Crypt::new(Phase::Two),
             first4v: None,
             burst_id: -1,
             ess_b: [None; 4],
-            es: None,
-            es_next: None,
-            chain: SyncCheck::default(),
-            cipher: None,
-            ks: None,
-            decrypting: false,
             last_vb: None,
             held: Vec::new(),
             end_s: 0.0,
@@ -103,7 +120,6 @@ impl Slot {
             flags: Flags::default(),
             talkgroup: None,
             granted: None,
-            listened: true,
             aliases: MacAliases::default(),
         }
     }
@@ -113,13 +129,9 @@ impl Slot {
     fn start(&mut self, t: f64, keys: &Option<Arc<Keyring>>) {
         self.dec.reset();
         self.active = true;
-        self.voice = Encryption::Unknown;
+        self.crypt.reset();
         self.end_s = t;
         self.ess_b = [None; 4];
-        self.es_next = None;
-        self.chain.reset();
-        self.cipher = None;
-        self.decrypting = false;
         self.last_vb = None;
         self.held.clear();
         self.talker = None;
@@ -131,11 +143,7 @@ impl Slot {
     /// The voice from now on is under `es`: its keystream, when the system
     /// has the key (by talkgroup: the MAC_PTT's, or the grant's).
     fn set_es(&mut self, es: Option<EncryptionSync>, keys: &Option<Arc<Keyring>>) {
-        self.es = es;
-        self.ks = match (keys, &es) {
-            (Some(keys), Some(es)) => keys.keystream(es, self.talkgroup.or(self.granted), Phase::Two),
-            _ => None,
-        };
+        self.crypt.set_es(es, keys, self.talkgroup.or(self.granted));
     }
 
     /// Whether a 2V burst went missing since the last voice burst: burst
@@ -151,21 +159,18 @@ impl Slot {
     /// the vocoder took it for something other than voice.
     fn voice(&mut self, c: usize, f: Option<usize>, mut bits: [u8; 49], mut errs: u32, out: &mut Vec<(usize, TrackerOut)>) -> bool {
         let mut erased = false;
-        if self.voice.encrypted() {
-            match (&self.ks, f) {
+        if self.crypt.voice.encrypted() {
+            match (self.crypt.keystream(), f) {
                 (Some(ks), Some(f)) => {
                     ks.apply_p2(f, &mut bits);
-                    if !std::mem::replace(&mut self.decrypting, true) {
-                        out.push((c, TrackerOut::Decrypted));
-                    }
+                    // (Half-rate voice has no tell of a wrong key: decrypted, as far as anyone can say.)
+                    let (_, told) = self.crypt.decrypted(None);
+                    out.extend(told.map(|o| (c, o)));
                 }
                 // Too many errors to be voice: repeats, then mutes.
-                _ if self.decrypting => (bits, errs, erased) = ([0; 49], 99, true),
+                _ if self.crypt.decrypting => (bits, errs, erased) = ([0; 49], 99, true),
                 _ => return false,
             }
-        }
-        if !self.listened {
-            return false;
         }
         let mut buf = [0f32; FRAME_SAMPLES];
         let kind = self.dec.ambe(&bits, errs, &mut buf);
@@ -187,19 +192,17 @@ impl Slot {
 
     /// What a sync says the voice is.
     fn set_voice(&mut self, v: Encryption, c: usize, out: &mut Vec<(usize, TrackerOut)>) {
-        let was = self.voice.encrypted();
-        self.voice = v;
-        if self.active && v.encrypted() && !was {
-            out.push((c, TrackerOut::Info { source: None, flags: Flags { encrypted: true, ..Default::default() } }));
-        }
+        out.extend(self.crypt.set_voice(v, self.active).map(|o| (c, o)));
     }
 
     fn report_cipher(&mut self, c: usize, es: &EncryptionSync, out: &mut Vec<(usize, TrackerOut)>) {
-        let id = CipherId { algid: es.algid, keyid: es.keyid };
-        if self.active && self.cipher != Some(id) {
-            self.cipher = Some(id);
-            out.push((c, TrackerOut::Cipher(id)));
-        }
+        out.extend(self.crypt.report_cipher(es, self.active).map(|o| (c, o)));
+    }
+
+    /// The voice channel named `group` for the transmission: told when the
+    /// slot was granted for another talkgroup.
+    fn named(&self, c: usize, group: u32, out: &mut Vec<(usize, TrackerOut)>) {
+        out.extend(super::voice::reassigned(self.granted, group).map(|o| (c, o)));
     }
 
     /// A talker named (MAC_PTT, a voice channel user message) and what the
@@ -208,7 +211,7 @@ impl Slot {
     /// message's protected bit.)
     fn talker(&mut self, c: usize, source: Option<u32>, flags: Flags, out: &mut Vec<(usize, TrackerOut)>) {
         let (Some(src), true) = (source, self.active) else { return };
-        let flags = Flags { encrypted: self.voice.encrypted(), ..flags };
+        let flags = Flags { encrypted: self.crypt.voice.encrypted(), ..flags };
         let merged = if self.talker == Some(src) { self.flags.merge(flags) } else { flags };
         if self.talker != Some(src) || merged != self.flags {
             (self.talker, self.flags) = (Some(src), merged);
@@ -239,8 +242,10 @@ pub struct TdmaTracker {
     /// Vocoder frames / repeated, muted or erased, over the channel's life.
     pub frames: u64,
     pub bad_frames: u64,
-    /// Scrambled bursts seen before the key (WACN / System ID / NAC) was known.
+    /// Scrambled bursts that waited for the key (WACN / System ID / NAC) in vain.
     pub undecodable: u64,
+    /// Slot packets waiting for the key (with their times, s; [`KEY_WAIT_S`]).
+    waiting: VecDeque<(Vec<Packet>, f64)>,
     /// MAC PDUs decoded (PTT, END_PTT, …).
     pub mac_pdus: u64,
 }
@@ -251,19 +256,17 @@ impl TdmaTracker {
     pub fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
         self.keys = keys.filter(|k| !k.is_empty());
         for s in &mut self.slots {
-            let es = s.es.take();
+            let es = s.crypt.es;
             s.set_es(es, &self.keys);
         }
     }
 
-    /// The talkgroup each slot's call was granted for (None: no call there,
-    /// and its voice isn't vocoded).
+    /// The talkgroup each slot's call was granted for (None: no call there).
     pub fn listen(&mut self, slots: [Option<u32>; 2]) {
         for (s, tg) in self.slots.iter_mut().zip(slots) {
-            s.listened = tg.is_some();
             if s.granted != tg {
                 s.granted = tg;
-                let es = s.es.take();
+                let es = s.crypt.es.take();
                 s.set_es(es, &self.keys);
             }
         }
@@ -280,14 +283,21 @@ impl TdmaTracker {
             frames: 0,
             bad_frames: 0,
             undecodable: 0,
+            waiting: VecDeque::new(),
             mac_pdus: 0,
         }
+    }
+
+    /// The talkgroup logical channel `c`'s transmission is for (its MAC_PTT's,
+    /// or a voice channel user message's), when one has named it.
+    pub fn talkgroup(&self, c: usize) -> Option<u32> {
+        self.slots[c & 1].talkgroup
     }
 
     /// The encryption sync logical channel `c`'s current superframe is under
     /// (None: clear, or not known yet).
     pub fn encryption_sync(&self, c: usize) -> Option<EncryptionSync> {
-        self.slots[c].es
+        self.slots[c].crypt.es
     }
 
     /// The scrambler seed: NAC (the color code), System ID, WACN (from the
@@ -302,34 +312,74 @@ impl TdmaTracker {
     /// One slot packet at time `t` (s); what it produced goes to `out` as
     /// (logical channel, output).
     pub fn packet(&mut self, p: &Packet, t: f64, out: &mut Vec<(usize, TrackerOut)>) {
-        let c = SLOT_CHANNEL[p.sf_slot];
-        let burstp = &p.dibits[10..];
-        let brel = (self.soft && p.rel.len() >= 2 * (10 + BURST_DIBITS)).then(|| &p.rel[20..]);
-        let kind = match brel {
-            Some(r) => duid_decode_soft(burstp, r),
-            None => duid_decode(burstp),
-        };
-        if kind < 0 {
+        self.group(std::slice::from_ref(p), t, out);
+    }
+
+    /// One slot packet as several receivers framed it (a
+    /// [`Group`](crate::p25::diversity::Group) of the receiver bank), the first the reference.
+    /// Before the scrambling is known it waits for it ([`KEY_WAIT_S`]).
+    pub fn group(&mut self, g: &[Packet], t: f64, out: &mut Vec<(usize, TrackerOut)>) {
+        if let Some((nac, sys_id, wacn)) = self.mask.is_none().then(|| network_status(self.soft, g)).flatten() {
+            self.set_key(nac, sys_id, wacn);
+        }
+        if self.mask.is_none() {
+            self.waiting.push_back((g.to_vec(), t));
+            while self.waiting.front().is_some_and(|(_, at)| t - at > KEY_WAIT_S) {
+                let (g, at) = self.waiting.pop_front().unwrap();
+                self.decode(&g, at, out);
+            }
             return;
         }
-        let scrambled = matches!(kind, BURST_4V | BURST_2V | BURST_SACCH_S | BURST_LCCH_S | BURST_FACCH_S);
-        let mut x = [0u8; BURST_DIBITS];
-        x.copy_from_slice(&burstp[..BURST_DIBITS]);
-        if scrambled {
-            let Some(m) = self.mask.as_ref() else {
-                self.undecodable += 1;
-                return;
-            };
-            let base = p.sf_slot * SLOT_DIBITS;
-            for (i, v) in x.iter_mut().enumerate() {
-                *v ^= m[base + i];
-            }
+        self.flush(out);
+        self.decode(g, t, out);
+    }
+
+    /// The slot packets waiting for the scrambling, decoded (with it, or
+    /// without it at the end of input).
+    pub fn flush(&mut self, out: &mut Vec<(usize, TrackerOut)>) {
+        for (g, at) in std::mem::take(&mut self.waiting) {
+            self.decode(&g, at, out);
         }
+    }
+
+    /// Copies the reference's superframe slot disagrees with are left out;
+    /// the rest are chosen from ([`best_burst_kind`], [`best_ambe`], a MAC
+    /// PDU the first copy's that passes its CRC).
+    fn decode(&mut self, g: &[Packet], t: f64, out: &mut Vec<(usize, TrackerOut)>) {
+        let Some(base) = g.first() else { return };
+        let copies: Vec<&Packet> = g.iter().filter(|p| p.sf_slot == base.sf_slot).collect();
+        let c = SLOT_CHANNEL[base.sf_slot];
+        let kinds: Vec<i8> = copies.iter().map(|p| burst_kind(self.soft, p)).collect();
+        let Some(kind) = best_burst_kind(&kinds) else { return };
+        let scrambled = matches!(kind, BURST_4V | BURST_2V | BURST_SACCH_S | BURST_LCCH_S | BURST_FACCH_S);
+        if scrambled && self.mask.is_none() {
+            self.undecodable += 1;
+            return;
+        }
+        // The copies that agree on it, descrambled.
+        let bursts: Vec<([u8; BURST_DIBITS], Option<&[f32]>)> = copies
+            .iter()
+            .zip(&kinds)
+            .filter(|(_, k)| **k == kind)
+            .map(|(p, _)| {
+                let mut x = [0u8; BURST_DIBITS];
+                x.copy_from_slice(&p.dibits[10..10 + BURST_DIBITS]);
+                if let (true, Some(m)) = (scrambled, self.mask.as_ref()) {
+                    let at = p.sf_slot * SLOT_DIBITS;
+                    for (i, v) in x.iter_mut().enumerate() {
+                        *v ^= m[at + i];
+                    }
+                }
+                (x, burst_rel(self.soft, p))
+            })
+            .collect();
+        let p = copies[kinds.iter().position(|k| *k == kind).unwrap_or(0)];
         if kind == BURST_4V || kind == BURST_2V {
-            self.voice_burst(c, kind, &x, brel, p, t, out);
+            let (x, rel) = best_ambe(&bursts, kind == BURST_4V);
+            self.voice_burst(c, kind, &x, rel.as_deref(), p, t, out);
         } else if matches!(kind, BURST_SACCH_S | BURST_SACCH_U | BURST_FACCH_S | BURST_FACCH_U) {
             let sacch = matches!(kind, BURST_SACCH_S | BURST_SACCH_U);
-            if let Some(pdu) = decode_acch(&x, brel, !sacch) {
+            if let Some(pdu) = bursts.iter().find_map(|(x, r)| decode_acch(x, *r, !sacch)) {
                 self.mac_pdus += 1;
                 self.mac(c, &pdu, sacch, p, t, out);
             }
@@ -366,10 +416,10 @@ impl TdmaTracker {
             // Its ESS, the sync for the superframe after it, is gone with it:
             // wait for the next good one. Voice held for it can't be
             // decrypted now; of unknown encryption, it isn't played.
-            s.es_next = None;
+            s.crypt.es_next = None;
             s.ess_b = [None; 4];
             s.set_es(None, keys);
-            if s.voice == Encryption::Unknown {
+            if s.crypt.voice == Encryption::Unknown {
                 s.held.clear();
             }
             self.bad_frames += s.release_held(c, out);
@@ -381,29 +431,29 @@ impl TdmaTracker {
             let (ess_a, ess_a_rel) = read_ess_a(x, rel);
             let heard = decode_ess(&s.ess_b, &ess_a, &ess_a_rel);
             s.ess_b = [None; 4];
-            s.es_next = s.chain.next(s.es, heard);
-            if let Some(es) = s.es_next {
+            s.crypt.es_next = s.crypt.chain.next(s.crypt.es, heard);
+            if let Some(es) = s.crypt.es_next {
                 s.set_voice(Encryption::from_sync(&es), c, out);
                 if es.algid != ALGID_CLEAR {
                     s.report_cipher(c, &es, out);
                     // No sync for this superframe: the ESS's, run back.
-                    if s.es.is_none() {
+                    if s.crypt.es.is_none() {
                         s.set_es(Some(EncryptionSync { mi: prev_mi(&es.mi), ..es }), keys);
                     }
                 }
             }
             self.bad_frames += s.release_held(c, out);
         }
-        let at: &[usize] = if kind == BURST_4V { &[11, 48, 96, 133] } else { &[11, 48] };
+        let at: &[usize] = if kind == BURST_4V { &VCW_AT_4V } else { &VCW_AT_2V };
         for (j, &a) in at.iter().enumerate() {
-            let v = decode_vcw(&x[a..a + 36], rel.map(|r| &r[2 * a..2 * a + 72]));
+            let v = decode_vcw(&x[a..a + VCW_DIBITS], rel.map(|r| &r[2 * a..2 * (a + VCW_DIBITS)]));
             self.frames += 1;
             // Its frame of the superframe (none where the count is off).
             let f = match kind {
                 BURST_2V => Some(16 + j),
                 _ => (0..4).contains(&s.burst_id).then(|| 4 * s.burst_id as usize + j),
             };
-            if s.voice == Encryption::Unknown || (s.voice.encrypted() && s.ks.is_none() && keys.is_some()) {
+            if s.crypt.voice == Encryption::Unknown || (s.crypt.voice.encrypted() && s.crypt.keystream().is_none() && keys.is_some()) {
                 s.held.push((f, v.bits, v.errs));
             } else {
                 self.bad_frames += s.voice(c, f, v.bits, v.errs, out) as u64;
@@ -412,9 +462,9 @@ impl TdmaTracker {
         if kind == BURST_2V {
             // The next superframe is under the ESS this one brought; lost to
             // errors, the MI it would have said follows from the last.
-            let es = match s.es_next.take() {
+            let es = match s.crypt.es_next.take() {
                 Some(es) => Some(es).filter(|es| es.algid != ALGID_CLEAR),
-                None => s.es.map(|es| EncryptionSync { mi: next_mi(&es.mi), ..es }),
+                None => s.crypt.es.map(|es| EncryptionSync { mi: next_mi(&es.mi), ..es }),
             };
             s.set_es(es, keys);
         }
@@ -432,9 +482,11 @@ impl TdmaTracker {
                 let es = EncryptionSync { algid: ptt.algid, keyid: ptt.keyid, mi: ptt.mi };
                 // A SACCH may repeat the transmission's MAC_PTT ("transitional
                 // cases", BBAC-1 §7.3.2): the same one starts nothing new.
-                let cipher = if ptt.algid == ALGID_CLEAR { s.voice == Encryption::Clear } else { s.cipher == Some(CipherId { algid: ptt.algid, keyid: ptt.keyid }) };
+                let cipher = if ptt.algid == ALGID_CLEAR { s.crypt.voice == Encryption::Clear } else { s.crypt.cipher() == Some(CipherId { algid: ptt.algid, keyid: ptt.keyid }) };
                 let same = s.active && cipher && radio(ptt.source) == s.talker && (ptt.group != 0).then_some(ptt.group) == s.talkgroup;
                 if !(sacch && same) {
+                    // (First, so the call it isn't for ends before its cipher and talker are taken.)
+                    s.named(c, ptt.group, out);
                     s.start(t, keys);
                     s.talkgroup = (ptt.group != 0).then_some(ptt.group);
                     s.set_voice(Encryption::from_sync(&es), c, out);
@@ -467,23 +519,23 @@ impl TdmaTracker {
                     // The 4th superframe's SACCH names the inbound talker, for
                     // it to check: listeners take the first three's (BBAC §3.2.2).
                     if !(sacch && p.ultraframe == Some(3)) {
+                        if let Mac::GroupVoiceUser { group, .. } = m.decode() {
+                            s.named(c, group as u32, out);
+                            // (Joined after its MAC_PTT.)
+                            if s.active && s.talkgroup.is_none() && group != 0 {
+                                s.talkgroup = Some(group as u32);
+                            }
+                        }
                         s.talker(c, m.talker().and_then(radio), opts.into(), out);
                     }
                     if opts.protected() {
-                        let v = s.voice.hinted();
-                        s.set_voice(v, c, out);
+                        out.extend(s.crypt.hint(s.active).map(|o| (c, o)));
                     }
                 }
                 Mac::PatchVoiceUser { .. } => {
                     if !(sacch && p.ultraframe == Some(3)) {
                         s.talker(c, m.talker().and_then(radio), Flags::default(), out);
                     }
-                }
-                // Unscrambled, with what scrambling is seeded from: the voice
-                // channel says it before the control channel may have.
-                Mac::NetworkStatus { wacn, sys_id, color_code } if self.mask.is_none() => {
-                    self.key = Some((color_code as u32, sys_id as u32, wacn));
-                    self.mask = Some(xor_mask(color_code as u32, sys_id as u32, wacn));
                 }
                 Mac::BaseStationId(cs) if !cs.text().is_empty() => out.push((c, TrackerOut::BaseStationId(cs.text()))),
                 _ => {}
@@ -675,6 +727,23 @@ mod tests {
         assert_eq!((t.slots[0].talker, t.slots[0].talkgroup), (Some(0x123456), Some(0x089f)));
     }
 
+    /// A MAC_PTT naming another talkgroup than the slot's grant says so,
+    /// before the cipher and talker it brings; its own says nothing.
+    #[test]
+    fn a_mac_ptt_for_another_talkgroup_is_told_first() {
+        let tx = tx(None, 1);
+        let ptt = pdu(MAC_PTT, 1, &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0x84, 0x12, 0x34, 0x12, 0x34, 0x56, 0x08, 0x9f]);
+        let heard = |granted: u32| {
+            let mut t = tracker();
+            t.listen([Some(granted), None]);
+            outs(&mut t, &[(tx.mac_packet(11, BURST_SACCH_S, &ptt, Some(0)), 0.0)])
+        };
+        assert!(!heard(0x089f).iter().any(|o| matches!(o, TrackerOut::Talkgroup(_))));
+        let o = heard(401);
+        assert!(matches!(o.first(), Some(TrackerOut::Talkgroup(0x089f))), "{o:?}");
+        assert!(o.iter().any(|o| matches!(o, TrackerOut::Cipher(_))));
+    }
+
     /// Hangtime ends the transmission (BBAC-1 §7.3.4): the next one isn't
     /// taken for its continuation.
     #[test]
@@ -715,12 +784,48 @@ mod tests {
         assert_eq!((t.undecodable, heard), (0, 18));
     }
 
-    /// A slot nobody records isn't vocoded.
+    /// Voice heard before the control channel names the scrambling waits
+    /// for it, and is heard once it does.
     #[test]
-    fn an_unrecorded_slot_isnt_vocoded() {
+    fn voice_waits_for_the_scrambling() {
         let tx = tx(None, 1);
+        let mut t = TdmaTracker::new(1, None);
+        let audio = |o: &[TrackerOut]| o.iter().filter(|o| matches!(o, TrackerOut::Audio(..))).count();
+        let p = tx.packets();
+        let (first, rest) = p.split_at(p.len() / 2);
+        assert_eq!(audio(&outs(&mut t, first)), 0, "nothing yet");
+        t.set_key(SEED.0, SEED.1, SEED.2);
+        assert_eq!((audio(&outs(&mut t, rest)), t.undecodable), (18, 0));
+    }
+
+    /// Without it, packets go on after a while, their scrambled bursts lost.
+    #[test]
+    fn packets_wait_for_the_scrambling_only_so_long() {
+        let p = tx(None, 1).packets();
+        let mut t = TdmaTracker::new(1, None);
+        outs(&mut t, &p);
+        assert_eq!(t.undecodable, 0, "all waiting");
+        t.flush(&mut Vec::new());
+        let lost = t.undecodable;
+        assert!(lost > 0);
+        // A packet this much later: the others have waited long enough.
+        let mut t = TdmaTracker::new(1, None);
+        let late = (p[0].0.clone(), p[p.len() - 1].1 + KEY_WAIT_S + 0.1);
+        outs(&mut t, &[p.as_slice(), &[late]].concat());
+        assert_eq!(t.undecodable, lost);
+    }
+
+    /// A slot nobody records is vocoded all the same (the engine keeps its
+    /// voice for a call put on it later), and says whose it is.
+    #[test]
+    fn an_unrecorded_slot_is_vocoded_and_named() {
+        let tx = tx(None, 1);
+        let vcu = pdu(MAC_ACTIVE, 7, &[0x01, 0x80, 0x08, 0x9f, 0x12, 0x34, 0x56]);
         let mut t = tracker();
         t.listen([None, Some(101)]);
-        assert!(!outs(&mut t, &tx.packets()).iter().any(|o| matches!(o, TrackerOut::Audio(..))));
+        let mut p = tx.packets();
+        p.push((tx.mac_packet(11, BURST_SACCH_S, &vcu, Some(0)), 0.36));
+        assert_eq!(outs(&mut t, &p).iter().filter(|o| matches!(o, TrackerOut::Audio(..))).count(), 18, "for a call put on it later");
+        assert_eq!(t.talkgroup(0), Some(0x089f), "joined after its MAC_PTT: a voice channel user names it");
     }
 }

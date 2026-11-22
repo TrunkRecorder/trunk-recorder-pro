@@ -11,7 +11,7 @@ import { ConventionalPanel, SystemCard } from "./Setup.tsx";
 import { setCardOpen } from "./SetupLayout.tsx";
 
 function connected(c: Config) {
-  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service"] }] as const) transport.onMessage(m as never);
+  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service"] }] as const) transport.onMessage(m as never);
 }
 
 test("a system's FCC licenses section: none until a frequency has a license", () => {
@@ -48,11 +48,11 @@ test("many licenses fold to a line (count and call signs), and open when asked, 
   connected(c);
   html = renderToString(<SystemCard c={c} i={0} />);
   assert.ok(html.includes('aria-expanded="false"'), "many: folded");
-  assert.match(html, /20 frequencies, 5 call signs: WQEE600, WQEE601, WQEE602, WQEE603…/);
+  assert.match(html, /<b>20<\/b><small>frequencies<\/small><\/span> · <span class="fig"><b>5<\/b><small>call signs<\/small><\/span> <span class="mono">WQEE600, WQEE601, WQEE602, WQEE603…<\/span>/);
   assert.match(html, /class="set-group-body cols-1"[^>]*hidden=""/);
   // Opened: kept by its key.
   setCardOpen("fcc:sys:ipsc", true);
   html = renderToString(<SystemCard c={c} i={0} />);
-  assert.ok(html.includes('class="set-group-toggle" aria-expanded="true"') && !/20 frequencies/.test(html));
+  assert.ok(html.includes('class="set-group-toggle" aria-expanded="true"') && !/<small>frequencies<\/small>/.test(html));
   setCardOpen("fcc:sys:ipsc", false);
 });

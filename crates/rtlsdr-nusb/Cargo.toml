@@ -6,7 +6,8 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Rust-native RTL-SDR driver built on nusb."
-license = "Apache-2.0"
+# src/tuners/e4k.rs is derived from librtlsdr's tuner_e4k.c (GPL-2.0-or-later).
+license = "Apache-2.0 AND GPL-2.0-or-later"
 repository = "https://github.com/bastibl/rtlsdr-nusb"
 documentation = "https://docs.rs/rtlsdr-nusb"
 keywords = ["rtlsdr", "sdr", "usb", "radio", "nusb"]

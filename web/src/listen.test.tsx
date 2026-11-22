@@ -32,16 +32,16 @@ function twoSites(): void {
   transport.onConnection(true);
   // The greeting: how things are, then hello.
   const greeting: FromRecorder[] = [
-    { type: "state", phase: "running", error: null, ended: false },
+    { type: "state", phase: "running", error: null, ended: false, restartNeeded: false },
     { type: "config", config: c, version: 1 },
     { type: "history", entries: [] },
-    { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },
+    { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys"] },
   ];
   for (const m of greeting) transport.onMessage(m);
   transport.onMessage({ type: "talkgroups", system: "dcfd", talkgroups: CSV("100,64,Fire Dispatch,D,Fire,,\n200,c8,EMS,D,EMS,,\n300,12c,Tac 3,D,Tac,,") });
   const id = (site: number): SiteIdentity => ({ nac: null, wacn: 0xbee00, sysId: 0x1a2, rfss: 1, site });
   const site = (index: number, name: string): SiteStatus =>
-    ({ index, name, nowS: 1, controlChannelHz: 851_000_000 + index * 500_000, identity: id(index + 1), good: 1, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null });
+    ({ index, name, nowS: 1, controlChannelHz: 851_000_000 + index * 500_000, source: 0, identity: id(index + 1), good: 1, bad: 0, modulation: null, activeCalls: 0, recording: 0, callsConcluded: 0, mismatch: null, adjacent: [] });
   const systems = [{ index: 0, shortName: "dcfd", activeCalls: 0, recording: 0, callsConcluded: 0, sites: [site(0, "dcfd"), site(1, "south")] }];
   transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources: [], load: 0, calls: [] });
 }
@@ -89,7 +89,7 @@ test("Listen: a system whose audio isn't kept has no talkgroups to pick, and say
   const list = tgList();
   assert.doesNotMatch(list, /Red Line/, "none of its talkgroups");
   assert.match(list, /dcfd 2 sites/, "the others still are");
-  assert.match(showing(), /wmata isn&#x27;t here: its calls&#x27; audio is deleted/);
+  assert.match(showing(), /wmata.*no audio kept.*Its calls&#x27; audio is deleted/);
   // Kept again, it's back and the card goes.
   wmata.recording = {};
   transport.onMessage({ type: "config", config: c, version: 3 });

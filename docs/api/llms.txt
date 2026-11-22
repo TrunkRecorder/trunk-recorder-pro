@@ -32,7 +32,8 @@ Unless the user asks otherwise, deliver an interface the recorder serves:
     {"id": "<lowercase-id>", "name": "…", "version": "0.1.0", "description": "…", "api": 1, "access": "listen"}
   "listen" (the default) can see and play everything and change nothing:
   setConfig, setTalkgroups, start, stop, quit and the plugin / interface / key commands are
-  refused, and the config comes without plugin settings and key sources.
+  refused, and the config comes with only what its pages show (no plugin settings, key
+  sources, users, server.bind / allowedOrigins / interfaces / tls, storage.url, folders or files).
   Ask for "control" only if the interface must change the recorder.
 - Tell the user how to run it, in one of two ways:
     trunk-pro --ui /path/to/folder
@@ -45,12 +46,47 @@ Unless the user asks otherwise, deliver an interface the recorder serves:
 
 For a program rather than a page (logging, forwarding, alerts), write a
 Node 22+ .mjs that imports a local copy of client.js. Node has WebSocket
-built in. Programs need no access settings.
+built in. Programs need no access settings, except a token when signing in
+is on (below): new TrunkClient({ server, token: process.env.TRP_TOKEN }).
 
 A page served from somewhere else (another machine, a dev server) needs its
 origin in the recorder's config: "server": {"allowedOrigins":
 ["http://host:port"]}. It must import client.js by full URL, and pass
 `new TrunkClient({ server: "host:port" })`. Prefer serving from the recorder.
+
+Signing in (server.auth) is off unless the recorder's owner turns it on. On,
+every request needs a user's access token (the user's role "listen" or
+"control"; secret "trp_" + 64 hex), except GET /api/version, /api/session
+and /signin (the sign-in page), POST /api/login (answers { access, user })
+and /api/logout, and the static files under /api/ (client.js, docs, schema,
+protocol.ts, this file, examples: importing client.js needs no token). A
+page the recorder serves needs nothing: the browser signs in on the
+recorder's sign-in page and its session cookie covers every port; to offer a way to
+sign in (anonymous "listen" access lets visitors in without one), link to
+/signin. Anything else sends the secret: as Authorization: Bearer <secret> (programs, curl,
+fetch() from an allowed origin; preferred), or as ?token=<secret> in the URL (a
+browser WebSocket or <audio> on another origin; client.js does this when
+given { token }): a URL's token lands in history and proxy logs, so only
+where a header can't go. Never hard-code a secret in a page: ask the user for it.
+Behind a proxy that signs people in (server.auth.proxy), the proxy's
+header (Remote-User by default) says who, believed from the proxy's
+addresses only and where the cookie would count; behind Cloudflare Access
+(proxy.cloudflare), its signed Cf-Access-Jwt-Assertion token, checked; a
+token or the cookie says who first.
+GET /api/session → { auth, access ("listen" | "control" | null), user,
+proxy (the proxy in front signed it in: sign out there, not with
+/api/logout), passkeys (whether a browser may sign in with a passkey here: the
+built-in interface's port only; POST /api/passkey/login/… and
+/register/…, same origin only; 403 on an interface's port), passkeyOrigin
+(the one origin passkeys work at, from any port: link to its /signin),
+ownPasskeys ([{ id, name, created }]: the user's own passkeys, never their keys;
+absent when none) }.
+POST /api/logout {"all": true} (built-in port): every browser session of the
+user ends (another user's with "user": name, control only); tokens don't.
+Without access: 401 (a browser page: the sign-in page). Access is the lower
+of the port's and the user's; hello.access says which. When it changes, or
+the session or Cloudflare token it opened with expires, the socket is
+closed; reconnect (client.js does).
 
 
 ## Template
@@ -98,14 +134,16 @@ draw();
 
 ## client.js (all of it)
 
-new TrunkClient({ server?, secure?, historyLimit? })
+new TrunkClient({ server?, secure?, historyLimit?, token? })
   server defaults to the page's host; in Node, localhost:8080.
+  token: an access token's secret, for signing in; put on the WebSocket's and
+  callUrl's URLs as ?token=. Leave it out on a page the recorder serves.
   It connects, reconnects by itself, and keeps this state (read only):
   connected   true while connected
   version     the recorder's version
   config      the whole config (Config)
   phase       { phase: "idle" | "starting" | "running" | "stopping", error: string|null, ended: boolean }
-  status      EngineStatus while running, else null: { nowS, activeCalls, recording, callsConcluded, systemNames, systems: SystemStatus[] }
+  status      the latest EngineStatus (null until the first one; kept after a stop: check phase.phase): { nowS, activeCalls, recording, callsConcluded, systemNames, systems: SystemStatus[] }
   sources     SourceStatus[]: each radio (centerHz, rateHz, dropped, errors, errorPpm…)
   calls       CallView[]: the calls on the air now; [] when not running
   configVersion  the config's version (setConfig sends it)
@@ -116,6 +154,8 @@ new TrunkClient({ server?, secure?, historyLimit? })
               (after rec.subscribe(["log"]); the recorder's own lines have time (Unix s) and level)
   aliases     talker aliases heard on the air: { shortName: { unit: alias } }
   capabilities  hello.capabilities: what the recorder can do beyond recording
+  access      hello.access: "listen" or "control" (null before hello)
+  user        hello.user: the user it signed in as, or null
   error       the text of the latest error message (or why a setConfig was refused), or null
   exited      true after the recorder said it was exiting; it keeps
               reconnecting (every 5 s), and this clears when it's back
@@ -132,6 +172,7 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.listen({ talkgroup })          one talkgroup's
   rec.listen({ system, talkgroup })  one system's (its short name) talkgroup's
   rec.listen(false)                  none
+  rec.listen({ voice: true, audio: false })  vocoder frames ("voice" messages) without the PCM; mixes with the above
                                      (kept across reconnects; one filter per connection)
   rec.subscribe(topics)              the costly messages to receive: ["log"] fills log,
                                      "spectrum:0" a waterfall's spectrum (kept across reconnects)
@@ -141,13 +182,16 @@ new TrunkClient({ server?, secure?, historyLimit? })
   rec.setTalkgroups(shortName, rows) replace a system's talkgroups (Talkgroup rows; [] for none)
   rec.setTalkgroup(shortName, talkgroup, edit)  change one talkgroup's cells: any of
                                      { alphaTag, description, tag, category, ignore }
-  await rec.calls(query)             recorded calls, newest first: query has any of system
+  rec.setUnitNames(shortName, rows, from?)  replace a system's own radio names ({ unit, name } rows)
+  rec.setUnitName(shortName, unit, name)    name one radio ("": its own name taken out)
+  await rec.queryCalls(query)        recorded calls, newest first: query has any of system
                                      (short name), talkgroup, unit, from / to (start time,
                                      Unix ms), cursor, limit (1–500, default 100). Answers
                                      { entries, next?, error? }: page on with cursor: next
                                      while next is there. Needs the "calls" capability
-  rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL
-  rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode }
+  rec.callUrl(entry, "wav" | "json" | "m4a")   a recorded call's file URL (?token= when given one)
+  await rec.session()                { auth, access, user }: GET /api/session (access null: sign in first)
+  rec.talkgroups(shortName)          Map talkgroup → { talkgroup, alphaTag, description, tag, group, mode, ignore }
                                      (a conventional system's: its channels, alphaTag the channel's name)
   rec.unitName(shortName, unit)      a radio's name (the user's unit names and the aliases heard,
                                      as the system's unitNames.mode says), or ""
@@ -179,7 +223,7 @@ Helpers: escapeHtml(s), duration(seconds) → "1:05", mhz(hz) → "155.2000 MHz"
 CallView: a call on the air (rec.calls, from the "status" message)
   id, system (number), systemName (short name), site? (its site's name), talkgroup, alphaTag ("" if
   not in the talkgroup file), talkgroupOta? (conventional: the talkgroup the air named), freqHz,
-  slot, analog, tone, encrypted, decrypted, emergency, startS (engine seconds), sources (unit numbers that talked,
+  slot, analog, nxdn ("nxdn48" | "nxdn96" | null), ran (NXDN's RAN or null), tone, encrypted, decrypted, emergency, startS (engine seconds), sources (unit numbers that talked,
   in order), state ("recording" | "monitoring"), reason (why it's only
   monitored: "ignored" | "unknown_tg" | "encrypted" | "no_source" |
   "no_recorder" | null), patched?, alsoOn? (names of the system's other
@@ -192,7 +236,9 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
   record is Trunk Recorder's call JSON (snake_case):
     talkgroup, talkgroup_ota? (conventional P25/DMR/NXDN: the talkgroup the air named), talkgroup_tag,
     talkgroup_description, talkgroup_group,
-    short_name (the system), site? (the site its copy was kept from), start_time / stop_time (Unix seconds),
+    short_name (the system), site? (the site its copy was kept from), system_id? / site_id?
+    (its system's and site's ids: the same across renames and runs), sites? ([{ id, name }]:
+    every site it was recorded on, `site` first), start_time / stop_time (Unix seconds),
     start_time_ms, call_length (seconds of audio), freq (Hz),
     emergency (1/0), encrypted (1/0), audio_type ("analog" | "digital" |
     "digital tdma"), system_type? ("p25" | "smartnet" | "dmr" | "nxdn" | "edacs" |
@@ -217,13 +263,15 @@ SystemStatus: one running system (rec.status.systems): the trunked ones, then th
 
 SiteStatus: one of its sites, each following its own control channel
   index, name (a system of one site: its short name), nowS,
-  controlChannelHz (null while searching), identity { nac?, wacn?, sysId?,
-  rfss?, site? } (SiteIdentity, as a config site's `expect`: a field not
+  controlChannelHz (null while searching), source (the radio its control channel is
+  received on, or null), identity { nac?, wacn?, sysId?, rfss?, site?, and for DMR and
+  NXDN colorCode?, network?, ran? } (SiteIdentity, as a config site's `expect`: a field not
   heard yet is absent, so test with `!= null`), good / bad (control messages decoded / failed: decode
   rate = good / (good + bad)), modulation, activeCalls, recording,
   callsConcluded, mismatch, radioClock? (the system's clock against ours), callsigns (FCC call signs
-  a Motorola control channel sends)
-  (adjacent sites, dmr and nxdn are in decodeDetail)
+  a Motorola control channel sends), adjacent ([{ wacn, sysId, rfss, site, freqHz }]: the
+  neighbouring sites its control channel announces)
+  (dmr and nxdn detail, and patches, are in decodeDetail)
 
 Systems and numbering
   config.systems[]: trunked systems ({ shortName, name?, type: "p25" |
@@ -254,12 +302,14 @@ From the recorder:
   On connecting you get how things are now as ordinary messages, then hello last
   ("caught up": draw the first screen then, and don't treat anything missing as
   missing before it):
-  state, config, talkgroups, units, heard, history, radios, survey, monitorEvent, host
+  state, config, talkgroups, unitNames, units, mdcUnits, heard, history, radios, survey, tune (the
+  last one, if any), monitorEvent, host
   (with control access also devices, keys, plugins, interfaces), then
-  hello        { version, platform, api, configPath?, surveyBands, capabilities }
+  hello        { version, platform, api, configPath?, surveyBands, capabilities, access, user? }
+               access: "listen" | "control", what this connection may do; user: who signed in
                capabilities: what it can do beyond recording, of "service" (quit, files by path, log,
                M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys",
-               "calls" (the call store: callsQuery), "history" (statsQuery further back than a
+               "tuneGain", "calls" (the call store: callsQuery), "history" (statsQuery further back than a
                week: 30d, 90d, 1y). The desktop app has all ("calls" and "history" while its
                call store is open); the browser build none. Show only what works.
   config       { config, version }: on connecting, and when someone changes it
@@ -272,12 +322,16 @@ From the recorder:
   history      { entries, next? }: the latest calls (≤ 300), newest first; next (a callsQuery cursor) is there when older ones remain
   units        { system, csv }: a system's saved talker aliases (CSV unit,alias,source,time,wacn,sys,tg;
                newest line wins)
-  decodeDetail topic decode:<shortName>: { system, channels, sites: [{ index, name, adjacent, dmr, nxdn }],
+  decodeDetail topic decode:<shortName>: { system, channels, sites: [{ index, name, dmr, nxdn }],
                patches: [{ supergroup, members }] }
-  state        { phase, error, ended }: recording started / stopped
+  state        { phase, error, ended, restartNeeded }: recording started / stopped
   status       ~2/s while running: { status, sources, load, calls }
   spectrum     ~7/s per radio: { source, centerHz, rateHz, bins: 512 dBFS levels }
   concluded    { entry }: a call was recorded
+  voice        { chunk }: while listening with voice (rec.listen({ voice: true, audio: false })), a
+               digital call's vocoder frames just before each audio chunk: the voice plugin topic's
+               chunk { call_id, system, system_id, short_name, talkgroup, unit, unit_name?, decrypted,
+               frames: [{ codec "imbe"|"ambe", bits (hex), e0, errs, erased, kind, tone? }] }
   log          { lines }: topic log (warnings and errors always); { timeS, kind, text, time?, level?, system?, site? }
   callsResult  { id, entries, next?, error? }: answers callsQuery; next is there only when more remain: send it back as cursor
   monitorEvent { t, level ("info" | "ok" | "warn" | "bad"), kind, … }: something notable (a control
@@ -293,7 +347,8 @@ From the recorder:
   (more in protocol.ts; ignore types you don't use)
 To the recorder:
   { type: "start" }, { type: "stop" }
-  { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required)
+  { type: "listen", on: true, system: null, talkgroup: null }   ("on" and both fields are always required;
+                                                                 optional voice: true, audio: false)
   { type: "setConfig", config: <the whole config>, version: <the last config message's> }
   { type: "setTalkgroups", system: <short name>, talkgroups: <Talkgroup rows, [] for none> }   all of them
     (a number twice: the later row); CSV is only for files: read one yourself and send its rows
@@ -321,7 +376,8 @@ system is a system's short name; you get its audio from whichever of its sites c
    HTML: talkgroup names, unit names and aliases come from files and from
    the air. Use escapeHtml or textContent.
 3. Never assume a field is set. alphaTag / talkgroup_tag can be "".
-   status is null when not recording. Optional fields can be missing or
+   status is null before the first status message and stale after a stop (check
+   phase.phase). Optional fields can be missing or
    null. Show the talkgroup number when there's no name.
 4. Audio needs a user gesture. Call player.resume() inside a click handler
    before playing. A recorded call plays with <audio src=rec.callUrl(entry)>.
@@ -336,12 +392,13 @@ system is a system's short name; you get its audio from whichever of its sites c
    callsQuery { id, cursor: <the last page's next>, … } and read callsResult
    (no next at the end). The desktop app answers from its call store
    (hello.capabilities has "calls" while it's open); the browser build from
-   its own list. client.js: rec.calls({ talkgroup, cursor }).
+   its own list. client.js: rec.queryCalls({ talkgroup, cursor }).
    The same query over HTTP (no WebSocket; any door with listen or control access; JSON):
      GET /api/v1/calls?talkgroup=<n>&limit=<n>                            → { entries, next?, error? }
        (all optional: system=<shortName>, talkgroup=<n>, unit=<n>, from=<ms>, to=<ms>, cursor=<next>, limit=<1..500>)
      GET /api/v1/calls/<path>                                             → CallEntry, or 404 { error }
      GET /api/v1/storage                                                  → { backend, path, schemaVersion, calls, oldestMs, newestMs, retentionDays, commitSeconds }
+     GET /api/v1/export/{table}[?system=<id>]                             → CSV (control access): calls, transmissions, talkgroups, talker-aliases, radios, heard-talkgroups, dashboard-history
    An empty parameter counts as not given; a bad number is 400 { error }; a store that is off still
    answers /calls with the recent calls and an error (200), /calls/<path> a recent call or 404, and /storage 503 { error }.
    Plugins ask over their own channel: calls.query { request, … } → calls { request, entries, next?, error? } (the plugin SDK's Host::calls).
@@ -351,14 +408,18 @@ system is a system's short name; you get its audio from whichever of its sites c
 9. Keep the page alive through disconnects and restarts. Show the
    connection state (rec.connected, rec.exited); client.js reconnects by
    itself.
-10. The API has no login. Don't put the recorder on the internet. If the user
-    wants remote access, tell them to use a VPN, an SSH tunnel, or a reverse
-    proxy with authentication.
+10. Signing in is optional and off by default. Don't put the recorder on the
+    internet. On plain HTTP a token crosses the network in the clear; the
+    recorder can serve HTTPS (server.tls, off by default). If the user wants
+    remote access, tell them to use a VPN or an SSH tunnel, with signing in
+    on, and HTTPS (or a reverse proxy that adds it) off their own network.
+    Build URLs from the page's own location: wss:// on an https:// page.
+    Don't build your own login: use the recorder's (above).
 
 
 ## Before you finish
 
-- It runs from the recorder: `trunk-pro --ui <folder>` → http://localhost:8080/.
+- It runs from the recorder: `trunk-pro --ui <folder>` → http://localhost:8081/ (the first free port after the built-in interface's).
 - With the recorder idle, it shows the history and a clear idle state, not
   an error.
 - While recording, it updates without reloading.

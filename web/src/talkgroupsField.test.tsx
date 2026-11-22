@@ -13,9 +13,9 @@ test("a system's talkgroups: how many, ignored, encrypted, and unknown columns k
   const rows = readTalkgroupFile("Decimal;Mode;Alpha Tag;Description;Zone;Ignore\n101;D;Dispatch;;North;\n102;DE;Tac;;;\n103;D;Data;;;x\n").talkgroups;
   transport.onMessage({ type: "talkgroups", system: "tgfield", talkgroups: rows });
   const html = renderToString(<TalkgroupsField sys={{ shortName: "tgfield" }} />);
-  assert.match(html, /<span class="mono">3<\/span>/);
+  assert.match(html, /<span class="fig"><b>3<\/b><small>talkgroups<\/small><\/span>/);
   assert.match(html, /1<!-- --> ignored/);
   assert.match(html, /1<!-- --> encrypted/);
   assert.match(html, /unknown column<!-- -->: <!-- -->Zone/);
-  assert.match(renderToString(<TalkgroupsField sys={{ shortName: "none" }} />), /<span class="mono">none<\/span>/);
+  assert.match(renderToString(<TalkgroupsField sys={{ shortName: "none" }} />), /<span class="muted">none<\/span>/);
 });

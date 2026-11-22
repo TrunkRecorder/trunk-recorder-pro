@@ -308,26 +308,25 @@ impl Framer {
     }
 }
 
+/// Dibits of a 48-bit sync pattern (for the synthetic repeater, [`super::synth`]).
+pub fn sync_dibits(k: SyncKind) -> [u8; 24] {
+    let p = SYNCS.iter().find(|s| s.1 == k).unwrap().0;
+    std::array::from_fn(|i| (p >> (46 - 2 * i) & 3) as u8)
+}
+
+/// A CACH naming `slot` (empty payload).
+pub fn cach_dibits(slot: u8) -> [u8; 12] {
+    let t = crate::dmr::fec::hamming7_encode(slot as u32 * 4);
+    let mut raw = [0u8; 24];
+    for (j, &i) in CACH_ORDER[..7].iter().enumerate() {
+        raw[i] = (t >> (6 - j) & 1) as u8;
+    }
+    std::array::from_fn(|i| raw[2 * i] << 1 | raw[2 * i + 1])
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::dmr::fec::hamming7_encode;
-
-    /// Dibits of a 48-bit sync pattern.
-    pub fn sync_dibits(k: SyncKind) -> [u8; 24] {
-        let p = SYNCS.iter().find(|s| s.1 == k).unwrap().0;
-        std::array::from_fn(|i| (p >> (46 - 2 * i) & 3) as u8)
-    }
-
-    /// A CACH naming `slot` (empty payload).
-    pub fn cach_dibits(slot: u8) -> [u8; 12] {
-        let t = hamming7_encode(slot as u32 * 4);
-        let mut raw = [0u8; 24];
-        for (j, &i) in CACH_ORDER[..7].iter().enumerate() {
-            raw[i] = (t >> (6 - j) & 1) as u8;
-        }
-        std::array::from_fn(|i| raw[2 * i] << 1 | raw[2 * i + 1])
-    }
 
     #[test]
     fn syncs_are_far_apart() {

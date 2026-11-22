@@ -7,9 +7,11 @@
 //! (`runtime::calls`), the paging rules (`read.rs`), and the backfill.
 
 use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
+use trunk_app::protocol::{DataCounts, DataKind, DataTable};
 use trunk_app::stats::radio::{RegistryChanges, SystemRadio};
 use trunk_app::stats::Bucket;
-use trunk_core::trunk::{TalkgroupRow, UnitAlias};
+use trunk_core::metrics::system_key;
+use trunk_core::trunk::{Origin, OriginKind, TalkgroupRow, UnitAlias, UnitNameRow};
 
 use super::read::{self, Where};
 use super::row::{call_values, src_entry, stored_call, tx_values, CallRow, CALL_COLS, TX_COLS};
@@ -51,6 +53,9 @@ pub enum Change {
     Talkgroups { system_id: i64, rows: Vec<TalkgroupRow> },
     /// One talkgroup of a system edited (`order`: its place among them).
     Talkgroup { system_id: i64, row: TalkgroupRow, order: usize },
+    /// A system's own names for its radios, in place of what's stored.
+    /// Committed at once, as [`Change::Talkgroups`].
+    UnitNames { system_id: i64, rows: Vec<UnitNameRow> },
     /// A system's talker aliases now (what changed is written).
     Units { system_id: i64, aliases: Vec<(u32, UnitAlias)> },
 }
@@ -68,6 +73,7 @@ impl Change {
             Change::StatsMinute { .. } | Change::StatsHours(_) => "stats write".into(),
             Change::RetireStats { .. } => "stats retention".into(),
             Change::Talkgroups { system_id, .. } | Change::Talkgroup { system_id, .. } => format!("talkgroups (system {system_id})"),
+            Change::UnitNames { system_id, .. } => format!("radio names (system {system_id})"),
             Change::Units { system_id, .. } => format!("talker aliases write (system {system_id})"),
         }
     }
@@ -75,7 +81,7 @@ impl Change {
     /// Whether it should be committed at once, not at the writer's interval
     /// (people make it).
     pub fn urgent(&self) -> bool {
-        matches!(self, Change::Talkgroups { .. } | Change::Talkgroup { .. })
+        matches!(self, Change::Talkgroups { .. } | Change::Talkgroup { .. } | Change::UnitNames { .. })
     }
 }
 
@@ -96,6 +102,10 @@ pub trait Backend: Send + Sync {
     fn checkpoint(&self) {}
     /// The writer is going: the last tidy-up (SQLite: `pragma optimize`).
     fn close(&self) {}
+    /// Give the space deleted rows left back to the disk (SQLite: `vacuum`,
+    /// then the WAL truncated; PostgreSQL: `vacuum full`), outside any
+    /// transaction. Writes wait meanwhile.
+    fn compact(&self) -> Result<(), String>;
     /// Copy `tables` (what can't be rebuilt) somewhere of its own; where
     /// (none: the database's operator backs it up, as PostgreSQL's).
     fn backup(&self, _tables: &[&str]) -> Result<Option<String>, String> {
@@ -106,7 +116,7 @@ pub trait Backend: Send + Sync {
 /// What a backup keeps: what people made and the recorder learned, which
 /// can't be made again (calls can, from their files; the dashboard's
 /// history is the dashboard's). Small: written once a day.
-pub const KEEP_SAFE: &[&str] = &["systems", "talkgroups", "units", "kept", "registry", "registry_changes", "meta"];
+pub const KEEP_SAFE: &[&str] = &["systems", "talkgroups", "unit_names", "units", "kept", "registry", "registry_changes", "meta"];
 
 /// The store over a backend. Only [`Backend::kind`] and [`Store::location`]
 /// are free to call from async code.
@@ -209,6 +219,12 @@ impl Store {
         self.read(|x| Ok(x.query(&sql, vals![system_id])?.iter().map(talkgroup_row).collect()))
     }
 
+    /// A system's own names for its radios, in their order.
+    pub fn unit_names(&self, system_id: i64) -> Result<Vec<UnitNameRow>, String> {
+        let sql = format!("select {} from unit_names where system_id = $1 order by sort_order", UNIT_NAME_COLS.join(", "));
+        self.read(|x| Ok(x.query(&sql, vals![system_id])?.iter().map(|r| UnitNameRow { unit: r.text(1), name: r.text(2), origin: origin_of(r, 4) }).collect()))
+    }
+
     /// A system's talker aliases.
     pub fn units(&self, system_id: i64) -> Result<Vec<(u32, UnitAlias)>, String> {
         self.read(|x| units_of(x, system_id))
@@ -231,6 +247,120 @@ impl Store {
     /// first, with their children; how many went.
     pub fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
         self.write(|x| Ok(x.execute("delete from calls where id in (select id from calls where start_ms < $1 order by start_ms limit $2)", vals![before_ms, max])? as usize))
+    }
+
+    /// Every system the store has (the config's and those gone from it), by id.
+    pub fn system_names(&self) -> Result<Vec<(i64, String)>, String> {
+        self.read(|x| Ok(x.query("select id, short_name from systems order by id", &[])?.iter().map(|r| (r.int(0), r.text(1))).collect()))
+    }
+
+    /// Every system the store has (the config's and those gone from it):
+    /// its id, short name and how many of each it keeps. The radio
+    /// registry's counts are left for the caller (it holds the registry).
+    pub fn data_systems(&self) -> Result<Vec<(i64, String, DataCounts)>, String> {
+        self.read(|x| {
+            let mut out: Vec<(i64, String, DataCounts)> = x.query("select id, short_name from systems order by short_name, id", &[])?.iter().map(|r| (r.int(0), r.text(1), DataCounts::default())).collect();
+            let mut each = |x: &mut dyn Exec, table: &str, f: fn(&mut DataCounts) -> &mut i64| -> Result<(), String> {
+                for r in x.query(&format!("select system_id, count(*) from {table} group by system_id"), &[])? {
+                    if let Some((_, _, c)) = out.iter_mut().find(|(id, _, _)| *id == r.int(0)) {
+                        *f(c) = r.int(1);
+                    }
+                }
+                Ok(())
+            };
+            each(x, "calls", |c| &mut c.calls)?;
+            each(x, "talkgroups", |c| &mut c.talkgroups)?;
+            each(x, "unit_names", |c| &mut c.unit_names)?;
+            each(x, "units", |c| &mut c.talker_aliases)?;
+            let series: Vec<String> = x.query("select name from series", &[])?.iter().map(|r| r.text(0)).collect();
+            for (_, name, c) in &mut out {
+                let key = system_key(name);
+                c.history_series = series.iter().filter(|s| **s == key || s.strip_prefix(key.as_str()).is_some_and(|r| r.starts_with('/'))).count() as i64;
+            }
+            Ok(out)
+        })
+    }
+
+    /// System `system_id`'s radio registry as stored (none: none stored, or none that could be read).
+    pub fn registry_of(&self, system_id: i64) -> Result<Option<SystemRadio>, String> {
+        self.read(|x| registry_of(x, system_id))
+    }
+
+    /// Delete `kinds` of system `system_id`'s data (none: every system's),
+    /// in one transaction; `forget`: the system's own row too, if nothing
+    /// is left that refers to it (it's gone from the config). How many of
+    /// each went (the registry's are its rows', not its radios'). A call
+    /// deleted isn't indexed again from its files by the next start's
+    /// backfill ([`deleted_before_key`]).
+    pub fn delete(&self, kinds: &[DataKind], system_id: Option<i64>, forget: bool, now_ms: i64) -> Result<DataCounts, String> {
+        self.write(|x| {
+            let mut n = DataCounts::default();
+            let ps: Vec<V> = system_id.map(V::Int).into_iter().collect();
+            let delete = |x: &mut dyn Exec, table: &str| -> Result<i64, String> {
+                let cond = if ps.is_empty() { "" } else { " where system_id = $1" };
+                Ok(x.execute(&format!("delete from {table}{cond}"), &ps)? as i64)
+            };
+            for k in kinds {
+                match k {
+                    DataKind::Calls => {
+                        n.calls = delete(x, "calls")?;
+                        x.execute("insert into meta (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", vals![deleted_before_key(system_id), now_ms.to_string()])?;
+                    }
+                    DataKind::Talkgroups => n.talkgroups = delete(x, "talkgroups")?,
+                    DataKind::UnitNames => n.unit_names = delete(x, "unit_names")?,
+                    DataKind::TalkerAliases => n.talker_aliases = delete(x, "units")?,
+                    // (How many radios and talkgroups it had: the registry's holder says.)
+                    DataKind::Registry => {
+                        delete(x, "registry")?;
+                        delete(x, "registry_changes")?;
+                    }
+                    DataKind::DashboardHistory => n.history_series = delete_history(x, system_id)?,
+                }
+            }
+            if let (true, Some(id)) = (forget, system_id) {
+                // (Something still refers to it, a call that came in meanwhile: it stays.)
+                let _ = savepoint(x, |x| x.execute("delete from systems where id = $1", vals![id]).map(drop));
+            }
+            Ok(n)
+        })
+    }
+
+    /// A page of table `table` (one of the store's, not the registry's) to
+    /// export: system `system_id`'s rows (none: every system's), oldest
+    /// first, after `after` (the last page's `next`; none: from the start),
+    /// `limit` at most.
+    pub fn export(&self, table: DataTable, system_id: Option<i64>, after: Option<&[V]>, limit: usize) -> Result<ExportPage, String> {
+        let q = ExportQuery::of(table).ok_or_else(|| format!("{} isn't a table of the store's", table.name()))?;
+        self.read(|x| {
+            let mut ps = Params::default();
+            let mut terms = Vec::new();
+            match (system_id, q.system) {
+                (Some(id), Some(col)) => terms.push(format!("{col} = {}", ps.add(id))),
+                // (The dashboard's series are a system's by name: `sys/<short name>`, and those under it.)
+                (Some(id), None) => {
+                    let name = x.query_opt("select short_name from systems where id = $1", vals![id])?.map(|r| r.text(0)).unwrap_or_default();
+                    let key = system_key(&name);
+                    // ('0' is the character after '/': every name under `key/`.)
+                    terms.push(format!("(se.name = {} or (se.name > {} and se.name < {}))", ps.add(key.clone()), ps.add(format!("{key}/")), ps.add(format!("{key}0"))));
+                }
+                (None, _) => {}
+            }
+            if let (Some(after), Some(keys)) = (after, q.keys) {
+                // (Keyset paging: after the last row's key, by the index the order walks.)
+                let (a, b) = (ps.add(after[0].clone()), ps.add(after[1].clone()));
+                terms.push(format!("({k0} > {a} or ({k0} = {a} and {k1} > {b}))", k0 = keys[0], k1 = keys[1]));
+            }
+            let filter = if terms.is_empty() { String::new() } else { format!(" where {}", terms.join(" and ")) };
+            let page = if q.keys.is_some() { format!(" limit {}", ps.add(limit)) } else { String::new() };
+            let sql = format!("{}{filter} order by {}{page}", q.sql, q.order);
+            let rows = x.query(&sql, &ps.0)?;
+            let next = match q.keys {
+                Some(_) if rows.len() >= limit => rows.last().map(|r| r.0[r.0.len() - 2..].to_vec()),
+                _ => None,
+            };
+            let width = q.cols.len();
+            Ok(ExportPage { cols: q.cols, rows: rows.into_iter().map(|r| r.0.into_iter().take(width).collect()).collect(), next })
+        })
     }
 
     /// The newest call's start (retention counts back from it at most a day).
@@ -303,6 +433,16 @@ impl Store {
 
     pub fn close(&self) {
         self.backend.close()
+    }
+
+    /// Give deleted rows' space back to the disk ([`Backend::compact`]): how
+    /// big the store was before and after (SQLite: its files; PostgreSQL:
+    /// its tables and indexes).
+    pub fn compact(&self) -> Result<(i64, i64), String> {
+        let size = |s: StoreSizes| s.file_bytes + s.wal_bytes;
+        let before = size(self.sizes()?);
+        self.backend.compact()?;
+        Ok((before, size(self.sizes()?)))
     }
 
     /// Back up what can't be rebuilt ([`KEEP_SAFE`]); where, if anywhere.
@@ -424,6 +564,14 @@ fn apply_one(x: &mut dyn Exec, change: &Change) -> Result<(), String> {
             rows.iter().enumerate().try_for_each(|(i, r)| write_talkgroup(x, *system_id, r, i))
         }
         Change::Talkgroup { system_id, row, order } => write_talkgroup(x, *system_id, row, *order),
+        Change::UnitNames { system_id, rows } => {
+            x.execute("delete from unit_names where system_id = $1", vals![*system_id])?;
+            let sql = insert(UNIT_NAME_COLS, "unit_names", 2);
+            rows.iter().enumerate().try_for_each(|(i, r)| {
+                let (kind, name, at) = origin_values(&r.origin);
+                x.execute(&sql, vals![*system_id, &r.unit, &r.name, i, kind, name, at]).map(drop)
+            })
+        }
         Change::Units { system_id, aliases } => {
             // (What changed alone: an alias heard again is no write.)
             let had: std::collections::HashMap<u32, UnitAlias> = units_of(x, *system_id)?.into_iter().collect();
@@ -522,17 +670,35 @@ fn compact_registry(x: &mut dyn Exec, system_id: i64) -> Result<(), String> {
 
 /// `talkgroups`' columns, in the order [`write_talkgroup`] gives them and
 /// [`talkgroup_row`] reads them.
-const TG_COLS: &[&str] = &["system_id", "number", "alpha_tag", "mode", "description", "tag", "category", "priority", "preferred_nac", "preferred_site", "ignore", "sort_order", "comment", "extra"];
+const TG_COLS: &[&str] = &["system_id", "number", "alpha_tag", "mode", "description", "tag", "category", "priority", "preferred_nac", "preferred_site", "ignore", "sort_order", "comment", "extra", "origin", "origin_name", "origin_at"];
+/// `unit_names`' columns, the same way.
+const UNIT_NAME_COLS: &[&str] = &["system_id", "unit", "name", "sort_order", "origin", "origin_name", "origin_at"];
+
+/// The insert of a row of `table` (`cols`), replacing the one with the same
+/// key (its first `key` columns).
+fn insert(cols: &[&str], table: &str, key: usize) -> String {
+    let marks: Vec<String> = (1..=cols.len()).map(|i| format!("${i}")).collect();
+    let set: Vec<String> = cols[key..].iter().map(|c| format!("{c} = excluded.{c}")).collect();
+    format!("insert into {table} ({}) values ({}) on conflict ({}) do update set {}", cols.join(", "), marks.join(", "), cols[..key].join(", "), set.join(", "))
+}
+
+/// A row's origin as its three columns ("", "", 0: not known).
+fn origin_values(o: &Option<Origin>) -> (&'static str, String, i64) {
+    o.as_ref().map_or(("", String::new(), 0), |o| (o.kind.as_str(), o.name.clone(), o.at))
+}
+
+/// The origin in a row's three columns from `at` on.
+fn origin_of(r: &super::sql::Row, at: usize) -> Option<Origin> {
+    OriginKind::from_name(&r.text(at)).map(|kind| Origin { kind, name: r.text(at + 1), at: r.int(at + 2) })
+}
 
 /// Talkgroup `r` of system `system_id`, at `order` among them.
 fn write_talkgroup(x: &mut dyn Exec, system_id: i64, r: &TalkgroupRow, order: usize) -> Result<(), String> {
     let t = &r.tg;
     let extra = (!r.extra.is_empty()).then(|| serde_json::to_string(&r.extra).unwrap_or_default());
-    let marks: Vec<String> = (1..=TG_COLS.len()).map(|i| format!("${i}")).collect();
-    let set: Vec<String> = TG_COLS[2..].iter().map(|c| format!("{c} = excluded.{c}")).collect();
-    let sql = format!("insert into talkgroups ({}) values ({}) on conflict (system_id, number) do update set {}", TG_COLS.join(", "), marks.join(", "), set.join(", "));
-    let ps = vals![system_id, t.number, &t.alpha_tag, &t.mode, &t.description, &t.tag, &t.group, i64::from(t.priority), t.preferred_nac, &t.preferred_site, t.ignore, order, &r.comment, extra];
-    x.execute(&sql, ps).map(drop)
+    let (kind, name, at) = origin_values(&r.origin);
+    let ps = vals![system_id, t.number, &t.alpha_tag, &t.mode, &t.description, &t.tag, &t.group, i64::from(t.priority), t.preferred_nac, &t.preferred_site, t.ignore, order, &r.comment, extra, kind, name, at];
+    x.execute(&insert(TG_COLS, "talkgroups", 2), ps).map(drop)
 }
 
 /// A talkgroup read back (columns [`TG_COLS`]).
@@ -549,7 +715,7 @@ fn talkgroup_row(r: &super::sql::Row) -> TalkgroupRow {
         preferred_site: r.text(9),
         ignore: r.bool(10),
     };
-    TalkgroupRow { tg, comment: r.text(12), extra: r.opt_text(13).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default() }
+    TalkgroupRow { tg, comment: r.text(12), extra: r.opt_text(13).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(), origin: origin_of(r, 14) }
 }
 
 /// System `system_id`'s talker aliases as stored.
@@ -620,6 +786,143 @@ fn after(prefix: &str) -> Option<String> {
     None
 }
 
+
+/// The `meta` key of when system `system_id`'s calls (none: every
+/// system's) were last deleted: the backfill indexes none that started
+/// before it from their files.
+pub fn deleted_before_key(system_id: Option<i64>) -> String {
+    system_id.map_or_else(|| "calls.deletedBefore".to_string(), |id| format!("calls.deletedBefore.{id}"))
+}
+
+/// Delete system `system_id`'s dashboard series (none: the whole history),
+/// their hours with them, and their values from the minutes kept; how
+/// many series went.
+fn delete_history(x: &mut dyn Exec, system_id: Option<i64>) -> Result<i64, String> {
+    let Some(id) = system_id else {
+        x.execute("delete from stats_minutes", &[])?;
+        x.execute("delete from stats_hours", &[])?;
+        return Ok(x.execute("delete from series", &[])? as i64);
+    };
+    let Some(name) = x.query_opt("select short_name from systems where id = $1", vals![id])?.map(|r| r.text(0)) else { return Ok(0) };
+    let key = system_key(&name);
+    let mine = |k: &str| k == key || k.strip_prefix(key.as_str()).is_some_and(|r| r.starts_with('/'));
+    let mut n = 0;
+    for r in x.query("select id, name from series", &[])? {
+        if mine(&r.text(1)) {
+            x.execute("delete from series where id = $1", vals![r.int(0)])?;
+            n += 1;
+        }
+    }
+    // (The minutes kept, a day or two: each one's rollup without the system's values.)
+    for r in x.query("select id, s from stats_minutes", &[])? {
+        let Some(mut roll) = serde_json::from_str(&r.text(1)).ok().as_ref().and_then(trunk_app::stats::Rollup::from_json) else { continue };
+        let had = roll.values.len();
+        roll.values.retain(|k, _| !mine(k));
+        if roll.values.len() != had {
+            x.execute("update stats_minutes set s = $2 where id = $1", vals![r.int(0), roll.to_json().to_string()])?;
+        }
+    }
+    Ok(n)
+}
+
+/// A page of a table to export ([`Store::export`]): its columns, and its
+/// rows' values in their order; `next`: more remain, after this key.
+pub struct ExportPage {
+    pub cols: &'static [(&'static str, Cell)],
+    pub rows: Vec<Vec<V>>,
+    pub next: Option<Vec<V>>,
+}
+
+/// How an exported value is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cell {
+    Plain,
+    /// Unix ms, as a local time.
+    Ms,
+    /// Unix s, as a local time.
+    S,
+    Bool,
+}
+
+/// How a table is exported: its query (with no `where` or `order`), its
+/// columns, its system's id column (none: the dashboard's history, a
+/// system's by its series' names), and its order; `keys`: the two columns,
+/// after the columns, it's paged by (none: small, in one page).
+struct ExportQuery {
+    sql: &'static str,
+    cols: &'static [(&'static str, Cell)],
+    system: Option<&'static str>,
+    order: &'static str,
+    keys: Option<[&'static str; 2]>,
+}
+
+impl ExportQuery {
+    fn of(table: DataTable) -> Option<ExportQuery> {
+        use Cell::*;
+        Some(match table {
+            DataTable::Calls => ExportQuery {
+                sql: "select s.short_name, c.start_ms, c.stop_ms, c.length_s, c.talkgroup, coalesce(nullif(g.alpha_tag, ''), c.talkgroup_tag), c.talkgroup_description, c.talkgroup_group,
+                             c.talkgroup_ota, c.freq_hz, c.freq_error, c.site, c.emergency, c.priority, c.encrypted, c.algid, c.key_id, c.decrypted, c.signal, c.noise, c.snr, c.clean_voice_pct,
+                             c.nac, c.color_code, c.ran, c.tone_detected, c.audio_type, c.system_type, c.voice_mode, c.audio, c.path, c.start_ms, c.id
+                      from calls c join systems s on s.id = c.system_id left join talkgroups g on g.system_id = c.system_id and g.number = c.talkgroup",
+                cols: &[
+                    ("system", Plain), ("start", Ms), ("stop", Ms), ("length_s", Plain), ("talkgroup", Plain), ("talkgroup_name", Plain), ("talkgroup_description", Plain), ("talkgroup_category", Plain),
+                    ("talkgroup_ota", Plain), ("freq_hz", Plain), ("freq_error", Plain), ("site", Plain), ("emergency", Bool), ("priority", Plain), ("encrypted", Bool), ("algid", Plain), ("key_id", Plain), ("decrypted", Bool),
+                    ("signal", Plain), ("noise", Plain), ("snr", Plain), ("clean_voice_pct", Plain), ("nac", Plain), ("color_code", Plain), ("ran", Plain), ("tone_detected", Plain), ("audio_type", Plain),
+                    ("system_type", Plain), ("voice_mode", Plain), ("audio_kept", Bool), ("path", Plain),
+                ],
+                system: Some("c.system_id"),
+                order: "c.start_ms, c.id",
+                keys: Some(["c.start_ms", "c.id"]),
+            },
+            DataTable::Transmissions => ExportQuery {
+                sql: "select s.short_name, c.start_ms, c.path, c.talkgroup, t.seq, t.unit, coalesce(nullif(a.alias, ''), nullif(t.tag, ''), t.tag_ota), t.time, t.pos, t.emergency, t.encrypted, t.duplex,
+                             t.mode, t.priority, t.signal_system, t.lat, t.lon, t.call_id, t.seq
+                      from call_transmissions t join calls c on c.id = t.call_id join systems s on s.id = t.system_id left join units a on a.system_id = t.system_id and a.unit = t.unit",
+                cols: &[
+                    ("system", Plain), ("call_start", Ms), ("call_path", Plain), ("talkgroup", Plain), ("seq", Plain), ("unit", Plain), ("unit_name", Plain), ("time", S), ("pos_s", Plain), ("emergency", Bool),
+                    ("encrypted", Bool), ("duplex", Bool), ("mode", Bool), ("priority", Plain), ("signal_system", Plain), ("lat", Plain), ("lon", Plain),
+                ],
+                system: Some("t.system_id"),
+                order: "t.call_id, t.seq",
+                keys: Some(["t.call_id", "t.seq"]),
+            },
+            DataTable::Talkgroups => ExportQuery {
+                sql: "select s.short_name, g.number, g.alpha_tag, g.mode, g.description, g.tag, g.category, g.priority, g.preferred_nac, g.preferred_site, g.ignore, g.comment, g.origin, g.origin_name, g.origin_at
+                      from talkgroups g join systems s on s.id = g.system_id",
+                cols: &[
+                    ("system", Plain), ("talkgroup", Plain), ("alpha_tag", Plain), ("mode", Plain), ("description", Plain), ("tag", Plain), ("category", Plain), ("priority", Plain), ("preferred_nac", Plain),
+                    ("preferred_site", Plain), ("ignore", Bool), ("comment", Plain), ("origin", Plain), ("origin_name", Plain), ("origin_at", S),
+                ],
+                system: Some("g.system_id"),
+                order: "s.short_name, g.system_id, g.sort_order",
+                keys: None,
+            },
+            DataTable::UnitNames => ExportQuery {
+                sql: "select s.short_name, n.unit, n.name, n.origin, n.origin_name, n.origin_at from unit_names n join systems s on s.id = n.system_id",
+                cols: &[("system", Plain), ("unit", Plain), ("name", Plain), ("origin", Plain), ("origin_name", Plain), ("origin_at", S)],
+                system: Some("n.system_id"),
+                order: "s.short_name, n.system_id, n.sort_order",
+                keys: None,
+            },
+            DataTable::TalkerAliases => ExportQuery {
+                sql: "select s.short_name, u.unit, u.alias, u.source, u.heard, u.wacn, u.sys, u.talkgroup from units u join systems s on s.id = u.system_id",
+                cols: &[("system", Plain), ("unit", Plain), ("alias", Plain), ("source", Plain), ("heard", S), ("wacn", Plain), ("sys", Plain), ("talkgroup", Plain)],
+                system: Some("u.system_id"),
+                order: "s.short_name, u.system_id, u.unit",
+                keys: None,
+            },
+            DataTable::DashboardHistory => ExportQuery {
+                sql: "select se.name, h.t, h.avg, h.lo, h.hi, h.n, h.series_id, h.t from stats_hours h join series se on se.id = h.series_id",
+                cols: &[("series", Plain), ("hour", S), ("avg", Plain), ("lo", Plain), ("hi", Plain), ("minutes", Plain)],
+                system: None,
+                order: "h.series_id, h.t",
+                keys: Some(["h.series_id", "h.t"]),
+            },
+            DataTable::Radios | DataTable::HeardTalkgroups => return None,
+        })
+    }
+}
 
 /// A table's or index's size ([`Store::sizes`]).
 #[derive(Clone, Debug, serde::Serialize)]

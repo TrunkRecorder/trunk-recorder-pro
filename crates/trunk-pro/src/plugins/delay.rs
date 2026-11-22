@@ -39,25 +39,31 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use trunk_recorder_plugin::filter::{talkgroup_list, talkgroup_matches};
 
+use trunk_core::trunk::{SiteId, SystemId};
+
 use crate::config::{Config, DelayRule};
 
 /// What something sent to the plugins is about: what the rules pick by.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct About {
-    /// Its system's short name (empty: no one system's, as the recorder's
-    /// status: never delayed).
-    pub system: String,
+    /// Its system (none: no one system's, as the recorder's status: never
+    /// delayed). By id: a rename keeps its delays.
+    pub system: SystemId,
     pub talkgroup: Option<u32>,
     /// Some of it was decrypted with our keys (only plugins with
     /// `shareDecrypted` may have it, then or later).
     pub decrypted: bool,
+    /// The sites it's of, by id: a unit event's, those a recorded call was
+    /// heard on (none: no one site's, as a call as it goes).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<SiteId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct Rule {
     /// None: every system's.
-    system: Option<String>,
+    system: Option<SystemId>,
     /// Plugin ids or copies' labels (`openmhz#2`); empty: all.
     plugins: Vec<String>,
     /// Patterns; empty: all.
@@ -68,7 +74,7 @@ struct Rule {
 }
 
 impl Rule {
-    fn new(system: Option<&str>, r: &DelayRule) -> Rule {
+    fn new(system: Option<SystemId>, r: &DelayRule) -> Rule {
         let clean = |v: &[String]| -> Vec<String> {
             let mut v: Vec<String> = v.iter().map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
             v.sort();
@@ -79,11 +85,11 @@ impl Rule {
         // isn't a talkgroup is kept as it is, and matches none (the form flags it).
         let tgs = |v: &[String]| -> Vec<String> { clean(&v.iter().flat_map(|e| talkgroup_list(std::slice::from_ref(e)).unwrap_or_else(|_| vec![e.clone()])).collect::<Vec<_>>()) };
         let delay = if r.delay_s.is_finite() && r.delay_s > 0.0 { Duration::from_secs_f64(r.delay_s) } else { Duration::ZERO };
-        Rule { system: system.map(str::to_string), plugins: clean(&r.plugins), talkgroups: tgs(&r.talkgroups), except: tgs(&r.except_talkgroups), delay }
+        Rule { system, plugins: clean(&r.plugins), talkgroups: tgs(&r.talkgroups), except: tgs(&r.except_talkgroups), delay }
     }
 
     fn picks(&self, label: &str, about: &About) -> bool {
-        self.system.as_ref().is_none_or(|s| *s == about.system)
+        self.system.is_none_or(|s| s == about.system)
             && (self.plugins.is_empty() || self.plugins.iter().any(|p| covers(p, label)))
             && (self.talkgroups.is_empty() || about.talkgroup.is_some_and(|tg| self.talkgroups.iter().any(|p| talkgroup_matches(p, tg))))
             && !about.talkgroup.is_some_and(|tg| self.except.iter().any(|p| talkgroup_matches(p, tg)))
@@ -119,10 +125,10 @@ impl Delays {
     pub fn of(cfg: &Config) -> Delays {
         let mut rules: Vec<Rule> = cfg.plugin_delays.iter().map(|r| Rule::new(None, r)).collect();
         for s in &cfg.systems {
-            rules.extend(s.plugin_delays.iter().map(|r| Rule::new(Some(&s.short_name), r)));
+            rules.extend(s.plugin_delays.iter().map(|r| Rule::new(Some(s.id), r)));
         }
         for c in &cfg.conventional {
-            rules.extend(c.plugin_delays.iter().map(|r| Rule::new(Some(&c.short_name), r)));
+            rules.extend(c.plugin_delays.iter().map(|r| Rule::new(Some(c.id), r)));
         }
         Delays { rules }
     }
@@ -139,7 +145,7 @@ impl Delays {
 
     /// How long plugin `label` (its id; a copy's `id#2`) waits for something about `about`.
     pub fn delay(&self, label: &str, about: &About) -> Duration {
-        if about.system.is_empty() {
+        if about.system == SystemId::default() {
             return Duration::ZERO;
         }
         let picked: Vec<&Rule> = self.rules.iter().filter(|r| r.picks(label, about)).collect();
@@ -155,10 +161,17 @@ mod tests {
     const MIN: u64 = 60;
 
     fn delays(v: serde_json::Value) -> Delays {
-        Delays::of(&serde_json::from_value(v).unwrap())
+        Delays::of(&Config::from_value(v).unwrap())
     }
+    /// About `system`: dcfd, the first system of each test's config (numbered 1 as it's read), or
+    /// another not in it; "": none.
     fn on(system: &str, tg: Option<u32>) -> About {
-        About { system: system.into(), talkgroup: tg, decrypted: false }
+        let id = match system {
+            "" => 0,
+            "dcfd" => 1,
+            _ => 99,
+        };
+        About { system: SystemId(id), talkgroup: tg, ..Default::default() }
     }
     fn mins(d: &Delays, plugin: &str, about: &About) -> u64 {
         d.delay(plugin, about).as_secs() / MIN
@@ -252,6 +265,16 @@ mod tests {
         assert_eq!(d.delay("x", &on("dcfd", Some(1))).as_secs(), 120);
         assert_eq!(d.delay("x", &on("dcfd", Some(51))).as_secs(), 90);
         assert_eq!(d.longest().as_secs(), 120);
+    }
+
+    /// A system renamed keeps its delays: they're its id's.
+    #[test]
+    fn a_rename_keeps_a_systems_delay() {
+        let mut cfg = Config::from_value(json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "delayS": 30 * MIN }] }] })).unwrap();
+        let about = on("dcfd", Some(1));
+        assert_eq!(mins(&Delays::of(&cfg), "openmhz", &about), 30);
+        cfg.systems[0].short_name = "fire".into();
+        assert_eq!(mins(&Delays::of(&cfg), "openmhz", &about), 30, "what was about it still is");
     }
 
     #[test]
