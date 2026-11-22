@@ -156,6 +156,11 @@ const click = (text, scope = "document") => evaluate(`(() => { const b = [...${s
 const cookie = async () => (await send("Network.getCookies", { urls: [origin] }, sid)).cookies.find((c) => c.name.startsWith("trp_"));
 const credentials = async () => (await send("WebAuthn.getCredentials", { authenticatorId }, sid)).credentials;
 const savedPasskeys = (user) => JSON.parse(readFileSync(config, "utf8")).server.auth.users[user].passkeys ?? [];
+// A passkey's record as last counted: access-state.json's, beside the config (the config keeps it as it was added).
+const countedPasskey = (p) => {
+  const state = join(dir, "access-state.json");
+  return (existsSync(state) && JSON.parse(readFileSync(state, "utf8")).passkeys?.[p.id]) || p.key;
+};
 const onSignIn = `document.title === "Sign in" && !!document.getElementById("t")`;
 const onDashboard = (user) => `!!document.querySelector(".topbar") && [...document.querySelectorAll(".user-menu button, .user-menu span")].some((b) => b.textContent.trim() === ${JSON.stringify(user)})`;
 const navLabels = () => evaluate(`[...document.querySelectorAll(".nav-label")].map((n) => n.textContent.trim())`);
@@ -219,8 +224,8 @@ try {
   };
   const countKept = async () => {
     const [cred] = await credentials();
-    const counter = savedPasskeys("luke")[0].key.cred.counter;
-    if (cred.signCount < 1 || counter !== cred.signCount) throw new Error(`counter: the authenticator's ${cred.signCount}, the config's ${counter}`);
+    const counter = countedPasskey(savedPasskeys("luke")[0]).cred.counter;
+    if (cred.signCount < 1 || counter !== cred.signCount) throw new Error(`counter: the authenticator's ${cred.signCount}, the recorder's ${counter}`);
   };
 
   await step("signed out, then in by the passkey the token field's autofill offers (conditional UI), nothing typed", async () => {
