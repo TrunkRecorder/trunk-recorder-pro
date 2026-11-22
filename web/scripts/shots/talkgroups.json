@@ -1,0 +1,238 @@
+{
+ "dcfd": [
+  {
+   "number": 166,
+   "mode": "D",
+   "alphaTag": "RIZ-01 UCC 1",
+   "description": "RIZ-01 Unified Command Channel 1",
+   "tag": "Interop",
+   "category": ""
+  },
+  {
+   "number": 167,
+   "mode": "D",
+   "alphaTag": "RIZ-02 UCC 2",
+   "description": "RIZ-02 Unified Command Channel 2",
+   "tag": "Interop",
+   "category": ""
+  },
+  {
+   "number": 621,
+   "mode": "D",
+   "alphaTag": "RIZ-07 MAF1",
+   "description": "RIZ-07 Mutual Aid Fire 1",
+   "tag": "Interop",
+   "category": ""
+  },
+  {
+   "number": 623,
+   "mode": "D",
+   "alphaTag": "RIZ-08 MAF2",
+   "description": "RIZ-08 Mutual Aid Fire 2",
+   "tag": "Interop",
+   "category": ""
+  },
+  {
+   "number": 728,
+   "mode": "D",
+   "alphaTag": "011 EMS 1",
+   "description": "EMS 1 (East)",
+   "tag": "EMS-Tac",
+   "category": "Fire/EMS Copy"
+  },
+  {
+   "number": 2191,
+   "mode": "T",
+   "alphaTag": "DC WASA 2",
+   "description": "Water and Sewer Authority 2",
+   "tag": "Utilities",
+   "category": "Services Copy"
+  },
+  {
+   "number": 2197,
+   "mode": "D",
+   "alphaTag": "DC Lib Sec",
+   "description": "Library Security",
+   "tag": "Security",
+   "category": "Services Copy"
+  },
+  {
+   "number": 2341,
+   "mode": "D",
+   "alphaTag": "RIZ-03 UCC 3",
+   "description": "RIZ-03 Unified Command Channel 3",
+   "tag": "Interop",
+   "category": ""
+  },
+  {
+   "number": 2343,
+   "mode": "D",
+   "alphaTag": "RIZ-04 UCC 4",
+   "description": "RIZ-04 Unified Command Channel 4",
+   "tag": "Interop",
+   "category": ""
+  },
+  {
+   "number": 3747,
+   "mode": "D",
+   "alphaTag": "RIZ-05 MA1",
+   "description": "RIZ-05 Mutual Aid 1",
+   "tag": "Interop",
+   "category": ""
+  },
+  {
+   "number": 3748,
+   "mode": "D",
+   "alphaTag": "RIZ-06 MA2",
+   "description": "RIZ-06 Mutual Aid 2 (also DC Interop 1)",
+   "tag": "Interop",
+   "category": ""
+  }
+ ],
+ "wmata": [
+  {
+   "number": 1680,
+   "mode": "D",
+   "alphaTag": "MetBus Disp3",
+   "description": "Bus Dispatch 3",
+   "tag": "Transportation",
+   "category": "Bus"
+  },
+  {
+   "number": 2224,
+   "mode": "D",
+   "alphaTag": "Analog MTPD",
+   "description": "Analog MTPD Patch",
+   "tag": "Law Dispatch",
+   "category": "Police"
+  },
+  {
+   "number": 32784,
+   "mode": "D",
+   "alphaTag": "Metro Ops 1",
+   "description": "Ops 1 - Red Line",
+   "tag": "Transportation",
+   "category": "Rail Operations"
+  },
+  {
+   "number": 32816,
+   "mode": "D",
+   "alphaTag": "Metro Ops 2",
+   "description": "Ops 2 - Blue/Orange/Silver Lines (Blue from Largo to Arlington Cemetery)",
+   "tag": "Transportation",
+   "category": "Rail Operations"
+  },
+  {
+   "number": 33264,
+   "mode": "D",
+   "alphaTag": "Radio Test 33264",
+   "description": "Radio Testing",
+   "tag": "Public Works",
+   "category": "Other"
+  },
+  {
+   "number": 34608,
+   "mode": "D",
+   "alphaTag": "Metro NewCn1",
+   "description": "New Carrollton Yard 1",
+   "tag": "Transportation",
+   "category": "Rail Yard"
+  },
+  {
+   "number": 34832,
+   "mode": "D",
+   "alphaTag": "Metro BrAve2",
+   "description": "Branch Avenue Yard 2",
+   "tag": "Transportation",
+   "category": "Rail Yard"
+  },
+  {
+   "number": 34960,
+   "mode": "D",
+   "alphaTag": "Metro 34960",
+   "description": "Train Operators",
+   "tag": "Transportation",
+   "category": "Rail Operations"
+  },
+  {
+   "number": 34992,
+   "mode": "D",
+   "alphaTag": "Metro 34992",
+   "description": "Train Operators",
+   "tag": "Transportation",
+   "category": "Rail Operations"
+  },
+  {
+   "number": 35024,
+   "mode": "D",
+   "alphaTag": "Rail Ops Yellow",
+   "description": "Yellow Line",
+   "tag": "Transportation",
+   "category": "Rail Operations"
+  },
+  {
+   "number": 35088,
+   "mode": "D",
+   "alphaTag": "TrnOpsRed088",
+   "description": "Train Operators - Red Line",
+   "tag": "Transportation",
+   "category": "Rail Operations"
+  },
+  {
+   "number": 49152,
+   "mode": "M",
+   "alphaTag": "MTPD Training",
+   "description": "Training",
+   "tag": "Law Talk",
+   "category": "Police"
+  },
+  {
+   "number": 49168,
+   "mode": "D",
+   "alphaTag": "MTPD-1",
+   "description": "MTPD-1",
+   "tag": "Law Dispatch",
+   "category": "Police"
+  },
+  {
+   "number": 49200,
+   "mode": "D",
+   "alphaTag": "MTPD-2",
+   "description": "MTPD-2",
+   "tag": "Law Tac",
+   "category": "Police"
+  },
+  {
+   "number": 49232,
+   "mode": "D",
+   "alphaTag": "MTPD-3",
+   "description": "MTPD-3",
+   "tag": "Law Tac",
+   "category": "Police"
+  },
+  {
+   "number": 49264,
+   "mode": "D",
+   "alphaTag": "MTPD-4",
+   "description": "MTPD-4",
+   "tag": "Law Tac",
+   "category": "Police"
+  },
+  {
+   "number": 50032,
+   "mode": "D",
+   "alphaTag": "MTPD Tac 1",
+   "description": "Tac 1",
+   "tag": "Law Tac",
+   "category": "Police"
+  },
+  {
+   "number": 50064,
+   "mode": "D",
+   "alphaTag": "MTPD Tac 2",
+   "description": "Tac 2",
+   "tag": "Law Tac",
+   "category": "Police"
+  }
+ ]
+}

@@ -13,26 +13,15 @@
 // browser (default: Google Chrome or Chromium where they're installed).
 // No Chrome: skipped, saying so. KEEP=1 keeps the temporary folder.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ended, findChrome, freePort, logTail, sleep, startChrome, startRecorder } from "./cdp.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const BIN = resolve(process.env.TRUNK_PRO ?? join(here, "../../target/debug/trunk-pro"));
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function findChrome() {
-  if (process.env.CHROME) return existsSync(process.env.CHROME) ? process.env.CHROME : null;
-  for (const p of ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium", "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"]) if (existsSync(p)) return p;
-  for (const name of ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]) {
-    const r = spawnSync("which", [name], { encoding: "utf8" });
-    if (r.status === 0 && r.stdout.trim()) return r.stdout.trim();
-  }
-  return null;
-}
 
 const chrome = findChrome();
 if (!chrome) {
@@ -43,8 +32,6 @@ if (!existsSync(BIN)) {
   console.error(`auth-browser: no trunk-pro at ${BIN}: cargo build -p trunk-pro first (after npm run build), or set TRUNK_PRO.`);
   process.exit(1);
 }
-
-const freePort = () => new Promise((res) => { const s = createServer().listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => res(p)); }); });
 
 // ── the recorder ────────────────────────────────────────────────────────────
 
@@ -63,37 +50,18 @@ const luke = cli("add", "luke");
 const kiosk = cli("add", "kiosk", "--access", "listen");
 cli("on");
 
-let log = "";
-const recorder = spawn(BIN, ["--config", config, "--port", String(port), "--no-open"], { stdio: ["ignore", "pipe", "pipe"] });
-recorder.stdout.on("data", (d) => (log += d));
-recorder.stderr.on("data", (d) => (log += d));
-const origin = `http://localhost:${port}`;
+const { proc: recorder, origin, log } = await startRecorder(BIN, config, port);
 const wallOrigin = `http://localhost:${wall}`;
-for (let t = Date.now(); ; await sleep(100)) {
-  if (await fetch(`${origin}/api/version`).then((r) => r.ok, () => false)) break;
-  if (Date.now() - t > 30_000 || recorder.exitCode !== null) throw new Error(`trunk-pro didn't start:\n${log}`);
-}
-for (let t = Date.now(); !(await fetch(`${wallOrigin}/api/version`).then((r) => r.ok, () => false)); await sleep(100)) if (Date.now() - t > 10_000) throw new Error(`the wall interface isn't served:\n${log}`);
+for (let t = Date.now(); !(await fetch(`${wallOrigin}/api/version`).then((r) => r.ok, () => false)); await sleep(100)) if (Date.now() - t > 10_000) throw new Error(`the wall interface isn't served:\n${log()}`);
 const home = await fetch(`${origin}/`, { headers: { authorization: `Bearer ${luke}` } }).then((r) => r.text());
 if (!/<div id="root"/.test(home)) throw new Error(`${BIN} has no dashboard built in: npm run build in web/, then cargo build -p trunk-pro.`);
 
 // ── the browser ─────────────────────────────────────────────────────────────
 
-const profile = join(dir, "chrome");
-const browser = spawn(chrome, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "--no-first-run", "--no-default-browser-check", "--disable-gpu", "--disable-extensions", ...(process.getuid?.() === 0 ? ["--no-sandbox"] : []), "about:blank"], { stdio: "ignore" });
-let wsUrl = null;
-for (let t = Date.now(); !wsUrl; await sleep(100)) {
-  const f = join(profile, "DevToolsActivePort");
-  if (existsSync(f)) {
-    const [p, path] = readFileSync(f, "utf8").split("\n");
-    if (p && path) wsUrl = `ws://127.0.0.1:${p}${path}`;
-  }
-  if (Date.now() - t > 20_000) throw new Error("Chrome didn't open its DevTools port");
-}
+const chromium = await startChrome(chrome, join(dir, "chrome"));
+const browser = chromium.proc;
 
 let failed = 0;
-// (Each process waited for before the folder goes: Chrome writes its profile as it quits.)
-const ended = (p) => (p.exitCode !== null || p.signalCode !== null ? Promise.resolve() : new Promise((r) => { p.once("exit", r); setTimeout(r, 5000); }));
 const cleanup = async () => {
   browser.kill();
   recorder.kill();
@@ -107,52 +75,13 @@ const cleanup = async () => {
 };
 process.on("exit", () => { browser.kill(); recorder.kill(); });
 
-const ws = new WebSocket(wsUrl);
-await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
-let nextId = 0;
-const pending = new Map();
-const listeners = new Set();
-ws.onmessage = (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) {
-    const { res, rej, method } = pending.get(m.id);
-    pending.delete(m.id);
-    if (m.error) rej(new Error(`${method}: ${m.error.message} ${m.error.data ?? ""}`));
-    else res(m.result);
-  } else if (m.method) for (const l of listeners) l(m);
-};
-const send = (method, params = {}, sessionId) => new Promise((res, rej) => { const id = ++nextId; pending.set(id, { res, rej, method }); ws.send(JSON.stringify({ id, method, params, sessionId })); });
-const event = (method, sessionId, ms = 15_000) => new Promise((res, rej) => {
-  const l = (m) => { if (m.method === method && m.sessionId === sessionId) { listeners.delete(l); clearTimeout(t); res(m.params); } };
-  const t = setTimeout(() => { listeners.delete(l); rej(new Error(`no ${method} in ${ms} ms`)); }, ms);
-  listeners.add(l);
-});
-
-const { targetId } = await send("Target.createTarget", { url: "about:blank" });
-const { sessionId: sid } = await send("Target.attachToTarget", { targetId, flatten: true });
-await send("Page.enable", {}, sid);
-await send("Runtime.enable", {}, sid);
-await send("Network.enable", {}, sid);
+const { sid, evaluate, goto, waitFor, click } = await chromium.page();
+const send = chromium.send;
 // (Sign out everywhere asks first: yes.)
-listeners.add((m) => m.method === "Page.javascriptDialogOpening" && m.sessionId === sid && send("Page.handleJavaScriptDialog", { accept: true }, sid));
+chromium.listeners.add((m) => m.method === "Page.javascriptDialogOpening" && m.sessionId === sid && send("Page.handleJavaScriptDialog", { accept: true }, sid));
 await send("WebAuthn.enable", { enableUI: false }, sid);
 const { authenticatorId } = await send("WebAuthn.addVirtualAuthenticator", { options: { protocol: "ctap2", ctap2Version: "ctap2_1", transport: "internal", hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } }, sid);
 
-const evaluate = async (expression) => {
-  const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true, userGesture: true }, sid);
-  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text);
-  return r.result.value;
-};
-const goto = async (url) => { const loaded = event("Page.loadEventFired", sid); await send("Page.navigate", { url }, sid); await loaded; };
-/** Until `expression` is truthy (a page loading meanwhile is no failure): its value. */
-const waitFor = async (expression, what, ms = 15_000) => {
-  for (let t = Date.now(); ; await sleep(100)) {
-    const v = await evaluate(expression).catch(() => null);
-    if (v) return v;
-    if (Date.now() - t > ms) throw new Error(`waited ${ms} ms for ${what}`);
-  }
-};
-const click = (text, scope = "document") => evaluate(`(() => { const b = [...${scope}.querySelectorAll("button, a")].find((b) => b.textContent.trim() === ${JSON.stringify(text)}); if (!b) throw new Error("no " + ${JSON.stringify(text)}); b.click(); return true; })()`);
 const cookie = async () => (await send("Network.getCookies", { urls: [origin] }, sid)).cookies.find((c) => c.name.startsWith("trp_"));
 const credentials = async () => (await send("WebAuthn.getCredentials", { authenticatorId }, sid)).credentials;
 const savedPasskeys = (user) => JSON.parse(readFileSync(config, "utf8")).server.auth.users[user].passkeys ?? [];
@@ -314,9 +243,9 @@ try {
     if (!nav.includes("Overview") || !b.includes("Sign out")) throw new Error(`nav ${nav}; buttons ${b}`);
   });
 } catch {
-  console.log(`\n# trunk-pro's log (last lines, the radios' own left out):\n${log.split("\n").filter((l) => !/\(info\)\s+(Opening device|starting event loop|event loop thread)/.test(l)).slice(-30).join("\n")}`);
+  console.log(`\n# trunk-pro's log (last lines, the radios' own left out):\n${logTail(log())}`);
 } finally {
-  ws.close();
+  chromium.close();
 }
 await cleanup();
 console.log(failed ? `\n${failed} failed` : "\nall passed");
