@@ -4,14 +4,17 @@
 //! from RTL-SDRs out of the box and from these once their driver is
 //! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_HYDRASDR` / `TRUNK_PRO_BLADERF` /
 //! `TRUNK_PRO_SOAPY` name a library file to use instead of searching.
+//! [`rtltcp`] and [`spyserver`] are radios on the network, over plain TCP: nothing to install either.
 
 pub mod airspy;
 pub mod bladerf;
 pub mod hackrf;
 pub mod priority;
 pub mod rtl;
+pub mod rtltcp;
 mod sdrplay;
 pub mod soapy;
+pub mod spyserver;
 pub mod uhd;
 mod usb_speed;
 
@@ -177,6 +180,24 @@ pub fn rate_refusal(what: &str, rates: &Rates, want_hz: f64) -> String {
     format!("this {what} runs at {rates} MSPS, not {}: {pick} in Setup → Radios", want_hz / 1e6)
 }
 
+/// A TCP connection to `target` (`host:port`), for a radio on the network: each address it names is tried in
+/// turn, `within` each. Commands are small and wait for nothing, so Nagle's delay is off.
+pub(crate) fn dial(name: &str, target: &str, within: Duration) -> Result<std::net::TcpStream, String> {
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<_> = target.to_socket_addrs().map_err(|e| format!("{name}: can't find {target}: {e}"))?.collect();
+    let mut last = format!("{name}: no address for {target}");
+    for a in addrs {
+        match std::net::TcpStream::connect_timeout(&a, within) {
+            Ok(s) => {
+                let _ = s.set_nodelay(true);
+                return Ok(s);
+            }
+            Err(e) => last = format!("{name}: can't connect to {a} ({e}): is the server running there, and its port open?"),
+        }
+    }
+    Err(last)
+}
+
 /// The frequency to ask a radio for: a reference off by `ppm` makes a
 /// requested f come out at f·(1 + ppm).
 pub fn ppm_corrected(hz: f64, ppm: f64) -> f64 {
@@ -269,7 +290,7 @@ pub fn candidates(unix_name: &str, mac_name: &str, win_names: &[&'static str]) -
 }
 
 /// Drivers and the devices found through them, for the interface:
-/// `{usrp: {available, detail, devices}, airspy: {…}, hydrasdr: {…}, bladerf: {…}, soapy: {…, modules}}`.
+/// `{usrp: {available, detail, devices}, hackrf: {…}, rtltcp: {…}, spyserver: {…}, airspy: {…}, hydrasdr: {…}, bladerf: {…}, soapy: {…, modules}}`.
 /// USRPs and SoapySDR devices are searched only with `search` (a device
 /// search can take seconds).
 pub fn radios_json(search: bool) -> serde_json::Value {
@@ -287,7 +308,24 @@ pub fn radios_json(search: bool) -> serde_json::Value {
         serde_json::Value::Null
     };
     let hackrf = serde_json::json!({ "available": true, "detail": "built in", "devices": hackrf::devices() });
-    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
+    // Radios on the network are found by their address, not searched for: always available, nothing to list.
+    let network = serde_json::json!({ "available": true, "detail": "built in", "devices": [] });
+    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "rtltcp": network, "spyserver": network, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
+}
+
+/// What the radio on the network at `address` runs at, as the `probed` answer to `probeRadio`: a SpyServer says,
+/// when it's asked, the rates it offers. Any other kind (an `rtl_tcp` runs at any rate) has none to tell.
+pub fn probe(kind: &str, address: &str) -> trunk_app::protocol::ToClient {
+    use trunk_app::protocol::ToClient;
+    let (k, a) = (kind.to_string(), address.to_string());
+    let answer = |r: Result<(String, Vec<u32>), String>| match r {
+        Ok((model, rates)) => ToClient::Probed { kind: k.clone(), address: a.clone(), model: Some(model), rates, error: None },
+        Err(e) => ToClient::Probed { kind: k.clone(), address: a.clone(), model: None, rates: vec![], error: Some(e) },
+    };
+    match kind {
+        "spyserver" => answer(spyserver::probe(address)),
+        _ => answer(Err(format!("a {kind} source has nothing to ask"))),
+    }
 }
 
 fn bladerf_json() -> serde_json::Value {

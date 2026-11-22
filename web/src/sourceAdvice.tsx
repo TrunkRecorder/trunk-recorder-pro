@@ -32,7 +32,7 @@ export function useSourceAdvice(c: Config | null): Advice | null {
   const s = useApp();
   const names = c ? activeSystems(c).map((x) => x.shortName) : [];
   const answers = usePolled(`heard:${names.join(",")}`, () => Promise.all(names.map((n) => radioQuery({ what: "freqs", system: n, hours: HEARD_HOURS }).then((r): [string, RadioResult | null] => [n, r], (): [string, RadioResult | null] => [n, null]))), 300_000);
-  return useMemo(() => (c ? sourceAdvice(c, c.sources.map((x) => foundRadio(s.radios, x)), heardOf(answers ?? [])) : null), [c, s.radios, answers]);
+  return useMemo(() => (c ? sourceAdvice(c, c.sources.map((x) => foundRadio(s.radios, x, s.probes)), heardOf(answers ?? [])) : null), [c, s.radios, s.probes, answers]);
 }
 
 /** What taking the advice does, a figure each with a short label: needs met, more reached, radios freed, sample rate saved. */

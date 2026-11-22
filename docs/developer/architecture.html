@@ -649,7 +649,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
       <tr><td>Call files, aliases, heard codes, registry</td><td>Files in the recordings and data folders</td><td>OPFS (the origin's private file system); <b>Export to folder…</b> copies calls out</td></tr>
       <tr><td>Sources</td><td>RTL-SDR, USRP, Airspy, SoapySDR, files</td><td>RTL-SDR over WebUSB, and capture files the user picks (forgotten on reload)</td></tr>
       <tr><td><code>hello.capabilities</code></td><td>All: <code>service</code>, <code>drivers</code>, <code>plugins</code>, <code>interfaces</code>, <code>host</code>, <code>keys</code></td><td>None: a command it can't do is answered with an <code>error</code></td></tr>
-      <tr><td>Not available</td><td></td><td>Plugins, interfaces, M4A, channel files, <code>findRadios</code>, <code>listDir</code>, Trunk Recorder import from disk, key containers, <code>quit</code></td></tr>
+      <tr><td>Not available</td><td></td><td>Plugins, interfaces, M4A, channel files, <code>findRadios</code>, <code>probeRadio</code>, <code>listDir</code>, Trunk Recorder import from disk, key containers, <code>quit</code></td></tr>
       <tr><td>Staying awake</td><td></td><td>A screen wake lock while recording, because phones and tablets freeze a tab once the screen sleeps</td></tr>
     </tbody>
   </table></div>
@@ -681,7 +681,7 @@ svg .label-free { fill: var(--muted); font: 11px var(--mono); }
     <tbody>
       <tr><td>Recording</td><td><code>setConfig {config, version}</code> (always the whole config, edited from that version; answered with <code>configSaved {version, error?}</code>), <code>setTalkgroups {system, talkgroups}</code>, <code>start</code>, <code>stop</code>, <code>quit</code>, <code>channelFile</code></td></tr>
       <tr><td>Watching</td><td><code>subscribe {topics}</code> (replaces the last; up to 64), <code>listen {on, system, talkgroup}</code>, <code>statsQuery {id, …}</code>, <code>radioQuery {id, what, …}</code>, <code>callsQuery {id, cursor, …}</code></td></tr>
-      <tr><td>Setup</td><td><code>devices</code>, <code>findRadios</code>, <code>listDir</code>, <code>readTrConfig</code>, <code>profileSource</code>, <code>surveyStart</code>, <code>surveyListen</code>, <code>surveyRescan</code>, <code>surveyStop</code></td></tr>
+      <tr><td>Setup</td><td><code>devices</code>, <code>findRadios</code>, <code>probeRadio</code>, <code>listDir</code>, <code>readTrConfig</code>, <code>profileSource</code>, <code>surveyStart</code>, <code>surveyListen</code>, <code>surveyRescan</code>, <code>surveyStop</code></td></tr>
       <tr><td>Plugins and interfaces</td><td><code>plugins</code>, <code>addPlugin</code>, <code>removePlugin</code>, <code>interfaces</code>, <code>addInterface</code>, <code>removeInterface</code>; their stores: <code>store {kind, refresh?}</code>, <code>install {kind, id}</code> or <code>{kind, repository, tag?}</code> (progress in <code>installProgress {kind, key, id, stage, message}</code>), <code>kind</code> <code>plugin</code> or <code>interface</code></td></tr>
       <tr><td>Keys</td><td><code>unlockKeys {source, password}</code>, <code>lockKeys {source}</code> (key containers without a password file)</td></tr>
     </tbody>

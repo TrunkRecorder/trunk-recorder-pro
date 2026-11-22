@@ -17,7 +17,7 @@ function setup(c: Config): void {
   const greeting: FromRecorder[] = [
     { type: "config", config: c, version: 1 },
     { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers"] },
-    { type: "radios", radios: { usrp: none, airspy: none, hydrasdr: none, bladerf: none, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] } } },
+    { type: "radios", radios: { usrp: none, airspy: none, hydrasdr: none, bladerf: none, rtltcp: { available: true, detail: "built in", devices: [] }, spyserver: { available: true, detail: "built in", devices: [] }, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One · SN 0000a1" }] } } },
   ];
   for (const m of greeting) transport.onMessage(m);
 }
@@ -105,4 +105,17 @@ test("A radio's gain says what it's set to when that isn't what Setup asks", () 
   const rtl = { type: "rtlsdr" as const, serial: "", centerHz: 851_000_000, rateHz: 2_400_000, gainDb: 34, agc: false, ppm: 0, bufLen: 0, buffers: 0 };
   assert.equal(gainLine(rtl, "33.8 dB"), "34 dB · set to 33.8 dB");
   assert.equal(gainLine(rtl, null), "34 dB", "the same: said once");
+});
+
+test("Setup: a SpyServer's sample rates are the ones the server said, not a fixed list", () => {
+  const c = defaultConfig();
+  c.sources = [{ ...SOURCE_KINDS.spyserver.fresh(), address: "pi:5555", rateHz: 1_250_000 } as Config["sources"][number]];
+  setup(c);
+  assert.match(renderToString(<SourceCard c={c} i={0} />), /<datalist/, "until it has said, any rate can be typed");
+  transport.onMessage({ type: "probed", kind: "spyserver", address: "pi:5555", model: "Airspy R2 / Mini", rates: [2_500_000, 1_250_000, 625_000] });
+  const html = renderToString(<SourceCard c={c} i={0} />);
+  const opts = [...html.matchAll(/<option[^>]*value="(\d+)"[^>]*>[\d.]+(?:<!-- -->)? MSPS/g)].map((m) => Number(m[1]));
+  assert.ok(opts.includes(625_000) && !opts.includes(10_000_000), `the server's rates: ${opts}`);
+  assert.match(text(html), /2\.5 MSPS 1\.25 MSPS 0\.625 MSPS/, "three decimals, the zeros that mean nothing left off");
+  assert.match(text(html), /This SpyServer Airspy R2 \/ Mini: 2\.5 or 1\.25 or 0\.625/);
 });

@@ -1558,6 +1558,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(true)).await.unwrap_or(Value::Null);
             Some(ToClient::Radios { radios })
         }
+        Command::ProbeRadio { kind, address } => Some(tokio::task::spawn_blocking(move || crate::radio::probe(&kind, &address)).await.unwrap_or_else(|_| ToClient::error("the probe stopped before it answered"))),
         Command::Quit => {
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
@@ -2800,6 +2801,7 @@ mod tests {
             (r#"{"type":"stop"}"#, C),
             (r#"{"type":"devices"}"#, C),
             (r#"{"type":"findRadios"}"#, C),
+            (r#"{"type":"probeRadio","kind":"spyserver","address":"a"}"#, C),
             (r#"{"type":"listDir"}"#, C),
             (r#"{"type":"readTrConfig","path":"/"}"#, C),
             (r#"{"type":"listen","on":true}"#, L),

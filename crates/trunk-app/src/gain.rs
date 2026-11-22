@@ -16,6 +16,8 @@
 //! - **RTL-SDR** (R820T/R828D): the tuner's 29 gains, librtlsdr's walk of the
 //!   LNA and mixer with the VGA fixed. About 5 dB steps, then one entry. Its
 //!   8-bit ADC overloads early near strong signals.
+//! - **RTL-SDR through `rtl_tcp`**: the same walk of the table of the tuner its server reports
+//!   (an R820T, R828D or E4000), known once the source has connected.
 //! - **Airspy / HydraSDR**: the mode's table step, 0–21, 3 then 1.
 //!   Linearity (the default) gives up LNA and mixer before the VGA, what
 //!   wins against strong signals; sensitivity keeps the LNA up. In manual,
@@ -217,6 +219,8 @@ enum PlanKind {
     AirspyTable(AirspyGain),
     AirspyManual,
     Hackrf,
+    /// A SpyServer's gain step.
+    Index,
     /// bladeRF, USRP, SoapySDR: the overall gain.
     Overall,
 }
@@ -240,6 +244,13 @@ fn airspy_gains(k: &SourceKind) -> Option<&AirspyGains> {
 impl GainPlan {
     /// The plan for source `src`. `mode`: an Airspy's other gain mode than the one it's in.
     pub fn of(src: &Source, mode: Option<AirspyGain>) -> Result<GainPlan, String> {
+        Self::of_with(src, mode, None)
+    }
+
+    /// [`GainPlan::of`], given `steps`: what an `rtl_tcp` or SpyServer source's server reported of its gain, the one thing
+    /// about such a source its config doesn't say (the tuner's gain table, dB; a SpyServer's steps, 0 up). Another kind
+    /// has no use for it.
+    pub fn of_with(src: &Source, mode: Option<AirspyGain>, steps: Option<&[f64]>) -> Result<GainPlan, String> {
         let (kind, axes, moves, about): (PlanKind, Vec<Axis>, Vec<Move>, Vec<&str>) = match &src.kind {
             SourceKind::Rtlsdr { .. } => (
                 PlanKind::Rtl,
@@ -247,6 +258,30 @@ impl GainPlan {
                 vec![mv(0, 4, Dir::Up), mv(0, 1, Dir::Up)],
                 vec!["the tuner's gain table (its LNA and mixer together, the VGA fixed): about 5 dB steps, then one entry; its AGC off"],
             ),
+            // An `rtl_tcp` source: its server's tuner's table, as the server reported the tuner (it is known once connected).
+            SourceKind::Rtltcp { .. } => {
+                let Some(steps) = steps.filter(|s| s.len() > 1) else {
+                    return Err("its server hasn't reported a tuner with a gain table this knows (it is read when the server connects, and these are the R820T, R828D and E4000): wait for it to connect".into());
+                };
+                (
+                    PlanKind::Rtl,
+                    vec![Axis::of(Knob::Db, steps.to_vec())],
+                    vec![mv(0, (steps.len() / 7).max(1), Dir::Up), mv(0, 1, Dir::Up)],
+                    vec!["the server's tuner's gain table, as it reported it (its LNA and mixer together): a seventh of it at a time, then one entry; its AGC off"],
+                )
+            }
+            // A SpyServer source: its server's gain steps, 0 to the highest it reported.
+            SourceKind::Spyserver { .. } => {
+                let Some(steps) = steps.filter(|s| s.len() > 1) else {
+                    return Err("its server hasn't said how many gain steps it has (Setup asks it when its address is entered, and it is read again when the source connects): enter the address in Setup, or wait for it to connect".into());
+                };
+                (
+                    PlanKind::Index,
+                    vec![Axis::of(Knob::Step, steps.to_vec())],
+                    vec![mv(0, (steps.len() / 7).max(1), Dir::Up), mv(0, 1, Dir::Up)],
+                    vec!["the server's gain steps, as it reported them (an Airspy's table, LNA, mixer and VGA together): a seventh of it at a time, then one step"],
+                )
+            }
             SourceKind::Airspy { gains, .. } | SourceKind::Hydrasdr { gains, .. } => match mode.unwrap_or(gains.gain_mode) {
                 AirspyGain::Manual => (
                     PlanKind::AirspyManual,
@@ -313,7 +348,8 @@ impl GainPlan {
     fn read(&self, src: &Source, knob: Knob) -> f64 {
         let g = airspy_gains(&src.kind);
         match (&src.kind, knob, knob.stage()) {
-            (SourceKind::Rtlsdr { gain_db, .. }, ..) => *gain_db,
+            (SourceKind::Rtlsdr { gain_db, .. } | SourceKind::Rtltcp { gain_db, .. }, ..) => *gain_db,
+            (SourceKind::Spyserver { gain, .. }, ..) => f64::from(*gain),
             (_, Knob::Step, _) => g.map_or(0.0, |g| g.gain_step.into()),
             (SourceKind::Hackrf { lna_db, .. }, _, Some(Stage::Lna)) => (*lna_db).into(),
             (SourceKind::Hackrf { vga_db, .. }, _, Some(Stage::Vga)) => (*vga_db).into(),
@@ -332,7 +368,7 @@ impl GainPlan {
         let mut s = src.clone();
         let v = |i: usize| self.axes[i].values[p[i]];
         match (&mut s.kind, self.kind) {
-            (SourceKind::Rtlsdr { gain_db, agc, .. }, PlanKind::Rtl) => (*gain_db, *agc) = (v(0), false),
+            (SourceKind::Rtlsdr { gain_db, agc, .. } | SourceKind::Rtltcp { gain_db, agc, .. }, PlanKind::Rtl) => (*gain_db, *agc) = (v(0), false),
             (SourceKind::Airspy { gains, .. } | SourceKind::Hydrasdr { gains, .. }, PlanKind::AirspyTable(m)) => {
                 (gains.gain_mode, gains.gain_step) = (m, v(0) as u8);
             }
@@ -340,6 +376,7 @@ impl GainPlan {
                 (gains.gain_mode, gains.agc) = (AirspyGain::Manual, false);
                 (gains.lna_step, gains.mixer_step, gains.vga_step) = (v(0) as u8, v(1) as u8, v(2) as u8);
             }
+            (SourceKind::Spyserver { gain, .. }, PlanKind::Index) => *gain = v(0) as u32,
             (SourceKind::Hackrf { lna_db, vga_db, amp, .. }, PlanKind::Hackrf) => (*lna_db, *vga_db, *amp) = (v(0) as u16, v(1) as u16, v(2) > 0.0),
             (SourceKind::Bladerf { gain_db, .. } | SourceKind::Usrp { gain_db, .. }, PlanKind::Overall) => *gain_db = v(0),
             (SourceKind::Soapy { gain_db, .. }, PlanKind::Overall) => *gain_db = Some(v(0)),
@@ -545,6 +582,37 @@ mod tests {
         assert_eq!(R82XX_DB[p[0]], 29.7);
         let SourceKind::Rtlsdr { gain_db, agc, .. } = plan.apply(&s, &p).kind else { panic!() };
         assert_eq!((gain_db, agc), (29.7, false));
+    }
+
+    #[test]
+    fn an_rtl_tcp_source_walks_the_table_of_the_tuner_its_server_reported() {
+        let s = src(serde_json::json!({ "type": "rtltcp", "address": "pi", "gainDb": 30, "agc": true }));
+        assert!(GainPlan::of(&s, None).unwrap_err().contains("wait for it to connect"), "no tuner reported yet");
+        assert!(GainPlan::of_with(&s, None, Some(&[])).is_err());
+        let plan = GainPlan::of_with(&s, None, Some(&R82XX_DB)).unwrap();
+        let p = plan.point(&s);
+        assert_eq!(R82XX_DB[p[0]], 29.7);
+        let SourceKind::Rtltcp { gain_db, agc, .. } = plan.apply(&s, &p).kind else { panic!() };
+        assert_eq!((gain_db, agc), (29.7, false));
+        // An E4000's own 14 steps (dB), and coarser moves for a shorter table.
+        let e4000 = [-1.0, 1.5, 4.0, 6.5, 9.0, 11.5, 14.0, 16.5, 19.0, 21.5, 24.0, 29.0, 34.0, 42.0];
+        let plan = GainPlan::of_with(&s, None, Some(&e4000)).unwrap();
+        assert_eq!(plan.axes[0].values, e4000);
+        assert_eq!((plan.moves[0].step, plan.moves[1].step), (2, 1));
+        assert_eq!((GainPlan::of_with(&s, None, Some(&R82XX_DB)).unwrap().moves[0].step), 4);
+    }
+
+    #[test]
+    fn a_spyserver_walks_the_gain_steps_its_server_reported() {
+        let s = src(serde_json::json!({ "type": "spyserver", "address": "pi", "gain": 14 }));
+        assert!(GainPlan::of(&s, None).unwrap_err().contains("hasn't said"), "not asked yet");
+        let steps: Vec<f64> = (0..=21).map(f64::from).collect();
+        let plan = GainPlan::of_with(&s, None, Some(&steps)).unwrap();
+        assert_eq!(plan.point(&s), vec![14]);
+        assert_eq!((plan.moves[0].step, plan.moves[1].step), (3, 1));
+        let SourceKind::Spyserver { gain, .. } = plan.apply(&s, &vec![9]).kind else { panic!() };
+        assert_eq!(gain, 9);
+        assert_eq!(plan.setting(&vec![9]).to_string(), "step 9");
     }
 
     #[test]

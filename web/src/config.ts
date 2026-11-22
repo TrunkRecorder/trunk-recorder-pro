@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitName, UnitNames, Origin } from "./protocol.ts";
+import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, FromRecorder, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitName, UnitNames, Origin } from "./protocol.ts";
 import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 import { SYSTEM_KINDS, type SystemKind } from "./systemKinds.gen.ts";
 
@@ -57,6 +57,14 @@ export function newBladerf(): Source {
 export function newHackrf(): Source {
   return { type: "hackrf", serial: "", centerHz: 0, rateHz: 8_000_000, lnaDb: 16, vgaDb: 20, amp: false, biasTee: false, ppm: 0 };
 }
+export function newRtltcp(): Source {
+  return { type: "rtltcp", address: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, biasTee: false, ppm: 0 };
+}
+export function newSpyserver(): Source {
+  return { type: "spyserver", address: "", centerHz: 0, rateHz: 2_500_000, iqFormat: "uint8", gain: 14, ppm: 0 };
+}
+/** A source that is a radio on the network, found by its address (a `rtl_tcp` or a SpyServer). */
+export const onNetwork = (x: Source): x is Extract<Source, { type: "rtltcp" | "spyserver" }> => x.type === "rtltcp" || x.type === "spyserver";
 export function newSoapy(): Source {
   return { type: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
 }
@@ -91,7 +99,9 @@ export interface SourceKind {
   freeRate?: boolean;
   rateHint?: string;
   /** The field that names its device ("" = the first found). */
-  device?: "serial" | "args";
+  device?: "serial" | "args" | "address";
+  /** It's a radio on the network, reached by TCP from the desktop app: nothing to install, and not in the browser. */
+  network?: boolean;
   /** The library it needs, loaded at run time (desktop app only). */
   driver?: Driver;
   /** A driver of its own, built in: nothing to install (desktop app only). */
@@ -167,6 +177,27 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     soapyDriver: "hackrf",
     biasT: "Powers an LNA via the antenna port (up to 50 mA)",
   },
+  rtltcp: {
+    label: "rtl_tcp",
+    fresh: newRtltcp,
+    get rates() { return sourceRates("rtltcp"); },
+    rateHint: "2.4 or less is dependable",
+    device: "address",
+    native: true,
+    network: true,
+    liveAgc: true,
+    biasT: "Powers an LNA on the antenna cable (an RTL-SDR Blog V3 or V4 behind it)",
+  },
+  spyserver: {
+    label: "SpyServer",
+    fresh: newSpyserver,
+    get rates() { return sourceRates("spyserver"); },
+    freeRate: true,
+    rateHint: "One the server offers: its top rate halved (R2: 2.5, 1.25…)",
+    device: "address",
+    native: true,
+    network: true,
+  },
   soapy: {
     label: "SoapySDR",
     fresh: newSoapy,
@@ -190,6 +221,11 @@ export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind 
 /** A source with a bias-T the recorder switches. */
 export const hasBiasT = (x: Source): x is Extract<Source, { biasTee: boolean }> => !!SOURCE_KINDS[x.type].biasT;
 
+/** What a radio on the network said when asked (`probed`), by `probeKey`. */
+export type Probes = Record<string, Extract<FromRecorder, { type: "probed" }>>;
+/** A probe's key: the kind and the address as typed, trimmed. */
+export const probeKey = (kind: string, address: string) => `${kind}:${address.trim()}`;
+
 /** The device a source names ("" = the first found, or a file). */
 export function deviceId(x: Source): string {
   const f = SOURCE_KINDS[x.type].device;
@@ -212,7 +248,12 @@ export function sourceFor(type: Source["type"], id: string, found?: FoundRadio):
  * The radio a source names ("" = the first found), as its driver listed it; undefined when
  * it isn't listed (not attached, not searched for, or not a driver's).
  */
-export function foundRadio(radios: Radios | null | undefined, x: Source): FoundRadio | undefined {
+export function foundRadio(radios: Radios | null | undefined, x: Source, probes?: Probes): FoundRadio | undefined {
+  // A radio on the network is found by asking it (`probeRadio`), not by its driver's search.
+  if (x.type === "spyserver") {
+    const p = probes?.[probeKey(x.type, x.address)];
+    return p && !p.error && p.rates.length ? { label: p.model ?? "", model: p.model, rates: p.rates } : undefined;
+  }
   if (!needsDriver(x) || !radios) return undefined;
   const devices: FoundRadio[] = radios[x.type]?.devices ?? [];
   const id = deviceId(x).trim();
@@ -222,9 +263,15 @@ export function foundRadio(radios: Radios | null | undefined, x: Source): FoundR
 }
 
 
+/** The highest rate a radio said it runs at (a probed SpyServer's), Hz; undefined when it listed none. */
+export function highestRate(found: FoundRadio | undefined): number | undefined {
+  return found?.rates?.length ? Math.max(...found.rates) : undefined;
+}
+
 /** What the radio runs at, MSPS ("10 or 2.5", "0.52–61.44"), when it said; null when not. */
-export function ratesText(found: FoundRadio | undefined): string | null {
-  const m = (hz: number) => Math.round(hz / 1e4) / 100;
+export function ratesText(found: FoundRadio | undefined, fine = false): string | null {
+  // (`fine`: to three decimals, as a SpyServer's rates are shown; the zeros that mean nothing never are.)
+  const m = (hz: number) => (fine ? Math.round(hz / 1e3) / 1e3 : Math.round(hz / 1e4) / 100);
   if (found?.rates?.length) return found.rates.map(m).join(" or ");
   if (found?.rateRange) return `${m(found.rateRange[0])}–${m(found.rateRange[1])}`;
   return null;
@@ -262,7 +309,8 @@ export function detectRadios(devices: Device[], r: Radios | null): Detected[] {
   for (const kind of DRIVER_KINDS) {
     const k = SOURCE_KINDS[kind];
     if (kind === "soapy") continue;
-    const found = r?.[kind].devices ?? [];
+    // (A recorder that predates a kind doesn't report it.)
+    const found = r?.[kind]?.devices ?? [];
     if (found.length && k.soapyDriver) native.add(k.soapyDriver);
     for (const d of found) {
       const id = (k.device === "serial" ? d.serial : d.args) ?? "";

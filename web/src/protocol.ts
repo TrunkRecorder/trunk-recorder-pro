@@ -8,6 +8,8 @@
 // sends against that.
 
 export type SampleFormat = "cu8" | "cs16" | "cf32";
+/** How a SpyServer sends its I/Q: 8-bit unsigned, 16-bit signed or 32-bit float. */
+export type SpyserverFormat = "uint8" | "int16" | "float32";
 
 /**
  * A radio, or a capture to replay (`type`), its own keys beside the ones every
@@ -58,6 +60,18 @@ export type Source = (
    * 0–40 (8 dB steps), `vgaDb` the baseband VGA 0–62 (2 dB steps), `amp` the +14 dB RF amp; `biasTee` powers an LNA on the antenna port.
    */
   | { type: "hackrf"; serial: string; lnaDb: number; vgaDb: number; amp: boolean; biasTee: boolean }
+  /**
+   * An RTL-SDR on another machine, through its `rtl_tcp` server (desktop app; nothing to install). `address`: `host` or
+   * `host:port` (1234 if left off). Gain, AGC and bias-T are an RTL-SDR's, taken by the far end (which answers nothing).
+   */
+  | { type: "rtltcp"; address: string; gainDb: number; agc: boolean; biasTee: boolean }
+  /**
+   * A receiver another machine publishes with Airspy's `spyserver` (an Airspy R2 / Mini / HF+, or an RTL-SDR behind it; desktop
+   * app, nothing to install). `address`: `host` or `host:port` (5555 if left off). `iqFormat`: how its I/Q travels (8-bit takes
+   * the least of the link). `gain`: the server's own gain step, not dB. `digitalGainDb`: what it multiplies the stream by before
+   * quantising it for the link; absent: the reference clients' rule. `rateHz` is one it offers: its top rate halved.
+   */
+  | { type: "spyserver"; address: string; iqFormat: SpyserverFormat; gain: number; digitalGainDb?: number }
   /**
    * Any SDR with a SoapySDR module (desktop app). `args` "" = first found ("driver=hackrf,serial=…");
    * `agc` the device's AGC; else `gainDb` overall (null: left as it is), then each stage in `gains`
@@ -128,6 +142,9 @@ export interface Radios {
   usrp: DriverState;
   /** Built in: always available. */
   hackrf: DriverState;
+  /** Radios on the network, built in: always available (and nothing to list). */
+  rtltcp: DriverState;
+  spyserver: DriverState;
   airspy: DriverState;
   hydrasdr: DriverState;
   bladerf: DriverState;
@@ -2389,6 +2406,8 @@ export type FromRecorder =
   /** Which key containers are unlocked, after an unlock, a lock or a config change. */
   | { type: "keys"; sources: LockableKeys[] }
   | { type: "radios"; radios: Radios }
+  /** Answers probeRadio, to its sender: what the radio on the network at `address` runs at (`rates`, Hz, widest first) and its `model`, or why it couldn't be asked (`error`). */
+  | { type: "probed"; kind: string; address: string; model?: string; rates: number[]; error?: string }
   | ({ type: "state" } & PhaseState)
   /** The config, and its version: what an edit of it (setConfig) is sent with. */
   | { type: "config"; config: Config; version: number }
@@ -2491,6 +2510,8 @@ export type ToRecorder =
   | { type: "stop" }
   | { type: "devices" }
   | { type: "findRadios" }
+  /** Ask the radio on the network (`kind`: "spyserver") at `address` what it runs at; answered with `probed`. */
+  | { type: "probeRadio"; kind: string; address: string }
   /** A folder's subfolders, for the folder picker ("" = the home folder). */
   | { type: "listDir"; path: string }
   /** A Trunk Recorder config.json (or a folder with one), with the files it names. */

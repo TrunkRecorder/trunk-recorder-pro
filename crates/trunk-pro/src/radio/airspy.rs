@@ -558,7 +558,7 @@ fn within(g: Gain) -> Option<Gain> {
         Gain::Preset(p, n) => Gain::Preset(p, n.min(21)),
         Gain::Stages(s) if s.agc => Gain::Stages(Stages::default().agc().with(Stage::Vga, step(&s, Stage::Vga, 15))),
         Gain::Stages(s) => Gain::Stages(Stages::default().with(Stage::Lna, step(&s, Stage::Lna, 14)).with(Stage::Mixer, step(&s, Stage::Mixer, 15)).with(Stage::Vga, step(&s, Stage::Vga, 15))),
-        Gain::Agc | Gain::Db(_) => return None,
+        Gain::Agc | Gain::Db(_) | Gain::Step(_) => return None,
     })
 }
 
