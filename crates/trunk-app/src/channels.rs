@@ -86,14 +86,15 @@ fn split(line: &str, delim: char) -> Vec<String> {
     out
 }
 
-/// A frequency cell: MHz with a decimal point (under 10 GHz in MHz), else Hz.
+/// A frequency cell: MHz under 10 000 (up to 10 GHz), else Hz. Not by its
+/// decimal point: Excel saves 147.000 as 147.
 fn freq(cell: &str, decimal_comma: bool) -> Option<f64> {
     let t = if decimal_comma { cell.replace(',', ".") } else { cell.to_string() };
     let v: f64 = t.trim().parse().ok()?;
     if !v.is_finite() || v <= 0.0 {
         return None;
     }
-    Some(if t.contains('.') && v < 10_000.0 { (v * 1e6).round() } else { v.round() })
+    Some(if v < 10_000.0 { (v * 1e6).round() } else { v.round() })
 }
 
 fn rows_list(rows: &[usize]) -> String {
@@ -391,6 +392,9 @@ mod tests {
         assert_eq!(eu.channels[0].freq_hz, 154_430_000.0);
         assert_eq!(eu.channels[0].mode, ConvMode::P25);
         assert_eq!(eu.channels[0].squelch_db, Some(12.5));
+        // A round frequency Excel saved without its decimals (#195), and one in Hz.
+        let round = parse("Decimal,Frequency,Tone,Alpha Tag,Description,Mode\n953,147,107.2,K2LED,K2LED Kenmore,fm\n1,154430000,,Fire,,fm\n").unwrap();
+        assert_eq!(round.channels.iter().map(|c| c.freq_hz).collect::<Vec<_>>(), [147_000_000.0, 154_430_000.0]);
         assert!(parse("Name,Mode\nx,fm\n").unwrap_err().contains("No Frequency column"));
     }
 
