@@ -1926,6 +1926,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A connection subscribed to `unit` gets its `unitEvent`s, and the
+    /// engine is told someone wants them; one that didn't subscribe gets none.
+    /// (Test from PR #110, by auggiesoft.)
+    #[tokio::test]
+    async fn the_unit_topic_goes_to_its_subscribers_alone() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message as Ws;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-unit-topic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = crate::protocol_tests::ctx(crate::protocol_tests::conventional_config(), &dir);
+        let url = format!("ws://{}/api/ws", super::test_server(&ctx, super::Door::Builtin).await);
+        // Connected and greeted: everything up to hello.
+        let greeted = || async {
+            let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+            while let Some(Ok(m)) = ws.next().await {
+                if m.to_text().is_ok_and(|t| t.contains(r#""type":"hello""#)) {
+                    return ws;
+                }
+            }
+            panic!("no hello");
+        };
+        // The units each connection hears, up to the notice `until`.
+        let units_until = |mut ws: tokio_tungstenite::WebSocketStream<_>, until: &'static str| async move {
+            let mut units = Vec::new();
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while let Some(Ok(Ws::Text(t))) = ws.next().await {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap();
+                    if v["type"] == "notice" && v["message"] == until {
+                        break;
+                    }
+                    if v["type"] == "unitEvent" {
+                        units.push(v["event"]["unit"].as_u64().unwrap());
+                    }
+                }
+            })
+            .await
+            .expect("the notice came");
+            units
+        };
+        let mut subscriber = greeted().await;
+        let plain = greeted().await;
+        subscriber.send(Ws::Text(r#"{"type":"subscribe","topics":["unit"]}"#.into())).await.unwrap();
+        loop {
+            let m = subscriber.next().await.unwrap().unwrap();
+            if m.to_text().is_ok_and(|t| t.contains(r#""type":"subscribed""#)) {
+                break;
+            }
+        }
+        assert!(ctx.topics().has(trunk_app::session::UNIT), "the engine is told");
+        let e = trunk_recorder_plugin::UnitEvent { short_name: "dcfd".into(), kind: "registration".into(), unit: 7, ..Default::default() };
+        let msg = trunk_app::protocol::ToClient::UnitEvent { event: e };
+        let _ = ctx.hub.send(std::sync::Arc::new(crate::runtime::Out::Topic { topic: trunk_app::session::UNIT.into(), text: msg.to_json() }));
+        crate::runtime::publish(&ctx.hub, trunk_app::protocol::ToClient::notice("after".to_string()));
+        assert_eq!(units_until(subscriber, "after").await, [7]);
+        assert!(units_until(plain, "after").await.is_empty(), "not for a connection that didn't ask");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// `method path` to a test server at `addr` with `headers` (and a body): its status, headers and body.
     async fn http(addr: std::net::SocketAddr, method: &str, path: &str, headers: &[(&str, &str)], body: Option<&str>) -> (u16, axum::http::HeaderMap, String) {
         let (url, method, body) = (format!("http://{addr}{path}"), method.to_string(), body.map(str::to_string));

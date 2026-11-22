@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Interfaces can follow what radios do.** A connection that subscribes to the topic `unit` gets a `unitEvent` each
+  time a radio registers, deregisters, affiliates, reports its location, acknowledges, asks for data, answers a call
+  alert or sends an emergency alarm. Each carries the system, site, radio and talkgroup with their names: the same
+  event plugins get on their `unit` topic. Listen-only connections may subscribe. The recorder builds these only while
+  someone takes them. (From PR #110 by auggiesoft, which first asked for a unit activity feed.)
+
 ## [0.4.1] — 2026-11-22
 
 - **The recordings folder is checked, and a failure to write says why.** At startup and whenever the folder changes in
