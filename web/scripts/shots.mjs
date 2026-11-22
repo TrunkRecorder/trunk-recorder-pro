@@ -341,7 +341,8 @@ for (const id of Object.keys(scenarios)) {
 chromium.close();
 chromium.proc.kill();
 await ended(chromium.proc);
-if (!flag("--keep")) rmSync(chromeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+// (Chrome's helpers may still be writing its profile: a temporary folder left behind is no failure.)
+if (!flag("--keep")) try { rmSync(chromeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (e) { console.log(`# left ${chromeDir}: ${e.code ?? e}`); }
 for (const d of kept) console.log(`kept: ${d}`);
 
 // ── the docs, and the lock ──────────────────────────────────────────────────

@@ -99,7 +99,8 @@ trunk-pro tool corpus release <version>
 
 The recordings regression tests run on, listed at [trunkrecorder.pro/corpus](https://trunkrecorder.pro/corpus) by SHA-256. `add` lists a SigMF
 capture in a local manifest and puts its files in the cache. `fetch` downloads what the cache lacks, resuming an interrupted
-download and keeping a file only if it matches its hash. `run` replays each capture into `<out>/<id>`, with
+download and keeping a file only if it matches its hash, and lays each capture out in
+`captures/.corpus/captures/<id>` (what `npm run shots` plays). `run` replays each capture into `<out>/<id>`, with
 what it printed in `<out>/<id>.stdout` and `.stderr`, compares each with its expected output, writes
 `<out>.report.json`, and fails if any replay failed or regressed. `--bless` keeps what it got as the expected
 output of the next release or of a version. `release` makes the unreleased expected output that version's.
