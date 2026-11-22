@@ -75,7 +75,8 @@ how many of that thing you have:
 | **Systems** | Your trunked systems, **Import…** (a Trunk Recorder config, or a [system from the directory](from-the-directory.md)) and **Add a system**, then **Find my system** below the list | [Find my system](find-my-system.md), [P25](p25.md), [SmartNet](smartnet.md), [DMR](dmr.md), [NXDN](nxdn.md) |
 | **Conventional** | Conventional systems and their channels | [Conventional](conventional.md) |
 | **Radios** | Your sources (dongles, other radios, capture files), **Add a source**, **Dongle not showing up?** | [Radios](radios.md) |
-| **Recording** | **Recorder** (recordings folder, RAM spool, recorders, pre-roll, voice decoder, **One copy per multi-site call**, start on launch), **Access** (sign-in, users), **Key containers** (when a key file is locked), **Call rules**, **Advanced** (**M4A audio**, **Log**) | [Recordings](recordings.md) |
+| **Recording** | **Recorder** (recordings folder, RAM spool, recorders, pre-roll, voice decoder, **One copy per multi-site call**, start on launch), **Key containers** (when a key file is locked), **Call rules**, **Advanced** (**M4A audio**, **Log**) | [Recordings](recordings.md) |
+| **Access** | Who may reach the recorder: **Sign-in**, users and their roles, passkeys, **Proxy**, HTTPS. Desktop only | [Remote access](remote-access.md) |
 | **Data** | Where the recorder keeps what it keeps: **Store** (SQLite or PostgreSQL), **Writing less** (**Normal** or **Low-write**, the call history indexes, **Write every**), **Radio registry** and **How long** (call and dashboard history, in days); then **Export and delete** (a CSV per table, **Delete**, **Compact DB…**). Desktop only | [The store](../configuration/storage.md) |
 | **Plugins** | Each plugin's settings | [Plugins](../plugins/README.md) |
 

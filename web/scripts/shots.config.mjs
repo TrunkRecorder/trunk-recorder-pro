@@ -82,5 +82,5 @@ export default [
   { name: "radio-system", scenario: "replay", live: true, after: 55, url: "#/radio/dcfd", ready: `document.querySelectorAll("main table tbody tr").length >= 3`, settle: 1500, height: 1200 },
 
   { name: "signin", scenario: "signin", signedOut: true, url: "/signin", ready: `document.title === "Sign in"`, width: 900, height: 600 },
-  { name: "setup-access", scenario: "signin", url: "#/setup", storage: { "trp.setupTab": "recording" }, clip: { card: "Access" }, height: 1300 },
+  { name: "setup-access", scenario: "signin", url: "#/setup", storage: { "trp.setupTab": "access" }, clip: { card: "Access" }, height: 1300 },
 ];
