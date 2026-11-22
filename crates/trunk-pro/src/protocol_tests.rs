@@ -787,6 +787,23 @@ fn live_voice_is_the_plugin_topics_chunk() {
     assert!(trunk_app::session::voice_chunk(1, "dcfd", "", &trunk_core::trunk::LiveAudio { frames: vec![], ..audio }).is_none(), "analog: none");
 }
 
+/// An interface subscribed to `unit` is sent the `unit` plugin topic's event
+/// as it is, in a message protocol.ts declares (with and without the fields
+/// that are left out when empty).
+#[test]
+fn a_unit_event_is_the_plugin_topics() {
+    use trunk_recorder_plugin::{HostMessage, UnitEvent};
+    let full = UnitEvent { system: 0, system_id: 3, short_name: "dcfd".into(), site: "north".into(), site_id: 7, kind: "affiliation".into(), unit: 1234, tag: "E1".into(), talkgroup: Some(101), alpha_tag: "Fire Dispatch".into(), emergency: false, time: 1.75e9 };
+    let bare = UnitEvent { site: String::new(), site_id: 0, kind: "registration".into(), tag: String::new(), talkgroup: None, alpha_tag: String::new(), ..full.clone() };
+    for e in [full, bare] {
+        let msg = ToClient::UnitEvent { event: e.clone() }.to_value();
+        check("FromRecorder", &msg).unwrap();
+        let mut plugin = serde_json::to_value(HostMessage::Unit(e)).unwrap();
+        plugin.as_object_mut().unwrap().remove("type");
+        assert_eq!(msg["event"], plugin);
+    }
+}
+
 /// Every series' running totals: a conventional channel's one transmission (0.5–2.5 s in,
 /// with its code) as its series count it, and as a plugin's node health report has it.
 #[test]

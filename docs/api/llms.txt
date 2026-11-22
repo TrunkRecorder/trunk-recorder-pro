@@ -322,6 +322,8 @@ From the recorder:
   history      { entries, next? }: the latest calls (≤ 300), newest first; next (a callsQuery cursor) is there when older ones remain
   units        { system, csv }: a system's saved talker aliases (CSV unit,alias,source,time,wacn,sys,tg;
                newest line wins)
+  unitEvent    topic unit:  { event: { system, system_id, short_name, site?, site_id?, kind, unit, tag?,
+               talkgroup, alpha_tag?, emergency, time } }: a radio's registration, affiliation, location, …
   decodeDetail topic decode:<shortName>: { system, channels, sites: [{ index, name, dmr, nxdn }],
                patches: [{ supergroup, members }] }
   state        { phase, error, ended, restartNeeded }: recording started / stopped
@@ -360,7 +362,7 @@ To the recorder:
                range 10m/1h/6h/24h/7d, or 30d/90d/1y with "history" (hourly steps, as far as storage.statsDays keeps)
   { type: "radioQuery", id, what: "talkgroups" | "units" | "tones" | …, system: <short name> }   what the
     recorder has heard (→ radioResult; listen may send it)
-  { type: "subscribe", topics: ["log", "spectrum:0", "rf:0", "decode:<shortName>", "platform"] }
+  { type: "subscribe", topics: ["log", "spectrum:0", "rf:0", "decode:<shortName>", "platform", "unit"] }
   A command it can't read (unknown type, a missing field) is answered with an error message.
   (more in protocol.ts: devices, survey, plugins, …)
 Listening is per connection. Send listen again after every hello (each reconnect).

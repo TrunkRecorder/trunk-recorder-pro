@@ -651,8 +651,9 @@ with signing in off too. Removing a user is a `setConfig` without them in
    last. Topics: `spectrum:<source>` (the waterfall, ~7/s), `log` (every
    control channel message as a line), `rf:<source>` (`rfDetail`, 1/s),
    `decode:<shortName>` (`decodeDetail`, 1/s), `platform` (per-core and
-   per-interface figures in `host`). With nobody subscribed the recorder
-   doesn't compute them.
+   per-interface figures in `host`), `unit` (`unitEvent`: what each radio
+   does on the control channel, as it happens). With nobody subscribed the
+   recorder doesn't compute them.
 5. **Send commands** as JSON text whenever you like. Answers to your own
    commands (`error`, `notice`, `dir`, `trConfig`, `devices`, `radios`,
    `store`, `configSaved`, `subscribed`, `statsResult`, `radioResult`, `callsResult`,
@@ -753,6 +754,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `rfDetail` | Topic `rf:<source>`: 1/s | `source`, `profile` (the noise floor in 64 slices across the band, dBFS per FFT bin), `channels` (each channel on it: power, floor, SNR, carrier offset, the receiver's eye opening or CQPSK phase error) |
 | `decodeDetail` | Topic `decode:<shortName>`: 1/s | `system`, `channels` (the system's channels as received now, each with its `site`), `sites` (each running site's `index`, `name`, and what its control channel announces: `dmr`, `nxdn`), `patches` (the patches standing now, each once: `supergroup` and `members`) |
 | `monitorEvent` | Something notable happened | `t`, `level` (`info`, `ok`, `warn`, `bad`), `kind` and its fields: control channels (`controlLost`, `controlRegained`; `system`, `site`), talkgroups and radios (`tgFirstSeen`, `tgActive`, `unitFirstSeen`, `unitActive`, `unitAffiliated`, `callVolume`), tones (`tonePattern`: `talkgroup`, `alphaTag` (its name, as its call has it), `text`, `signals`), radios (`sourceDrops`, `sourceClipping`, `sourceQuiet` with `peakDb` (gain too low), `sourceRecovered`), plugins (`pluginHealth`), the computer (`linkDown`, `linkUp`, `diskLow`), the folders calls are written to (`folderUnwritable` with `folder`, `path`, `why`, `detail` and `fix`; `folderWritable` with `lost`), the RAM spool (`spoolLow` with `critical`, `spoolFull` with `calls`, `spoolRecovered`, `spoolRemoved` with `spool` (its kind) and `remade`), the clock (`clockOff` with `why` and `bad`, `clockOk`, `clockStep` with `byMs`). The event feed's kinds are listed in protocol.ts (`MonitorEvent`) |
+| `unitEvent` | Topic `unit`: as it happens | `event`: what a radio did on the control channel, as the `unit` plugin topic has it ([`UnitEvent`](../plugins/writing-plugins.md)): `system`, `system_id`, `short_name`, `site`, `site_id`, `kind` (`registration`, `deregistration`, `affiliation`, `acknowledge`, `location`, `data_grant`, `answer_request`, `call_alert`, `emergency_alarm`), `unit` and its `tag`, `talkgroup` and its `alpha_tag`, `emergency`, `time` (Unix s). Calls (grants) come as `status` and `concluded` |
 | `subscribed` | Answers `subscribe` | `topics` |
 | `callsResult` | Answers `callsQuery` | `id` (as asked), `entries` (`CallEntry[]`, newest first, ordered by start time then path), `next?` (present only when more calls remain: send it back as `cursor` for the next page), `error?` (the call store is off or failed: the page is the recent calls alone) |
 | `keys` | On connecting, and after an unlock, a lock or a config change (control access) | `sources[]`: `{ name, systems, unlocked }`, each key container that waits for a password |
@@ -829,7 +831,7 @@ too.
 | `install` | `kind`, then `id`, or `repository` and `tag?` | Install or update a plugin or an interface from its store or a GitHub release (→ `installProgress` as it goes). A new interface is served at once on the next free port. |
 | `addInterface` | `path` | Serve a folder on the recorder's computer as an interface. |
 | `removeInterface` | `id` | Stop serving it and forget it; an installed copy is deleted. |
-| `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform` (→ `subscribed`). |
+| `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`, `unit` (→ `subscribed`). |
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d` / `30d` / `90d` / `1y`) or `from` / `to` (Unix s), `points?` | The history of series, averaged down to about `points` steps (→ `statsResult`). Up to a day (a week without a store) is answered from memory by the minute; further back (`7d` with a store, `30d`, `90d`, `1y`, or an older `from`) is the store's hours, needs `history` in `hello.capabilities`, and its steps are whole hours or days, as far back as `storage.statsDays` keeps. |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). `hours` (default 24) is how far back a row must have been heard; `limit` (default 500) is the most rows returned, up to the registry's cap (`summary` answers it as `caps`: `storage.registryRadios`, 20,000 by default; null for none, with `days`, `storage.registryDays`), so a `limit` of `caps.radios` is every radio heard. |
 | `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |
