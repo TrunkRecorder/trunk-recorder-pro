@@ -192,7 +192,7 @@ lean on what it sees itself as well: which node delivers transmissions the other
 | Field | Type | Meaning |
 |---|---|---|
 | `sync` | string | `ntp`, `ptp`, `gps`, `none`, `unknown` (the recorder can't tell; or leave it out) |
-| `systemOffsetMs` | number | The recorder's clock less the time a P25 system broadcasts (SYNC_BCST), ms, when heard. Services judge late calls by the recorder's clock, so a wrong clock looks like a slow recorder |
+| `systemOffsetMs` | number | The recorder's clock less the time a P25 system broadcasts (SYNC_BCST), ms, when heard with its time marked valid (IST clear). A system that sets IST gives none. Services judge late calls by the recorder's clock, so a wrong clock looks like a slow recorder |
 
 ## The answer
 
@@ -284,3 +284,4 @@ don't change `v`; a change in a field's meaning does.
 |---|---|
 | 2026-11-15 | Still `1`, all additive or clarifying, after reviewing what SDRTrunk and SDRTrunk VCE can measure: what a node's report covers (whole sites, a site in several nodes' reports, several receivers on one site, `receiver`); protocols `mpt1327`, `ltr`, `ltrnet`, `passport`; control message units per protocol, `symbolRate` in baud, rest channels; `cc.syncLossSym`, `cc.merDb`, `voice.*.missing`; `calls.recorded` defined; reasons `data` and `noFrequency`; conventional `noiseDb` optional; the answers a recorder acts on |
 | 2026-11-15 | Still `1`, additive and clarifying: radio `ppmApplied`; `ppmError` said to be measured against the configured correction (as recorders already measured it) |
+| 2026-11-22 | Still `1`, clarifying: `systemOffsetMs` comes only from a SYNC_BCST whose time is marked valid (IST clear), as Trunk Recorder Pro already measured it |
