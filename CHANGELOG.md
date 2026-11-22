@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-11-22
+
 - **The recordings folder is checked, and a failure to write says why.** At startup and whenever the folder changes in
   Setup, the recorder writes a file of its own there and deletes it. After that, every call's files go through the same
   path, so a folder that stops taking them partway through a run (a drive unplugged, a share gone, a disk full) is
@@ -15,6 +17,26 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   saved, the event feed has it, and Setup → Recording shows **Writable** or **Can't write** under the folder (Onboarding
   too). A folder that vanished isn't made again on the disk beneath it, so a drive that's gone doesn't quietly fill the
   system disk. A call the RAM spool can't take goes to the recordings folder instead of being lost.
+- **The gain tuner tells close calls apart by SNR.** Where a control channel already decodes in full at every gain, the
+  tuner can't score one gain over another by decoding. It now picks the gain that lifts that control channel's SNR by more
+  than 2 dB (and clearly more than the measurement's spread), since that margin is what a fade takes. When a tuning finds
+  nothing better than the gain the radio has, the "Gain too low" warning goes away and the RF page says **Best as it is**.
+  Changing the radio in Setup brings the warning back. The warning now quotes the minute's average peak, which is what it
+  decides on.
+- **Setup → Access is its own tab.** Signing in guards the whole recorder (dashboard, API, call audio, every interface
+  port), so it no longer sits under Recording.
+- **Channel CSV: a frequency under 10 000 is MHz** (#195), with or without a decimal point. Excel saves `147.000` as
+  `147`, which was read as 147 Hz.
+- **DMR: the rest channel is marked "rest" on Hytera XPT too.** The DMR panel marked it "rest" only on Capacity Plus;
+  XPT's free repeater read "control".
+- **The browser version no longer offers HackRF** as a kind of radio in Setup, since only the desktop app can open one.
+- **Docs reorganised and checked against the code.** Getting started and the guides explain how and why. The reference
+  lists every key, flag and message, and the developer pages cover the internals. Each topic has one page, and the
+  others link to it. Screenshots in the docs are taken from the app itself, in light and dark, and retaken at each
+  release.
+- For developers: `client.js` keeps `phase.restartNeeded`, and clears `status` and `sources` when a run starts.
+  `protocol.ts` defines `GET /api/session`'s answer (`ownPasskeys` included). `tool snr` accepts `--kinds` and
+  `--transmissions`. `tool corpus fetch` lays out each capture's folder as well as downloading it.
 
 ## [0.4.0] — 2026-11-21
 
