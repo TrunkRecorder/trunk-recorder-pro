@@ -370,3 +370,31 @@ export function parseAccess(mode: Channel["mode"], text: string): AccessParts | 
 export function sameAccess(mode: Channel["mode"], a: AccessParts, b: AccessParts): boolean {
   return rules().accessSame(mode, JSON.stringify(a), JSON.stringify(b));
 }
+
+/**
+ * FRS/GMRS "privacy codes" as Motorola Talkabout numbers them: code N is entry N-1. 1–38 are the
+ * same CTCSS tones on every brand; 39–121 are DCS codes, and other brands number those differently
+ * (repeater-builder.com/motorola/pdfs/talkabout-privacy-codes.pdf).
+ */
+const TALKABOUT = [
+  ...[670, 719, 744, 770, 797, 825, 854, 885, 915, 948, 974, 1000, 1035, 1072, 1109, 1148, 1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567, 1622, 1679,
+    1738, 1799, 1862, 1928, 2035, 2107, 2181, 2257, 2336, 2418, 2503].map((t) => `${Math.floor(t / 10)}.${t % 10}`),
+  ...[23, 25, 26, 31, 32, 43, 47, 51, 54, 65, 71, 72, 73, 74, 114, 115, 116, 125, 131, 132, 134, 143, 152, 155, 156, 162, 165, 172, 174, 205, 223, 226,
+    243, 244, 245, 251, 261, 263, 265, 271, 306, 311, 315, 331, 343, 346, 351, 364, 365, 371, 411, 412, 413, 423, 431, 432, 445, 464, 465, 466, 503, 506,
+    516, 532, 546, 565, 606, 612, 624, 627, 631, 632, 654, 662, 664, 703, 712, 723, 731, 732, 734, 743, 754].map((c) => `D${String(c).padStart(3, "0")}N`),
+];
+
+/** A tone ("151.4", "151.4 Hz", "D023N", or an alias like "D047I") as a GMRS radio's privacy code number, if it has one. */
+export function gmrsCode(tone: string): number | undefined {
+  const t = tone.replace(/\s*Hz$/i, "");
+  let i = TALKABOUT.indexOf(t);
+  // A DCS code by another name (D047I is D023N): the recorder's own matching.
+  if (i < 0 && t.startsWith("D")) i = TALKABOUT.findIndex((c) => c.startsWith("D") && sameAccess("fm", { code: c }, { code: t }));
+  return i < 0 ? undefined : i + 1;
+}
+
+/** A tone with its GMRS privacy code when it has one: "151.4 Hz" → "151.4 Hz (code 24)". */
+export function withGmrsCode(tone: string): string {
+  const n = gmrsCode(tone);
+  return n ? `${tone} (code ${n})` : tone;
+}
