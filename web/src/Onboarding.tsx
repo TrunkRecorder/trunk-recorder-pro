@@ -38,6 +38,7 @@ import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
 import { BiasT, CopyButton, FileInput, TextInput } from "./inputs.tsx";
 import { Fig, Figs, Info } from "./charts.tsx";
+import { FolderCheck } from "./FolderCheck.tsx";
 import type { Config, OriginFrom, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
@@ -1383,6 +1384,7 @@ function StorageStep(props: { s: AppState; c: Config; defaultDir: string; onNext
           }}
         />
       )}
+      {!choosing && <FolderCheck name="recordings" path={dir} />}
       <p className="ob-aside">
         Settings file <span className="ob-mono">{props.s.configPath}</span>
       </p>
@@ -2313,6 +2315,7 @@ const IconKey = () => icon(<><circle className="ln" cx="11" cy="16" r="6" /><pat
 const IconQuestion = () => icon(<><circle className="ln" cx="16" cy="16" r="12" /><path className="acs" d="M12 12 a4 4 0 1 1 5 4 v3 M17 23 v.5" /></>);
 export const IconAntenna = () => icon(<><path className="ln" d="M16 29 V12 M11 29 h10" /><circle className="ac" cx="16" cy="10" r="2.5" /><path className="acs" d="M21 5 a8 8 0 0 1 0 10 M11 5 a8 8 0 0 0 0 10" /></>);
 export const IconDatabase = () => icon(<><ellipse className="ln" cx="16" cy="7" rx="10" ry="4" /><path className="ln" d="M6 7 v18 a10 4 0 0 0 20 0 V7" /><path className="acs" d="M6 13 a10 4 0 0 0 20 0 M6 19 a10 4 0 0 0 20 0" /></>);
+export const IconLock = () => icon(<><rect className="ln" x="6" y="14" width="20" height="14" rx="2" /><path className="ln" d="M11 14 V10 a5 5 0 0 1 10 0 v4" /><circle className="ac" cx="16" cy="21" r="2" /></>);
 export const IconFolder = () => icon(<path className="ln" d="M3 8 h9 l3 3 h14 v15 h-26 z" />);
 const IconDrive = () => icon(<><rect className="ln" x="3" y="10" width="26" height="12" rx="3" /><circle className="ac" cx="23" cy="16" r="2" /><path className="ln" d="M7 16 h9" /></>);
 const IconClock = () => icon(<><circle className="ln" cx="16" cy="16" r="12" /><path className="acs" d="M16 9 v7 l5 3" /></>);

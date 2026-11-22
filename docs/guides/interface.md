@@ -190,7 +190,7 @@ To start recording again after a restart without touching anything, turn on **Re
 By default the interface only answers on this computer (`127.0.0.1`). To reach it from another
 machine, start with `--bind 0.0.0.0` (or set `server.bind`), or leave it as it is and use an SSH
 tunnel (`ssh -L 8080:localhost:8080 you@recorder.local`). Signing in is off until you turn it on
-in Setup → **Recording** → **Access**. All of this, with HTTPS, passkeys, proxies and Cloudflare
+in Setup → **Access**. All of this, with HTTPS, passkeys, proxies and Cloudflare
 Tunnel, is in [Remote access and signing in](remote-access.md).
 
 ## Other interfaces

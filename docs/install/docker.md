@@ -103,7 +103,7 @@ Anything written elsewhere in the container is lost when the container is replac
 ## Security
 
 Signing in is off until you turn it on: until then, anyone who can reach port 8080 can change the
-settings, install plugins and stop the recorder. Turn it on in Setup → **Recording** → **Access**,
+settings, install plugins and stop the recorder. Turn it on in Setup → **Access**,
 or from the host:
 
 ```bash

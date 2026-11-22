@@ -33,7 +33,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -192,6 +192,9 @@ pub type OnSettle = Box<dyn Fn(&str, bool, bool) + Send + Sync>;
 pub struct Archive {
     pending: Mutex<HashMap<String, Pending>>,
     on_settle: Mutex<Option<OnSettle>>,
+    /// The recordings folder, which what's kept is moved into out of the
+    /// spool (none: moved as it is, as in tests).
+    folder: Mutex<Option<Arc<crate::folder::Folder>>>,
     /// Each plugin's delivery timing, by id (its copies together).
     timing: Mutex<BTreeMap<String, Totals>>,
 }
@@ -200,6 +203,15 @@ impl Archive {
     /// Who to tell what each call kept (the history list).
     pub fn on_settle(&self, f: OnSettle) {
         *self.on_settle.lock().unwrap() = Some(f);
+    }
+
+    /// The recordings folder: files kept are moved into it through it ([`crate::folder`]).
+    pub fn writes_to(&self, f: Arc<crate::folder::Folder>) {
+        *self.folder.lock().unwrap() = Some(f);
+    }
+
+    fn settle(&self, x: &Pending) -> (bool, bool) {
+        settle(x, self.folder.lock().unwrap().clone().as_deref())
     }
 
     fn settled(&self, rel: &str, audio: bool, json: bool) {
@@ -227,12 +239,12 @@ impl Archive {
         drop(p);
         for (k, mut x) in lost {
             x.failed = true;
-            let (audio, json) = settle(&x);
+            let (audio, json) = self.settle(&x);
             self.settled(&k, audio, json);
         }
         // (Nothing waits on it, and its entry already says what it keeps.)
         if let Some(x) = now {
-            settle(&x);
+            self.settle(&x);
         }
     }
 
@@ -285,7 +297,7 @@ impl Archive {
         if x.left == 0 {
             let x = p.remove(rel).unwrap();
             drop(p);
-            let (audio, json) = settle(&x);
+            let (audio, json) = self.settle(&x);
             self.settled(rel, audio, json);
         }
     }
@@ -305,8 +317,9 @@ impl Archive {
     }
 }
 
-/// Delete what isn't kept; (audio kept, JSON kept).
-fn settle(x: &Pending) -> (bool, bool) {
+/// Delete what isn't kept, and move what is out of the spool (into
+/// `folder`, which says when it can't be); (audio kept, JSON kept).
+fn settle(x: &Pending, folder: Option<&crate::folder::Folder>) -> (bool, bool) {
     let r = x.rules;
     let keep_all = x.failed && r.archive_files_on_failure;
     let at = |base: &Path, ext: &str| PathBuf::from(format!("{}.{ext}", base.display()));
@@ -324,8 +337,15 @@ fn settle(x: &Pending) -> (bool, bool) {
                 let _ = std::fs::remove_file(p);
             }
         } else if let Some(s) = x.spooled.as_ref().map(|s| at(s, ext)).filter(|p| p.exists()) {
-            if let Err(e) = crate::spool::move_file(&s, &at(&x.base, ext)) {
-                log::warn!("Couldn't move {} out of the spool: {e}", s.display());
+            match folder {
+                Some(f) => {
+                    let _ = f.move_in(&s, &at(&x.base, ext));
+                }
+                None => {
+                    if let Err(e) = crate::spool::move_file(&s, &at(&x.base, ext)) {
+                        log::warn!("Couldn't move {} out of the spool: {e}", s.display());
+                    }
+                }
             }
         }
     }

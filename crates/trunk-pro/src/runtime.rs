@@ -143,6 +143,8 @@ pub struct Ctx {
     pub host_last: Mutex<Option<ToClient>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
+    /// The folders calls are written to, and how writing to them goes ([`crate::folder`]).
+    pub folders: crate::folder::Folders,
     /// The computer's clock, watched (#61): what calls' `clock_off` and the dashboard go by.
     pub clock: Arc<crate::clock::Clock>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).
@@ -930,9 +932,10 @@ pub(crate) fn local_offset(t: i64) -> i32 {
 /// off, the one the app made emptied into the recordings folder and removed.
 /// One that can't be made leaves calls going to the recordings folder.
 fn open_spool(ctx: &Ctx, cfg: &Config) {
-    let (want, capture) = (&cfg.recording.ram_spool, Path::new(&cfg.recording.capture_dir));
+    let want = &cfg.recording.ram_spool;
+    ctx.folders.recordings.follow(Path::new(&cfg.recording.capture_dir));
     if !want.enabled || !want.dir.is_empty() {
-        crate::spool::retire(&crate::paths::data_dir(), capture);
+        crate::spool::retire(&crate::paths::data_dir(), &ctx.folders.recordings);
     }
     let spool = if want.enabled {
         match crate::spool::Spool::open(want, &crate::paths::data_dir()) {
@@ -945,6 +948,7 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
     } else {
         None
     };
+    ctx.folders.spool.follow(spool.as_ref().map_or(Path::new(""), |s| s.dir.as_path()));
     *ctx.spool.lock().unwrap() = spool;
 }
 
@@ -1287,31 +1291,67 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
     let json = f.record.to_json();
     let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
-    let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
-    let (wav_at, json_at, frames_at, m4a_at) = (at(keep_wav, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
-    for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
-        let _ = fs::create_dir_all(d);
-    }
-    let ok = (!p.write_wav || fs::write(&wav_at, &f.wav).is_ok())
-        && (!p.write_json || fs::write(&json_at, &json).is_ok())
-        && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
-    if !ok {
-        log::warn!("Couldn't write {}", base.display());
+    // Each file through the folder it goes to, which says why when one can't
+    // be written (crate::folder); what the spool can't take goes to the
+    // recordings folder (the archive looks in both).
+    let folders = &ctx.folders;
+    let mut spool_ok = spooled.is_some();
+    let at = |b: &Path, ext: &str| PathBuf::from(format!("{}.{ext}", b.display()));
+    let mut put = |kept: bool, ext: &str, bytes: &[u8]| -> Option<PathBuf> {
+        if let Some(s) = spooled.as_ref().filter(|_| !kept && spool_ok) {
+            let p = at(s, ext);
+            if folders.spool.write(&p, bytes).is_ok() {
+                return Some(p);
+            }
+            spool_ok = false;
+        }
+        let p = at(&base, ext);
+        folders.recordings.write(&p, bytes).ok().map(|_| p)
+    };
+    // (The first that fails ends it: the folder says why, once, and counts it.)
+    let written = 'w: {
+        let wav = match p.write_wav.then(|| put(keep_wav, "wav", &f.wav)) {
+            Some(None) => break 'w None,
+            w => w.flatten(),
+        };
+        let json = match p.write_json.then(|| put(keep_json, "json", json.as_bytes())) {
+            Some(None) => break 'w None,
+            j => j.flatten(),
+        };
+        if f.frames.as_ref().filter(|_| p.write_frames).is_some_and(|c| put(keep_audio, c.ext, &c.bytes).is_none()) {
+            break 'w None;
+        }
+        Some((wav, json))
+    };
+    let Some((wav_at, json_at)) = written else {
+        log::debug!("Call {} not saved", f.rel);
         return;
-    }
+    };
+    // Where the rest goes (made later, or not at all): the folder, and the path.
+    let place = |kept: bool, ext: &str| match spooled.as_ref().filter(|_| !kept && spool_ok) {
+        Some(s) => (&folders.spool, at(s, ext)),
+        None => (&folders.recordings, at(&base, ext)),
+    };
+    let (wav_at, json_at) = (wav_at.unwrap_or_else(|| place(keep_wav, "wav").1), json_at.unwrap_or_else(|| place(keep_json, "json").1));
+    let (m4a_folder, m4a_at) = place(keep_m4a, "m4a");
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
     let call = index_call(ctx, f.system_id, &f.rel, &f.record, keep_audio, keep_json);
     publish(&ctx.hub, ToClient::Concluded { entry: serde_json::to_value(&call).unwrap_or_default() });
     let mut wav_written = p.write_wav;
     let mut m4a = None;
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
-        match e.m4a(&f.wav, &m4a_at, *kbps) {
+        // (Its folder not made: the folder said why; "" here.)
+        let made = m4a_folder.prepare(&m4a_at).map_err(|_| String::new()).and_then(|_| e.m4a(&f.wav, &m4a_at, *kbps));
+        match made {
             Ok(()) => m4a = Some(m4a_at),
             Err(err) => {
-                m4a_failed(&f.rel, &err);
+                if !err.is_empty() {
+                    m4a_failed(&f.rel, &err);
+                }
                 // The call's audio is then the WAV.
                 if !wav_written {
-                    wav_written = fs::write(&wav_at, &f.wav).is_ok();
+                    let (folder, wav_at) = place(keep_wav, "wav");
+                    wav_written = folder.write(&wav_at, &f.wav).is_ok();
                 }
             }
         }
@@ -1977,5 +2017,37 @@ mod calls_query_tests {
         let page = calls(&ctx, &CallsQuery::default());
         assert_eq!((page.entries.len(), page.next), (1, None));
         assert!(page.error.is_some_and(|e| e.contains("only the recent calls")), "and says why it's only those");
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    /// A call the recordings folder can't take: the folder says why, counts
+    /// its file, and the call isn't listed as saved; once the folder takes
+    /// files again, the next call is saved and listed.
+    #[test]
+    fn a_call_the_recordings_folder_cant_take_is_counted_and_not_listed() {
+        let root = std::env::temp_dir().join(format!("trunk-pro-finish-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("calls");
+        let ctx = test_ctx(&dir);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&dir, b"in the way").unwrap();
+        ctx.folders.recordings.set_path(&dir);
+        let rules = FileRules { archive_wav: true, archive_m4a: false, call_log: true, archive_files_on_failure: true };
+        let call = |n: u32| Finish { rel: format!("ohmarcs/2026/11/22/{n}-1"), system: 0, system_id: None, wav: b"RIFF".to_vec(), record: Default::default(), frames: None, rules, decrypted: false };
+        finish_one(&ctx, &dir, None, call(1), None);
+        let r = ctx.folders.report();
+        assert_eq!((r[0]["ok"].as_bool(), r[0]["why"].as_str(), r[0]["lost"].as_u64()), (Some(false), Some("Not a folder"), Some(1)));
+        assert!(ctx.recent.lock().unwrap().is_empty(), "not listed as a call kept");
+        fs::remove_file(&dir).unwrap();
+        finish_one(&ctx, &dir, None, call(2), None);
+        assert_eq!(ctx.folders.report()[0]["ok"], true);
+        assert!(dir.join("ohmarcs/2026/11/22/2-1.wav").exists() && dir.join("ohmarcs/2026/11/22/2-1.json").exists());
+        assert_eq!(ctx.recent.lock().unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&root);
     }
 }

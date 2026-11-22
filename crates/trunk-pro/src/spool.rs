@@ -25,6 +25,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RamSpool;
+use crate::folder::Folder;
 
 /// Files here this long belong to calls nothing settled (a plugin's retries
 /// run ~20 minutes): they're moved to the recordings folder.
@@ -138,15 +139,17 @@ impl Spool {
         self.overflowed.load(Ordering::Relaxed)
     }
 
-    /// Move files older than `age` to the same place under `capture`; how many.
-    pub fn sweep(&self, capture: &Path, age: Duration) -> usize {
-        sweep(&self.dir, capture, age)
+    /// Move files older than `age` to the same place in the recordings folder `to`; how many.
+    pub fn sweep(&self, to: &Folder, age: Duration) -> usize {
+        sweep(&self.dir, to, age)
     }
 }
 
-/// Move the files under `dir` older than `age` to the same place under `to`
-/// (hidden ones left), then drop the folders that emptied; how many moved.
-fn sweep(dir: &Path, to: &Path, age: Duration) -> usize {
+/// Move the files under `dir` older than `age` to the same place in `to`
+/// (hidden ones left), then drop the folders that emptied; how many moved
+/// (one that can't be is said by `to`, and stays).
+fn sweep(dir: &Path, to: &Folder, age: Duration) -> usize {
+    let dest = to.path();
     let now = SystemTime::now();
     let mut moved = 0;
     let mut stack = vec![dir.to_path_buf()];
@@ -164,9 +167,8 @@ fn sweep(dir: &Path, to: &Path, age: Duration) -> usize {
                 dirs.push(p);
             } else if m.modified().ok().and_then(|t| now.duration_since(t).ok()).unwrap_or_default() >= age {
                 let Ok(rel) = p.strip_prefix(dir) else { continue };
-                match move_file(&p, &to.join(rel)) {
-                    Ok(()) => moved += 1,
-                    Err(e) => log::warn!("Couldn't move {} out of the spool: {e}", p.display()),
+                if to.move_in(&p, &dest.join(rel)).is_ok() {
+                    moved += 1;
                 }
             }
         }
@@ -248,16 +250,16 @@ pub fn statvfs(_: &Path) -> Option<(u64, u64)> {
 }
 
 /// The spool when it's off (or a folder of the user's): what's in the one the
-/// app made goes to `capture`, and then it goes too.
-pub fn retire(data: &Path, capture: &Path) {
+/// app made goes to the recordings folder `to`, and then it goes too.
+pub fn retire(data: &Path, to: &Folder) {
     if let Some(dir) = sys::existing(data) {
-        let n = sweep(&dir, capture, Duration::ZERO);
+        let n = sweep(&dir, to, Duration::ZERO);
         if has_files(&dir) {
             log::warn!("The RAM spool at {} still has files: left as it is", dir.display());
             return;
         }
         match sys::remove(&dir) {
-            Ok(()) => log::info!("RAM spool removed ({n} file(s) moved to {})", capture.display()),
+            Ok(()) => log::info!("RAM spool removed ({n} file(s) moved to {})", to.path().display()),
             Err(e) => log::warn!("Couldn't remove the RAM spool at {}: {e}", dir.display()),
         }
     }
@@ -428,9 +430,11 @@ mod tests {
         fs::create_dir_all(spool.join("wmata/2026/10/4")).unwrap();
         fs::write(spool.join("wmata/2026/10/4/a.m4a"), b"audio").unwrap();
         fs::write(spool.join(".metadata_never_index"), b"").unwrap();
+        let folders = crate::folder::Folders::default();
+        folders.recordings.set_path(&capture);
         // Too new to move.
-        assert_eq!(sweep(&spool, &capture, Duration::from_secs(3600)), 0);
-        assert_eq!(sweep(&spool, &capture, Duration::ZERO), 1);
+        assert_eq!(sweep(&spool, &folders.recordings, Duration::from_secs(3600)), 0);
+        assert_eq!(sweep(&spool, &folders.recordings, Duration::ZERO), 1);
         assert_eq!(fs::read(capture.join("wmata/2026/10/4/a.m4a")).unwrap(), b"audio");
         // The emptied folders go; the hidden file stays.
         assert!(!spool.join("wmata").exists() && spool.join(".metadata_never_index").exists());

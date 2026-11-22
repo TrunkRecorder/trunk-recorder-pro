@@ -127,10 +127,14 @@ test("Admin: the editing pages, Start and the editors are all there", () => {
 
 test("Access: the users, each's role and when their token was made; the last Admin can't be removed while on", () => {
   hello(full(), "control", "luke");
-  setSetupTab("recording");
+  setSetupTab("access");
   setView("setup");
   const page = text(renderToString(<App />));
   assert.match(page, /Access Tokens, passkeys/);
+  assert.match(renderToString(<App />), /role="tab"[^>]*>(<svg[\s\S]*?<\/svg>)?<span>Access<\/span>/, "its own tab: it guards everything, not only recording");
+  setSetupTab("recording");
+  assert.doesNotMatch(text(renderToString(<App />)), /Access Tokens, passkeys/, "not under Recording");
+  setSetupTab("access");
   const html = renderToString(<AccessSection c={full()} />);
   assert.match(text(html), /Name Role Token Passkeys luke .* kiosk/);
   assert.match(html, /aria-label="Role of luke" disabled=""/, "the only Admin stays Admin");

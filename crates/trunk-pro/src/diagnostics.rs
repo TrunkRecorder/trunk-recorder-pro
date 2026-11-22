@@ -16,7 +16,7 @@ use crate::iq_capture::{keep, Activity, Live, QUEUE, RADIO_KEYS, RECORDING_KEYS}
 
 /// Of the recent events, the ones and fields that say how the radios and the
 /// clock did. A source's name (it can hold a serial number) becomes its number.
-const EVENT_KINDS: &[&str] = &["controlLost", "controlRegained", "sourceDrops", "sourceClipping", "sourceQuiet", "sourceRecovered", "clockOff", "clockOk", "clockStep", "diskLow", "linkDown", "linkUp", "spoolLow", "spoolFull", "spoolRecovered", "spoolRemoved"];
+const EVENT_KINDS: &[&str] = &["controlLost", "controlRegained", "sourceDrops", "sourceClipping", "sourceQuiet", "sourceRecovered", "clockOff", "clockOk", "clockStep", "diskLow", "folderUnwritable", "folderWritable", "linkDown", "linkUp", "spoolLow", "spoolFull", "spoolRecovered", "spoolRemoved"];
 const EVENT_KEYS: &[&str] = &["kind", "t", "level", "perS", "pct", "peakDb", "freePct", "critical", "calls", "bad", "byMs", "remade", "downS"];
 
 /// `e`, a `monitorEvent` ([`trunk_app::stats::MonitorEvent::to_json`]); `labels`: the sources' series names.

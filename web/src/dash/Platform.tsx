@@ -6,16 +6,36 @@
 // tell is listed, greyed, with why.
 
 import { useState } from "react";
-import type { ClockInfo, MonitorSettings, PlatformInfo, SeriesData } from "../protocol.ts";
+import type { ClockInfo, FolderRow, MonitorSettings, PlatformInfo, SeriesData } from "../protocol.ts";
 import { mayEdit, updateConfig, useApp, useTopic, type StatsRange } from "../controller.ts";
 import { Card, Choice, Fig, Figs, HeatStrip, Info, LiveSpark, Meter, Ribbon, Stat, TimeSeries, type Level } from "../charts.tsx";
 import { ago, bytes, clockAt, dur, ms, num, pct } from "../fmt.ts";
-import { connections, connectionsSummary, platformHealth, total, useHistory, useRanges } from "./data.ts";
+import { FOLDER_LABEL, connections, connectionsSummary, folderWhy, platformHealth, total, useHistory, useRanges } from "./data.ts";
 import { Field, NumberInput, TextArea, TextInput, Toggle } from "../inputs.tsx";
 import { Switch } from "../SetupLayout.tsx";
 import { StorageView } from "./Storage.tsx";
 
 const PRESSURE = ["normal", "warning", "critical"];
+
+/** A folder calls can't be written to: why, what the system said and what to do, since when, and the files not saved. */
+function FolderProblem({ f, label }: { f: FolderRow; label?: boolean }) {
+  return (
+    <div className="folder-problem">
+      <p className="bad small">
+        {label && <b>{FOLDER_LABEL[f.name] ?? f.name} · </b>}
+        Can't write: {f.why}
+        <Info>{folderWhy(f)}</Info>
+      </p>
+      <Figs
+        items={[
+          label && { k: "Path", v: f.path },
+          f.since != null && { k: "Since", v: ago(f.since) },
+          { k: "Not saved", v: num(f.lost ?? 0, 0), u: f.lost === 1 ? "file" : "files", level: f.lost ? "bad" : undefined },
+        ]}
+      />
+    </div>
+  );
+}
 
 export function PlatformPage() {
   const s = useApp();
@@ -151,6 +171,11 @@ export function PlatformPage() {
         </Card>
       </div>
       <Card title="Disks">
+        {(p.folders ?? [])
+          .filter((f) => f.ok === false && !p.disks.some((d) => d.name === f.name))
+          .map((f) => (
+            <FolderProblem key={f.name} f={f} label />
+          ))}
         {p.disks.length === 0 ? (
           <p className="empty">{missing("disk") ?? "No disks found."}</p>
         ) : (
@@ -167,6 +192,7 @@ export function PlatformPage() {
                     <span className="muted small mono">{d.path}</span>
                   </div>
                   <Meter value={d.missing ? null : used} max={100} zones={spool ? [75, 90] : [90, 95]} label={`${d.name} disk used`} />
+                  {p.folders?.filter((f) => f.name === d.name && f.ok === false).map((f) => <FolderProblem key={f.name} f={f} />)}
                   {d.missing ? (
                     <p className="bad small">Gone: calls go to the recordings folder</p>
                   ) : (

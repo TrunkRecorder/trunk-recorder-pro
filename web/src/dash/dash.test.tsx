@@ -16,6 +16,7 @@ import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
 import { RfPage } from "./Rf.tsx";
 import { PlatformPage } from "./Platform.tsx";
+import { FolderCheck } from "../FolderCheck.tsx";
 import { PluginHealthPage } from "./PluginHealth.tsx";
 import { StorageView, tablesOf } from "./Storage.tsx";
 import { axisTicks, TimeSeries } from "../charts.tsx";
@@ -343,11 +344,11 @@ test("A frequency out of band: the nearest source, and how far past its usable e
 });
 
 /** The computer as the recorder samples it, its clock as given (the rest as nothing known). */
-function host(given: Partial<ClockInfo>, disks: PlatformInfo["disks"] = []): void {
+function host(given: Partial<ClockInfo>, disks: PlatformInfo["disks"] = [], folders?: PlatformInfo["folders"]): void {
   const clock: ClockInfo = { warnMs: 250, os: null, service: null, driftMs: null, radio: [], server: null, measured: null, error: null, problem: null, check: null, ...given };
   const platform: PlatformInfo = {
     os: "Linux", arch: "aarch64", host: "pi", cores: 4, container: null, cpuLimitCores: null, memTotal: 8e9, uptimeS: 3600, disks, probes: [], clock,
-    perCore: null, interfaces: null, unavailable: [],
+    perCore: null, interfaces: null, unavailable: [], folders,
   };
   transport.onMessage({ type: "host", t: Date.now() / 1000, values: {}, platform });
 }
@@ -513,6 +514,35 @@ test("Platform: a RAM spool deleted while running (systemd's RemoveIPC at logout
   assert.match(text(renderToString(<PlatformPage />)), /Gone: calls go to the recordings folder/);
 });
 
+test("Platform: a recordings folder the recorder can't write to turns the light red with why, what to do and the files lost", () => {
+  twoSites();
+  setView("platform");
+  const disk = { name: "recordings", path: "/srv/calls", mount: "/srv", totalBytes: 1e12, freeBytes: 5e11 };
+  const failing = { name: "recordings", path: "/srv/calls", ok: false, why: "Permission denied", detail: "writing /srv/calls/.trunk-pro-write-check-7: Permission denied (os error 13) — /srv/calls is owned by root (755); the app runs as luke", fix: "Give luke the folder (sudo chown -R luke \"/srv/calls\")", since: now() - 120, lost: 3 };
+  host({ os: synced }, [disk], [failing]);
+  const h = pageHealth(snapshot()).platform;
+  assert.equal(h.level, "bad");
+  assert.equal(h.why, "Can't write to the recordings folder: Permission denied · 3 files not saved");
+  const page = text(renderToString(<PlatformPage />));
+  assert.match(page, /Can&#x27;t write: Permission denied/);
+  assert.match(page, /Not saved\s*3\s*files/);
+  assert.match(renderToString(<PlatformPage />), /owned by root \(755\); the app runs as luke\. Give luke the folder/, "why and the fix, behind the ⓘ");
+  // Its disk not found (a drive gone): said in the card all the same, with its path.
+  host({ os: synced }, [], [{ ...failing, why: "Drive not mounted", path: "/Volumes/Calls/rec" }]);
+  assert.match(text(renderToString(<PlatformPage />)), /the recordings folder · Can&#x27;t write: Drive not mounted.*Path\s*\/Volumes\/Calls\/rec/);
+  // Setup's field: why, for the folder it has now; nothing for one not checked yet (typed, not yet saved).
+  host({ os: synced }, [disk], [failing]);
+  assert.match(text(renderToString(<FolderCheck name="recordings" path="/srv/calls" />)), /Can&#x27;t write: Permission denied/);
+  assert.equal(renderToString(<FolderCheck name="recordings" path="/srv/other" />), "");
+  // Fine again: nothing said.
+  host({ os: synced }, [disk], [{ name: "recordings", path: "/srv/calls", ok: true }]);
+  assert.equal(pageHealth(snapshot()).platform.level, "ok");
+  assert.doesNotMatch(text(renderToString(<PlatformPage />)), /Can&#x27;t write/);
+  assert.match(renderToString(<FolderCheck name="recordings" path="/srv/calls" />), /Writable/);
+  assert.equal(eventText({ type: "monitorEvent", t: now(), level: "bad", kind: "folderUnwritable", folder: "recordings", path: "/srv/calls", why: "Disk is full" }), "Can't write to the recordings folder: Disk is full");
+  assert.equal(eventText({ type: "monitorEvent", t: now(), level: "ok", kind: "folderWritable", folder: "recordings", path: "/srv/calls", lost: 4 }), "Can write to the recordings folder again · 4 files not saved");
+});
+
 /** A plugin that's on and running, with what it said of its work. */
 function uploader(id: string): void {
   const c = defaultConfig();
@@ -610,6 +640,17 @@ test("RF: a source whose gain is low says so and offers Tune gain; the tuning's 
   transport.onMessage({ type: "tune", ...report, phase: "done", tried: [], best: [["gain", 33.8]], applied: true, elapsedS: 600 });
   page = text(renderToString(<RfPage />));
   assert.match(page, /Tune gain Kept 33\.8 dB Tried 0 Took 10 m/);
+  // Tuned and none better (the live WMATA RTL: its control channel decoded in full at every gain): low, but not a warning.
+  const tried = [{ candidate: [["gain", 33.8]] as [string, number][], against: report.start, kept: false, systems: [], clipPct: 0, cmp: { diff: 0, se: 0.2, incumbent: 99.8, candidate: 99.8 } }];
+  transport.onMessage({ type: "tune", ...report, phase: "done", tried, elapsedS: 600 });
+  page = text(renderToString(<RfPage />));
+  assert.doesNotMatch(page, /Gain too low/, "the tuner's word wins");
+  assert.match(page, /Tune gain Best as it is Tried 1/);
+  // Setup changed the radio since: the warning is back.
+  transport.onMessage({ type: "tune", ...report, phase: "done", tried, elapsedS: 600, outdated: true });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Gain too low · peaks -32 dBFS — Tune gain/);
+  assert.match(page, /Best changed since/);
   assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain too low · peaks -32 dBFS");
 });
 

@@ -64,7 +64,7 @@ built-in interface).
 `server.auth`: who may sign in, with what role. Off unless turned on. How to turn it on, users and
 their roles (View is `listen`, Admin is `control`), passkeys, sessions and signing out everywhere
 are in [Remote access and signing in](../guides/remote-access.md#signing-in). In the app: Setup →
-**Recording** → **Access**.
+**Access**.
 
 ```json
 "server": {
@@ -129,7 +129,7 @@ and [Cloudflare Tunnel and Access](../guides/remote-access.md#cloudflare-tunnel-
 | `users` | `{}` | The proxy's names for users whose name here differs: `"luke@example.com": "luke"`. Edited in the config file, not in Setup |
 | `other` | none | `"listen"`: what someone the proxy signed in may do when their name is no user here. None: they aren't signed in (the sign-in page, or `anonymous`'s access). `"control"` is refused |
 
-In the app: Setup → **Recording** → **Access** → **Proxy** sets `from`, `header` (or, for
+In the app: Setup → **Access** → **Proxy** sets `from`, `header` (or, for
 **Cloudflare**, **Team** and **Audience**) and **Others** (`other`).
 
 ## HTTPS

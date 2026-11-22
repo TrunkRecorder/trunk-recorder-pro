@@ -22,7 +22,7 @@ service on Linux, Docker or a Pi, the install pages say where the flag goes
 
 **Signing in is off by default.** Until you turn it on, anyone who can reach the built-in
 interface's port can change the settings, start and stop recording, quit the app, listen, and
-download your recordings. Turn it on with **Sign-in** in Setup → **Recording** → **Access**
+download your recordings. Turn it on with **Sign-in** in Setup → **Access**
 ([Signing in](#signing-in)): then every browser and program signs in as a user, with their access
 token, and gets no more than the user's role allows (View or Admin). An interface with listen
 access is safer to share either way: on its port, the recorder can be listened to but not
@@ -77,7 +77,7 @@ control on the built-in interface's, each interface's own `access` on its. On, t
 a **user**, with that user's **access token** or one of their [passkeys](#passkeys), and get the
 lower of the port's access and the user's role.
 
-**Turning it on.** In the app: Setup → **Recording** → **Access**. Turn the **Sign-in** switch on.
+**Turning it on.** In the app: Setup → **Access**. Turn the **Sign-in** switch on.
 With no Admin yet, it asks for one first: give it a name, **Create**, and copy the token's secret
 while it's shown (once). The browser is signed in with it, and only then is signing in turned on,
 so you can't lock yourself out. (With an Admin already there, it asks for their token's secret
@@ -141,7 +141,7 @@ signed out everywhere, and each passkey's count of sign-ins. A dashboard left op
 
 **Signing out everywhere.** A browser that may have been left signed in somewhere (a lost phone, a
 shared computer): click your name in the top bar → **Sign out everywhere**, or, as an Admin, a
-user's **Sign out** in Setup → **Recording** → **Access** (or `trunk-pro access signout <name>`). Every browser
+user's **Sign out** in Setup → **Access** (or `trunk-pro access signout <name>`). Every browser
 signed in as them until then signs in again, this one too, and their open dashboards close. It
 ends sessions, not credentials: a program that sends the access token with each request
 (`Authorization: Bearer`, `?token=`) keeps working, and so does anyone who has the token or a
@@ -227,7 +227,7 @@ somewhere else.) Other sign-in problems are in
 On plain HTTP the secret crosses the network in the clear, as everything else does.
 That's fine on your own network, over a VPN or an SSH tunnel. Otherwise turn on HTTPS
 (`server.tls`, its keys in [HTTPS](../configuration/server-and-log.md#https)), or put a reverse
-proxy that adds it in front. Setup → **Recording** → **Access** says **Unencrypted** when the page
+proxy that adds it in front. Setup → **Access** says **Unencrypted** when the page
 was opened over plain HTTP from another computer: the token you paste and the sign-in cookie cross
 the network readable, to anyone who can watch it.
 
@@ -301,7 +301,7 @@ Its keys (`from`, `header`, `cloudflare`, `users`, `other`) are in
 - **Signing out** is the proxy's: the dashboard shows no **Sign out** for someone the proxy signed in.
 - **A way back in.** With a proxy set, an Admin with no token counts as a way in (the proxy can
   name them). If the proxy goes wrong, `trunk-pro access off` on the recorder's computer works as ever.
-- In the app: Setup → **Recording** → **Access** → **Proxy** sets `from`, `header` (or, for
+- In the app: Setup → **Access** → **Proxy** sets `from`, `header` (or, for
   **Cloudflare**, **Team** and **Audience**) and **Others** (`other`); `users` is edited in the config file.
 
 **Which header.** `Remote-User` is Authelia's. The others name it differently, so set `header` to match:
@@ -436,7 +436,7 @@ request reaches the tunnel, and the recorder can take Cloudflare's word for who 
 }
 ```
 
-Or in the app: Setup → **Recording** → **Access** → **Proxy** → **Set up** → **Cloudflare**.
+Or in the app: Setup → **Access** → **Proxy** → **Set up** → **Cloudflare**.
 
 - **The token, not the header.** Access sends each request with the email it signed in
   (`Cf-Access-Authenticated-User-Email`) and a token it signed (`Cf-Access-Jwt-Assertion`).

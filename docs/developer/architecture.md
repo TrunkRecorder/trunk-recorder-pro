@@ -1064,6 +1064,19 @@ its files are written. The WAV goes to the encoder on stdin (afconvert gets a te
 it's written only when it's kept, a plugin takes WAV, or encoding failed; `call.concluded`'s `wav`
 path may not exist for a plugin that asked for M4A.
 
+**Folders** (`folder.rs`). Every file of a call goes into the recordings folder (or the spool)
+through its `Folder`: `write`, `prepare` (an encoder's output) and `move_in` (out of the spool).
+Each is also checked with a file of its own (`probe`: written, synced, deleted) at startup and when
+its path changes (`apply_config`, on a thread of its own, since a network share can hang); after
+that the calls' own writes are the check, and the first one that works says it's back. Checks and
+writes report to the same state, so the first failure is logged once with why (an io::Error turned
+into permission and who owns the folder, macOS privacy, read-only, full, not a folder, a drive not
+mounted) and becomes a `folderUnwritable` event; the files not written are counted (logged at most
+once a minute); and `folderWritable` is sent when it takes files again. The folder is made only
+when it's never been there at that path: a drive that goes isn't replaced by a folder on the disk
+beneath. A call the spool can't take goes to the recordings folder. `host.platform.folders`
+carries the state (the dashboard's light, Setup's field).
+
 ### 8.6 RAM spool
 
 With `recording.ramSpool.enabled` (`spool.rs`), files that will be deleted once the plugins are

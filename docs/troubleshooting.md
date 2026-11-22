@@ -395,7 +395,7 @@ sign-in page, and a program gets `401` (`Sign in first: an access token as Autho
   the dashboard without asking. **Sign in** in the top bar (or `/signin`) is the sign-in page.
 - **Locked out** (no Admin token left to you): on the recorder's computer, run
   `trunk-pro access off` (with `--config` if it uses another config) and restart the recorder.
-  Then add a new Admin in Setup → **Recording** → **Access** and turn **Sign-in** back on.
+  Then add a new Admin in Setup → **Access** and turn **Sign-in** back on.
 - **A page from another origin gets 401** although it's in `server.allowedOrigins`: with signing
   in on, it must send a token too ([API docs](api/README.md#a-page-on-another-origin)).
 
