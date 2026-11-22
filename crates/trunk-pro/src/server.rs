@@ -1314,7 +1314,7 @@ pub(crate) fn apply_config(ctx: &Ctx, old: &crate::config::Config, new: &crate::
     // rest at the next start, which the log says; the banner says whether a restart waits.
     for (i, g) in ctx.live_sources(old, new) {
         // A radio whose gain is being tuned: the edit wins.
-        ctx.tune.edited(&new.sources[i]);
+        ctx.tune.edited(&ctx.hub, &new.sources[i]);
         if let Some(g) = g {
             log::info!("{}: gain changed while recording, applied now: {g}", new.sources[i].title(i));
         } else {

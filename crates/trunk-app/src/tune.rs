@@ -16,6 +16,11 @@
 //! The weakest system counts twice, so a gain that helps the strong systems a
 //! little at the cost of a weak one isn't chosen.
 //!
+//! A control channel already decoded in full can't score better, however much
+//! closer to the noise it is: there the tie is broken by its SNR (the weakest
+//! scored system's). A setting that decodes no worse and lifts it by more than
+//! [`SNR_MARGIN_DB`] is better: the margin it gains is what a fade takes.
+//!
 //! A control channel's decoding drifts by more from minute to minute (traffic,
 //! simulcast fading) than a step of gain usually moves it, so a setting is
 //! never judged by one measurement: each candidate is compared with the best
@@ -41,6 +46,8 @@ const MIN_VOICE_FRAMES: f64 = 250.0;
 const CC_WEIGHT: f64 = 0.7;
 /// Control channel symbols a second (P25): what its coverage is out of.
 const P25_SYM_S: f64 = 4800.0;
+/// A setting that decodes no worse is better when it lifts the control channel's SNR by more than this, dB.
+pub const SNR_MARGIN_DB: f64 = 2.0;
 
 // ───────────────────────────── what's asked ─────────────────────────────
 
@@ -227,6 +234,11 @@ impl Step {
     pub fn clipping(&self) -> bool {
         self.src.clip.get().is_some_and(|c| c > CLIP_PCT)
     }
+
+    /// The scored systems' weakest control channel SNR, dB (`only` as [`Self::score_of`]).
+    pub fn snr_of(&self, only: Option<&[String]>) -> Option<f64> {
+        self.systems.iter().filter(|(n, _)| only.is_none_or(|o| o.contains(n))).filter_map(|(_, t)| t.snr.get()).reduce(f64::min)
+    }
 }
 
 /// Where one system's numbers are in the `stats` values: its control
@@ -326,13 +338,31 @@ pub fn harmed(rounds: &[(Step, Step)], protected: &[String], limit: f64) -> Opti
 /// A candidate setting measured against the one it would replace, in rounds of a
 /// slice each, alternately first: how much better it scored (`diff`, candidate less
 /// incumbent, averaged over the rounds) and how sure that is (`se`, the standard
-/// error of the rounds' differences).
+/// error of the rounds' differences); and the same of the control channel's SNR
+/// (`snr`), the tie-break ([`Self::with_snr`]).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cmp {
     pub diff: f64,
     pub se: f64,
     pub incumbent: f64,
     pub candidate: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snr: Option<SnrCmp>,
+}
+
+/// The candidate's SNR less the incumbent's, dB, averaged over the rounds, and its standard error.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SnrCmp {
+    pub diff: f64,
+    pub se: f64,
+}
+
+/// The mean of `d` and its standard error (0 for one).
+fn mean_se(d: &[f64]) -> (f64, f64) {
+    let n = d.len() as f64;
+    let mean = d.iter().sum::<f64>() / n;
+    let se = if d.len() < 2 { 0.0 } else { (d.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0)).sqrt() / n.sqrt() };
+    (mean, se)
 }
 
 impl Cmp {
@@ -345,16 +375,29 @@ impl Cmp {
         }
         let pairs: Vec<(f64, f64)> = rounds.iter().map(|(i, c)| (i.unwrap_or(0.0), c.unwrap_or(0.0))).collect();
         let n = pairs.len() as f64;
-        let diffs: Vec<f64> = pairs.iter().map(|(i, c)| c - i).collect();
-        let diff = diffs.iter().sum::<f64>() / n;
-        let se = if pairs.len() < 2 { 0.0 } else { (diffs.iter().map(|d| (d - diff).powi(2)).sum::<f64>() / (n - 1.0)).sqrt() / n.sqrt() };
-        Some(Cmp { diff, se, incumbent: pairs.iter().map(|p| p.0).sum::<f64>() / n, candidate: pairs.iter().map(|p| p.1).sum::<f64>() / n })
+        let (diff, se) = mean_se(&pairs.iter().map(|(i, c)| c - i).collect::<Vec<_>>());
+        Some(Cmp { diff, se, incumbent: pairs.iter().map(|p| p.0).sum::<f64>() / n, candidate: pairs.iter().map(|p| p.1).sum::<f64>() / n, snr: None })
+    }
+
+    /// With each round's (incumbent, candidate) SNRs, where both had one (two rounds at least).
+    pub fn with_snr(mut self, rounds: &[(f64, f64)]) -> Cmp {
+        if rounds.len() >= 2 {
+            let (diff, se) = mean_se(&rounds.iter().map(|(i, c)| c - i).collect::<Vec<_>>());
+            self.snr = Some(SnrCmp { diff, se });
+        }
+        self
     }
 
     /// Better by more than `margin`, and by more than twice its standard error (so not
-    /// by the luck of the minute).
+    /// by the luck of the minute); or, decoding no worse than `margin`, its SNR better
+    /// by more than [`SNR_MARGIN_DB`] and twice its standard error.
     pub fn better(&self, margin: f64) -> bool {
-        self.diff > margin.max(2.0 * self.se)
+        self.diff > margin.max(2.0 * self.se) || (self.diff > -margin && self.snr.is_some_and(|s| s.diff > SNR_MARGIN_DB.max(2.0 * s.se)))
+    }
+
+    /// Better by its SNR alone ([`Self::better`]'s tie-break).
+    pub fn by_snr(&self, margin: f64) -> bool {
+        self.better(margin) && self.diff <= margin.max(2.0 * self.se)
     }
 }
 
@@ -516,6 +559,9 @@ pub struct TuneReport {
     pub best: Option<Setting>,
     /// It was kept and saved.
     pub applied: bool,
+    /// The radio was changed in Setup since: what it found was about the gain it had then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub outdated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -571,6 +617,21 @@ mod tests {
         let noisy = Cmp::of(&[(Some(80.0), Some(95.0)), (Some(90.0), Some(80.0)), (Some(80.0), Some(87.0))]).unwrap();
         assert!(!noisy.better(1.0), "{noisy:?}");
         assert_eq!(Cmp::of(&[(Some(80.0), Some(90.0)), (Some(80.0), None)]), None, "refused once: refused");
+    }
+
+    #[test]
+    fn a_control_channel_decoded_in_full_is_broken_by_its_snr() {
+        // The live RTL (WMATA, 16.6 → 25.4 dB): 99.8 % both ways, SNR 13.6 → 20.3 dB.
+        let full = Cmp::of(&[(Some(99.8), Some(99.8)), (Some(99.7), Some(99.9)), (Some(99.9), Some(99.7))]).unwrap();
+        assert!(!full.better(1.0), "no SNR: a tie");
+        let lifted = full.with_snr(&[(13.5, 20.1), (13.7, 20.5), (13.6, 20.3)]);
+        assert!(lifted.better(1.0) && lifted.by_snr(1.0));
+        assert!(!full.with_snr(&[(13.5, 14.6), (13.7, 15.0), (13.6, 15.1)]).better(1.0), "under the SNR margin");
+        assert!(!full.with_snr(&[(13.0, 20.0), (14.0, 13.5), (13.0, 16.0)]).better(1.0), "within its spread");
+        let worse = Cmp::of(&[(Some(99.0), Some(96.0)), (Some(99.0), Some(96.5)), (Some(99.0), Some(96.0))]).unwrap();
+        assert!(!worse.with_snr(&[(10.0, 20.0), (10.0, 20.0), (10.0, 20.0)]).better(1.0), "decoding worse: SNR doesn't buy it");
+        let steady = Cmp::of(&[(Some(80.0), Some(84.0)), (Some(81.0), Some(85.0)), (Some(79.0), Some(83.0))]).unwrap();
+        assert!(!steady.by_snr(1.0), "better by decoding");
     }
 
     #[test]

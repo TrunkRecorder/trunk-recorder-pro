@@ -2053,12 +2053,13 @@ export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "hos
 /** A gain as set: each knob (`lna`, `mixer`, `vga`, `amp`, `pga`; `step`: an Airspy table's; `gain`: the overall dB) and its value. */
 export type GainSetting = [string, number][];
 
-/** How a candidate gain compared with the one it would replace, over the rounds: `diff` (candidate less incumbent, 0–100 points) and its standard error `se`. */
+/** How a candidate gain compared with the one it would replace, over the rounds: `diff` (candidate less incumbent, 0–100 points) and its standard error `se`; `snr`, the same of the control channel's SNR (dB), the tie-break where decoding is already full. */
 export interface GainCmp {
   diff: number;
   se: number;
   incumbent: number;
   candidate: number;
+  snr?: { diff: number; se: number };
 }
 
 /** One system's figures in a comparison: [incumbent, candidate]. */
@@ -2101,6 +2102,8 @@ export interface TuneReport {
   elapsedS: number;
   best?: GainSetting;
   applied: boolean;
+  /** The radio was changed in Setup since: what it found was about the gain it had then. */
+  outdated?: boolean;
   error?: string;
 }
 

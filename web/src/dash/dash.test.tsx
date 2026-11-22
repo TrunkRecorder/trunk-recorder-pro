@@ -597,6 +597,17 @@ test("RF: a source whose gain is low says so and offers Tune gain; the tuning's 
   transport.onMessage({ type: "tune", ...report, phase: "done", tried: [], best: [["gain", 33.8]], applied: true, elapsedS: 600 });
   page = text(renderToString(<RfPage />));
   assert.match(page, /Tune gain Kept 33\.8 dB Tried 0 Took 10 m/);
+  // Tuned and none better (the live WMATA RTL: its control channel decoded in full at every gain): low, but not a warning.
+  const tried = [{ candidate: [["gain", 33.8]] as [string, number][], against: report.start, kept: false, systems: [], clipPct: 0, cmp: { diff: 0, se: 0.2, incumbent: 99.8, candidate: 99.8 } }];
+  transport.onMessage({ type: "tune", ...report, phase: "done", tried, elapsedS: 600 });
+  page = text(renderToString(<RfPage />));
+  assert.doesNotMatch(page, /Gain too low/, "the tuner's word wins");
+  assert.match(page, /Tune gain Best as it is Tried 1/);
+  // Setup changed the radio since: the warning is back.
+  transport.onMessage({ type: "tune", ...report, phase: "done", tried, elapsedS: 600, outdated: true });
+  page = text(renderToString(<RfPage />));
+  assert.match(page, /Gain too low · peaks -32 dBFS — Tune gain/);
+  assert.match(page, /Best changed since/);
   assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain too low · peaks -32 dBFS");
 });
 

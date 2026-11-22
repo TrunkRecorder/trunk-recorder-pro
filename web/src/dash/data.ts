@@ -3,7 +3,7 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems, autoTuneOn, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
+import { activeSystems, autoTuneOn, configIndex, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
 import { isRecording, can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
 import { dur, keyPart, num, pct, signed } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
@@ -311,7 +311,9 @@ export const UNUSED_SOURCE_WHY = "The other sources reach every channel the conf
 /**
  * A source's gain by its samples: too high (clipping over 0.5%, or peaks at
  * full scale) or too low (the recorder's `quiet`: a minute of peaks a few ADC
- * steps tall, stats/meter.rs), and the why, pointing at the fix; null: fine.
+ * steps tall, stats/meter.rs, said as that minute's average, as it decides),
+ * and the why, pointing at the fix; null: fine. Low but tuned (gainTuned): fine,
+ * since no gain decoded better.
  */
 export function gainOff(s: AppState, src: SourceStatus): { dir: "low" | "high"; why: string } | null {
   const clip = recentAvg(K.src(src.label, "clipPct"), 10) ?? 0;
@@ -319,8 +321,17 @@ export function gainOff(s: AppState, src: SourceStatus): { dir: "low" | "high"; 
   const off = (dir: "low" | "high", measured: string) => ({ dir, why: `Gain too ${dir} · ${measured}${gainFix(s, dir, "")}` });
   if (clip > 0.5) return off("high", `${num(clip, 1)}% clipping`);
   if (peak !== null && peak > -1) return off("high", "peaks at full scale");
-  if (val(s, K.src(src.label, "quiet"))) return off("low", `peaks ${peak === null ? "—" : num(peak, 0)} dBFS`);
+  if (val(s, K.src(src.label, "quiet")) && !gainTuned(s, src)) {
+    const avg = recentAvg(K.src(src.label, "peak"), 60) ?? peak;
+    return off("low", `peaks ${avg === null ? "—" : num(avg, 0)} dBFS`);
+  }
   return null;
+}
+
+/** The tuner has judged source `src`'s gain as it is: its tuning done, no gain tried better, and the radio not changed since. */
+export function gainTuned(s: AppState, src: SourceStatus): boolean {
+  const t = s.tune;
+  return !!t && !!s.config && t.phase === "done" && !t.best && !t.outdated && t.tried.length > 0 && t.source === configIndex(s.sources, s.config, src);
 }
 
 /** What to do about a gain that's too `dir`, after " — ": nothing for who can't change it (a View user). `where`: where the tuner is, said from elsewhere. */

@@ -371,7 +371,14 @@ one 800 MHz Airspy the same gain scored 92 and then 84 ten minutes apart. So eac
 compared with the best so far by turns, `--slice` seconds each after `--settle` seconds to settle,
 for `--rounds` rounds (best first in one round, the candidate first in the next), and it is moved to
 only when it scored better on average by more than `--margin` **and** by more than twice the
-standard error of the rounds' differences. A candidate takes `rounds × 2 × (settle + slice)`
+standard error of the rounds' differences.
+
+**A control channel already decoded in full is compared by its SNR.** Once it decodes 99.8 % at
+one gain it can't score better at another, however close to the noise it is: on one RTL-SDR at
+490 MHz, 16.6 dB and 25.4 dB both decoded 99.8 %, but the control channel's SNR went from 13.6 to
+20.3 dB. So a candidate that decodes no worse (by less than `--margin`) is also better when the
+weakest scored system's control channel SNR is higher by more than 2 dB and by more than twice the
+standard error of the rounds' differences: that margin is what a fade takes. A candidate takes `rounds × 2 × (settle + slice)`
 seconds: 114 by default.
 
 **Each kind of radio has a plan**, from how it is built. The front of the chain (the LNA) sets the
