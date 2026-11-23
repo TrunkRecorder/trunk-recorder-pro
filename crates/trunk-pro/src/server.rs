@@ -1433,6 +1433,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
                         let error = "The config was changed elsewhere meanwhile, so this edit wasn't saved: here it is as it is now.".to_string();
                         return Some(ToClient::ConfigSaved { version: at, error: Some(error) });
                     }
+                    // A source relabelled (its serial, address or args edited): what received on it still does.
+                    c.follow_source_labels(&cur);
                     let saved = c.save(&ctx.config_path);
                     let old = std::mem::replace(&mut *cur, c.clone());
                     (old, saved, ctx.config_changed(&cur))

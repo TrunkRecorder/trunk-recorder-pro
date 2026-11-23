@@ -549,7 +549,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     if let Some(p) = cfg.problem() {
         return Err(p);
     }
-    // What edits from here are held against ([`Ctx::restart_check`], [`Ctx::live_sources`]).
+    // What edits from here are held against ([`Ctx::restart_check`], [`Ctx::live_sources`]): the config
+    // as it is, even with something left out of the run (Session::new, #216).
     *ctx.run.lock().unwrap() = Some(cfg.clone());
     // Encryption keys: a file that can't be read, or a bad key in it, stops the start.
     let keys = cfg.load_keys(&ctx.config_path, &|name| crate::unlock::held(&ctx, &cfg, name))?;
@@ -1066,7 +1067,8 @@ fn wall_less(recording_ms: f64) -> f64 {
 /// sources' errors and ends (by way of their decoding threads), and the
 /// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
-    ctx.set_phase(Phase::Running, None, false);
+    // (Running, with what the config left out said: set to receive on a source that isn't one.)
+    ctx.set_phase(Phase::Running, session.left_out(), false);
     // Calls are stamped by this clock: the clock's health watches it against the wall clock.
     ctx.clock.recording(Some(epoch));
     let mut radio_at = Instant::now();

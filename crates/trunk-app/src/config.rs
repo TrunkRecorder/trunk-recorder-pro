@@ -3185,8 +3185,79 @@ impl Config {
         None
     }
 
-    /// Why this config can't start, or None.
+    /// The first of `on` that isn't a source's label (a hand-edited one, say), if any.
+    fn missing_source<'a>(&self, on: &'a [String]) -> Option<&'a String> {
+        on.iter().find(|l| !self.sources.iter().any(|s| s.label() == **l))
+    }
+
+    /// What's set to receive on a source that isn't one: each system or conventional channel being
+    /// recorded, and why, naming the sources there are (#216).
+    pub fn unreceivable(&self) -> Vec<String> {
+        let labels: Vec<String> = self.sources.iter().map(|s| format!("\"{}\"", s.label())).collect();
+        let why = |name: &str, gone: &str| format!("{name}: it is set to receive on \"{gone}\", which isn't one of the sources ({}) — choose its sources again.", labels.join(", "));
+        let systems = self.active_systems().filter_map(|s| self.missing_source(&s.receive_on).map(|g| why(&s.short_name, g)));
+        let channels = self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).filter_map(move |c| self.missing_source(&c.receive_on).map(|g| why(&format!("{} {:.5} MHz", v.short_name, c.freq_hz / 1e6), g))));
+        systems.chain(channels).collect()
+    }
+
+    /// This config to run with what's [`Config::unreceivable`] left out (a system, a conventional
+    /// channel): the rest records. Why each was, to say.
+    pub fn set_aside_unreceivable(&mut self) -> Vec<String> {
+        let why = self.unreceivable();
+        let off: Vec<bool> = self.systems.iter().map(|s| self.missing_source(&s.receive_on).is_some()).collect();
+        let off_rows: Vec<bool> = self.conventional.iter().flat_map(|v| &v.channels).map(|c| self.missing_source(&c.receive_on).is_some()).collect();
+        for (s, off) in self.systems.iter_mut().zip(off) {
+            s.enabled &= !off;
+        }
+        for (c, off) in self.conventional.iter_mut().flat_map(|v| &mut v.channels).zip(off_rows) {
+            c.enabled &= !off;
+        }
+        why
+    }
+
+    /// Sources relabelled since `old` (an edit of a serial, an address, SoapySDR's args: a source is
+    /// named by its label in `receiveOn`): what named one by its old label names it by its new (#216).
+    /// A source is the one at the same place, of the same kind, while the list keeps its length.
+    pub fn follow_source_labels(&mut self, old: &Config) {
+        if old.sources.len() != self.sources.len() {
+            return;
+        }
+        let now: Vec<String> = self.sources.iter().map(Source::label).collect();
+        let renamed: Vec<(String, String)> = old
+            .sources
+            .iter()
+            .zip(&self.sources)
+            .filter(|(o, n)| std::mem::discriminant(&o.kind) == std::mem::discriminant(&n.kind))
+            .map(|(o, n)| (o.label(), n.label()))
+            .filter(|(was, to)| was != to && !now.contains(was))
+            .collect();
+        if renamed.is_empty() {
+            return;
+        }
+        let follow = |on: &mut Vec<String>| {
+            for l in on.iter_mut() {
+                if let Some((_, to)) = renamed.iter().find(|(was, _)| was == l) {
+                    *l = to.clone();
+                }
+            }
+        };
+        self.systems.iter_mut().for_each(|s| follow(&mut s.receive_on));
+        self.conventional.iter_mut().flat_map(|v| &mut v.channels).for_each(|c| follow(&mut c.receive_on));
+    }
+
+    /// Why this config can't start, or None: as it would run, with what's [`Config::unreceivable`]
+    /// left out (that alone doesn't stop the rest); when what's left can't, why both.
     pub fn problem(&self) -> Option<String> {
+        if self.unreceivable().is_empty() {
+            return self.problem_as_it_runs();
+        }
+        let mut run = self.clone();
+        let aside = run.set_aside_unreceivable();
+        run.problem_as_it_runs().map(|p| aside.into_iter().chain([p]).collect::<Vec<_>>().join(" "))
+    }
+
+    /// [`Config::problem`] of a config as it is, nothing left out.
+    fn problem_as_it_runs(&self) -> Option<String> {
         if self.sources.is_empty() {
             return Some("Add a source (a dongle or a capture file).".into());
         }
@@ -3199,16 +3270,8 @@ impl Config {
         if self.sources.iter().any(|s| matches!(&s.kind, SourceKind::File { path, .. } if path.trim().is_empty())) {
             return Some("Choose the capture file to replay.".into());
         }
-        let pinned = self
-            .active_systems()
-            .map(|s| (s.short_name.clone(), &s.receive_on))
-            .chain(self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).map(|c| (format!("{} {:.5} MHz", v.short_name, c.freq_hz / 1e6), &c.receive_on))));
-        let labels: Vec<String> = self.sources.iter().map(Source::label).collect();
-        for (name, on) in pinned {
-            if let Some(gone) = on.iter().find(|l| !labels.contains(l)) {
-                return Some(format!("{name}: it is set to receive on {gone}, which isn't one of the sources — choose its sources again."));
-            }
-        }
+        // (A system or channel set to receive on a source that isn't one is left out of a run, not the
+        // whole run: Config::set_aside_unreceivable.)
         for (i, s) in self.sources.iter().enumerate() {
             match &s.kind {
                 SourceKind::Rtlsdr { address, gain_db, buf_len, buffers, .. } => {
@@ -4133,6 +4196,37 @@ mod tests {
         assert!(problem(at(deep, 2.5e6)).unwrap().contains("digital gain is 0–60 dB"));
     }
 
+    /// #216: a source relabelled by an edit (SoapySDR's args, a serial, an address): what received on
+    /// it follows; not when the list changed length, or the place has another kind.
+    #[test]
+    fn receive_on_follows_a_relabelled_source() {
+        let cfg = |args: &str, extra: bool| -> Config {
+            let mut srcs = vec![serde_json::json!({ "type": "soapy", "args": args, "centerHz": 851e6, "rateHz": 2.4e6 }), serde_json::json!({ "type": "rtlsdr", "serial": "1", "centerHz": 853e6, "rateHz": 2.4e6 })];
+            if extra {
+                srcs.push(serde_json::json!({ "type": "rtlsdr", "serial": "2", "centerHz": 855e6, "rateHz": 2.4e6 }));
+            }
+            Config::from_value(serde_json::json!({
+                "sources": srcs,
+                "systems": [{ "shortName": "pge", "type": "dmr", "receiveOn": [format!("SoapySDR {args}"), "RTL-SDR SN 1"], "sites": [{ "controlChannelsHz": [851012500] }] }],
+                "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 853100000, "mode": "fm", "receiveOn": [format!("SoapySDR {args}")] }] }]
+            }))
+            .unwrap()
+        };
+        let old = cfg("driver=remote,remote=tcp://a:55132", false);
+        let mut new = old.clone();
+        let SourceKind::Soapy { args, .. } = &mut new.sources[0].kind else { panic!() };
+        *args = "driver=remote,remote=tcp://b:55132".into();
+        new.follow_source_labels(&old);
+        assert_eq!(new.systems[0].receive_on, ["SoapySDR driver=remote,remote=tcp://b:55132", "RTL-SDR SN 1"]);
+        assert_eq!(new.conventional[0].channels[0].receive_on, ["SoapySDR driver=remote,remote=tcp://b:55132"]);
+        assert!(new.unreceivable().is_empty());
+        // A source added or removed meanwhile: places don't say which is which, so nothing's renamed.
+        let mut grown = cfg("driver=remote,remote=tcp://b:55132", true);
+        grown.systems[0].receive_on = old.systems[0].receive_on.clone();
+        grown.follow_source_labels(&old);
+        assert_eq!(grown.systems[0].receive_on[0], "SoapySDR driver=remote,remote=tcp://a:55132");
+    }
+
     /// What a run reads only when it starts needs a restart; what applies
     /// while recording doesn't: plugins, sharing and its link, FCC call signs
     /// the recorder learns, a source's name.
@@ -4701,10 +4795,19 @@ mod tests {
         // A pin names the radio, not its place: moved, it moves with it.
         c.sources.swap(0, 1);
         assert_eq!(c.engine_config(0.0, &Default::default()).systems[0].pins, Pins::only(vec![0]));
-        // A radio no longer there: Start says so, rather than receiving it anywhere.
+        // A radio no longer there: what's pinned to it is left out, not received anywhere, and the rest
+        // still starts (#216), with why, naming the sources there are.
         c.sources.remove(0);
-        assert!(c.problem().unwrap().starts_with("trunked: it is set to receive on file b.cu8, which isn't one of the sources"), "{:?}", c.problem());
         assert_eq!(c.pins(&["file b.cu8".into()]), Pins::only(vec![]), "none, not any");
+        let why = c.unreceivable();
+        assert_eq!(why.len(), 2, "{why:?}");
+        assert_eq!(why[0], format!("trunked: it is set to receive on \"file b.cu8\", which isn't one of the sources (\"{}\") — choose its sources again.", c.sources[0].label()));
+        assert!(why[1].starts_with("conv 154.43000 MHz: it is set to receive on \"file b.cu8\""), "{}", why[1]);
+        let mut run = c.clone();
+        assert_eq!(run.set_aside_unreceivable(), why);
+        assert!(!run.systems[0].enabled && !run.conventional[0].channels[0].enabled, "left out of the run");
+        assert!(run.conventional[0].channels[1].enabled, "the channel on any source still records");
+        assert!(run.unreceivable().is_empty() && run.problem().is_none(), "what's left starts: {:?}", run.problem());
         // Unpinned is how a config was always written.
         c.systems[0].receive_on.clear();
         assert!(!serde_json::to_string(&c.systems[0]).unwrap().contains("receiveOn"));

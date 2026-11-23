@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A system set to receive on a source that isn't one no longer stops the rest** (#216). It's left out of the run,
+  and so is a conventional channel set so; everything else records. The log and the dashboard's banner say why, naming
+  the sources there are ("…isn't one of the sources ("RTL-SDR SN 1", "SoapySDR driver=remote,…")"). And a source's
+  label edited in Setup (its serial, address or SoapySDR args) is followed by every `receiveOn` that named it.
+
 - **An Airspy on Windows: what it needs, and why it didn't load** (#219). `airspy.dll` needs `libusb-1.0.dll` and
   `pthreadVC2.dll` beside it, from the same `x64` folder of Airspy's airspy_host_tools, and `pthreadVC2.dll` needs the
   Visual C++ 2010 runtime; Setup's hint and the docs said only `airspy.dll`. A driver that's there but won't load now
