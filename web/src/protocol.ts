@@ -1819,7 +1819,7 @@ export interface MonitorEventBody {
   source?: string;
   perS?: number;
   pct?: number;
-  /** sourceQuiet: its peaks over the last minute, averaged, dBFS (gain too low). */
+  /** sourceQuiet: its peaks over the last minute, averaged, dBFS (gain may be low: no call on it for a day). */
   peakDb?: number;
   plugin?: string;
   state?: string;

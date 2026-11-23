@@ -303,7 +303,8 @@ themselves. Other USRP messages: `USRP can't run at … MSPS (it offers …); se
 ## Clipping or "Peaks at full scale"
 
 The source's light says `Gain too high · N% clipping` or `Gain too high · peaks at full scale`
-(and the event feed `Samples at full scale`), or `Gain too low · peaks … dBFS` for the opposite.
+(and the event feed `Samples at full scale`). For the opposite the card suggests `Gain may be low · peaks … dBFS`
+without changing its light, and not on a source that carried a call in the last day.
 For the first two, the gain is too high, or there's a strong transmitter nearby. Lower the gain a few dB. On the RF
 page, **Headroom** should stay a few dB above zero. More gain isn't better: past a point it
 raises the noise and overloads the radio. See [Radios](guides/radios.md).

@@ -5,6 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **"Gain may be low" is a suggestion, not a warning** (#222). A source whose samples stay tiny keeps its green light;
+  its card suggests *Gain may be low · peaks … dBFS* with the way out (Tune gain, or raise it in Setup), and the event
+  feed says it as info. And a source that carried a call in the last day isn't called quiet at all: a source on a few
+  rarely used voice channels hears nothing for hours, and its samples stay small at a working gain. Gain too high
+  (clipping) still warns, since clipped samples lose calls.
+
+- **DMR, NXDN and EDACS control channels have a history like P25's and SmartNet's** (#218, thanks @taclane). Their
+  sites now record the control channel's offset, eye opening, signal, noise and SNR, so the Decode page's charts show
+  them.
+
 ## [0.5.0] — 2026-11-23
 
 **Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or

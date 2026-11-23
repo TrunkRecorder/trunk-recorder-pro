@@ -154,8 +154,8 @@ coloured light. Click one to go to the page about it. These are the events you c
 | `<system>: control channel back` | green | Back to normal. |
 | `<source>: dropping samples` | amber | The computer or USB bus isn't keeping up; calls on that source lose audio. See [Troubleshooting](../troubleshooting.md#dropped-samples). |
 | `<source>: gain too high · …% clipping` | amber | More than 0.5% of samples are at full scale: the gain is too high, or a strong signal is nearby. Lower the gain a few dB. |
-| `<source>: gain too low · peaks … dBFS` | amber | The source's samples stayed tiny for a minute (their peaks average the dBFS shown): the gain may be too low. Raise it a few dB. |
-| `<source>: clean again` | green | No more drops, clipping or low gain. |
+| `<source>: gain may be low · peaks … dBFS` | info | The source's samples stayed tiny for a minute (their peaks average the dBFS shown) and it carried no call in the last day: the gain may be too low. A suggestion, not a warning: a source on a few quiet voice channels can look like this at a working gain. Try a few dB more, or **Tune gain**. |
+| `<source>: clean again` | green | No more drops, clipping or low-gain suggestion. |
 | `<plugin>: error — …` / `warning — …` / `ok — …` | red / amber / green | A plugin's own status changed. See the Plugins page. |
 | `<target>: not answering` | red | One of the hosts checked (`monitor.checkHosts`) stopped answering. |
 | `<target>: back · down … s` | green | It's back. |

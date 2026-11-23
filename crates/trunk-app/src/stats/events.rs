@@ -56,7 +56,7 @@ pub enum MonitorEvent {
     /// A source's samples hit the rails (gain too high?).
     #[serde(rename_all = "camelCase")]
     SourceClipping { source: String, pct: f64 },
-    /// A source's samples stayed tiny for a minute (gain too low?): `peak_db`, their peaks' average, dBFS.
+    /// A source's samples stayed tiny for a minute and it carried no call for a day (gain maybe low): `peak_db`, their peaks' average, dBFS.
     #[serde(rename_all = "camelCase")]
     SourceQuiet { source: String, peak_db: f64 },
     #[serde(rename_all = "camelCase")]
@@ -121,7 +121,7 @@ impl MonitorEvent {
             MonitorEvent::ControlLost { .. } | MonitorEvent::LinkDown { .. } | MonitorEvent::DiskLow { .. } | MonitorEvent::SpoolFull { .. } | MonitorEvent::FolderUnwritable { .. } => "bad",
             MonitorEvent::SpoolLow { critical, .. } | MonitorEvent::ClockOff { bad: critical, .. } => if *critical { "bad" } else { "warn" },
             MonitorEvent::SpoolRemoved { remade, .. } => if *remade { "warn" } else { "bad" },
-            MonitorEvent::SourceDrops { .. } | MonitorEvent::SourceClipping { .. } | MonitorEvent::SourceQuiet { .. } | MonitorEvent::ClockStep { .. } => "warn",
+            MonitorEvent::SourceDrops { .. } | MonitorEvent::SourceClipping { .. } | MonitorEvent::ClockStep { .. } => "warn",
             MonitorEvent::PluginHealth { state, .. } => match state.as_str() {
                 "error" => "bad",
                 "warning" => "warn",

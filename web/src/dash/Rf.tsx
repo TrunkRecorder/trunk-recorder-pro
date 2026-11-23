@@ -105,10 +105,16 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
         />
       </div>
       {src.unused && (
-        <div className="row src-unused">
+        <div className="row src-note">
           <span className="chip warn">Unused</span>
           <span className="muted">Probably removable</span>
           <Info label="Why unused">{UNUSED_SOURCE_WHY}</Info>
+        </div>
+      )}
+      {off?.dir === "low" && (
+        <div className="row src-note">
+          <span className="chip">Suggestion</span>
+          <span className="muted">{off.why}</span>
         </div>
       )}
       {k >= 0 && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && <TuneGain s={s} k={k} off={off?.dir ?? null} />}

@@ -24,6 +24,10 @@ pub const QUIET_DB: f64 = -50.0;
 pub const QUIET_S: usize = 60;
 /// Quiet ends only this far, dB, over where it began (no flapping on the line).
 const QUIET_HYST_DB: f64 = 3.0;
+/// A source that carried a call within this long, s, isn't quiet: its gain
+/// was enough for that call. (A source on a few rarely used voice channels
+/// hears nothing for hours, and its samples stay small at a working gain.)
+pub const VOICE_VOUCHES_S: f64 = 24.0 * 3600.0;
 
 #[derive(Default, Clone)]
 pub struct SampleMeter {
@@ -85,8 +89,9 @@ impl SampleMeter {
     /// Report under the source's scope and start the next window: `peak`
     /// (dBFS), `clipPct` (% of samples at the rails), `quiet` (1 while it is,
     /// [`Self::quiet`]), and the totals `samples` (→ the measured rate),
-    /// `dropped`, `errors`.
-    pub fn report(&mut self, sink: &mut dyn Sink) {
+    /// `dropped`, `errors`. `voiced`: it carried a call within
+    /// [`VOICE_VOUCHES_S`], so it isn't quiet.
+    pub fn report(&mut self, sink: &mut dyn Sink, voiced: bool) {
         sink.counter("samples", self.samples);
         sink.counter("dropped", self.dropped);
         sink.counter("errors", self.errors);
@@ -103,7 +108,7 @@ impl SampleMeter {
             self.peaks.clear();
         }
         let line = if self.eight_bit { QUIET_DB_8BIT } else { QUIET_DB };
-        self.quiet = self.peaks.len() == QUIET_S && self.peak_avg() < line + if self.quiet { QUIET_HYST_DB } else { 0.0 };
+        self.quiet = !voiced && self.peaks.len() == QUIET_S && self.peak_avg() < line + if self.quiet { QUIET_HYST_DB } else { 0.0 };
         if self.quiet {
             sink.gauge("quiet", 1.0);
         }
@@ -145,13 +150,13 @@ mod tests {
         let quiet: Vec<u8> = (0..4096).map(|i| if i % 2 == 0 { 137 } else { 118 }).collect();
         m.u8(&quiet);
         let mut g = G::default();
-        m.report(&mut g);
+        m.report(&mut g, false);
         let peak = g.0.iter().find(|(n, _)| n == "peak").unwrap().1;
         assert!((-23.0..-21.0).contains(&peak), "{peak}");
         assert_eq!(g.0.iter().find(|(n, _)| n == "clipPct").unwrap().1, 0.0);
         m.u8(&[255u8; 4096]);
         let mut g = G::default();
-        m.report(&mut g);
+        m.report(&mut g, false);
         assert_eq!(g.0.iter().find(|(n, _)| n == "clipPct").unwrap().1, 100.0);
         assert_eq!(g.0.iter().find(|(n, _)| n == "samples").unwrap().1, 4096.0);
     }
@@ -161,7 +166,7 @@ mod tests {
         let iq: Vec<u8> = (0..4096).map(|i| if i % 2 == 0 { 128 + counts } else { 127 - counts }).collect();
         for _ in 0..seconds {
             m.u8(&iq);
-            m.report(&mut G::default());
+            m.report(&mut G::default(), false);
         }
         m.quiet()
     }
@@ -175,7 +180,7 @@ mod tests {
         assert!((-32.0..-30.5).contains(&db), "{db}");
         let mut g = G::default();
         m.u8(&[130u8; 64]);
-        m.report(&mut g);
+        m.report(&mut g, false);
         assert!(g.0.iter().any(|(n, v)| n == "quiet" && *v == 1.0), "its gauge");
         // A working gain in a quiet band (±20 counts): never.
         assert_eq!(rtl(&mut SampleMeter::default(), 20, 2 * QUIET_S), None);
@@ -185,7 +190,7 @@ mod tests {
         // Stopped (nothing comes): not quiet.
         rtl(&mut m, 3, QUIET_S);
         assert!(m.quiet().is_some());
-        m.report(&mut G::default());
+        m.report(&mut G::default(), false);
         assert_eq!(m.quiet(), None, "stopped");
     }
 
@@ -195,13 +200,17 @@ mod tests {
         let iq = |a: f32| vec![Complex32::new(a, -a); 1024];
         for _ in 0..QUIET_S {
             m.iq(&iq(0.025));
-            m.report(&mut G::default());
+            m.report(&mut G::default(), false);
         }
         assert_eq!(m.quiet(), None, "−32 dBFS from a 12-bit radio is fine");
         for _ in 0..QUIET_S {
             m.iq(&iq(0.002));
-            m.report(&mut G::default());
+            m.report(&mut G::default(), false);
         }
         assert!(m.quiet().is_some_and(|db| db < QUIET_DB));
+        // It carried a call lately: its gain was enough for that.
+        m.iq(&iq(0.002));
+        m.report(&mut G::default(), true);
+        assert_eq!(m.quiet(), None, "voiced");
     }
 }

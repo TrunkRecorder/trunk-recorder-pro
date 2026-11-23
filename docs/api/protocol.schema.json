@@ -4117,7 +4117,7 @@
             },
             "peakDb": {
               "type": "number",
-              "description": "sourceQuiet: its peaks over the last minute, averaged, dBFS (gain too low)."
+              "description": "sourceQuiet: its peaks over the last minute, averaged, dBFS (gain may be low: no call on it for a day)."
             },
             "plugin": {
               "type": "string"
