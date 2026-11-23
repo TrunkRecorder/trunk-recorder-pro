@@ -484,9 +484,11 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
     if (f["x-multiline"]) {
       control = <TextArea id={id} rows={4} value={text} placeholder={placeholder} onChange={set} />;
     } else if (f["x-secret"]) {
+      // A placeholder is never masked, even in a password box: one set above is shown as dots until Show.
+      const secretHint = !emptyValue(inherited) && !shown ? "•••••••• (set above)" : placeholder;
       control = (
         <span className="secret">
-          <TextInput id={id} className="mono" type={shown ? "text" : "password"} autoComplete="off" value={text} placeholder={placeholder} onChange={set} />
+          <TextInput id={id} className="mono" type={shown ? "text" : "password"} autoComplete="off" value={text} placeholder={secretHint} onChange={set} />
           <button type="button" className="btn ghost small" onClick={() => setShown(!shown)} aria-label={shown ? `Hide ${label}` : `Show ${label}`}>
             {shown ? "Hide" : "Show"}
           </button>

@@ -30,3 +30,14 @@ test("plugin form: a slider in its steps, and read-only fields the plugin fills 
   assert.match(page, /Invite Invite the bot ↗ https:\/\/example\.com\/invite Copy/);
   assert.match(page, /Channel Not known yet/);
 });
+
+test("plugin form: a secret set above isn't in the placeholder, which a password box shows as it is", () => {
+  const schema: PluginSchema = { type: "object", properties: { apiKey: { type: "string", title: "API key", "x-secret": true } } };
+  const inherited = renderToString(<SchemaFields schema={schema} values={{}} inherited={{ apiKey: "KEY-FROM-SYSTEM" }} onChange={() => {}} id="p" />);
+  assert.doesNotMatch(inherited, /KEY-FROM-SYSTEM/, inherited);
+  assert.match(inherited, /<input[^>]*type="password"[^>]*placeholder="•+ \(set above\)"/, inherited);
+  const own = renderToString(<SchemaFields schema={schema} values={{ apiKey: "OWN-KEY" }} onChange={() => {}} id="p" />);
+  assert.match(own, /<input[^>]*type="password"[^>]*value="OWN-KEY"/, "its own value is in a password box, masked");
+  const none = renderToString(<SchemaFields schema={schema} values={{}} onChange={() => {}} id="p" />);
+  assert.match(none, /<input[^>]*type="password"[^>]*placeholder=""/, none);
+});
