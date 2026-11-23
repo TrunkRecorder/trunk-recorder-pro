@@ -66,6 +66,13 @@ impl Variant {
             Variant::Xpt => "Hytera XPT",
         }
     }
+
+    /// Standard trunking's (Tier III, Capacity Max, Connect Plus): heard
+    /// once, a site is it. Hytera radios on it send Hytera's own blocks too,
+    /// which aren't XPT signalling there.
+    pub fn grants(self) -> bool {
+        matches!(self, Variant::TierIII | Variant::CapacityMax | Variant::ConnectPlus)
+    }
 }
 
 /// A Tier III / Capacity Max site's System Identity Code (C_ALOHA's and C_BCAST's 16 bits,
@@ -389,7 +396,8 @@ impl Site {
                 self.notes.push(format!("Colour code {c}"));
             }
         }
-        let xpt = super::xpt::control(&e);
+        // (A site heard granting as standard trunking does isn't XPT, whatever its radios send.)
+        let xpt = super::xpt::control(&e).filter(|_| !self.variant.is_some_and(Variant::grants));
         let is_xpt = xpt.is_some() || self.variant == Some(Variant::Xpt);
         // Another system's carrier (a neighbour on a listed frequency, or a stray): not followed.
         // XPT repeaters may each have their own colour code: every listed one is the site's
@@ -816,6 +824,26 @@ mod tests {
         s.csbk(0, 0, &Csbk(b), None, 1.0, &mut Vec::new());
         assert_eq!((s.identity().get(IdField::Network), s.identity().site()), (Some(100), Some(17)));
         assert_eq!(s.variant, Some(Variant::TierIII));
+    }
+
+    /// A Tier III site whose Hytera radios send Hytera's own blocks (one that
+    /// is an XPT site status's shape) stays Tier III: its voice LC keeps
+    /// 24-bit IDs, and it isn't told it's XPT.
+    #[test]
+    fn hytera_blocks_on_a_tier3_site_are_not_xpt() {
+        let mut s = Site::new(&[451_012_500.0], 24_000.0, DmrConfig::default());
+        let mut out = Vec::new();
+        s.csbk(0, 0, &csbk([0x99, 0x00, 0x00, 0x00, 0x00, 0xb0, 0x13, 0x00, 0x00, 0x00]), None, 1.0, &mut out);
+        assert_eq!(s.variant, Some(Variant::TierIII));
+        s.carriers[0].chan.slots[0].color_code = Some(1);
+        s.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0x0a, 0x68, 0x28, 0, 25, 0, 0, 0, 0, 0]), mbc: false }, 2.0, &mut out);
+        assert_eq!((s.variant, s.carriers[0].chan.variant), (Some(Variant::TierIII), Some(Variant::TierIII)));
+        assert!(!s.notes.iter().any(|n| n.contains("XPT")), "{:?}", s.notes);
+        // Before anything standard is heard, the same block is XPT's (an XPT site's).
+        let mut x = Site::new(&[451_012_500.0], 24_000.0, DmrConfig::default());
+        x.carriers[0].chan.slots[0].color_code = Some(1);
+        x.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0x0a, 0x68, 0x28, 0, 25, 0, 0, 0, 0, 0]), mbc: false }, 2.0, &mut out);
+        assert_eq!(x.variant, Some(Variant::Xpt));
     }
 
     /// C_ALOHA and C_BCAST both carry it, read from a control channel only.
