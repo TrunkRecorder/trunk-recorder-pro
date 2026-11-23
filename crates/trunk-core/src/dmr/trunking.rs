@@ -396,8 +396,7 @@ impl Site {
                 self.notes.push(format!("Colour code {c}"));
             }
         }
-        // (A site heard granting as standard trunking does isn't XPT, whatever its radios send.)
-        let xpt = super::xpt::control(&e).filter(|_| !self.variant.is_some_and(Variant::grants));
+        let xpt = super::xpt::control_on(self.variant, &e);
         let is_xpt = xpt.is_some() || self.variant == Some(Variant::Xpt);
         // Another system's carrier (a neighbour on a listed frequency, or a stray): not followed.
         // XPT repeaters may each have their own colour code: every listed one is the site's

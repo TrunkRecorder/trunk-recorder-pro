@@ -171,6 +171,12 @@ pub trait ControlChannel: Send {
     fn patch_hold_s(&self) -> f64 {
         patches::P25_HOLD_S
     }
+    /// It sends a call's grant again every few seconds while the call goes on, its hang time
+    /// too, maybe less often than the call timeout (DMR's Late Entry): calls are held as long as
+    /// it's heard repeating ([`super::calls::CallManager::hold_repeats`]).
+    fn repeats_grants(&self) -> bool {
+        false
+    }
     /// How its analog calls are demodulated.
     fn analog(&self) -> AnalogTuning {
         AnalogTuning::default()
@@ -526,6 +532,9 @@ trait WatchedSite: Send {
     fn patch_hold_s(&self) -> f64 {
         patches::P25_HOLD_S
     }
+    fn repeats_grants(&self) -> bool {
+        false
+    }
     fn analog(&self) -> AnalogTuning {
         AnalogTuning::default()
     }
@@ -581,6 +590,9 @@ impl<S: WatchedSite> ControlChannel for Watched<S> {
     }
     fn patch_hold_s(&self) -> f64 {
         self.site.patch_hold_s()
+    }
+    fn repeats_grants(&self) -> bool {
+        self.site.repeats_grants()
     }
     fn analog(&self) -> AnalogTuning {
         self.site.analog()
@@ -732,6 +744,11 @@ impl WatchedSite for dmr::Site {
     }
     fn voice_params(&self) -> VoiceParams {
         VoiceParams { dmr: self.variant, ..Default::default() }
+    }
+    /// A Tier III site repeats a kept channel's grant, Late Entry set, at intervals the network
+    /// chooses (5.3 s measured on one, against the 3 s call timeout).
+    fn repeats_grants(&self) -> bool {
+        true
     }
 }
 

@@ -494,7 +494,7 @@ impl Channel {
             k[1 - slot as usize].keyed = true;
         }
         out.extend(self.ev.drain(..).map(|e| (slot, e)));
-        if !self.variant.is_some_and(super::trunking::Variant::grants) && out[start..].iter().any(|(_, e)| super::xpt::control(e).is_some()) {
+        if out[start..].iter().any(|(_, e)| super::xpt::control_on(self.variant, e).is_some()) {
             self.variant = Some(super::trunking::Variant::Xpt);
         }
         if self.variant == Some(super::trunking::Variant::Xpt) {

@@ -665,7 +665,6 @@ export function sameOnTheAir(c: Config, live: SystemStatus[]): [System, System][
 
 const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
 
-/** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
 /** A site's number as its protocol states it: P25's RFSS-site ("1-3"), else the site alone; null: not known. */
 export function siteNumber(id: SiteIdentity): string | null {
   if (id.site == null) return null;
@@ -679,6 +678,7 @@ export function siteLabel(id: SiteIdentity): string | null {
   return id.network != null && id.rfss == null ? `net ${id.network} · site ${n}` : `site ${n}`;
 }
 
+/** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
 export function siteText(id: SiteIdentity): string {
   const parts: string[] = [];
   if (id.wacn != null) parts.push(`WACN ${hexText(id.wacn)}`);

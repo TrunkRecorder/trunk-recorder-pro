@@ -1830,13 +1830,11 @@ impl Core {
                 lc_protected_tgs: BTreeSet::new(),
                 cfg: sc.clone(),
             };
-            // A DMR site grants a kept channel again every few seconds: its calls are held as long.
-            t.calls.hold_repeats = matches!(sc.protocol, Protocol::Dmr(_));
-            let (hold_s, id_fields, reopens) = {
+            let (hold_s, repeats, id_fields, reopens) = {
                 let c = t.cc();
-                (c.patch_hold_s(), c.identity_fields(), c.reopens())
+                (c.patch_hold_s(), c.repeats_grants(), c.identity_fields(), c.reopens())
             };
-            (t.calls.patches.hold_s, t.id_fields, t.reopens) = (hold_s, id_fields, reopens);
+            (t.calls.patches.hold_s, t.calls.hold_repeats, t.id_fields, t.reopens) = (hold_s, repeats, id_fields, reopens);
             t.start(&mut radio, sys, &mut events)?;
             trunks.push(t);
         }

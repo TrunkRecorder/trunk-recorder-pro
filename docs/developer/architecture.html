@@ -1789,7 +1789,7 @@ const CFG = {
   "systems[].sites[].expect.sysId": ["number", "—", "System ID (P25, SmartNet, NXDN Type-C)."],
   "systems[].sites[].expect.rfss": ["number", "—", "P25 RFSS."],
   "systems[].sites[].expect.site": ["number", "—", "Site (P25, SmartNet, NXDN Type-C)."],
-  "systems[].sites[].voiceChannelsHz": ["array of Hz", "[]", "From the survey; only used for auto-centring."],
+  "systems[].sites[].voiceChannelsHz": ["array of Hz", "[]", "From the survey or Setup (with a DMR or NXDN site's lcnTableHz); only used for auto-centring."],
   "systems[].sites[].bandplan": ["800_standard · 800_reband · 800_splinter · 900 · 400_custom / obt", "800_standard", "SmartNet band plan; OBT needs bandplanBaseHz, bandplanSpacingHz, bandplanHighHz (and bandplanOffset)."],
   "systems[].sites[].lcnTableHz": ["{ LCN: Hz }", "{}", "DMR / NXDN logical channel numbers to frequencies."],
   "systems[].sites[].dmrChannelsHz": ["array of Hz", "[]", "DMR: more carriers to watch."],
