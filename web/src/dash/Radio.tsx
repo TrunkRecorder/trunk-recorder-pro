@@ -4,7 +4,7 @@
 // radio, its week and its connections.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatMhz, systemColor } from "../config.ts";
+import { formatMhz, siteLabel, systemColor } from "../config.ts";
 import { callsQuery, editTalkgroup, mayEdit, nameUnit, radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "../NameFields.tsx";
 import { originText } from "../origins.ts";
@@ -764,11 +764,11 @@ function UnitView({ s, sys, unit }: { s: AppState; sys: DashSystem; unit: number
 
 /** Which system a page is about: its colour, name, kind and site. */
 function SystemHeader({ s, sys }: { s: AppState; sys: DashSystem }) {
-  // Its sites as their control channels say: "SysID 1A2 · site 1-3", or "SysID 1A2 · sites 1-3, 1-4".
+  // Its sites as their control channels say: "SysID 1A2 · site 1-3", "SysID 1A2 · site 1-3, site 1-4", a DMR network's "net 12 · site 4".
   const ids = sys.sites.flatMap((x) => (x.status ? [x.status.identity] : []));
   const sysId = ids.find((i) => i.sysId != null)?.sysId;
-  const numbers = ids.filter((i) => i.site != null).map((i) => `${i.rfss ?? "?"}-${i.site}`);
-  const site = [sysId != null ? `SysID ${sysId.toString(16).toUpperCase()}` : "", numbers.length ? `site${numbers.length > 1 ? "s" : ""} ${numbers.join(", ")}` : ""].filter(Boolean).join(" · ");
+  const sites = ids.flatMap((i) => siteLabel(i) ?? []);
+  const site = [sysId != null ? `SysID ${sysId.toString(16).toUpperCase()}` : "", sites.join(", ")].filter(Boolean).join(" · ");
   return (
     <div className="sys-header" style={{ borderLeftColor: systemColor(s.config, sys.name) }}>
       <div>

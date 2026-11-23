@@ -247,7 +247,7 @@ In the **Signals found** list:
   Frequencies are rounded to the 6.25 kHz channel raster. It doesn't set the radio.
 - **Add** on a DMR control / rest channel adds a trunked DMR system with its colour code. For
   Capacity Plus, add the site's other repeaters under **Site frequencies**; for the others, the
-  voice channels under **Voice frequencies**. See [DMR](dmr.md).
+  voice channels under **Watched frequencies** or **Voice channels**. See [DMR](dmr.md).
 - **Add** on an NXDN control channel adds an NXDN Type-C system with its RAN; add its channel
   table or voice frequencies next. On an NXDN conventional signal it adds a conventional channel.
   See [NXDN](nxdn.md).

@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Trunked DMR fixes** (#220, thanks @taclane):
+  - **Fewer empty recordings on Tier III.** A Tier III site repeats a call's grant (Late Entry) every few seconds,
+    through its hang time, which can be longer than the call timeout. Each repeat started a new call with no voice
+    (22–25% of recordings on one site). A site's calls are now held as long as it's heard repeating, and empty
+    recordings on that site went to 5%.
+  - **A Tier III site with Hytera radios stays Tier III.** It was switched to XPT, which cut its radio IDs to 16 bits.
+  - **Radios placed over the voice channels.** A DMR or NXDN site's channel table, and a new **Voice channels** field
+    in Setup, now count when Auto places the radios, and the source advice judges an Auto source where Start would put
+    it. DMR's watched list is now labelled **Watched frequencies**.
+  - **Site labels.** A DMR site read `site ?-4`; a Tier III network's now reads `net 12 · site 4`.
+
 - **A shorter message for what's left out** (#216, thanks @jschmall). With several systems set to receive on a source
   that isn't one, the message names each with the label it gives, and lists the sources there are once instead of for
   each. And when that leaves nothing to record, it says only that, not "Add a system with a control channel".

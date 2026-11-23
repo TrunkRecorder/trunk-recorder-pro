@@ -760,7 +760,9 @@ pub struct Site {
     /// Only follow a control channel with this identity (fields left out
     /// match anything) — this site, not its neighbour on a nearby frequency.
     pub expect: SiteIdentity,
-    /// Voice channels the survey heard (for placing sources; informational).
+    /// Voice channels: what the survey heard, or (DMR, NXDN) frequencies
+    /// granted but not watched. For placing sources; nothing listens to them
+    /// until a grant does.
     pub voice_channels_hz: Vec<f64>,
     /// SmartNet (`type` "smartnet"): the band plan, as Trunk Recorder names
     /// it — "800_standard", "800_reband", "800_splinter", "900", or
@@ -1127,6 +1129,18 @@ impl Site {
         } else {
             vec![]
         }
+    }
+
+    /// Frequencies its calls may be granted on that it doesn't watch, for
+    /// placing sources: its voice channels, and a DMR or NXDN site's channel
+    /// table (a grant names a channel the table turns into a frequency, then
+    /// a recorder follows it, as a P25 grant's).
+    pub fn voice_hz(&self, sys: &System) -> Vec<f64> {
+        let table = (sys.is_dmr() || sys.is_nxdn()).then(|| self.lcn_table::<u32>().into_values().map(|f| f as f64)).into_iter().flatten();
+        let mut out: Vec<f64> = self.voice_channels_hz.iter().copied().chain(table).filter(|&f| f > 0.0).collect();
+        out.sort_by(f64::total_cmp);
+        out.dedup();
+        out
     }
 
     /// The DMR settings.
@@ -3066,7 +3080,7 @@ impl Config {
     pub fn advice(&self, found: &[Option<crate::rates::Rates>], heard: &Heard) -> Option<Advice> {
         let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
         let choices: Vec<Choices> = self.sources.iter().enumerate().map(|(k, s)| s.choices(found.get(k).and_then(Option::as_ref))).collect();
-        advise(&sources, &choices, &self.targets_with(heard))
+        advise(&sources, &choices, &self.targets_with(heard), &self.targets())
     }
 
     /// What the sources' advice ([`Config::advice`], by the config alone)
@@ -3085,7 +3099,7 @@ impl Config {
                 let mut set = Vec::new();
                 if x.released && src.center_hz > 0.0 {
                     set.push("on auto".to_string());
-                } else if let Some(c) = x.center_hz.filter(|c| src.center_hz > 0.0 && (c - src.center_hz).abs() >= 1000.0) {
+                } else if let Some(c) = x.center_hz.filter(|c| if src.center_hz > 0.0 { (c - src.center_hz).abs() >= 1000.0 } else { !x.released }) {
                     set.push(format!("{:.4} MHz", c / 1e6));
                 }
                 if (x.rate_hz - src.rate_hz).abs() >= 1.0 {
@@ -3114,7 +3128,7 @@ impl Config {
 
     /// What the radios are placed to reach, and what Start needs reached:
     /// each active site's control (and watched) channels and its voice
-    /// channels — one control channel needed (a DMR, NXDN or EDACS site:
+    /// channels ([`Site::voice_hz`]) — one control channel needed (a DMR, NXDN or EDACS site:
     /// every frequency it watches) — then each conventional system's
     /// channels, every one needed (a group for each set of sources its rows
     /// may be received on). Each on its sources. The sites' groups come
@@ -3128,7 +3142,7 @@ impl Config {
         };
         let mut groups: Vec<Group> = self
             .active_sites()
-            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.kind.info().watched, &s.voice_channels_hz, &sys.receive_on))
+            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.kind.info().watched, &s.voice_hz(sys), &sys.receive_on))
             .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
             let rows: Vec<&Channel> = v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0).collect();
@@ -3157,7 +3171,7 @@ impl Config {
     pub fn receivers(&self) -> Vec<Receiving> {
         let rx = self.receiving(&self.resolved_centers());
         let on = |system: &str, receive_on: &[String], hz: f64| Receiving { system: system.to_string(), hz, source: rx(receive_on, hz) };
-        let trunked = self.active_sites().flat_map(|(sys, s)| s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).chain(s.voice_channels_hz.iter().copied()).map(move |hz| (sys, hz))).map(|(sys, hz)| on(&sys.short_name, &sys.receive_on, hz));
+        let trunked = self.active_sites().flat_map(|(sys, s)| s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).chain(s.voice_hz(sys)).map(move |hz| (sys, hz))).map(|(sys, hz)| on(&sys.short_name, &sys.receive_on, hz));
         let conv = self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).map(move |c| (v, c))).map(|(v, c)| on(&v.short_name, &c.receive_on, c.freq_hz));
         trunked.chain(conv).collect()
     }
@@ -4375,6 +4389,43 @@ mod tests {
         assert_eq!(c.problem(), None, "{:?}", c.resolved_centers());
         // Only the control channel known: the spares are placed, but nothing listed needs them.
         assert_eq!(c.placement().iter().map(|p| p.listed).collect::<Vec<_>>(), [1, 0, 0, 0]);
+    }
+
+    /// A Tier III site learning its channels from the air, an auto radio for
+    /// its control channel and one for its voice: the voice one goes over the
+    /// channel table's frequencies (or the voice channels), which are
+    /// recorded when granted; knowing only the control channel, it's put
+    /// beside the others, where the advice heard the calls tells it to go.
+    #[test]
+    fn a_dmr_sites_granted_channels_place_a_radio() {
+        let rtl = |rate_hz: f64, center_hz: f64| Source { kind: SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz, rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let mut dmr = system("tier3", &[451_012_500.0]);
+        dmr.kind = SystemKind::Dmr;
+        let voice = [452_512_500.0, 453_387_500.0];
+        let c = |dmr: &System| Config { sources: vec![rtl(2_400_000.0, 852_731_250.0), rtl(1_024_000.0, 0.0), rtl(1_920_000.0, 0.0)], systems: vec![system("p25", &[853_750_000.0]), dmr.clone()], ..Default::default() };
+        let over_voice = |c: &Config| voice.iter().all(|&f| c.sources[2].reaches(c.resolved_centers()[2], f));
+
+        dmr.sites[0].lcn_table_hz = [("1".to_string(), voice[0]), ("2".to_string(), voice[1])].into();
+        let with_table = c(&dmr);
+        assert_eq!(with_table.problem(), None);
+        assert!(over_voice(&with_table), "{:?}", with_table.resolved_centers());
+        assert!(with_table.placement()[2].listed > 0);
+        // Not watched: the engine's DMR site still listens to the control channel alone.
+        assert!(with_table.systems[1].sites[0].watched_channels(&with_table.systems[1]).is_empty());
+
+        dmr.sites[0].lcn_table_hz.clear();
+        dmr.sites[0].voice_channels_hz = voice.to_vec();
+        assert!(over_voice(&c(&dmr)), "voice channels place it as the table does");
+
+        dmr.sites[0].voice_channels_hz.clear();
+        let bare = c(&dmr);
+        assert!(!over_voice(&bare) && bare.placement()[2].listed == 0, "{:?}", bare.resolved_centers());
+        // Heard there: the advice gives it a centre over them, as auto wouldn't put it there.
+        let heard: Heard = [("tier3".to_string(), voice.iter().map(|&hz| Weighted { hz, weight: 1700.0 }).collect())].into();
+        let a = bare.advice(&[], &heard).expect("advice");
+        let s = &a.sources[2];
+        assert!(s.changed && !s.auto && !s.released && a.after.reached > a.before.reached, "{a:?}");
+        assert!(voice.iter().all(|&f| bare.sources[2].reaches(s.center_hz.unwrap(), f)), "{a:?}");
     }
 
     #[test]

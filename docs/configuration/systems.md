@@ -147,7 +147,7 @@ a link to the system's page in the directory. The directory's answer is kept as 
 | `directoryId` | | `""` | string | Set by [sharing](#sharing-with-the-directory): the directory's ID for the site |
 | `controlChannelsHz` | | `[]` | array of numbers | P25 and SmartNet: the control channel and its alternates, Hz. The recorder hunts through them, moving on when one goes quiet for 5 s. DMR and NXDN: every frequency listed is watched at once (NXDN Type-D: the repeaters) |
 | `expect` | | `{}` | object | Site lock: only follow a control channel with this identity. See [Site lock](#site-lock-expect) |
-| `voiceChannelsHz` | | `[]` | array of numbers | Voice channels Find my system heard. Used only to place Auto sources so they cover them too |
+| `voiceChannelsHz` | | `[]` | array of numbers | Voice channels: what Find my system heard, or ones you list (Setup's **Voice channels**). Used only to place Auto sources so they cover them too (with a DMR or NXDN site's `lcnTableHz`); nothing listens to one until a grant names it |
 
 The protocol keys below are a site's too, except `defaultMode` (SmartNet) and `nxdnType` (NXDN),
 which are the system's.

@@ -4,7 +4,7 @@
 // so a bad channel, a band edge or a source's ppm shows up as a pattern.
 
 import { Fragment, useState, type ReactNode } from "react";
-import { formatMhz } from "../config.ts";
+import { formatMhz, siteNumber } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
@@ -469,7 +469,7 @@ export function SiteIdentityLine(props: { kind: DashSystem["kind"]; st: SiteStat
             ["NAC", hex(id.nac)],
             ["WACN", hex(id.wacn)],
             ["SysID", hex(id.sysId)],
-            ["Site", id.site != null ? `${id.rfss ?? "?"}-${id.site}` : null],
+            ["Site", siteNumber(id)],
           ];
   return (
     <div className="kv small">

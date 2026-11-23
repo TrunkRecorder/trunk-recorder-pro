@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, kindLabel, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os, networkRadio, onNetwork, desktopOnly } from "./config.ts";
+import { detectRadios, siteNumber, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, kindLabel, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os, networkRadio, onNetwork, desktopOnly } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -868,7 +868,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
                 items={[
                   { k: "System ID", v: hex(id.sysId) },
                   id.wacn != null && { k: "WACN", v: hex(id.wacn) },
-                  id.site != null && { k: "Site", v: `${id.rfss ?? "?"}-${id.site}` },
+                  id.site != null && { k: "Site", v: siteNumber(id) },
                 ]}
               />
             ) : (
