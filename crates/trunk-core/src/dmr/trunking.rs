@@ -695,8 +695,14 @@ impl Site {
                 let ch = k.bits(16, 28);
                 let abs = cont.and_then(|c| (ch == 0xfff).then(|| absolute_downlink(c)).flatten());
                 let group = op != 0x30;
-                let what = ["Private voice grant", "Talkgroup voice grant", "Broadcast talkgroup voice grant"][(op - 0x30) as usize];
-                self.grant(idx, slot, ch, k.bits(28, 29) as u8, k.bits(32, 56), Some(k.bits(56, 80)), group, false, k.bits(30, 31) != 0, abs, what, t, out);
+                // Late Entry: the grant again while the call goes on (its set-up's say 0), an update.
+                let late = k.bits(29, 30) != 0;
+                let what = if late {
+                    ["Private voice grant (late entry)", "Talkgroup voice grant (late entry)", "Broadcast talkgroup voice grant (late entry)"]
+                } else {
+                    ["Private voice grant", "Talkgroup voice grant", "Broadcast talkgroup voice grant"]
+                }[(op - 0x30) as usize];
+                self.grant(idx, slot, ch, k.bits(28, 29) as u8, k.bits(32, 56), Some(k.bits(56, 80)), group, late, k.bits(30, 31) != 0, abs, what, t, out);
             }
             (FID_STANDARD, 0x28) => {
                 self.set_variant(Variant::TierIII);
@@ -959,6 +965,13 @@ mod tests {
         s.csbk(0, 0, &tier3_grant(0x31, 7, 0, 3001, 12), None, 1.0, &mut out);
         assert_eq!((out[0].kind, out[0].freq_hz, out[0].voice.slot().unwrap_or(9), out[0].talkgroup, out[0].source), (MessageType::Grant, 451_012_500, 0, 3001, 12));
         assert_eq!(s.variant, Some(Variant::TierIII));
+        // The same grant again while the call goes on (Late Entry set): an update.
+        out.clear();
+        let mut late = tier3_grant(0x31, 7, 0, 3001, 12);
+        put(&mut late.0, 29, 30, 1);
+        s.csbk(0, 0, &late, None, 1.5, &mut out);
+        assert_eq!((out[0].kind, out[0].freq_hz), (MessageType::Update, 451_012_500));
+        assert!(out[0].meta.starts_with("Talkgroup voice grant (late entry): TG 3001"), "{}", out[0].meta);
         // A private call with absolute parameters (channel 0xFFF, MBC).
         out.clear();
         s.csbk(0, 0, &tier3_grant(0x30, 0xfff, 1, 777, 12), Some(&absolute(9, 451_587_500)), 2.0, &mut out);
