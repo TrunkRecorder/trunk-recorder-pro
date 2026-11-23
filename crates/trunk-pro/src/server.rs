@@ -929,7 +929,11 @@ pub(crate) fn tr_config(path: &str) -> ToClient {
 pub(crate) async fn greeting(ctx: &Arc<Ctx>, access: ApiAccess, user: Option<String>) -> Vec<ToClient> {
     let control = access == ApiAccess::Control;
     let ctx2 = ctx.clone();
-    let found = tokio::task::spawn_blocking(move || (control.then(|| json!(crate::radio::rtl::devices())), crate::radio::radios_json(false), runtime::history(&ctx2), kept_now(&ctx2))).await;
+    let found = tokio::task::spawn_blocking(move || {
+        let sources = ctx2.config.lock().unwrap().sources.clone();
+        (control.then(|| json!(crate::radio::rtl::devices())), crate::radio::radios_json(false, &sources, false), runtime::history(&ctx2), kept_now(&ctx2))
+    })
+    .await;
     let (devices, radios, history, kept) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new(), next: None }, Vec::new()));
     let mut m = greeting_now(ctx, devices, radios, history, kept);
     if control {
@@ -1306,6 +1310,13 @@ pub(crate) fn apply_config(ctx: &Ctx, old: &crate::config::Config, new: &crate::
     if old.recording.capture_dir != new.recording.capture_dir {
         ctx.folders.recordings.follow(std::path::Path::new(&new.recording.capture_dir));
     }
+    // A radio on the network named anew: asked what it is (its model, rates and gains), in the background, and the
+    // list of radios sent again, as a search would (Setup shows them; nothing else asks).
+    let network = |c: &crate::config::Config| c.sources.iter().filter_map(crate::radio::on_network).map(|(_, _, key)| key).collect::<Vec<_>>();
+    if network(old) != network(new) {
+        let (hub, sources) = (ctx.hub.clone(), new.sources.clone());
+        std::thread::spawn(move || crate::runtime::publish(&hub, ToClient::Radios { radios: crate::radio::radios_json(false, &sources, true) }));
+    }
     // Their delays apply at once, to what's waiting too (no restart).
     ctx.plugins.set_delays(new);
     // Sharing switched on or off (or what it uses changed, like licenses): at once too.
@@ -1555,10 +1566,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
         }
         Command::Devices => tokio::task::spawn_blocking(devices).await.ok(),
         Command::FindRadios => {
-            let radios = tokio::task::spawn_blocking(|| crate::radio::radios_json(true)).await.unwrap_or(Value::Null);
+            let sources = ctx.config.lock().unwrap().sources.clone();
+            let radios = tokio::task::spawn_blocking(move || crate::radio::radios_json(true, &sources, true)).await.unwrap_or(Value::Null);
             Some(ToClient::Radios { radios })
         }
-        Command::ProbeRadio { kind, address } => Some(tokio::task::spawn_blocking(move || crate::radio::probe(&kind, &address)).await.unwrap_or_else(|_| ToClient::error("the probe stopped before it answered"))),
         Command::Quit => {
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
@@ -2801,7 +2812,6 @@ mod tests {
             (r#"{"type":"stop"}"#, C),
             (r#"{"type":"devices"}"#, C),
             (r#"{"type":"findRadios"}"#, C),
-            (r#"{"type":"probeRadio","kind":"spyserver","address":"a"}"#, C),
             (r#"{"type":"listDir"}"#, C),
             (r#"{"type":"readTrConfig","path":"/"}"#, C),
             (r#"{"type":"listen","on":true}"#, L),

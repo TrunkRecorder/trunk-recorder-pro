@@ -1,6 +1,6 @@
 // Config helpers for the setup form (the recorder validates again).
 
-import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, FromRecorder, LogSettings, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitName, UnitNames, Origin } from "./protocol.ts";
+import type { AdjacentSite, Channel, Config, Conventional, Device, DirectoryLink, FccLicense, FccLicenses, FoundRadio, LogSettings, NetworkRadio, Radios, RecordingOverride, Site, SiteIdentity, Source, SourceStatus, System, SystemStatus, Talkgroup, UnitName, UnitNames, Origin } from "./protocol.ts";
 import { readTalkgroupFile, splitCsvLine } from "./talkgroups.ts";
 import { SYSTEM_KINDS, type SystemKind } from "./systemKinds.gen.ts";
 
@@ -34,7 +34,7 @@ export function defaultLog(): LogSettings {
 
 
 export function newDongle(): Source {
-  return { type: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, ppm: 0, bufLen: 0, buffers: 0 };
+  return { type: "rtlsdr", serial: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, biasTee: false, ppm: 0, bufLen: 0, buffers: 0 };
 }
 export function newUsrp(): Source {
   return { type: "usrp", args: "", centerHz: 0, rateHz: 8_000_000, gainDb: 40, agc: false, antenna: "", ppm: 0 };
@@ -57,14 +57,16 @@ export function newBladerf(): Source {
 export function newHackrf(): Source {
   return { type: "hackrf", serial: "", centerHz: 0, rateHz: 8_000_000, lnaDb: 16, vgaDb: 20, amp: false, biasTee: false, ppm: 0 };
 }
-export function newRtltcp(): Source {
-  return { type: "rtltcp", address: "", centerHz: 0, rateHz: 2_400_000, gainDb: RTL_DEFAULT_GAIN_DB, agc: false, biasTee: false, ppm: 0 };
-}
 export function newSpyserver(): Source {
-  return { type: "spyserver", address: "", centerHz: 0, rateHz: 2_500_000, iqFormat: "uint8", gain: 14, ppm: 0 };
+  return { type: "spyserver", address: "", centerHz: 0, rateHz: 2_500_000, iqFormat: "cu8", gain: 14, ppm: 0 };
 }
-/** A source that is a radio on the network, found by its address (a `rtl_tcp` or a SpyServer). */
-export const onNetwork = (x: Source): x is Extract<Source, { type: "rtltcp" | "spyserver" }> => x.type === "rtltcp" || x.type === "spyserver";
+/** The address of the radio on the network a source is (an RTL-SDR's `rtl_tcp` server, a SpyServer), trimmed; undefined: it isn't one. */
+export function networkAddress(x: Source): string | undefined {
+  const a = x.type === "spyserver" ? x.address : x.type === "rtlsdr" ? x.address ?? "" : "";
+  return x.type === "spyserver" || a.trim() ? a.trim() : undefined;
+}
+/** A radio on the network (an RTL-SDR behind `rtl_tcp`, a SpyServer): reached by TCP from the desktop app, not the browser. */
+export const onNetwork = (x: Source): boolean => networkAddress(x) !== undefined;
 export function newSoapy(): Source {
   return { type: "soapy", args: "", centerHz: 0, rateHz: 8_000_000, agc: true, gainDb: null, gains: {}, antenna: "", settings: "", ppm: 0 };
 }
@@ -100,7 +102,7 @@ export interface SourceKind {
   rateHint?: string;
   /** The field that names its device ("" = the first found). */
   device?: "serial" | "args" | "address";
-  /** It's a radio on the network, reached by TCP from the desktop app: nothing to install, and not in the browser. */
+  /** It's a radio on the network (`radios.network`), reached by TCP from the desktop app: nothing to install, and not in the browser. */
   network?: boolean;
   /** The library it needs, loaded at run time (desktop app only). */
   driver?: Driver;
@@ -117,7 +119,16 @@ export interface SourceKind {
 }
 
 export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
-  rtlsdr: { label: "RTL-SDR", fresh: newDongle, get rates() { return sourceRates("rtlsdr"); }, rateHint: "2.4 or less is dependable", device: "serial", soapyDriver: "rtlsdr", liveAgc: true },
+  rtlsdr: {
+    label: "RTL-SDR",
+    fresh: newDongle,
+    get rates() { return sourceRates("rtlsdr"); },
+    rateHint: "2.4 or less is dependable",
+    device: "serial",
+    soapyDriver: "rtlsdr",
+    liveAgc: true,
+    biasT: "Powers an LNA on the antenna cable (an RTL-SDR Blog V3 or V4)",
+  },
   usrp: {
     label: "USRP",
     fresh: newUsrp,
@@ -177,17 +188,6 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     soapyDriver: "hackrf",
     biasT: "Powers an LNA via the antenna port (up to 50 mA)",
   },
-  rtltcp: {
-    label: "rtl_tcp",
-    fresh: newRtltcp,
-    get rates() { return sourceRates("rtltcp"); },
-    rateHint: "2.4 or less is dependable",
-    device: "address",
-    native: true,
-    network: true,
-    liveAgc: true,
-    biasT: "Powers an LNA on the antenna cable (an RTL-SDR Blog V3 or V4 behind it)",
-  },
   spyserver: {
     label: "SpyServer",
     fresh: newSpyserver,
@@ -195,7 +195,6 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     freeRate: true,
     rateHint: "One the server offers: its top rate halved (R2: 2.5, 1.25…)",
     device: "address",
-    native: true,
     network: true,
   },
   soapy: {
@@ -212,22 +211,25 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
 };
 
 /** The kinds of source with a driver (installed, or built in) and so the desktop app: the recorder reports each in `radios`. */
-export type DriverKind = keyof Radios;
-/** A kind of source the desktop app alone opens: a library loaded at run time, or a driver of its own. */
-export const kindNeedsDriver = (k: Source["type"]): k is DriverKind => !!(SOURCE_KINDS[k].driver || SOURCE_KINDS[k].native);
+export type DriverKind = Exclude<keyof Radios, "network">;
+/** A kind of source whose radios a driver of the desktop app opens: a library loaded at run time, or one of its own. */
+export const kindNeedsDriver = (k: Source["type"]): k is DriverKind => !SOURCE_KINDS[k].network && !!(SOURCE_KINDS[k].driver || SOURCE_KINDS[k].native);
 export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filter(kindNeedsDriver);
 /** A source that needs a driver, and so the desktop app. */
 export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => kindNeedsDriver(x.type);
+/** A kind only the desktop app has: a driver's, or a radio on the network's. */
+export const kindDesktopOnly = (k: Source["type"]): boolean => kindNeedsDriver(k) || !!SOURCE_KINDS[k].network;
+/** A source only the desktop app opens: a driver's radio, or one on the network (the browser can't open a socket). */
+export const desktopOnly = (x: Source): boolean => needsDriver(x) || onNetwork(x);
+/** Why the browser can't open source `x` ("SpyServer needs the desktop app."), or null when it can. */
+export const desktopOnlyWhy = (x: Source): string | null => (!desktopOnly(x) ? null : `${onNetwork(x) && x.type === "rtlsdr" ? "An RTL-SDR on the network" : SOURCE_KINDS[x.type].label} needs the desktop app.`);
 /** A source with a bias-T the recorder switches. */
 export const hasBiasT = (x: Source): x is Extract<Source, { biasTee: boolean }> => !!SOURCE_KINDS[x.type].biasT;
 
-/** What a radio on the network said when asked (`probed`), by `probeKey`. */
-export type Probes = Record<string, Extract<FromRecorder, { type: "probed" }>>;
-/** A probe's key: the kind and the address as typed, trimmed. */
-export const probeKey = (kind: string, address: string) => `${kind}:${address.trim()}`;
-
 /** The device a source names ("" = the first found, or a file). */
 export function deviceId(x: Source): string {
+  const net = networkAddress(x);
+  if (net !== undefined) return net;
   const f = SOURCE_KINDS[x.type].device;
   return f ? ((x as Record<string, unknown>)[f] as string) : "";
 }
@@ -248,12 +250,9 @@ export function sourceFor(type: Source["type"], id: string, found?: FoundRadio):
  * The radio a source names ("" = the first found), as its driver listed it; undefined when
  * it isn't listed (not attached, not searched for, or not a driver's).
  */
-export function foundRadio(radios: Radios | null | undefined, x: Source, probes?: Probes): FoundRadio | undefined {
-  // A radio on the network is found by asking it (`probeRadio`), not by its driver's search.
-  if (x.type === "spyserver") {
-    const p = probes?.[probeKey(x.type, x.address)];
-    return p && !p.error && p.rates.length ? { label: p.model ?? "", model: p.model, rates: p.rates } : undefined;
-  }
+export function foundRadio(radios: Radios | null | undefined, x: Source): FoundRadio | undefined {
+  const net = networkAddress(x);
+  if (net !== undefined) return networkRadio(radios, x);
   if (!needsDriver(x) || !radios) return undefined;
   const devices: FoundRadio[] = radios[x.type]?.devices ?? [];
   const id = deviceId(x).trim();
@@ -263,15 +262,20 @@ export function foundRadio(radios: Radios | null | undefined, x: Source, probes?
 }
 
 
-/** The highest rate a radio said it runs at (a probed SpyServer's), Hz; undefined when it listed none. */
+/** The radio on the network a source names, as the recorder last heard from it (or why it couldn't: `error`). */
+export function networkRadio(radios: Radios | null | undefined, x: Source): NetworkRadio | undefined {
+  const net = networkAddress(x);
+  return net === undefined ? undefined : radios?.network?.devices.find((d) => d.kind === x.type && d.address === net);
+}
+
+/** The highest rate a radio said it runs at (a SpyServer's), Hz; undefined when it listed none. */
 export function highestRate(found: FoundRadio | undefined): number | undefined {
   return found?.rates?.length ? Math.max(...found.rates) : undefined;
 }
 
-/** What the radio runs at, MSPS ("10 or 2.5", "0.52–61.44"), when it said; null when not. */
-export function ratesText(found: FoundRadio | undefined, fine = false): string | null {
-  // (`fine`: to three decimals, as a SpyServer's rates are shown; the zeros that mean nothing never are.)
-  const m = (hz: number) => (fine ? Math.round(hz / 1e3) / 1e3 : Math.round(hz / 1e4) / 100);
+/** What the radio runs at, MSPS ("10 or 2.5", "0.521–61.44"; to the kHz, as the recorder says it), when it said; null when not. */
+export function ratesText(found: FoundRadio | undefined): string | null {
+  const m = (hz: number) => Math.round(hz / 1e3) / 1e3;
   if (found?.rates?.length) return found.rates.map(m).join(" or ");
   if (found?.rateRange) return `${m(found.rateRange[0])}–${m(found.rateRange[1])}`;
   return null;
@@ -1144,7 +1148,9 @@ export function importTrunkRecorderConfig(
       );
       continue;
     }
-    const serial = /rtl=([^,\s]+)/.exec(dev)?.[1] ?? "";
+    const serial = /(?:^|,)rtl=([^,\s]+)/.exec(dev)?.[1] ?? "";
+    // gr-osmosdr's rtl_tcp=host:port: the same dongle, on another machine.
+    const address = /rtl_tcp=([^,\s]+)/.exec(dev)?.[1] ?? "";
     // osmosdr's buflen= / buffers= (bytes per USB transfer, transfers in flight).
     const bufLen = Number(/buflen=(\d+)/.exec(dev)?.[1] ?? 0);
     const buffers = Number(/buffers=(\d+)/.exec(dev)?.[1] ?? 0);
@@ -1158,10 +1164,12 @@ export function importTrunkRecorderConfig(
     imported.push({
       type: "rtlsdr",
       serial: /^\d$/.test(serial) ? "" : serial,
+      ...(address ? { address } : {}),
       centerHz: center,
       rateHz: rate,
       gainDb: gain ?? RTL_DEFAULT_GAIN_DB,
       agc,
+      biasTee: /bias=1/.test(dev),
       ppm: Math.round(ppm),
       bufLen: okLen ? bufLen : 0,
       buffers: Math.min(buffers, 256),

@@ -172,11 +172,12 @@ A SoapySDR source with `driver=hackrf` still works, for a rad1o or a HackRF behi
 
 ### Radios on the network: rtl_tcp and SpyServer
 
-An **rtl_tcp** or **SpyServer** source is a radio on another machine, reached over TCP by its address: no driver, no SoapySDR, and
-nothing to find (a network can't be searched), so you type the **Server address** in Setup → Radios.
+An RTL-SDR behind **rtl_tcp**, or a **SpyServer**, is a radio on another machine, reached over TCP by its address: no driver, no
+SoapySDR, and nothing to find (a network can't be searched), so you type the **Server address** in Setup → Radios. Once it's saved,
+the recorder asks the server what it is (its tuner or receiver, rates and gain steps) and Setup shows it, or *Not answering*.
 
 - **rtl_tcp**: on the machine with the dongle, run `rtl_tcp -a 0.0.0.0` (port 1234; `-p` changes it), and open that port to this
-  machine. In Setup the address is just the host when the server is on port 1234 (`pi.local`), and `host:port` when it isn't
+  machine. In Setup it's an **RTL-SDR** source with **Connection** set to **rtl_tcp**. The address is just the host when the server is on port 1234 (`pi.local`), and `host:port` when it isn't
   (`pi.local:4321`). It serves one client at a time: a dongle another client has open doesn't answer a second, which shows as a source that
   connects but says nothing.
 - **SpyServer**: on the machine with an Airspy (or an RTL-SDR), run Airspy's `spyserver` (port 5555). Any number of clients can

@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
 import { Info } from "./charts.tsx";
 import { hasBiasT, SOURCE_KINDS } from "./config.ts";
+import { can } from "./controller.ts";
 import { asTyped, decimal, finishDraft, gain, hex, talkgroupProblem, type TextCodec } from "./fieldText.ts";
 import type { Source } from "./protocol.ts";
 
@@ -62,7 +63,9 @@ export function Toggle(props: { label: string; checked: boolean; onChange: (v: b
 
 /** A radio's bias-T switch, wherever it's picked (Setup, the setup guide, a scan's spare radio); none for a radio without one. */
 export function BiasT(props: { src: Source; checked: boolean; onChange: (v: boolean) => void }) {
-  return hasBiasT(props.src) ? <Toggle label="Bias-T" hint={SOURCE_KINDS[props.src.type].biasT} checked={props.checked} onChange={props.onChange} /> : null;
+  // (A dongle's is switched by the desktop app's driver: the browser's WebUSB one leaves it as it is.)
+  const offered = hasBiasT(props.src) && (props.src.type !== "rtlsdr" || can("drivers"));
+  return offered ? <Toggle label="Bias-T" hint={SOURCE_KINDS[props.src.type].biasT} checked={props.checked} onChange={props.onChange} /> : null;
 }
 
 /**

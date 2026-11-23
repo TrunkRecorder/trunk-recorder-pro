@@ -30,7 +30,7 @@ use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use crate::config::{AirspyGain, AirspyGains, Config, SampleFormat, Source, SourceKind};
 use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, bladerf, hackrf, rtl, rtltcp, soapy, spyserver, uhd};
+use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, uhd};
 use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
@@ -424,13 +424,12 @@ pub struct Runner {
 /// The gain to set on a source running with `old` now that it is `new`:
 /// when the gain is all that changed and the radio takes it while running.
 /// The gain in dB always; AGC on or off only on an RTL-SDR, an Airspy or a
-/// HydraSDR, or through `rtl_tcp` (the others take that at the next start).
+/// HydraSDR (an RTL-SDR on USB or behind `rtl_tcp`; the others take that at the next start).
 pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     // `old` with `new`'s gain: equal to `new` when only the gain differs (a name aside).
     let (mut o, new) = (old.radio(), &new.radio());
     let gain = match (&mut o.kind, &new.kind) {
-        (SourceKind::Rtlsdr { gain_db, agc, .. }, SourceKind::Rtlsdr { gain_db: g, agc: a, .. })
-        | (SourceKind::Rtltcp { gain_db, agc, .. }, SourceKind::Rtltcp { gain_db: g, agc: a, .. }) => {
+        (SourceKind::Rtlsdr { gain_db, agc, .. }, SourceKind::Rtlsdr { gain_db: g, agc: a, .. }) => {
             (*gain_db, *agc) = (*g, *a);
             if *a { Gain::Agc } else { Gain::Db(*g as f32) }
         }
@@ -833,17 +832,14 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
     std::thread::Builder::new().name(name.to_string()).spawn(move || {
         let Source { kind, rate_hz, ppm, .. } = src;
         match kind {
-            SourceKind::Rtlsdr { serial, gain_db, agc, buf_len, buffers } => {
-                sdr::run_with(i, rtl::RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
+            SourceKind::Rtlsdr { serial, address, gain_db, agc, bias_tee, buf_len, buffers } => {
+                sdr::run_with(i, rtl::RtlConfig { serial, address, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers, bias_tee }, tx, stop, ctl)
             }
             SourceKind::Usrp { args, gain_db, agc, antenna, wire_format } => {
                 sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
             }
             SourceKind::Hackrf { serial, lna_db, vga_db, amp, bias_tee } => {
                 sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf_gain(lna_db, vga_db, amp), bias_tee, ppm }, tx, stop, ctl)
-            }
-            SourceKind::Rtltcp { address, gain_db, agc, bias_tee } => {
-                sdr::run_with(i, rtltcp::RtlTcpConfig { address, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, bias_tee }, tx, stop, ctl)
             }
             SourceKind::Spyserver { address, iq_format, gain, digital_gain_db } => {
                 sdr::run_with(i, spyserver::SpyserverConfig { address, center_hz: center, rate_hz, format: iq_format, gain, digital_gain_db }, tx, stop, ctl)

@@ -39,11 +39,10 @@ import {
   systemType,
   deviceKey,
   needsDriver,
-  probeKey,
-  kindNeedsDriver,
+  kindDesktopOnly,
   hasBiasT,
   airspyGains,
-  onNetwork,
+  networkRadio,
   pickedBySerial,
   type SerialKind,
   sourceInputs,
@@ -66,7 +65,6 @@ import {
   dismissTodo,
   downloadText,
   findRadios,
-  probeRadio,
   forgetNames,
   moveNames,
   renameSystem,
@@ -89,7 +87,7 @@ import { renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconLock, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, SpyserverFormat, StorageSettings, System } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, SampleFormat, StorageSettings, System } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -554,14 +552,14 @@ async function connectDongle(): Promise<void> {
 }
 
 /** A sample rate in MSPS: pick a common one or type another. */
-function RateInput(props: { hz: number; options: number[]; onChange: (hz: number) => void; free?: boolean; trim?: boolean }) {
+function RateInput(props: { hz: number; options: number[]; onChange: (hz: number) => void; free?: boolean }) {
   const id = useId();
   if (!props.free) {
     return (
       <select value={props.hz} onChange={(e) => props.onChange(Number(e.target.value))}>
         {(props.options.includes(props.hz) ? props.options : [props.hz, ...props.options]).map((r) => (
           <option key={r} value={r}>
-            {props.trim ? Math.round(r / 1e3) / 1e3 : (r / 1e6).toFixed(3)} MSPS
+            {Math.round(r / 1e3) / 1e3} MSPS
           </option>
         ))}
       </select>
@@ -685,13 +683,13 @@ type EditSource = (fn: (x: Source) => void) => void;
 function PpmField(props: { src: Exclude<Source, { type: "file" }>; edit: EditSource }) {
   const { src, edit } = props;
   return (
-    <Field label="Correction, ppm" info={src.type === "rtlsdr" || src.type === "rtltcp" ? "Whole numbers only: an RTL-SDR's driver takes no fractions." : undefined}>
+    <Field label="Correction, ppm" info={src.type === "rtlsdr" ? "Whole numbers only: an RTL-SDR's driver takes no fractions." : undefined}>
       <NumberInput
         label="Frequency correction, ppm"
         value={src.ppm}
         onChange={(v) =>
           edit((x) => {
-            if (x.type !== "file") x.ppm = x.type === "rtlsdr" || x.type === "rtltcp" ? Math.round(v ?? 0) : v ?? 0;
+            if (x.type !== "file") x.ppm = x.type === "rtlsdr" ? Math.round(v ?? 0) : v ?? 0;
           })
         }
       />
@@ -954,27 +952,25 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
   const center = resolvedCenters(c)[i];
   const auto = src.centerHz ? null : center;
   // The radio picked, as its driver found it: an Airspy R2 runs at 10 / 2.5 MSPS, a Mini at 6 / 3.
-  const found = foundRadio(s.radios, src, s.probes);
-  const foundRates = ratesText(found, src.type === "spyserver");
-  // A SpyServer says what it runs at when asked: ask once the address stops changing.
-  const probeAt = src.type === "spyserver" ? src.address.trim() : "";
-  useEffect(() => {
-    if (!probeAt) return;
-    const t = setTimeout(() => probeRadio("spyserver", probeAt), 600);
-    return () => clearTimeout(t);
-  }, [probeAt]);
-  const probeError = src.type === "spyserver" ? s.probes[probeKey("spyserver", src.address)]?.error : undefined;
+  const found = foundRadio(s.radios, src);
+  const foundRates = ratesText(found);
+  // A radio on the network, as it last answered: the recorder asks it when its address is saved.
+  const netError = networkRadio(s.radios, src)?.error;
   const edit = (fn: (x: Source) => void) => updateConfig((x) => fn(x.sources[i]));
-  // The first time a server is heard from for an address entered here, the rate starts at its highest (not for one
+  // The first time a SpyServer answers for an address entered here, the rate starts at its highest (not for one
   // already in the config when Setup opened: that rate was chosen).
-  const seen = useRef(probeAt);
+  const spyAt = src.type === "spyserver" ? src.address.trim() : "";
+  const seen = useRef(spyAt);
   const top = highestRate(found);
   useEffect(() => {
-    if (!probeAt || top === undefined || seen.current === probeAt) return;
-    seen.current = probeAt;
+    if (!spyAt || top === undefined || seen.current === spyAt) return;
+    seen.current = spyAt;
     edit((x) => x.type === "spyserver" && void (x.rateHz = top));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [probeAt, top]);
+  }, [spyAt, top]);
+  // An RTL-SDR on USB or behind `rtl_tcp` (shown as chosen until an address is typed; one without is on USB).
+  const [rtlNet, setRtlNet] = useState(src.type === "rtlsdr" && !!src.address?.trim());
+  const viaNetwork = src.type === "rtlsdr" && can("drivers") && (rtlNet || !!src.address?.trim());
   const setKind = (kind: Source["type"]) =>
     updateConfig((x) => {
       const old = x.sources[i];
@@ -1033,7 +1029,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           <span className="field-label">Kind</span>
           <div className="seg small" role="radiogroup" aria-label={`${sourceTitle(c, i)} kind`}>
             {(Object.keys(SOURCE_KINDS) as Source["type"][])
-              .filter((k) => !kindNeedsDriver(k) || can("drivers"))
+              .filter((k) => !kindDesktopOnly(k) || can("drivers"))
               .map((k) => (
                 <button key={k} role="radio" aria-checked={src.type === k} className={src.type === k ? "on" : ""} onClick={() => setKind(k)}>
                   {SOURCE_KINDS[k].label}
@@ -1041,7 +1037,22 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
               ))}
           </div>
         </div>
-        {src.type === "rtlsdr" && (
+        {src.type === "rtlsdr" && can("drivers") && (
+          <Field label="Connection" info="An RTL-SDR on this computer's USB, or on another machine through its rtl_tcp server (rtl_tcp -a 0.0.0.0 there): nothing to install either way.">
+            <div className="seg small" role="radiogroup" aria-label={`${sourceTitle(c, i)} connection`}>
+              <button role="radio" aria-checked={!viaNetwork} className={viaNetwork ? "" : "on"} onClick={() => {
+                setRtlNet(false);
+                edit((x) => x.type === "rtlsdr" && void delete x.address);
+              }}>
+                USB
+              </button>
+              <button role="radio" aria-checked={viaNetwork} className={viaNetwork ? "on" : ""} onClick={() => setRtlNet(true)}>
+                rtl_tcp
+              </button>
+            </div>
+          </Field>
+        )}
+        {src.type === "rtlsdr" && !viaNetwork && (
           <Field label="Dongle" hint={s.devices.length ? undefined : <span className="warn-text">{web ? "None connected" : "None found"}</span>}>
             <div className="row">
               <select value={src.serial} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.serial = e.target.value))}>
@@ -1066,18 +1077,28 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             </div>
           </Field>
         )}
-        {src.type === "rtlsdr" && can("drivers") && <UsbTransfers src={src} edit={edit} />}
-        {onNetwork(src) && (
-          <Field label="Server address" hint={src.type === "rtltcp" ? "host or host:port (port defaults to 1234 if not specified)" : "host or host:port (port defaults to 5555 if not specified)"} info={src.type === "rtltcp" ? "Where rtl_tcp is running (rtl_tcp -a 0.0.0.0 on that machine). The port is 1234 unless the address gives one, as pi.local:4321. One client at a time." : "Where spyserver is running. Any number can listen, but only the first to connect can tune the receiver."} wide>
-            <TextInput className="mono" value={src.address} placeholder={src.type === "rtltcp" ? "e.g. raspberrypi.local" : "e.g. 192.168.1.20:5555"} onChange={(v) => edit((x) => onNetwork(x) && void (x.address = v))} />
+        {src.type === "rtlsdr" && can("drivers") && !viaNetwork && <UsbTransfers src={src} edit={edit} />}
+        {(viaNetwork || src.type === "spyserver") && (
+          <Field
+            label="Server address"
+            hint={netError ? <span className="warn-text" title={netError}>Not answering</span> : `host or host:port (${src.type === "spyserver" ? 5555 : 1234} if left off)`}
+            info={src.type === "spyserver" ? "Where spyserver is running. Any number can listen, but only the first to connect can tune the receiver." : "Where rtl_tcp is running. The port is 1234 unless the address gives one, as pi.local:4321. One client at a time."}
+            wide
+          >
+            <TextInput
+              className="mono"
+              value={src.type === "spyserver" ? src.address : src.type === "rtlsdr" ? src.address ?? "" : ""}
+              placeholder={src.type === "spyserver" ? "e.g. 192.168.1.20:5555" : "e.g. raspberrypi.local"}
+              onChange={(v) => edit((x) => (x.type === "spyserver" || x.type === "rtlsdr") && void (x.address = v))}
+            />
           </Field>
         )}
         {src.type === "spyserver" && (
-          <Field label="I/Q format" hint={`${((src.rateHz * 2 * (src.iqFormat === "uint8" ? 1 : src.iqFormat === "int16" ? 2 : 4) * 8) / 1e6).toFixed(0)} Mbit/s over the link`} info="8-bit takes the least of the link; 16-bit and float keep more of a weak signal beside a strong one (an Airspy's ADC is 12-bit).">
-            <select value={src.iqFormat} onChange={(e) => edit((x) => x.type === "spyserver" && void (x.iqFormat = e.target.value as SpyserverFormat))}>
-              <option value="uint8">8-bit</option>
-              <option value="int16">16-bit</option>
-              <option value="float32">32-bit float</option>
+          <Field label="I/Q format" hint={`${Math.round((src.rateHz * { cu8: 2, cs16: 4, cf32: 8 }[src.iqFormat] * 8) / 1e6)} Mbit/s over the link`} info="8-bit takes the least of the link; 16-bit and float keep more of a weak signal beside a strong one (an Airspy's ADC is 12-bit).">
+            <select value={src.iqFormat} onChange={(e) => edit((x) => x.type === "spyserver" && void (x.iqFormat = e.target.value as SampleFormat))}>
+              <option value="cu8">8-bit</option>
+              <option value="cs16">16-bit</option>
+              <option value="cf32">32-bit float</option>
             </select>
           </Field>
         )}
@@ -1266,14 +1287,14 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
               <span className="warn-text" title={`This ${radioName(src.type, found)} runs at ${foundRates} MSPS, not ${src.rateHz / 1e6}`}>
                 Won&apos;t start · {radioName(src.type, found)}: {foundRates}
               </span>
-            ) : (src.type === "rtlsdr" || src.type === "rtltcp") && src.rateHz > 2_400_000 ? (
+            ) : src.type === "rtlsdr" && src.rateHz > 2_400_000 ? (
               <span className="warn-text" title="Past 2.4 MSPS an RTL-SDR loses samples without saying so, most of all beside another dongle: fine for a waterfall, not for decoding">
                 May drop samples · 2.4 is dependable
               </span>
             ) : foundRates ? (
               `This ${radioName(src.type, found)}: ${foundRates}`
-            ) : probeError ? (
-              <span className="warn-text" title={probeError}>
+            ) : netError ? (
+              <span className="warn-text" title={netError}>
                 Can&apos;t ask the server what it runs at
               </span>
             ) : (
@@ -1286,7 +1307,6 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             hz={src.rateHz}
             // (A SpyServer that has said what it runs at refuses any other rate: only its own are offered.)
             free={(!!SOURCE_KINDS[src.type].freeRate && !(src.type === "spyserver" && found)) || (src.type === "file" && can("service"))}
-            trim={src.type === "spyserver"}
             options={sourceRates(src.type, found)}
             onChange={(hz) => edit((x) => void (x.rateHz = hz))}
           />
@@ -1326,11 +1346,11 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             </>
           }
         >
-          {(src.type === "rtlsdr" || src.type === "rtltcp") && (
+          {src.type === "rtlsdr" && (
             <Field label="Gain, dB" hint={src.agc ? "Fixed usually works better" : "0–49.6"} info="Most dongles: 0–49.6 in steps (0.9, 1.4, 2.7 … 49.6); the nearest is used.">
               <div className="row">
-                <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== undefined && edit((x) => (x.type === "rtlsdr" || x.type === "rtltcp") && void (x.gainDb = v))} />
-                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => (x.type === "rtlsdr" || x.type === "rtltcp") && void (x.agc = v))} />
+                <NumberInput gain label="Gain, dB" value={src.gainDb} disabled={src.agc} onChange={(v) => v !== undefined && edit((x) => x.type === "rtlsdr" && void (x.gainDb = v))} />
+                <Toggle label="AGC" checked={src.agc} onChange={(v) => edit((x) => x.type === "rtlsdr" && void (x.agc = v))} />
               </div>
             </Field>
           )}

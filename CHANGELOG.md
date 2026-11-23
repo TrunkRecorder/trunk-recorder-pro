@@ -29,14 +29,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   and the roll-off plot's edges straight away; it's saved once the field is left, as before (Escape puts it back). The
   roll-off plot and the field show the same guard band, so a value typed while the plot is open shows there too. (#105)
 
-- **Radios on the network: `rtl_tcp` and SpyServer sources.** An RTL-SDR served by `rtl_tcp`, and an Airspy R2 / Mini / HF+ (or an
-  RTL-SDR) served by Airspy's `spyserver`, can be a source by their address (`"type": "rtltcp"` and `"type": "spyserver"`; Setup →
-  Radios): nothing to install, and they work in Docker. Plain TCP from the desktop app, as the protocols are; not in the browser.
-  `rtl_tcp` takes gain, AGC, bias-T and ppm as an RTL-SDR does (gain and AGC live while recording), and a gain is set to the
-  nearest step the dongle's tuner has (R820T, R828D, E4000), the step set being what's reported; the gain-tuning tool walks that tuner's table, and a SpyServer's gain steps once it has been asked (Setup does when its address is entered); a SpyServer's gain step is set live too. A SpyServer source takes its I/Q
-  at a decimation stage the server offers (a rate it doesn't is refused with the ones it does), as 8-bit, 16-bit or float, with the
-  server's gain step and digital gain divided out; a second client of one server keeps to the window of the first, which holds the
-  receiver. Setup asks a SpyServer what it runs at once its address is entered, and offers those rates, starting a new address at the highest. A survey step waits longer on these than on a dongle, for what the link has queued from before a retune.
+- **Radios on the network: RTL-SDRs through `rtl_tcp`, and SpyServer.** An RTL-SDR on another machine is an RTL-SDR source
+  with the `address` of its `rtl_tcp` server (Setup → Radios → **Connection**: **rtl_tcp**): the same gain, AGC, bias-T, ppm,
+  rates and gain tuning as one on USB, its gain set to the nearest step of the tuner the server names (R820T, R828D, E4000). An
+  Airspy R2 / Mini / HF+ (or an RTL-SDR) served by Airspy's `spyserver` is a `spyserver` source: I/Q at a decimation stage the
+  server offers (a rate it doesn't is refused with the ones it does), as `cu8`, `cs16` or `cf32` like a capture file's, with the
+  server's gain step (set live) and digital gain divided out; a second client of one server keeps to the window of the first.
+  Nothing to install, and they work in Docker; the desktop app only (plain TCP). When a saved config names one, the recorder
+  asks it what it is, and the list of radios carries its model, rates and gain steps: Setup offers its rates (a new SpyServer
+  starts at its highest) or says it isn't answering, and the gain-tuning tool walks its steps. A survey step waits longer on
+  these, for what the link has queued from before a retune. Importing a Trunk Recorder config takes `rtl_tcp=host:port`.
+  (PR #208 by gofaster.)
+- **RTL-SDRs on USB have a bias-T switch** (desktop app), for an LNA on the antenna cable of an RTL-SDR Blog V3 or V4.
+- **Sample rates to the kHz.** A radio's rates read 2.048 and 0.625 MSPS, not 2.05 and 0.63.
 
 ## [0.4.1] — 2026-11-22
 

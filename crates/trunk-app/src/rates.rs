@@ -40,9 +40,9 @@ impl Rates {
 }
 
 impl std::fmt::Display for Rates {
-    /// "10 / 2.5" or "0.52–61.44" (MSPS).
+    /// "10 / 2.5 / 0.625" or "0.52–61.44" (MSPS: to the kHz, the zeros that mean nothing left off).
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let msps = |hz: f64| (hz / 1e4).round() / 100.0;
+        let msps = |hz: f64| (hz / 1e3).round() / 1000.0;
         match self {
             Rates::List(v) => write!(f, "{}", v.iter().map(|&r| format!("{}", msps(r as f64))).collect::<Vec<_>>().join(" / ")),
             Rates::Range { min, max } => write!(f, "{}–{}", msps(*min), msps(*max)),
@@ -58,7 +58,7 @@ const RTL: &[u32] = &[2_400_000, 2_048_000, 2_560_000, 3_200_000, 1_920_000, 1_0
 /// HydraSDR or SpyServer runs at these.
 pub fn of_kind(kind: &str) -> &'static [u32] {
     match kind {
-        "rtlsdr" | "rtltcp" => RTL,
+        "rtlsdr" => RTL,
         "usrp" => &[2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000],
         // Airspy R2: 10 / 2.5; Mini: 6 / 3 (and 10 with newer firmware).
         "airspy" => &[10_000_000, 6_000_000, 3_000_000, 2_500_000],
@@ -79,9 +79,9 @@ pub fn of_kind(kind: &str) -> &'static [u32] {
 /// The highest rate a source of kind `kind` runs at dependably: an RTL-SDR
 /// past 2.4 MSPS loses blocks of samples without saying so once a second
 /// dongle streams beside it (measured on Pi, Mac and x86 hosts alike), which
-/// breaks decoding (the same chip behind `rtl_tcp`). Advice never goes past it. None: any it offers.
+/// breaks decoding (on USB or behind `rtl_tcp`). Advice never goes past it. None: any it offers.
 pub fn steady_max(kind: &str) -> Option<u32> {
-    matches!(kind, "rtlsdr" | "rtltcp").then_some(2_400_000)
+    (kind == "rtlsdr").then_some(2_400_000)
 }
 
 /// The rates a source of kind `kind` may run at: what its radio said
@@ -108,7 +108,10 @@ mod tests {
         assert_eq!(offered("airspy", Some(&r2)), [10_000_000, 2_500_000], "the radio's own list");
         assert_eq!(offered("bladerf", Some(&Rates::Range { min: 1e6, max: 5e6 })), [2_400_000, 4_000_000, 5_000_000], "its kind's, within its range");
         assert_eq!(offered("rtlsdr", None)[0], 2_400_000, "the usual first");
-        assert_eq!((r2.to_string(), blade.to_string()), ("10 / 2.5".to_string(), "0.52–61.44".to_string()));
+        assert_eq!((r2.to_string(), blade.to_string()), ("10 / 2.5".to_string(), "0.521–61.44".to_string()));
+        // To the kHz, the zeros that mean nothing left off: an RTL-SDR's 2.048, a SpyServer's halvings.
+        let fine = Rates::List(vec![2_048_000, 2_500_000, 1_250_000, 625_000, 312_500, 156_250, 768_000]);
+        assert_eq!(fine.to_string(), "2.048 / 2.5 / 1.25 / 0.625 / 0.313 / 0.156 / 0.768");
         assert_eq!((steady_max("rtlsdr"), steady_max("airspy")), (Some(2_400_000), None));
     }
 }

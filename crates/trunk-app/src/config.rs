@@ -46,14 +46,25 @@ pub struct Source {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SourceKind {
-    /// An RTL-SDR dongle. `serial` "" = the first free one. `agc`: the tuner's AGC instead of `gain_db`.
+    /// An RTL-SDR dongle: on USB (`serial` "" = the first free one), or on
+    /// another machine through its `rtl_tcp` server (`address`: `host` or
+    /// `host:port`, the port 1234 when left off; nothing to install). `agc`:
+    /// the tuner's AGC instead of `gain_db`. `bias_tee`: power for an LNA on
+    /// the antenna cable (an RTL-SDR Blog V3 / V4). `buf_len` and `buffers`
+    /// are USB's; `rtl_tcp` answers nothing, so what a source on the network
+    /// says it is set to is what it asked for.
     #[serde(rename_all = "camelCase")]
     Rtlsdr {
+        #[serde(default)]
         serial: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        address: String,
         #[serde(default = "rtl_gain")]
         gain_db: f64,
         #[serde(default)]
         agc: bool,
+        #[serde(default)]
+        bias_tee: bool,
         /// Bytes per USB transfer (Trunk Recorder's `buflen`): a multiple of 512;
         /// 0 = the driver's 16384 (small ones interleave well with other dongles on one bus).
         #[serde(default)]
@@ -150,27 +161,11 @@ pub enum SourceKind {
         #[serde(default)]
         bias_tee: bool,
     },
-    /// An RTL-SDR on another machine, through its `rtl_tcp` server (nothing to
-    /// install). `address`: `host` or `host:port` (the port is 1234 when left
-    /// off). `gain_db`, `agc` and `bias_tee` are an RTL-SDR's, taken by the far
-    /// end: `rtl_tcp` answers nothing, so what a source says it is set to is
-    /// what it asked for.
-    #[serde(rename_all = "camelCase")]
-    Rtltcp {
-        #[serde(default)]
-        address: String,
-        #[serde(default = "rtl_gain")]
-        gain_db: f64,
-        #[serde(default)]
-        agc: bool,
-        #[serde(default)]
-        bias_tee: bool,
-    },
     /// A receiver another machine publishes with Airspy's `spyserver` (an
     /// Airspy R2 / Mini / HF+, or an RTL-SDR behind it), over the network
     /// (nothing to install). `address`: `host` or `host:port` (5555 when left
-    /// off). `iq_format`: how its I/Q travels (8-bit takes the least of the
-    /// link). `gain`: the server's own gain step (an index into the receiver's
+    /// off). `iq_format`: how its I/Q travels, as a capture file's samples are
+    /// (`cu8` takes the least of the link). `gain`: the server's own gain step (an index into the receiver's
     /// gain table, not dB; held to what the server has). `digital_gain_db`: what
     /// the server multiplies the stream by before it is quantised for the link
     /// (it is divided out again here); left out, the reference clients' rule:
@@ -181,7 +176,7 @@ pub enum SourceKind {
         #[serde(default)]
         address: String,
         #[serde(default)]
-        iq_format: SpyserverFormat,
+        iq_format: SampleFormat,
         #[serde(default = "spyserver_gain")]
         gain: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,19 +281,6 @@ fn hackrf_vga() -> u16 {
     20
 }
 
-choice! {
-    /// How a SpyServer sends its I/Q ([`SourceKind::Spyserver`]).
-    pub enum SpyserverFormat {
-        /// Unsigned 8-bit: two bytes a sample, the least of the link.
-        #[default]
-        Uint8 = "uint8",
-        /// Signed 16-bit, little-endian: twice the link.
-        Int16 = "int16",
-        /// 32-bit float, little-endian: four times the link.
-        Float32 = "float32",
-    }
-}
-
 /// The port `rtl_tcp` listens on unless it is given `-p`.
 pub const RTL_TCP_PORT: u16 = 1234;
 /// The port `spyserver` listens on out of the box.
@@ -346,6 +328,14 @@ choice! {
 }
 
 impl SampleFormat {
+    /// As people say it: "8-bit", "16-bit", "32-bit float".
+    pub fn describe(self) -> &'static str {
+        match self {
+            SampleFormat::Cu8 => "8-bit",
+            SampleFormat::Cs16 => "16-bit",
+            SampleFormat::Cf32 => "32-bit float",
+        }
+    }
     /// From a file name's extension (.cf32 / .cfile / .fc32 / .complex → cf32, .cs16 / .sc16 → cs16, else
     /// cu8, .raw included).
     pub fn from_path(path: &str) -> Self {
@@ -419,7 +409,7 @@ impl Source {
     }
     /// `ppm` as it can be set on it: an RTL-SDR (on USB or `rtl_tcp`) takes whole ppm, the others hundredths.
     pub fn settable_ppm(&self, ppm: f64) -> f64 {
-        if matches!(self.kind, SourceKind::Rtlsdr { .. } | SourceKind::Rtltcp { .. }) {
+        if matches!(self.kind, SourceKind::Rtlsdr { .. }) {
             ppm.round()
         } else {
             (ppm * 100.0).round() / 100.0
@@ -438,7 +428,6 @@ impl Source {
             SourceKind::Hydrasdr { .. } => "hydrasdr",
             SourceKind::Bladerf { .. } => "bladerf",
             SourceKind::Hackrf { .. } => "hackrf",
-            SourceKind::Rtltcp { .. } => "rtltcp",
             SourceKind::Spyserver { .. } => "spyserver",
             SourceKind::Soapy { .. } => "soapy",
             SourceKind::File { .. } => "file",
@@ -460,6 +449,7 @@ impl Source {
     pub fn may_be(&self, other: &Source) -> bool {
         let id = |s: &Source| -> Option<(u8, String)> {
             match &s.kind {
+                SourceKind::Rtlsdr { address, .. } if !address.trim().is_empty() => Some((6, endpoint(address, RTL_TCP_PORT).to_lowercase())),
                 SourceKind::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
                 SourceKind::Usrp { args, .. } => Some((1, args.trim().to_string())),
                 // (libairspy opens an RFOne as "the first" when it comes first.)
@@ -468,7 +458,6 @@ impl Source {
                 SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
                 SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
                 // (One `rtl_tcp` serves one client at a time; a SpyServer's second client can't move its receiver.)
-                SourceKind::Rtltcp { address, .. } => Some((6, endpoint(address, RTL_TCP_PORT).to_lowercase())),
                 SourceKind::Spyserver { address, .. } => Some((7, endpoint(address, SPYSERVER_PORT).to_lowercase())),
                 SourceKind::File { .. } => None,
             }
@@ -482,6 +471,7 @@ impl Source {
     /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
     pub fn label(&self) -> String {
         match &self.kind {
+            SourceKind::Rtlsdr { address, .. } if !address.trim().is_empty() => format!("rtl_tcp {}", endpoint(address, RTL_TCP_PORT)),
             SourceKind::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Usrp { args, .. } => {
                 // Which device, not how it's driven: buffer sizes and the like
@@ -493,7 +483,6 @@ impl Source {
             SourceKind::Hydrasdr { serial, .. } => format!("HydraSDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Hackrf { serial, .. } => format!("HackRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
-            SourceKind::Rtltcp { address, .. } => format!("rtl_tcp {}", endpoint(address, RTL_TCP_PORT)),
             SourceKind::Spyserver { address, .. } => format!("SpyServer {}", endpoint(address, SPYSERVER_PORT)),
             SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
             SourceKind::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
@@ -2434,7 +2423,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             other: BTreeMap::new(),
-            sources: vec![Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() }],
+            sources: vec![Source { kind: SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: String::new(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() }],
             systems: vec![],
             conventional: vec![],
             next_system_id: 0,
@@ -2640,7 +2629,7 @@ fn expand_home(path: &mut String) {
 
 /// A source's `type` names its kind (the tag of [`Source`]), read in any case
 /// as the other closed choices are (`"RTLSDR"` is `"rtlsdr"`).
-const SOURCE_TYPES: [&str; 10] = ["rtlsdr", "usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "rtltcp", "spyserver", "soapy", "file"];
+const SOURCE_TYPES: [&str; 9] = ["rtlsdr", "usrp", "airspy", "hydrasdr", "bladerf", "hackrf", "spyserver", "soapy", "file"];
 
 fn source_types(v: &mut serde_json::Value) {
     for s in v.get_mut("sources").and_then(serde_json::Value::as_array_mut).into_iter().flatten() {
@@ -3222,7 +3211,18 @@ impl Config {
         }
         for (i, s) in self.sources.iter().enumerate() {
             match &s.kind {
-                SourceKind::Rtlsdr { buf_len, buffers, .. } => {
+                SourceKind::Rtlsdr { address, gain_db, buf_len, buffers, .. } => {
+                    if let Some(e) = Some(address).filter(|a| !a.trim().is_empty()).and_then(|a| address_problem(a, "rtl_tcp")) {
+                        return Some(format!("{}: {e}", s.title(i)));
+                    }
+                    // (An RTL2832U's two ranges, on USB or behind rtl_tcp: out of them rtl_tcp logs a refusal and
+                    // goes on at its old rate, which would read as this one's.)
+                    if !((225_001.0..=300_000.0).contains(&s.rate_hz) || (900_001.0..=3_200_000.0).contains(&s.rate_hz)) {
+                        return Some(format!("{}: an RTL-SDR runs at 0.225–0.3 or 0.9–3.2 MSPS.", s.title(i)));
+                    }
+                    if !(0.0..=50.0).contains(gain_db) {
+                        return Some(format!("{}: an RTL-SDR's gain is 0–50 dB.", s.title(i)));
+                    }
                     if buf_len % 512 != 0 || *buf_len > 16 << 20 {
                         return Some(format!("{}: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB.", s.title(i)));
                     }
@@ -3237,19 +3237,6 @@ impl Config {
                     let ((lna_max, lna_by), (vga_max, vga_by)) = (crate::gain::HACKRF_LNA, crate::gain::HACKRF_VGA);
                     if *lna_db > lna_max || lna_db % lna_by != 0 || *vga_db > vga_max || vga_db % vga_by != 0 {
                         return Some(format!("{}: a HackRF's LNA gain is 0–{lna_max} dB in {lna_by} dB steps, its VGA gain 0–{vga_max} dB in {vga_by} dB steps.", s.title(i)));
-                    }
-                }
-                SourceKind::Rtltcp { address, gain_db, .. } => {
-                    if let Some(e) = address_problem(address, "rtl_tcp") {
-                        return Some(format!("{}: {e}", s.title(i)));
-                    }
-                    // (An RTL2832U's two ranges. Out of them the server logs a refusal and goes on at its old rate,
-                    // which would read as this one's: so it is refused here.)
-                    if !((225_001.0..=300_000.0).contains(&s.rate_hz) || (900_001.0..=3_200_000.0).contains(&s.rate_hz)) {
-                        return Some(format!("{}: an RTL-SDR runs at 0.225–0.3 or 0.9–3.2 MSPS.", s.title(i)));
-                    }
-                    if !(0.0..=50.0).contains(gain_db) {
-                        return Some(format!("{}: an RTL-SDR's gain is 0–50 dB.", s.title(i)));
                     }
                 }
                 SourceKind::Spyserver { address, digital_gain_db, .. } => {
@@ -4094,28 +4081,32 @@ mod tests {
 
     /// A radio on the network is named by its address (the port left off is its server's usual one), is
     /// read in any case of its type, keeps what only it has flat beside the rest, and can't start without
-    /// an address or at a rate its radio doesn't run at.
+    /// an address or at a rate its radio doesn't run at. An RTL-SDR on the network is an RTL-SDR, given
+    /// an address: its kind, ppm and rates are a dongle's on USB.
     #[test]
     fn network_sources() {
         let c = Config::from_json(
             r#"{ "sources": [
-                { "type": "RTLTCP", "address": " Pi.local ", "centerHz": 0, "rateHz": 2400000, "ppm": 2.4 },
-                { "type": "SpyServer", "address": "[::1]", "centerHz": 0, "rateHz": 2500000, "iqFormat": "Int16" }
+                { "type": "RTLSDR", "address": " Pi.local ", "centerHz": 0, "rateHz": 2400000, "ppm": 2.4, "biasTee": true },
+                { "type": "SpyServer", "address": "[::1]", "centerHz": 0, "rateHz": 2500000, "iqFormat": "cs16" }
             ] }"#,
         )
         .unwrap();
-        assert_eq!(c.sources[0].kind, SourceKind::Rtltcp { address: " Pi.local ".into(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, bias_tee: false });
-        assert_eq!(c.sources[1].kind, SourceKind::Spyserver { address: "[::1]".into(), iq_format: SpyserverFormat::Int16, gain: 14, digital_gain_db: None });
+        assert_eq!(c.sources[0].kind, SourceKind::Rtlsdr { serial: String::new(), address: " Pi.local ".into(), gain_db: RTL_DEFAULT_GAIN_DB, agc: false, bias_tee: true, buf_len: 0, buffers: 0 });
+        assert_eq!(c.sources[1].kind, SourceKind::Spyserver { address: "[::1]".into(), iq_format: SampleFormat::Cs16, gain: 14, digital_gain_db: None });
         assert_eq!((c.sources[0].label(), c.sources[1].label()), ("rtl_tcp Pi.local:1234".to_string(), "SpyServer [::1]:5555".to_string()));
-        assert_eq!((c.sources[0].kind_name(), c.sources[1].kind_name()), ("rtltcp", "spyserver"));
+        assert_eq!((c.sources[0].kind_name(), c.sources[1].kind_name()), ("rtlsdr", "spyserver"));
         assert_eq!(c.sources[0].settable_ppm(2.4), 2.0, "whole ppm, as an RTL-SDR's");
         let j = serde_json::to_value(&c.sources[1]).unwrap();
-        assert_eq!((&j["type"], &j["iqFormat"], j.get("digitalGainDb")), (&serde_json::json!("spyserver"), &serde_json::json!("int16"), None));
+        assert_eq!((&j["type"], &j["iqFormat"], j.get("digitalGainDb")), (&serde_json::json!("spyserver"), &serde_json::json!("cs16"), None));
+        let usb = serde_json::to_value(Source { kind: SourceKind::Rtlsdr { serial: "200".into(), address: String::new(), gain_db: 30.0, agc: false, bias_tee: false, buf_len: 0, buffers: 0 }, ..c.sources[0].clone() }).unwrap();
+        assert_eq!(usb.get("address"), None, "a dongle on USB says nothing of an address");
         assert_eq!((endpoint("host", 1234), endpoint("host:99", 1234), endpoint("[fe80::1]", 5555), endpoint("[fe80::1]:6", 5555)), ("host:1234".into(), "host:99".into(), "[fe80::1]:5555".into(), "[fe80::1]:6".into()));
         // One address, one radio: with or without its usual port, in any case; another kind's isn't it.
-        let rtl = |address: &str| -> Source { serde_json::from_value(serde_json::json!({ "type": "rtltcp", "address": address, "centerHz": 0, "rateHz": 2400000 })).unwrap() };
+        let rtl = |address: &str| -> Source { serde_json::from_value(serde_json::json!({ "type": "rtlsdr", "address": address, "centerHz": 0, "rateHz": 2400000 })).unwrap() };
         let spy = |address: &str| -> Source { serde_json::from_value(serde_json::json!({ "type": "spyserver", "address": address, "centerHz": 0, "rateHz": 2500000 })).unwrap() };
         assert!(rtl("Pi.local").may_be(&rtl("pi.local:1234")) && !rtl("pi.local").may_be(&rtl("pi.local:1235")) && !rtl("pi.local").may_be(&spy("pi.local:1234")));
+        assert!(!rtl("pi.local").may_be(&rtl("")), "a dongle on the network isn't the first on USB");
         assert!(spy("a").may_be(&spy("A:5555")));
         let problem = |source: Source| {
             let mut c: Config = serde_json::from_str(r#"{ "sources": [], "conventional": [{ "channels": [{ "freqHz": 154430000, "mode": "fm" }] }] }"#).unwrap();
@@ -4129,10 +4120,11 @@ mod tests {
             s
         };
         assert_eq!((problem(at(rtl("pi.local"), 2.4e6)), problem(at(spy("pi.local"), 2.5e6))), (None, None));
-        assert!(problem(at(rtl(""), 2.4e6)).unwrap().contains("enter the rtl_tcp server's address"));
+        assert_eq!(problem(at(rtl(""), 2.4e6)), None, "no address: a dongle on USB");
         assert!(problem(at(spy("  "), 2.5e6)).unwrap().contains("enter the SpyServer server's address"));
         assert!(problem(at(rtl("http://pi.local"), 2.4e6)).unwrap().contains("host name or IP address"));
         assert!(problem(at(rtl("pi.local"), 5e6)).unwrap().contains("0.9–3.2 MSPS"), "a rate the RTL2832U can't make would be taken silently");
+        assert!(problem(at(rtl(""), 5e6)).unwrap().contains("0.9–3.2 MSPS"), "on USB the same");
         assert_eq!(problem(at(rtl("pi.local"), 0.25e6)), None, "its lower range");
         let mut deep = spy("pi.local");
         if let SourceKind::Spyserver { digital_gain_db, .. } = &mut deep.kind {
@@ -4196,7 +4188,7 @@ mod tests {
 
     #[test]
     fn rtl_usb_transfers_checked() {
-        let rtl = |rate_hz: f64, buf_len: u32| Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len, buffers: 0 }, center_hz: 851e6, rate_hz: rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let rtl = |rate_hz: f64, buf_len: u32| Source { kind: SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: String::new(), gain_db: 30.0, agc: false, buf_len, buffers: 0 }, center_hz: 851e6, rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut c = Config { sources: vec![rtl(2.4e6, 65_536)], systems: vec![system("s", &[851_012_500.0])], ..Default::default() };
         assert_eq!(c.problem(), None);
         c.sources[0] = rtl(2.4e6, 65_000);
@@ -4221,7 +4213,7 @@ mod tests {
     /// channel, the spares go alongside rather than stopping Start.
     #[test]
     fn every_auto_source_is_placed_over_a_wide_site() {
-        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let rtl = || Source { kind: SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut sys = system("p25", &[856_237_500.0]);
         sys.sites[0].voice_channels_hz = (0..=30).map(|k| 851_012_500.0 + k as f64 * 262_500.0).collect();
         let mut c = Config { sources: vec![rtl(), rtl(), rtl(), rtl()], systems: vec![sys], ..Default::default() };
@@ -4239,7 +4231,7 @@ mod tests {
 
     #[test]
     fn several_systems_centers_and_engine_config() {
-        let rtl = || Source { kind: SourceKind::Rtlsdr { serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let rtl = || Source { kind: SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut c = Config { sources: vec![rtl(), rtl()], ..Default::default() };
         let mut a = system("east", &[851_012_500.0]);
         a.sites[0].voice_channels_hz = vec![851_500_000.0, 852_000_000.0];
@@ -4724,7 +4716,7 @@ mod tests {
     /// what a pinned one is received on.
     #[test]
     fn auto_placement_and_the_start_check_follow_pins() {
-        let rtl = |serial: &str| Source { kind: SourceKind::Rtlsdr { serial: serial.into(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let rtl = |serial: &str| Source { kind: SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: serial.into(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz: 0.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
         let mut far = system("far", &[771_106_250.0]);
         far.receive_on = vec!["RTL-SDR SN 2".into()];
         let mut c = Config { sources: vec![rtl("1"), rtl("2")], systems: vec![far, system("near", &[851_012_500.0])], ..Default::default() };

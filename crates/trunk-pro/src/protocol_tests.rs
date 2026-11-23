@@ -524,8 +524,8 @@ fn the_servers_messages() {
             { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0, "autoTune": true },
             { "type": "usrp", "args": "", "centerHz": 0, "rateHz": 8000000, "gainDb": 30, "agc": false, "antenna": "RX2", "ppm": 0 },
             { "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "gainMode": "linearity", "gainStep": 12, "lnaStep": 0, "mixerStep": 0, "vgaStep": 0, "agc": false, "biasTee": false, "ppm": 0 },
-            { "type": "rtltcp", "address": "raspberrypi.local", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "biasTee": false, "ppm": 0 },
-            { "type": "spyserver", "address": "192.168.1.20:5555", "centerHz": 0, "rateHz": 2500000, "iqFormat": "int16", "gain": 14, "digitalGainDb": 12, "ppm": 0 },
+            { "type": "rtlsdr", "serial": "", "address": "raspberrypi.local", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "biasTee": false, "ppm": 0 },
+            { "type": "spyserver", "address": "192.168.1.20:5555", "centerHz": 0, "rateHz": 2500000, "iqFormat": "cs16", "gain": 14, "digitalGainDb": 12, "ppm": 0 },
             { "type": "soapy", "args": "driver=hackrf", "centerHz": 0, "rateHz": 8000000, "agc": false, "gainDb": null, "gains": { "LNA": 16 }, "antenna": "", "settings": "", "ppm": 0 },
             { "type": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true, "format": "cu8" }
         ],
@@ -645,9 +645,9 @@ fn the_servers_messages() {
         ToClient::ConfigSaved { version: 3, error: Some("changed elsewhere".into()) },
         crate::runtime::PhaseInfo { phase: trunk_app::protocol::Phase::Running, error: Some("x".into()), ended: false, restart_needed: true }.message(),
         crate::server::devices(),
-        ToClient::Probed { kind: "spyserver".into(), address: "pi:5555".into(), model: Some("Airspy R2 / Mini".into()), rates: vec![2_500_000, 1_250_000], error: None },
-        ToClient::Probed { kind: "spyserver".into(), address: "pi:5555".into(), model: None, rates: vec![], error: Some("refused".into()) },
-        ToClient::Radios { radios: crate::radio::radios_json(false) },
+        ToClient::Radios { radios: crate::radio::radios_json(false, &[], false) },
+        // Radios on the network: one that said what it is when opened, one not asked yet, one that can't be.
+        ToClient::Radios { radios: crate::radio::radios_json(false, &network_sources(), true) },
         ctx.plugins.list(&cfg),
         crate::plugins::manage::store_message(&crate::plugins::store::built_in()),
         ctx.interfaces.list(&cfg, &ctx.config_path),
@@ -700,7 +700,7 @@ fn messages_to_the_recorder() {
         json!({ "type": "listDir", "path": "" }),
         json!({ "type": "surveyStart", "source": 0, "bands": ["800"], "findGain": true }),
         json!({
-            "type": "surveyStart", "source": 0, "radio": { "type": "rtlsdr", "serial": "2", "centerHz": 0, "rateHz": 2_400_000, "gainDb": 30, "agc": false, "ppm": 0 }, "bands": ["uhf"], "findGain": false,
+            "type": "surveyStart", "source": 0, "radio": { "type": "rtlsdr", "serial": "2", "centerHz": 0, "rateHz": 2_400_000, "gainDb": 30, "agc": false, "biasTee": false, "ppm": 0 }, "bands": ["uhf"], "findGain": false,
             "lookFor": { "freqsHz": [], "sites": [{ "label": "1 Walker Tower", "freqsHz": [451_175_000], "expect": { "rfss": 1, "site": 1, "nac": 0x212 } }, { "label": "2", "freqsHz": [452_175_000], "expect": {}, "colorCode": 3 }], "type": "dmr", "listenS": 60 },
         }),
         json!({ "type": "profileSource", "source": 0, "centerHz": 460_000_000 }),
@@ -789,6 +789,16 @@ fn live_voice_is_the_plugin_topics_chunk() {
     let tone = trunk_core::trunk::LiveAudio { frames: vec![VoiceFrame { tone: Some((5, 20)), ..frame(Codec::Ambe, FrameKind::Tone) }], ..audio.clone() };
     check("FromRecorder", &ToClient::Voice { chunk: trunk_app::session::voice_chunk(1, "dcfd", "", &tone).unwrap() }.to_value()).unwrap();
     assert!(trunk_app::session::voice_chunk(1, "dcfd", "", &trunk_core::trunk::LiveAudio { frames: vec![], ..audio }).is_none(), "analog: none");
+}
+
+/// Sources on the network for a list of radios: a SpyServer remembered as opened, an `rtl_tcp` nothing answers at.
+fn network_sources() -> Vec<trunk_app::config::Source> {
+    crate::radio::remember(&crate::radio::spyserver::key("spy.test"), crate::radio::Caps { model: "Airspy R2 / Mini".into(), rates: crate::radio::Rates::List(vec![2_500_000, 1_250_000]), gains: (0..=21).map(f64::from).collect() });
+    let src = |kind: serde_json::Value| -> trunk_app::config::Source { serde_json::from_value(kind).unwrap() };
+    vec![
+        src(json!({ "type": "spyserver", "address": "spy.test", "centerHz": 0, "rateHz": 2500000 })),
+        src(json!({ "type": "rtlsdr", "address": "127.0.0.1:1", "centerHz": 0, "rateHz": 2400000 })),
+    ]
 }
 
 /// An interface subscribed to `unit` is sent the `unit` plugin topic's event

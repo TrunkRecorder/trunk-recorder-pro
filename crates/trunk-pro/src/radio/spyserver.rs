@@ -13,17 +13,17 @@
 //! A server lets any number of clients listen but only one move the receiver: a source that isn't the first
 //! to connect can only slide its window inside what the first has tuned, and says so.
 
-use std::collections::HashMap;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use num_complex::Complex32;
-use trunk_app::config::{endpoint, SpyserverFormat, SPYSERVER_PORT};
+use trunk_app::config::{endpoint, SampleFormat, SPYSERVER_PORT};
 
-use super::Deadline;
+use super::net::{timed_out, CONNECT, POLL, SILENT};
+use super::{Caps, Deadline, Rates};
 use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
 
 #[derive(Clone, Debug)]
@@ -32,7 +32,7 @@ pub struct SpyserverConfig {
     pub address: String,
     pub center_hz: f64,
     pub rate_hz: f64,
-    pub format: SpyserverFormat,
+    pub format: SampleFormat,
     /// The server's gain step (held to what it has).
     pub gain: u32,
     /// What the server multiplies by before quantising; None: the reference clients' rule.
@@ -45,12 +45,6 @@ impl SpyserverConfig {
     }
 }
 
-/// A connection, and a server's hello, may each take this long.
-const CONNECT: Duration = Duration::from_secs(5);
-/// How long a read waits before the loop looks at `stop` and the controls again.
-const POLL: Duration = Duration::from_millis(50);
-/// A stream that has said nothing for this long has stopped.
-const SILENT: Duration = Duration::from_secs(3);
 /// A ping this often keeps a server from taking a quiet client for a dead one.
 const PING_EVERY: Duration = Duration::from_secs(3);
 /// The floor between retunes: more are more than a server will do.
@@ -130,21 +124,21 @@ fn freq_wire(hz: f64) -> u32 {
     hz.round().clamp(0.0, f64::from(u32::MAX)) as u32
 }
 
-fn format_wire(f: SpyserverFormat) -> u32 {
+fn format_wire(f: SampleFormat) -> u32 {
     match f {
-        SpyserverFormat::Uint8 => FORMAT_UINT8,
-        SpyserverFormat::Int16 => FORMAT_INT16,
-        SpyserverFormat::Float32 => FORMAT_FLOAT,
+        SampleFormat::Cu8 => FORMAT_UINT8,
+        SampleFormat::Cs16 => FORMAT_INT16,
+        SampleFormat::Cf32 => FORMAT_FLOAT,
     }
 }
 
 /// The format a server insists on (`forced_iq_format`; 0 = none), if there is one this reads.
-fn forced_format(code: u32) -> Result<Option<SpyserverFormat>, String> {
+fn forced_format(code: u32) -> Result<Option<SampleFormat>, String> {
     match code {
         0 => Ok(None),
-        FORMAT_UINT8 => Ok(Some(SpyserverFormat::Uint8)),
-        FORMAT_INT16 => Ok(Some(SpyserverFormat::Int16)),
-        FORMAT_FLOAT => Ok(Some(SpyserverFormat::Float32)),
+        FORMAT_UINT8 => Ok(Some(SampleFormat::Cu8)),
+        FORMAT_INT16 => Ok(Some(SampleFormat::Cs16)),
+        FORMAT_FLOAT => Ok(Some(SampleFormat::Cf32)),
         FORMAT_INT24 => Err("it forces 24-bit I/Q, which isn't read here".into()),
         v => Err(format!("it forces I/Q format {v}, which isn't read here")),
     }
@@ -303,23 +297,16 @@ fn parse_sync(b: &[u8]) -> Result<ClientSync, String> {
 /// A sample message as complex floats in `out` (full scale ±1), with the gain the server applied divided
 /// out (`gain`: linear).
 fn decode(kind: u16, body: &[u8], gain: f32, out: &mut Vec<Complex32>) -> Result<(), String> {
-    out.clear();
-    let k = 1.0 / gain;
-    match kind {
-        // Offset binary, mid-scale 128.
-        MSG_UINT8_IQ => {
-            let k = k / 128.0;
-            out.extend(body.chunks_exact(2).map(|p| Complex32::new((f32::from(p[0]) - 128.0) * k, (f32::from(p[1]) - 128.0) * k)));
-        }
-        MSG_INT16_IQ => {
-            let k = k / 32768.0;
-            out.extend(body.chunks_exact(4).map(|p| Complex32::new(f32::from(i16::from_le_bytes([p[0], p[1]])) * k, f32::from(i16::from_le_bytes([p[2], p[3]])) * k)));
-        }
-        MSG_FLOAT_IQ => {
-            out.extend(body.chunks_exact(8).map(|p| Complex32::new(f32::from_le_bytes([p[0], p[1], p[2], p[3]]) * k, f32::from_le_bytes([p[4], p[5], p[6], p[7]]) * k)));
-        }
+    let format = match kind {
+        MSG_UINT8_IQ => SampleFormat::Cu8,
+        MSG_INT16_IQ => SampleFormat::Cs16,
+        MSG_FLOAT_IQ => SampleFormat::Cf32,
         other => return Err(format!("a sample message of type {other}, which isn't read here")),
-    }
+    };
+    // (As a capture file's samples are read, the gain the server applied divided out.)
+    let k = 1.0 / gain;
+    out.clear();
+    out.extend(trunk_app::samples::to_iq(format, body).into_iter().map(|c| c * k));
     Ok(())
 }
 
@@ -335,7 +322,7 @@ struct Client {
     /// The decimation stage, and the rate it makes.
     stage: u32,
     rate: f64,
-    format: SpyserverFormat,
+    format: SampleFormat,
     gain_index: u32,
     /// The digital gain the source sets, dB; none: it follows from the gain step.
     digital_set: Option<u8>,
@@ -424,11 +411,6 @@ impl Tunable for Client {
     }
 }
 
-fn read_timed_out(e: &std::io::Error) -> bool {
-    // (A read that times out is WouldBlock on Unix, TimedOut on Windows.)
-    matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted)
-}
-
 /// Say hello and read the server's device info and sync: `(info, sync, bytes already read beyond them)`.
 fn handshake(sock: &mut TcpStream, name: &str) -> Result<(Info, ClientSync, Vec<u8>), String> {
     sock.write_all(&frame_hello("Trunk Recorder Pro")).map_err(|e| format!("{name}: {e}"))?;
@@ -459,69 +441,55 @@ fn handshake(sock: &mut TcpStream, name: &str) -> Result<(Info, ClientSync, Vec<
         match sock.read(&mut buf) {
             Ok(0) => return Err(format!("{name}: it hung up at hello (is that a SpyServer? One with no client slot free does)")),
             Ok(n) => pending.extend_from_slice(&buf[..n]),
-            Err(e) if read_timed_out(&e) => {}
+            Err(e) if timed_out(&e) => {}
             Err(e) => return Err(format!("{name}: {e}")),
         }
     }
 }
 
-/// `hz` in MSPS to three decimals, the zeros that mean nothing left off: 2.5, 1.25, 0.625, 0.313 (a half rounds up).
-fn msps(hz: f64) -> String {
-    let k = (hz / 1e3).round() as u64;
-    let (whole, frac) = (k / 1000, k % 1000);
-    if frac == 0 {
-        whole.to_string()
-    } else {
-        format!("{whole}.{frac:03}").trim_end_matches('0').to_string()
+/// What a SpyServer at `address` is remembered by ([`super::remember`]).
+pub fn key(address: &str) -> String {
+    format!("spyserver:{}", endpoint(address, SPYSERVER_PORT).to_lowercase())
+}
+
+impl Info {
+    /// What it said of the receiver behind it, as a radio's [`Caps`]: its model, the rates it offers, its gain steps (0 up).
+    fn caps(&self) -> Caps {
+        Caps { model: self.model(), rates: Rates::List(self.offered()), gains: (0..=self.max_gain).map(f64::from).collect() }
     }
 }
 
-/// The highest gain step each server (by its address as entered) said it has, when last asked or connected to: what
-/// the gain-tuning tool walks, since a source's config doesn't say what is behind it.
-static RECEIVERS: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
-
-fn remember(address: &str, info: &Info) {
-    RECEIVERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(address.trim().to_string(), info.max_gain);
-}
-
-/// The gain steps of the receiver the server at `address` reported, 0 up (as the numbers a gain is set to); none
-/// until it has been asked (Setup does when the address is entered) or connected to.
-pub fn gain_steps(address: &str) -> Option<Vec<f64>> {
-    let top = *RECEIVERS.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(address.trim())?;
-    Some((0..=top).map(f64::from).collect())
-}
-
-/// Ask the server at `address` what it is and which rates it offers (its model, then Hz widest first), for Setup:
-/// connect, read the hello, hang up. Nothing is set, so a receiver another client is using is left as it is.
-pub fn probe(address: &str) -> Result<(String, Vec<u32>), String> {
-    let name = format!("SpyServer {}", address.trim());
-    let mut sock = super::dial(&name, &endpoint(address.trim(), SPYSERVER_PORT), CONNECT)?;
-    let (info, _, _) = handshake(&mut sock, &name)?;
+/// Connect to the server at `address` (as `name`), and read its hello: the receiver behind it (remembered, as any
+/// radio is when opened), where it's tuned, and bytes already read beyond them.
+fn hello(name: &str, address: &str) -> Result<(TcpStream, Info, ClientSync, Vec<u8>), String> {
+    let mut sock = super::net::dial(name, &endpoint(address, SPYSERVER_PORT), CONNECT)?;
+    let (info, sync, pending) = handshake(&mut sock, name)?;
     if info.device == 0 {
         return Err(format!("{name}: the server has no receiver attached"));
     }
-    remember(address, &info);
-    Ok((info.model(), info.offered()))
+    super::remember(&key(address), info.caps());
+    Ok((sock, info, sync, pending))
+}
+
+/// What the receiver behind the SpyServer at `address` is, for a list of radios: connect, read the hello, hang up.
+/// Nothing is set, so a receiver another client is using is left as it is.
+pub fn ask(address: &str) -> Result<Caps, String> {
+    let name = format!("SpyServer {}", endpoint(address, SPYSERVER_PORT));
+    hello(&name, address).map(|(_, info, ..)| info.caps())
 }
 
 /// Connect, introduce, and settle what the stream will be (the stage, the format, where the window can sit).
 fn connect(cfg: &SpyserverConfig) -> Result<(Client, Vec<u8>), String> {
     let name = cfg.name();
-    let mut sock = super::dial(&name, &endpoint(&cfg.address, SPYSERVER_PORT), CONNECT)?;
-    let (info, sync, pending) = handshake(&mut sock, &name)?;
-    if info.device == 0 {
-        return Err(format!("{name}: the server has no receiver attached"));
-    }
-    remember(&cfg.address, &info);
+    let (sock, info, sync, pending) = hello(&name, &cfg.address)?;
     let rates = info.rates();
     let Some(&(stage, rate)) = rates.iter().find(|&&(_, r)| (r - cfg.rate_hz).abs() < 1.0) else {
-        let list: Vec<String> = info.offered().iter().map(|&r| msps(f64::from(r))).collect();
-        return Err(format!("{name}: this SpyServer ({}) runs at {} MSPS, not {}: pick one of those in Setup → Radios", info.model(), list.join(" / "), msps(cfg.rate_hz)));
+        return Err(format!("{name}: {}", super::rate_refusal(&format!("SpyServer ({})", info.model()), &Rates::List(info.offered()), cfg.rate_hz)));
     };
     let format = match forced_format(info.forced_format).map_err(|e| format!("{name}: {e}"))? {
         Some(f) => {
             if f != cfg.format {
-                log::info!("{name}: it sends {} I/Q whatever is asked", format_name(f));
+                log::info!("{name}: it sends {} I/Q whatever is asked", f.describe());
             }
             f
         }
@@ -556,22 +524,6 @@ fn connect(cfg: &SpyserverConfig) -> Result<(Client, Vec<u8>), String> {
     Ok((client, pending))
 }
 
-fn bytes_per_component(f: SpyserverFormat) -> u32 {
-    match f {
-        SpyserverFormat::Uint8 => 1,
-        SpyserverFormat::Int16 => 2,
-        SpyserverFormat::Float32 => 4,
-    }
-}
-
-fn format_name(f: SpyserverFormat) -> &'static str {
-    match f {
-        SpyserverFormat::Uint8 => "8-bit",
-        SpyserverFormat::Int16 => "16-bit",
-        SpyserverFormat::Float32 => "32-bit float",
-    }
-}
-
 /// What a connection is told before it streams. The order is the protocol's: the mode before the gain (a server
 /// may reset its gain when the mode changes), and the digital gain after, as it follows from the gain step.
 fn start(c: &mut Client, cfg: &SpyserverConfig) -> Result<(), String> {
@@ -588,13 +540,13 @@ fn start(c: &mut Client, cfg: &SpyserverConfig) -> Result<(), String> {
     c.set(SETTING_IQ_DIGITAL_GAIN, dg)?;
     c.set(SETTING_STREAMING_ENABLED, 1)?;
     c.last_retune = Instant::now();
-    let link_mbit = c.rate * 2.0 * f64::from(bytes_per_component(c.format)) * 8.0 / 1e6;
+    let link_mbit = c.rate * c.format.bytes_per_sample() as f64 * 8.0 / 1e6;
     log::info!(
         "{}: {}, {:.3} MSPS {} ({link_mbit:.1} Mbit/s), gain step {}, digital gain {dg} dB{}",
         c.name,
         c.info.describe(),
         c.rate / 1e6,
-        format_name(c.format),
+        c.format.describe(),
         c.gain_index,
         if c.can_control { "" } else { " (another client has the receiver: its tuning and gain stand)" }
     );
@@ -663,7 +615,7 @@ fn run(c: &mut Client, mut pending: Vec<u8>, sink: &mut Sink, stop: &AtomicBool,
                 heard = Instant::now();
                 pending.extend_from_slice(&buf[..n]);
             }
-            Err(e) if read_timed_out(&e) => {
+            Err(e) if timed_out(&e) => {
                 if heard.elapsed() > SILENT {
                     return Err(format!("{}: no samples for {} s", c.name, SILENT.as_secs()));
                 }
@@ -806,12 +758,13 @@ mod tests {
 
     #[test]
     fn samples_are_scaled_to_full_scale_with_the_servers_gain_taken_out() {
+        // As a capture file's samples are read (8-bit offset around 127.5, as an RTL-SDR's).
         let mut out = Vec::new();
-        decode(MSG_UINT8_IQ, &[128, 128, 255, 0], 1.0, &mut out).unwrap();
-        assert_eq!(out, vec![Complex32::new(0.0, 0.0), Complex32::new(127.0 / 128.0, -1.0)]);
+        decode(MSG_UINT8_IQ, &[255, 0], 1.0, &mut out).unwrap();
+        assert_eq!(out, vec![Complex32::new(1.0, -1.0)]);
         // 20 dB of gain applied by the server is a factor of ten to divide out.
-        decode(MSG_UINT8_IQ, &[128 + 64, 128 - 32], 10.0, &mut out).unwrap();
-        assert_eq!(out, vec![Complex32::new(0.05, -0.025)]);
+        decode(MSG_UINT8_IQ, &[255, 0], 10.0, &mut out).unwrap();
+        assert_eq!(out, vec![Complex32::new(0.1, -0.1)]);
         let i16s: Vec<u8> = [16384i16, -32768].iter().flat_map(|v| v.to_le_bytes()).collect();
         decode(MSG_INT16_IQ, &i16s, 1.0, &mut out).unwrap();
         assert_eq!(out, vec![Complex32::new(0.5, -1.0)]);
@@ -827,7 +780,7 @@ mod tests {
     #[test]
     fn a_format_the_server_forces_is_taken_or_refused() {
         assert_eq!(forced_format(0), Ok(None));
-        assert_eq!(forced_format(FORMAT_INT16), Ok(Some(SpyserverFormat::Int16)));
+        assert_eq!(forced_format(FORMAT_INT16), Ok(Some(SampleFormat::Cs16)));
         assert!(forced_format(FORMAT_INT24).unwrap_err().contains("24-bit"));
         assert!(forced_format(9).is_err());
     }
@@ -867,7 +820,7 @@ mod tests {
     }
 
     fn cfg(port: u16, center_hz: f64, rate_hz: f64) -> SpyserverConfig {
-        SpyserverConfig { address: format!("127.0.0.1:{port}"), center_hz, rate_hz, format: SpyserverFormat::Int16, gain: 14, digital_gain_db: None }
+        SpyserverConfig { address: format!("127.0.0.1:{port}"), center_hz, rate_hz, format: SampleFormat::Cs16, gain: 14, digital_gain_db: None }
     }
 
     #[test]
@@ -895,24 +848,19 @@ mod tests {
     }
 
     #[test]
-    fn rates_show_three_decimals_without_the_zeros_that_mean_nothing() {
-        let shown: Vec<String> = [10e6, 2.5e6, 1.25e6, 625e3, 312_500.0, 156_250.0, 2.4e6, 768e3].map(msps).to_vec();
-        assert_eq!(shown, ["10", "2.5", "1.25", "0.625", "0.313", "0.156", "2.4", "0.768"]);
-    }
-
-    #[test]
-    fn a_probe_reads_the_rates_the_server_offers_and_sets_nothing() {
+    fn asking_reads_the_rates_and_gain_steps_the_server_offers_and_sets_nothing() {
         let (port, server) = serve(r2(), 1, 100_000_000);
-        let (model, rates) = probe(&format!("127.0.0.1:{port}")).unwrap();
-        assert_eq!(model, "Airspy R2 / Mini");
-        assert_eq!(rates, vec![2_500_000, 1_250_000, 625_000, 312_500, 156_250], "whole Hz, the ones under 100 kHz left out");
+        let address = format!("127.0.0.1:{port}");
+        let caps = ask(&address).unwrap();
+        assert_eq!(caps.model, "Airspy R2 / Mini");
+        assert_eq!(caps.rates, Rates::List(vec![2_500_000, 1_250_000, 625_000, 312_500, 156_250]), "whole Hz, the ones under 100 kHz left out");
+        assert_eq!((caps.gains.len(), caps.gains[0], caps.gains[21]), (22, 0.0, 21.0), "its gain steps, 0 to its highest");
         let (_, settings) = server.join().unwrap();
         assert!(settings.is_empty(), "{settings:?}");
-        assert!(probe("127.0.0.1:1").is_err(), "nothing there");
-        // What it said of its gain is kept for the gain-tuning tool: steps 0 to its highest.
-        let steps = gain_steps(&format!("127.0.0.1:{port}")).unwrap();
-        assert_eq!((steps.len(), steps[0], steps[21]), (22, 0.0, 21.0));
-        assert!(gain_steps("never.asked:5555").is_none());
+        assert!(ask("127.0.0.1:1").is_err(), "nothing there");
+        // Remembered, as any radio is when opened: a list of radios and the gain-tuning tool read it.
+        assert_eq!(super::super::known(&key(&address)), Some(caps));
+        assert_eq!(super::super::known(&key("never.asked")), None);
     }
 
     #[test]

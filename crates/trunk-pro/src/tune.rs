@@ -122,13 +122,8 @@ pub fn start(ctx: &Arc<Ctx>, req: TuneRequest) -> Result<Option<ToClient>, Strin
         let k = cfg.same_radio(i, &run.sources).ok_or_else(|| format!("{title} isn't recording (it was added since Start)."))?;
         (k, run.sources[k].clone())
     };
-    // (What is behind an `rtl_tcp` or SpyServer source is the server's to say.)
-    let steps = match &base.kind {
-        crate::config::SourceKind::Rtltcp { address, .. } => crate::radio::rtltcp::steps(address),
-        crate::config::SourceKind::Spyserver { address, .. } => crate::radio::spyserver::gain_steps(address),
-        _ => None,
-    };
-    let plan = GainPlan::of_with(&base, req.mode, steps.as_deref()).map_err(|e| format!("{title}: {e}"))?;
+    // (The gains its radio said it has, where they aren't its kind's own.)
+    let plan = GainPlan::of_with(&base, req.mode, crate::radio::reported_gains(&base).as_deref()).map_err(|e| format!("{title}: {e}"))?;
     let start = plan.point(&base);
     let as_it_is = plan.apply(&base, &start) != base;
     if crate::runtime::live_gain(&base, &plan.apply(&base, &start)).is_none() {

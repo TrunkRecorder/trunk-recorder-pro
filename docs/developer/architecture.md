@@ -1755,7 +1755,7 @@ WebSocket, so the interface code is shared.
 | Files | recordings and data folders | OPFS |
 | Sources | RTL-SDR, USRP, Airspy, SoapySDR, files | RTL-SDR over WebUSB, picked files |
 | `hello.capabilities` | all: `service`, `drivers`, `plugins`, `interfaces`, `host`, `keys`, `tuneGain` (and `calls`, `history` while the store is open) | none |
-| Not available | | plugins, interfaces, M4A, channel files, `findRadios`, `probeRadio`, `listDir`, Trunk Recorder import from disk, key containers, `quit` |
+| Not available | | plugins, interfaces, M4A, channel files, `findRadios`, `listDir`, Trunk Recorder import from disk, key containers, `quit` |
 
 ### 13.3 The config rules in the interface
 
@@ -1835,7 +1835,7 @@ hub skips the oldest without notice.
 |---|---|
 | Recording | `setConfig`, `setTalkgroups`, `setUnitNames`, `setUnitName`, `setTalkgroup`, `start`, `stop`, `quit`, `channelFile`, `tuneGain`, `tuneStop` |
 | Watching | `subscribe`, `listen`, `statsQuery`, `radioQuery`, `callsQuery` |
-| Setup | `devices`, `findRadios`, `probeRadio`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop`, `licenseQuery`, `callSignQuery`, `iqCapture*`, `iqRuleCheck`, `dataSummary`, `deleteData`, `compactData`, `createToken` (docs/api/README.md lists them all) |
+| Setup | `devices`, `findRadios`, `listDir`, `readTrConfig`, `profileSource`, `surveyStart`, `surveyListen`, `surveyRescan`, `surveyStop`, `licenseQuery`, `callSignQuery`, `iqCapture*`, `iqRuleCheck`, `dataSummary`, `deleteData`, `compactData`, `createToken` (docs/api/README.md lists them all) |
 | Plugins and interfaces | `plugins`, `addPlugin`, `removePlugin`, `pluginAction`, `interfaces`, `addInterface`, `removeInterface`; their stores: `store {kind, refresh?}`, `install {kind, id}` or `{kind, repository, tag?}` (progress in `installProgress {kind, key, id, stage, message}`), `kind` `plugin` or `interface` |
 | Keys | `unlockKeys {source, password}`, `lockKeys {source}` (key containers without a password file) |
 

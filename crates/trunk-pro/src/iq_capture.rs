@@ -434,7 +434,7 @@ fn window_start(kept: &[Counts], asked: Counts, start_ms: f64) -> Counts {
 /// A file a radio's samples take, per sample.
 fn bytes_per_sample(kind: &SourceKind) -> u64 {
     match kind {
-        SourceKind::Rtlsdr { .. } | SourceKind::Rtltcp { .. } | SourceKind::Hackrf { .. } => 2,
+        SourceKind::Rtlsdr { .. } | SourceKind::Hackrf { .. } => 2,
         SourceKind::File { format, path, .. } if SampleFormat::of(*format, path) == SampleFormat::Cu8 => 2,
         _ => 4,
     }

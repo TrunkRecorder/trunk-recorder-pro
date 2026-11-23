@@ -8,7 +8,7 @@ import { editedNow, fromNow } from "../origins.ts";
 import { talkgroupsReplace, unitNamesReplace } from "../rules.ts";
 import init, { calls_page, configNeedsRestart, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
 import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder, UnitName } from "../protocol.ts";
-import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, sourceTitle, trpBase } from "../config.ts";
+import { activeSystems, desktopOnlyWhy, resolvedCenters, sourceTitle, trpBase } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 /** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
@@ -139,7 +139,8 @@ async function profileSource(req: { source: number; centerHz: number }): Promise
   let rtl: WebRtl | null = null;
   try {
     await ready;
-    if (needsDriver(src)) throw new Error(`${SOURCE_KINDS[src.type].label} needs the desktop app.`);
+    const why = desktopOnlyWhy(src);
+    if (why) throw new Error(why);
     if (src.type === "rtlsdr") {
       if (!(req.centerHz > 0)) throw new Error("Choose a frequency to look at.");
       const p = new WebProfiler(req.source, req.centerHz, src.rateHz);
@@ -151,7 +152,7 @@ async function profileSource(req: { source: number; centerHz: number }): Promise
       }
       post(JSON.parse(p.result()) as FromRecorder);
       p.free();
-    } else {
+    } else if (src.type === "file") {
       if (src.format && src.format !== "cu8") throw new Error("The browser version reads rtl_sdr (cu8) captures only.");
       const f = files[req.source];
       if (!f) throw new Error("Choose the capture file again (the browser forgets it on reload).");
@@ -187,7 +188,8 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
     await ready;
     const src = config.sources[req.source];
     if (!src) throw new Error("No such source.");
-    if (needsDriver(src)) throw new Error(`${SOURCE_KINDS[src.type].label} needs the desktop app.`);
+    const why = desktopOnlyWhy(src);
+    if (why) throw new Error(why);
     const s = new WebSurvey(JSON.stringify(config), JSON.stringify(req));
     survey = s;
     surveying = true;
@@ -198,7 +200,7 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
       surveyRtl = rtl;
       s.tuned(first?.tune ?? src.centerHz);
       void pumpSurveyRtl(s, rtl);
-    } else {
+    } else if (src.type === "file") {
       if (src.format && src.format !== "cu8") throw new Error("The browser version reads rtl_sdr (cu8) captures only.");
       const f = files[req.source];
       if (!f) throw new Error("Choose the capture file again (the browser forgets it on reload).");
@@ -415,13 +417,14 @@ async function start(): Promise<void> {
     rtls = [];
     for (let i = 0; i < cfg.sources.length; i++) {
       const s = cfg.sources[i];
-      if (s.type === "rtlsdr") {
+      const why = desktopOnlyWhy(s);
+      if (why) {
+        throw new Error(`${sourceTitle(cfg, i)}: ${why}`);
+      } else if (s.type === "rtlsdr") {
         const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.agc ? undefined : s.gainDb, s.ppm);
         rtls.push(rtl);
         void pumpRtl(i, rtl);
-      } else if (needsDriver(s)) {
-        throw new Error(`${sourceTitle(cfg, i)}: ${SOURCE_KINDS[s.type].label} needs the desktop app.`);
-      } else {
+      } else if (s.type === "file") {
         if (s.format && s.format !== "cu8") throw new Error(`${sourceTitle(cfg, i)}: the browser version reads rtl_sdr (cu8) captures only.`);
         const f = files[i];
         if (!f) throw new Error(`${sourceTitle(cfg, i)}: choose the capture file again (the browser forgets it on reload).`);

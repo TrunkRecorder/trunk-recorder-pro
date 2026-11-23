@@ -7,9 +7,8 @@
 // docs/api/protocol.schema.json; trunk-pro's tests check what the recorder
 // sends against that.
 
+/** I/Q samples as bytes: 8-bit offset, 16-bit signed or 32-bit float (a capture file's, a SpyServer's on the link). */
 export type SampleFormat = "cu8" | "cs16" | "cf32";
-/** How a SpyServer sends its I/Q: 8-bit unsigned, 16-bit signed or 32-bit float. */
-export type SpyserverFormat = "uint8" | "int16" | "float32";
 
 /**
  * A radio, or a capture to replay (`type`), its own keys beside the ones every
@@ -22,11 +21,14 @@ export type SpyserverFormat = "uint8" | "int16" | "float32";
  */
 export type Source = (
   /**
-   * `agc`: the tuner's AGC instead of `gainDb`. `bufLen`: bytes per USB transfer (Trunk Recorder's
-   * buflen), a multiple of 512, 0 = the driver's 16384 bytes.
-   * `buffers`: transfers in flight, 0 = the driver's 128 (about 2 MiB). Desktop app only.
+   * An RTL-SDR: on USB (`serial` "" = the first free one), or on another machine through its `rtl_tcp` server
+   * (`address`: `host` or `host:port`, 1234 if left off; nothing to install, and it answers nothing, so what the
+   * source says it's set to is what it asked for). `agc`: the tuner's AGC instead of `gainDb`. `biasTee`: power for
+   * an LNA on the antenna cable (an RTL-SDR Blog V3 / V4). `bufLen` and `buffers` are USB's: bytes per transfer
+   * (Trunk Recorder's buflen), a multiple of 512, 0 = the driver's 16384 bytes; transfers in flight, 0 = the
+   * driver's 128 (about 2 MiB). Desktop app only.
    */
-  | { type: "rtlsdr"; serial: string; gainDb: number; agc: boolean; bufLen?: number; buffers?: number }
+  | { type: "rtlsdr"; serial: string; address?: string; gainDb: number; agc: boolean; biasTee: boolean; bufLen?: number; buffers?: number }
   /**
    * USRP through UHD (desktop app, UHD installed). `args` "" = first found; `agc` the device's AGC (B200/B210).
    * `wireFormat`: samples on the wire, "sc16", "sc12" (B2xx), "sc8"; "" or absent = sc16, or sc12 for a B2xx on USB 2.0 above 8 MSPS.
@@ -61,17 +63,12 @@ export type Source = (
    */
   | { type: "hackrf"; serial: string; lnaDb: number; vgaDb: number; amp: boolean; biasTee: boolean }
   /**
-   * An RTL-SDR on another machine, through its `rtl_tcp` server (desktop app; nothing to install). `address`: `host` or
-   * `host:port` (1234 if left off). Gain, AGC and bias-T are an RTL-SDR's, taken by the far end (which answers nothing).
-   */
-  | { type: "rtltcp"; address: string; gainDb: number; agc: boolean; biasTee: boolean }
-  /**
    * A receiver another machine publishes with Airspy's `spyserver` (an Airspy R2 / Mini / HF+, or an RTL-SDR behind it; desktop
-   * app, nothing to install). `address`: `host` or `host:port` (5555 if left off). `iqFormat`: how its I/Q travels (8-bit takes
-   * the least of the link). `gain`: the server's own gain step, not dB. `digitalGainDb`: what it multiplies the stream by before
+   * app, nothing to install). `address`: `host` or `host:port` (5555 if left off). `iqFormat`: how its I/Q travels, as a
+   * capture file's samples are (`cu8` takes the least of the link). `gain`: the server's own gain step, not dB. `digitalGainDb`: what it multiplies the stream by before
    * quantising it for the link; absent: the reference clients' rule. `rateHz` is one it offers: its top rate halved.
    */
-  | { type: "spyserver"; address: string; iqFormat: SpyserverFormat; gain: number; digitalGainDb?: number }
+  | { type: "spyserver"; address: string; iqFormat: SampleFormat; gain: number; digitalGainDb?: number }
   /**
    * Any SDR with a SoapySDR module (desktop app). `args` "" = first found ("driver=hackrf,serial=…");
    * `agc` the device's AGC; else `gainDb` overall (null: left as it is), then each stage in `gains`
@@ -123,6 +120,18 @@ export interface FoundRadio {
   model?: string;
   rates?: number[];
   rateRange?: [number, number];
+  /** The gains it can be set to, where they aren't its kind's own (an RTL-SDR's tuner behind `rtl_tcp`; a SpyServer's steps, 0 up). */
+  gains?: number[];
+}
+/**
+ * A radio on the network a source names (an RTL-SDR's `rtl_tcp` server, a SpyServer): what it said when it was last
+ * opened, or when asked (a search, or its address entered); `error` when it couldn't be; neither: not asked yet.
+ */
+export interface NetworkRadio extends FoundRadio {
+  kind: "rtlsdr" | "spyserver";
+  /** As the source gives it. */
+  address: string;
+  error?: string;
 }
 /** A SoapySDR module (one per device family): the drivers it registered, or why it didn't load. */
 export interface SoapyModule {
@@ -142,13 +151,12 @@ export interface Radios {
   usrp: DriverState;
   /** Built in: always available. */
   hackrf: DriverState;
-  /** Radios on the network, built in: always available (and nothing to list). */
-  rtltcp: DriverState;
-  spyserver: DriverState;
   airspy: DriverState;
   hydrasdr: DriverState;
   bladerf: DriverState;
   soapy?: SoapyState;
+  /** The radios on the network the sources name: built in, always available. */
+  network?: { available: boolean; detail: string; devices: NetworkRadio[] };
 }
 
 /**
@@ -2406,8 +2414,6 @@ export type FromRecorder =
   /** Which key containers are unlocked, after an unlock, a lock or a config change. */
   | { type: "keys"; sources: LockableKeys[] }
   | { type: "radios"; radios: Radios }
-  /** Answers probeRadio, to its sender: what the radio on the network at `address` runs at (`rates`, Hz, widest first) and its `model`, or why it couldn't be asked (`error`). */
-  | { type: "probed"; kind: string; address: string; model?: string; rates: number[]; error?: string }
   | ({ type: "state" } & PhaseState)
   /** The config, and its version: what an edit of it (setConfig) is sent with. */
   | { type: "config"; config: Config; version: number }
@@ -2510,8 +2516,6 @@ export type ToRecorder =
   | { type: "stop" }
   | { type: "devices" }
   | { type: "findRadios" }
-  /** Ask the radio on the network (`kind`: "spyserver") at `address` what it runs at; answered with `probed`. */
-  | { type: "probeRadio"; kind: string; address: string }
   /** A folder's subfolders, for the folder picker ("" = the home folder). */
   | { type: "listDir"; path: string }
   /** A Trunk Recorder config.json (or a folder with one), with the files it names. */

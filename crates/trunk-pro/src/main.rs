@@ -938,6 +938,8 @@ fn capture(a: &Args) {
     let out = a.positional.first().unwrap_or_else(|| die("capture <out.cu8> --freq Hz …"));
     let cfg = radio::rtl::RtlConfig {
         serial: a.get("serial").unwrap_or("").into(),
+        address: a.get("address").unwrap_or("").into(),
+        bias_tee: a.flag("bias-tee"),
         center_hz: a.num("freq", 0.0) as u64,
         rate_hz: a.num("rate", 2_400_000.0) as u32,
         gain_db: a.get("gain").and_then(|g| g.parse().ok()),

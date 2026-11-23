@@ -328,7 +328,7 @@ test("Radio: a warning of calls out of band links to the frequencies, on the Ove
 
 test("A frequency out of band: the nearest source, and how far past its usable edge", () => {
   twoSites();
-  const settings = (centerHz: number): Source => ({ type: "rtlsdr", serial: "", gainDb: 25, agc: false, centerHz, rateHz: 2_400_000, ppm: 0 });
+  const settings = (centerHz: number): Source => ({ type: "rtlsdr", serial: "", gainDb: 25, agc: false, biasTee: false, centerHz, rateHz: 2_400_000, ppm: 0 });
   const src = (index: number, label: string, centerHz: number): SourceStatus => ({ index, label, centerHz, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: settings(centerHz) });
   const s = { ...snapshot(), sources: [src(0, "rtl0", 851_000_000), src(1, "rtl1", 855_000_000)] };
   // (2.4 MS/s less the 75 kHz guard each side: 1.125 MHz either side is usable.)
@@ -614,7 +614,7 @@ test("RF: a HackRF's stages, and the sample clock's error once measured", () => 
 
 test("RF: a source whose gain is low says so and offers Tune gain; the tuning's progress, then what it kept", () => {
   const c = defaultConfig();
-  c.sources = [{ type: "rtlsdr", serial: "1", gainDb: 25.4, agc: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 }];
+  c.sources = [{ type: "rtlsdr", serial: "1", gainDb: 25.4, agc: false, biasTee: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 }];
   running(c, []);
   const src: SourceStatus = { index: 0, label: "RTL-SDR SN 1", centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: c.sources[0] };
   transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [src], load: 0, calls: [] });
@@ -656,7 +656,7 @@ test("RF: a source whose gain is low says so and offers Tune gain; the tuning's 
 
 test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {
   const c = defaultConfig();
-  const rtl = (serial: string, centerHz: number): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz, rateHz: 2_400_000, ppm: 0 });
+  const rtl = (serial: string, centerHz: number): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, biasTee: false, centerHz, rateHz: 2_400_000, ppm: 0 });
   c.sources = [rtl("1", 851_000_000), rtl("2", 853_000_000)];
   running(c, []);
   const src = (i: number, unused: boolean): SourceStatus => ({ index: i, label: `RTL-SDR SN ${i + 1}`, centerHz: c.sources[i].centerHz, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: c.sources[i], voiceChannels: 0, unused });
@@ -669,7 +669,7 @@ test("RF: a source nothing needs says it can probably go; one in use doesn't", (
 
 test("RF: a source's card is called as Setup calls it, a new name at once; its radio by its label", () => {
   const c = defaultConfig();
-  const rtl = (serial: string, name?: string): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0, ...(name ? { name } : {}) });
+  const rtl = (serial: string, name?: string): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, biasTee: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0, ...(name ? { name } : {}) });
   c.sources = [rtl("1"), rtl("2", "Whip")];
   running(c, []);
   const st = (i: number): SourceStatus => ({ index: i, label: `RTL-SDR SN ${i + 1}`, centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: rtl(String(i + 1)) });

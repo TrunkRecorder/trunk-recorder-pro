@@ -566,7 +566,7 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
         // What it runs at, for the list of radios and the refusal.
         let rates = d.rates();
         if let Some(r) = &rates {
-            super::remember(&key(&cfg.args), Caps { model: String::new(), rates: r.clone() });
+            super::remember(&key(&cfg.args), Caps { model: String::new(), rates: r.clone(), gains: Vec::new() });
         }
         check(a, "sample rate", (a.set_sample_rate)(d.dev, RX, 0, cfg.rate_hz))?;
         let actual = (a.get_sample_rate)(d.dev, RX, 0);

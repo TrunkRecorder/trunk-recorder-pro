@@ -13,7 +13,7 @@
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { adjacentIdentity, deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, needsDriver, siteNameOf, SOURCE_KINDS, sourceKey, sourceTitle, roaming, siteAddress, systemWithChannel } from "./config.ts";
+import { adjacentIdentity, deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, desktopOnly, siteNameOf, SOURCE_KINDS, sourceKey, sourceTitle, roaming, siteAddress, systemWithChannel } from "./config.ts";
 import {
   can,
   addDmrSite,
@@ -588,7 +588,7 @@ export function SurveyPanel(props: { c: Config }) {
   const scanWith = spare && hasBiasT(spare) ? { ...spare, biasTee: spareBiasOn } : spare;
   const src = spare ?? c.sources[source];
   const active = sv.stage !== "idle";
-  const unsupported = !can("drivers") && !!src && needsDriver(src);
+  const unsupported = !can("drivers") && !!src && desktopOnly(src);
   const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
   const shown = !active && (open || !!lookingFor);
   // The radios plugged in now: which are spare.

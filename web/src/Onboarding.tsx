@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, kindLabel, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
+import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, kindLabel, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os, networkRadio, onNetwork, desktopOnly } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -689,7 +689,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
   const [bands, setBands] = useState<string[] | null>(null);
   const [manual, setManual] = useState(false);
   const picked = bands ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
-  const unsupported = !can("drivers") && !!c.sources[source] && needsDriver(c.sources[source]);
+  const unsupported = !can("drivers") && !!c.sources[source] && desktopOnly(c.sources[source]);
   // Naming what it finds from FCC licenses: optional, with the location given here.
   const [naming, setNaming] = useState(() => !!savedWhere().text);
   const [where, setWhere] = useState<Where>(savedWhere);
@@ -1798,6 +1798,12 @@ function ConfigPicker() {
 
 /** How an imported source will fare here. */
 function sourceState(src: Source, s: AppState): { tone: "ok" | "warn" | "bad"; text: string } {
+  // A radio on the network: as it last answered (asked when its address was entered, or a search).
+  if (onNetwork(src)) {
+    if (!s.radios) return { tone: "bad", text: "Needs the desktop app" };
+    const n = networkRadio(s.radios, src);
+    return n?.error ? { tone: "warn", text: "Not answering" } : n?.model ? { tone: "ok", text: `${n.model}, answering` } : { tone: "ok", text: "On the network" };
+  }
   if (src.type === "rtlsdr") {
     if (!src.serial) return s.devices.some((d) => !d.busy) ? { tone: "ok", text: "The first free dongle" } : { tone: "warn", text: "No free dongle plugged in" };
     const d = s.devices.find((x) => x.serial === src.serial);
@@ -1805,7 +1811,7 @@ function sourceState(src: Source, s: AppState): { tone: "ok" | "warn" | "bad"; t
   }
   if (src.type === "file") return { tone: "ok", text: "Capture file" };
   if (!s.radios) return { tone: "bad", text: "Needs the desktop app" };
-  const d = s.radios[src.type];
+  const d = needsDriver(src) ? s.radios[src.type] : undefined;
   return d?.available ? { tone: "ok", text: "Driver installed" } : { tone: "bad", text: `Needs ${SOURCE_KINDS[src.type].driver?.name} installed` };
 }
 

@@ -17,7 +17,7 @@ const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g,
 /** A P25 site and one RTL-SDR whose centre was typed in too low for its voice channels. */
 function tooLow(): Config {
   const c = defaultConfig();
-  c.sources = [{ type: "rtlsdr", serial: "", centerHz: 849_500_000, rateHz: 2_400_000, gainDb: 25, agc: false, ppm: 0, bufLen: 0, buffers: 0 }];
+  c.sources = [{ type: "rtlsdr", serial: "", centerHz: 849_500_000, rateHz: 2_400_000, gainDb: 25, agc: false, biasTee: false, ppm: 0, bufLen: 0, buffers: 0 }];
   c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_012_500] }));
   c.systems[0].sites[0].voiceChannelsHz = [851_512_500, 852_012_500];
   const greeting: FromRecorder[] = [

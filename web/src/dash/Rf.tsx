@@ -28,7 +28,6 @@ function gainText(c: Source | undefined): string {
   if (!c) return "—";
   switch (c.type) {
     case "rtlsdr":
-    case "rtltcp":
       return c.agc ? "AGC" : `${formatGain(c.gainDb)} dB`;
     case "spyserver":
       return `step ${c.gain}${c.digitalGainDb !== undefined ? ` · digital ${c.digitalGainDb} dB` : ""}`;
