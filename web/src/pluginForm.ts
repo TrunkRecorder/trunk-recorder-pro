@@ -107,8 +107,16 @@ export function applies(schema: PluginSchema | undefined, values: PluginValues, 
   });
 }
 
-/** How a value reads in a summary: a choice by its label, a list joined (the first few), a switch on by its title. "": nothing set. */
+/** A secret's value as it's shown anywhere it isn't typed (`x-secret`): dots, never its text. */
+export const SECRET_SHOWN = "••••••••";
+
+/** Whether `v` is a value a setting has (not empty). */
+const isSet = (v: unknown) => v !== undefined && v !== null && v !== "";
+
+/** How a value reads in a summary: a choice by its label, a list joined (the first few), a switch on by its title,
+ * a secret as dots. "": nothing set. */
 export function summaryValue(f: PluginSchema, v: unknown): string {
+  if (f["x-secret"]) return isSet(v) ? SECRET_SHOWN : "";
   const label = (s: PluginSchema | undefined, x: unknown) => {
     const i = s?.enum?.indexOf(x as string | number) ?? -1;
     return i >= 0 ? (s?.["x-enum-labels"]?.[i] ?? String(x)) : String(x);
