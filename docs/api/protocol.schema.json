@@ -4411,6 +4411,34 @@
                 "additionalProperties": false
               }
             },
+            "joined": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "unit": {
+                    "type": "number"
+                  },
+                  "alias": {
+                    "type": "string"
+                  },
+                  "n": {
+                    "type": "number"
+                  },
+                  "last": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "unit",
+                  "alias",
+                  "n",
+                  "last"
+                ],
+                "additionalProperties": false
+              },
+              "description": "tg: every radio ever heard affiliated with it, the most joins first (`last`: Unix s)."
+            },
             "lengths": {
               "$ref": "#/definitions/LengthHistogram"
             },
@@ -8279,6 +8307,9 @@
             },
             "biasTee": {
               "type": "boolean"
+            },
+            "fpgaChannelizer": {
+              "type": "string"
             }
           },
           "required": [
@@ -11403,6 +11434,18 @@
           },
           "description": "[talkgroup, transmissions], most first."
         },
+        "affs": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "description": "Every talkgroup it was heard affiliated with: [talkgroup, times it joined, first, last (Unix s)], most recently heard first."
+        },
         "partners": {
           "type": "array",
           "items": {
@@ -11431,6 +11474,7 @@
         "affT",
         "reg",
         "tgs",
+        "affs",
         "partners",
         "new"
       ],

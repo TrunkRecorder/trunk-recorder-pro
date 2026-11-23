@@ -283,6 +283,8 @@ usage:
       of each frame type; p2: a Phase 2 channel, --nac --sysid --wacn).
   trunk-pro tool smartnet <capture.cu8> --center Hz --rate Hz --cc Hz [--osw]
       A SmartNet control channel's messages.
+  trunk-pro tool bank-capture <bladeRF serial> --image p25chan.rbf --center Hz --freqs Hz,… --out f.pkt [--seconds 10] [--gain 30]
+      Load the FPGA filter bank into RAM and record what it sends, for replay.
   trunk-pro tool dmrscan|nxdnscan <capture.cu8> --center Hz
       Every DMR / NXDN carrier in a capture.
   trunk-pro tool dmr|nxdn <capture.cu8> --center Hz --freq Hz [--nxdn 48|96] [--audio out.f32]
@@ -441,7 +443,7 @@ fn replay(a: &Args) {
         }
     } else if let Some(p) = a.positional.first() {
         files.push(p.clone());
-        sources.push(file_source(p, format_of(p, None), a.num("center", 0.0), a.num("rate", 2_400_000.0), a.flag("auto-tune"), a.num("guard", DEFAULT_GUARD_HZ)));
+        sources.push(file_source(p, format_of(p, None), a.num("center", 0.0), a.num("rate", if p.ends_with(".pkt") { trunk_core::dsp::filter_bank::FS } else { 2_400_000.0 }), a.flag("auto-tune"), a.num("guard", DEFAULT_GUARD_HZ)));
     }
     if files.is_empty() {
         die("replay: no capture given");
@@ -507,6 +509,46 @@ fn replay(a: &Args) {
     session.want_audio = false;
     let messages = a.flag("messages");
     session.watch = Some(Box::new(move |ev: &Event, engine: &Engine| print_event(ev, engine, quiet, messages)));
+
+    // A filter bank packet file (`tool bank-pack`): one source, fed block by block.
+    if cfg.engine_config(0.0, &names).sources[0].filter_bank {
+        if files.len() != 1 {
+            die("replay: a packet file (.pkt) replays on its own");
+        }
+        use trunk_core::dsp::{bank_wire, filter_bank};
+        let block = (filter_bank::BLOCK_HOPS * filter_bank::HOP) as u64;
+        let t0 = Instant::now();
+        let bytes = fs::read(&files[0]).unwrap_or_else(|e| die(&format!("{}: {e}", files[0])));
+        let table = fs::read_to_string(format!("{}.bins", files[0])).unwrap_or_else(|e| die(&format!("{}.bins: {e}", files[0])));
+        let bins: Vec<u16> = table.trim().split(',').map(|v| v.trim().parse().unwrap_or_else(|_| die(&format!("{}.bins: bad bin \"{v}\"", files[0])))).collect();
+        let (mut rest, mut next, mut written, mut lost) = (&bytes[..], 0u32, 0, 0u64);
+        let mut out = Vec::new();
+        let at = |next: u32| epoch_ms + next as f64 * block as f64 / filter_bank::FS * 1000.0;
+        while !rest.is_empty() {
+            let (p, more) = bank_wire::parse(rest).unwrap_or_else(|e| die(&format!("{}: {e:?}", files[0])));
+            rest = more;
+            let bank_wire::Body::Channels { iq, power_start, power, .. } = &p.body;
+            let missed = p.block.wrapping_sub(next) as u64;
+            lost += missed;
+            session.push_bank(0, &bins, iq, *power_start, power, None, missed * block, at(p.block));
+            next = p.block.wrapping_add(1);
+            if next % 64 == 0 {
+                session.poll(at(next), &mut out);
+                written += write_calls(&mut out, &session, &out_dir, multi, quiet);
+            }
+        }
+        session.finish(&mut out);
+        written += write_calls(&mut out, &session, &out_dir, multi, quiet);
+        let air_s = next as f64 * block as f64 / filter_bank::FS;
+        println!("\n{air_s:.1} s of air ({lost} blocks lost) in {:.2} s. {written} call(s) written to {out_dir}/", t0.elapsed().as_secs_f64());
+        let st = session.status_and_bandplans().0;
+        for (i, t) in st.sources.iter().enumerate() {
+            if let Some(e) = t.error_ppm {
+                println!("  source {}: frequency error {e:+.2} ppm, corrected by {:+.2} ppm", i + 1, t.applied_ppm);
+            }
+        }
+        return;
+    }
 
     // Streamed from disk, not read whole: a long capture is gigabytes (a
     // small Raspberry Pi has 1–2 GB of memory).

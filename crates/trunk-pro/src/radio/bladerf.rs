@@ -15,7 +15,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
-use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
 
 type Dev = *mut c_void;
 
@@ -65,6 +65,34 @@ const RX0: c_int = 0;
 const RX_X1: c_int = 0;
 /// BLADERF_FORMAT_SC16_Q11_META.
 const FORMAT_SC16_Q11_META: c_int = 1;
+/// libbladeRF versions the filter bank has run against. Others get a warning.
+const TESTED_VERSIONS: &[(u16, u16, u16)] = &[(2, 5, 0), (2, 6, 0)];
+
+/// BLADERF_FORMAT_PACKET_META in libbladeRF `major.minor`: 2 through 2.5, and 3
+/// from 2.6, which inserts BLADERF_FORMAT_SC16_Q11_PACKED before it. (Where a
+/// 2.6 build numbers them as 2.5 did, [`is_wideband_header`] catches it.)
+fn packet_format(major: u16, minor: u16) -> c_int {
+    if (major, minor) >= (2, 6) { 3 } else { 2 }
+}
+
+/// What a libbladeRF `major.minor.patch` should be warned about, if anything.
+fn version_warning(major: u16, minor: u16, patch: u16) -> Option<String> {
+    let mut w = None;
+    if !TESTED_VERSIONS.contains(&(major, minor, patch)) {
+        w = Some(format!("libbladeRF {major}.{minor}.{patch} hasn't been tested with the FPGA filter bank; its sample format numbers are assumed from the version"));
+    }
+    if packet_format(major, minor) != 2 {
+        let packed = format!("libbladeRF {major}.{minor}.{patch} numbers its sample formats differently: the wideband stream gets packed samples without metadata, so overruns aren't detected");
+        w = Some(w.map_or(packed.clone(), |t| format!("{t}. {packed}")));
+    }
+    w
+}
+
+/// Whether a stream's bytes start with the header of wideband samples with
+/// metadata (fifo_writer's marker), not a packet's.
+fn is_wideband_header(b: &[u8]) -> bool {
+    b.len() >= 4 && u32::from_le_bytes([b[0], b[1], b[2], b[3]]) == 0x1234_4321
+}
 /// BLADERF_GAIN_DEFAULT (the board's AGC) and BLADERF_GAIN_MGC (manual).
 const GAIN_DEFAULT: c_int = 0;
 const GAIN_MGC: c_int = 1;
@@ -96,7 +124,20 @@ struct Api {
     sync_config: unsafe extern "C" fn(Dev, c_int, c_int, c_uint, c_uint, c_uint, c_uint) -> c_int,
     enable_module: unsafe extern "C" fn(Dev, c_int, bool) -> c_int,
     sync_rx: unsafe extern "C" fn(Dev, *mut c_void, c_uint, *mut Metadata, c_uint) -> c_int,
+    /// For the FPGA filter bank (`tool bank-test`).
+    load_fpga: Option<unsafe extern "C" fn(Dev, *const c_char) -> c_int>,
+    wb_read: Option<unsafe extern "C" fn(Dev, u32, *mut u32) -> c_int>,
+    wb_write: Option<unsafe extern "C" fn(Dev, u32, u32) -> c_int>,
+    init_stream: Option<unsafe extern "C" fn(*mut *mut c_void, Dev, StreamCb, *mut *mut *mut c_void, usize, c_int, usize, usize, *mut c_void) -> c_int>,
+    stream: Option<unsafe extern "C" fn(*mut c_void, c_int) -> c_int>,
+    deinit_stream: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// BLADERF_FORMAT_PACKET_META in this libbladeRF, and its version to name in errors.
+    packet_format: c_int,
+    version_text: String,
 }
+
+/// bladerf_stream_cb.
+type StreamCb = unsafe extern "C" fn(Dev, *mut c_void, *mut Metadata, *mut c_void, usize, *mut c_void) -> *mut c_void;
 
 // SAFETY: plain C entry points; each device is used from one thread.
 unsafe impl Send for Api {}
@@ -118,8 +159,18 @@ fn api() -> Result<&'static Api, String> {
                     *lib.get(concat!($n, "\0").as_bytes()).map_err(|e| format!("{path}: {} missing (libbladeRF 2.x is needed): {e}", $n))?
                 };
             }
+            let version: unsafe extern "C" fn(*mut Version) = f!("bladerf_version");
+            let mut v = Version { major: 0, minor: 0, patch: 0, describe: std::ptr::null() };
+            version(&mut v);
+            let version_text = format!("{}.{}.{} ({})", v.major, v.minor, v.patch, cstr(v.describe));
+            log::info!("libbladeRF {version_text}, {path}");
+            if let Some(w) = version_warning(v.major, v.minor, v.patch) {
+                log::warn!("{w}");
+            }
             Ok(Api {
-                version: f!("bladerf_version"),
+                packet_format: packet_format(v.major, v.minor),
+                version_text,
+                version,
                 strerror: f!("bladerf_strerror"),
                 get_device_list: f!("bladerf_get_device_list"),
                 free_device_list: f!("bladerf_free_device_list"),
@@ -139,6 +190,12 @@ fn api() -> Result<&'static Api, String> {
                 sync_config: f!("bladerf_sync_config"),
                 enable_module: f!("bladerf_enable_module"),
                 sync_rx: f!("bladerf_sync_rx"),
+                load_fpga: lib.get(b"bladerf_load_fpga\0").ok().map(|s| *s),
+                wb_read: lib.get(b"bladerf_wishbone_master_read\0").ok().map(|s| *s),
+                wb_write: lib.get(b"bladerf_wishbone_master_write\0").ok().map(|s| *s),
+                init_stream: lib.get(b"bladerf_init_stream\0").ok().map(|s| *s),
+                stream: lib.get(b"bladerf_stream\0").ok().map(|s| *s),
+                deinit_stream: lib.get(b"bladerf_deinit_stream\0").ok().map(|s| *s),
                 _lib: lib,
             })
         }
@@ -252,6 +309,9 @@ pub struct BladerfConfig {
     /// Power an LNA over the RX coax (bladeRF 2.0 only).
     pub bias_tee: bool,
     pub ppm: f64,
+    /// A filter bank image to load into the FPGA's RAM: then this stream is
+    /// its packets ([`Block::Bank`]), not wideband samples.
+    pub fpga_image: Option<String>,
 }
 
 /// A bladeRF, streamed by [`crate::sdr::run_with`]: reopened after errors with a short back-off.
@@ -272,6 +332,9 @@ impl crate::sdr::Radio for BladerfConfig {
         self.rate_hz
     }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+        if self.fpga_image.is_some() {
+            return stream_bank(self, sink, stop, ctl);
+        }
         stream_once(self, sink, stop, ctl)
     }
 }
@@ -329,6 +392,485 @@ fn identifier(serial: &str) -> String {
         s.to_string()
     } else {
         format!("*:serial={s}")
+    }
+}
+
+/// Filter bank packets arriving from libbladeRF's stream callback: put back
+/// together from USB transfers and handed to `handler` whole.
+struct BankRx {
+    start: std::time::Instant,
+    /// How long to run; INFINITY: until `stop`.
+    seconds: f64,
+    stop: AtomicBool,
+    handler: Box<dyn FnMut(&[u8])>,
+    bad_parse: std::sync::atomic::AtomicU64,
+    /// USB transfers seen, and the first one's length and first bytes, for a stream that delivers nothing.
+    transfers: std::sync::atomic::AtomicU64,
+    first: std::sync::Mutex<Option<(usize, Vec<u8>)>>,
+    /// Bytes of a packet still arriving.
+    partial: Vec<u8>,
+}
+
+impl BankRx {
+    fn new(seconds: f64, handler: Box<dyn FnMut(&[u8])>) -> Self {
+        BankRx { start: std::time::Instant::now(), seconds, stop: AtomicBool::new(false), handler, bad_parse: Default::default(), transfers: Default::default(), first: Default::default(), partial: Vec::new() }
+    }
+
+    /// One USB transfer. A packet arrives in pieces of 512 DWORDs (2048 bytes,
+    /// libbladeRF's message size), so they're put back together here: bladeRF's
+    /// 16-byte header gives the payload's length.
+    fn on_buffer(&mut self, bytes: &[u8]) {
+        use trunk_core::dsp::bank_wire::{CORE_ID, HEADER_BYTES};
+        if self.transfers.fetch_add(1, Ordering::Relaxed) == 0 {
+            *self.first.lock().unwrap() = Some((bytes.len(), bytes[..bytes.len().min(16)].to_vec()));
+        }
+        self.partial.extend_from_slice(bytes);
+        while self.partial.len() >= HEADER_BYTES {
+            if self.partial[3] != CORE_ID {
+                self.bad_parse.fetch_add(1, Ordering::Relaxed);
+                self.partial.clear();
+                return;
+            }
+            let need = HEADER_BYTES + 4 * u16::from_le_bytes([self.partial[0], self.partial[1]]) as usize;
+            if self.partial.len() < need {
+                return;
+            }
+            (self.handler)(&self.partial[..need]);
+            // The rest of the last piece is padding.
+            self.partial.clear();
+        }
+    }
+}
+
+/// How the capture tool's numbers come out.
+#[derive(Default)]
+struct CaptureCount {
+    packets: u64,
+    skipped: u64,
+    bad_parse: u64,
+    bad_time: u64,
+    lost: u64,
+    last: Option<(u32, u64)>,
+    error: Option<String>,
+}
+
+impl CaptureCount {
+    /// One packet for the file. Blocks before the table took effect aren't
+    /// kept: they read as a gap, which keeps the time right.
+    fn on_packet(&mut self, out: &mut dyn std::io::Write, bins: usize, bytes: &[u8]) {
+        use trunk_core::dsp::bank_wire::{parse, Body};
+        /// Samples in a block of 48 hops.
+        const SAMPLES_PER_BLOCK: u64 = 12288;
+        let Ok((p, _)) = parse(bytes) else {
+            self.bad_parse += 1;
+            return;
+        };
+        if p.generation != 1 || !matches!(&p.body, Body::Channels { bins: n, .. } if *n == bins) {
+            self.skipped += 1;
+            return;
+        }
+        self.packets += 1;
+        if let Err(e) = out.write_all(bytes) {
+            self.error.get_or_insert(e.to_string());
+        }
+        if let Some((block, ts)) = self.last {
+            let gap = p.block.wrapping_sub(block) as u64;
+            self.lost += gap.wrapping_sub(1);
+            // The header's written with the packet's end: a few clocks of slack.
+            if p.timestamp.wrapping_sub(ts).abs_diff(gap * SAMPLES_PER_BLOCK) > 8 {
+                self.bad_time += 1;
+            }
+        }
+        self.last = Some((p.block, p.timestamp));
+    }
+}
+
+/// Gives the finished buffer back for the next transfer, so nothing needs a queue.
+unsafe extern "C" fn bank_rx_cb(_dev: Dev, _stream: *mut c_void, _meta: *mut Metadata, samples: *mut c_void, n: usize, user: *mut c_void) -> *mut c_void {
+    // SAFETY: `user` is the BankRx bank_capture keeps alive for the stream, and `samples` a finished buffer of n DWORDs.
+    let st = unsafe { &mut *(user as *mut BankRx) };
+    if !samples.is_null() && n > 0 {
+        st.on_buffer(unsafe { std::slice::from_raw_parts(samples as *const u8, n * 4) });
+    }
+    if st.stop.load(Ordering::Relaxed) || st.start.elapsed().as_secs_f64() >= st.seconds {
+        return std::ptr::null_mut();
+    }
+    samples
+}
+
+/// What the filter bank needs of libbladeRF.
+struct BankCalls {
+    load: unsafe extern "C" fn(Dev, *const c_char) -> c_int,
+    rd: unsafe extern "C" fn(Dev, u32, *mut u32) -> c_int,
+    wr: unsafe extern "C" fn(Dev, u32, u32) -> c_int,
+    init: unsafe extern "C" fn(*mut *mut c_void, Dev, StreamCb, *mut *mut *mut c_void, usize, c_int, usize, usize, *mut c_void) -> c_int,
+    run: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
+    deinit: unsafe extern "C" fn(*mut c_void),
+}
+
+/// Bank registers (`fb_regs.vhd`), by their byte addresses.
+const REG_ID: u32 = 0x00;
+const REG_CONTROL: u32 = 0x04;
+const REG_COUNT: u32 = 0x08;
+const REG_COMMIT: u32 = 0x0C;
+const REG_SATURATED: u32 = 0x10;
+const REG_DROPPED: u32 = 0x14;
+const REG_RX_RATE: u32 = 0x18;
+const REG_ADC_PEAK: u32 = 0x1C;
+const REG_ADC_CLIPS: u32 = 0x20;
+const REG_TABLE: u32 = 0x400;
+/// The output gain shift the radios run with (issue 06's status).
+const GAIN_SHIFT: u32 = trunk_core::dsp::filter_bank::RADIO_GAIN_SHIFT;
+/// After the stream starts, before RX is enabled: the stream sets the format as it starts.
+const BANK_STARTUP: Duration = Duration::from_millis(300);
+/// Samples in a filter bank block.
+const SAMPLES_PER_BLOCK: u64 = 12288;
+
+impl BankCalls {
+    fn of(a: &Api) -> Result<BankCalls, String> {
+        match (a.load_fpga, a.wb_read, a.wb_write, a.init_stream, a.stream, a.deinit_stream) {
+            (Some(load), Some(rd), Some(wr), Some(init), Some(run), Some(deinit)) => Ok(BankCalls { load, rd, wr, init, run, deinit }),
+            _ => Err("this libbladeRF has no Wishbone access or async streaming (2.4 or later is needed)".into()),
+        }
+    }
+
+    /// # Safety
+    /// `dev` is open.
+    unsafe fn read(&self, a: &Api, dev: Dev, addr: u32) -> Result<u32, String> {
+        let mut v = 0;
+        check(a, "register read", unsafe { (self.rd)(dev, addr, &mut v) })?;
+        Ok(v)
+    }
+
+    /// # Safety
+    /// `dev` is open.
+    unsafe fn write(&self, a: &Api, dev: Dev, addr: u32, v: u32) -> Result<(), String> {
+        check(a, "register write", unsafe { (self.wr)(dev, addr, v) })
+    }
+
+    /// Open the board, load the image into RAM, and open it again: setting
+    /// the sample rate in the session that loaded it times out in the RFIC's calibration.
+    /// # Safety
+    /// libbladeRF's calls.
+    unsafe fn open_loaded(&self, a: &'static Api, serial: &str, image: &str) -> Result<Device, String> {
+        let id = CString::new(identifier(serial)).map_err(|e| e.to_string())?;
+        let path = CString::new(image).map_err(|e| e.to_string())?;
+        let id_ptr = if serial.trim().is_empty() { std::ptr::null() } else { id.as_ptr() };
+        let mut dev: Dev = std::ptr::null_mut();
+        check(a, "open", unsafe { (a.open)(&mut dev, id_ptr) })?;
+        let d = Device { a, dev, enabled: false, ppm: 0.0 };
+        check(a, "load FPGA", unsafe { (self.load)(d.dev, path.as_ptr()) })?;
+        drop(d);
+        check(a, "reopen", unsafe { (a.open)(&mut dev, id_ptr) })?;
+        let d = Device { a, dev, enabled: false, ppm: 0.0 };
+        let version = unsafe { self.read(a, d.dev, REG_ID) }?;
+        let (core, wire) = (version >> 24, version >> 16 & 0xff);
+        if core == trunk_core::dsp::bank_wire::CORE_ID as u32 && wire != trunk_core::dsp::bank_wire::VERSION as u32 {
+            return Err(format!("{image} is filter bank image version {wire}, and this build needs {}: build it from this version of fpga/", trunk_core::dsp::bank_wire::VERSION));
+        }
+        if core != trunk_core::dsp::bank_wire::CORE_ID as u32 {
+            return Err(format!("{image} isn't a filter bank image: its core id register reads {version:#x}"));
+        }
+        Ok(d)
+    }
+
+    /// The stream running on its own thread, delivering to `st`.
+    /// # Safety
+    /// `dev` stays open and `st` alive until the handle is joined.
+    unsafe fn start(&self, a: &Api, dev: Dev, st: *mut BankRx) -> Result<(*mut c_void, std::thread::JoinHandle<c_int>), String> {
+        let (mut stream, mut buffers): (*mut c_void, *mut *mut c_void) = (std::ptr::null_mut(), std::ptr::null_mut());
+        check(a, "stream setup", unsafe { (self.init)(&mut stream, dev, bank_rx_cb, &mut buffers, 32, a.packet_format, 2048, 16, st as *mut c_void) })?;
+        let (run, addr) = (self.run, stream as usize);
+        Ok((stream, std::thread::spawn(move || unsafe { run(addr as *mut c_void, RX_X1) })))
+    }
+
+    /// Write `bins` to the pending table and commit them as `generation`,
+    /// taking effect at the next block.
+    /// # Safety
+    /// `dev` is open.
+    unsafe fn commit(&self, a: &Api, dev: Dev, bins: &[u16], generation: u8) -> Result<(), String> {
+        for (i, b) in bins.iter().enumerate() {
+            unsafe { self.write(a, dev, REG_TABLE + 4 * i as u32, *b as u32) }?;
+        }
+        unsafe {
+            self.write(a, dev, REG_COUNT, bins.len() as u32)?;
+            self.write(a, dev, REG_COMMIT, generation as u32)
+        }
+    }
+}
+
+/// Recording what a bladeRF's filter bank sends.
+pub struct BankCapture<'a> {
+    pub serial: &'a str,
+    pub image: &'a str,
+    pub center_hz: f64,
+    pub bins: &'a [u16],
+    pub gain_db: i32,
+    pub gain_shift: u32,
+    pub seconds: f64,
+    pub out: &'a str,
+}
+
+/// `tool bank-capture`: load the filter bank image into RAM and record what it sends.
+pub fn bank_capture(c: &BankCapture) -> Result<serde_json::Value, String> {
+    use std::io::Write;
+    use std::sync::Mutex;
+    use std::time::Instant;
+    use trunk_core::dsp::bank_wire;
+    const RATE: u32 = 8_000_000;
+    let a = api()?;
+    let calls = BankCalls::of(a)?;
+    if c.bins.is_empty() || c.bins.len() > bank_wire::MAX_BINS {
+        return Err(format!("{} bins: 1 to {} can be sent", c.bins.len(), bank_wire::MAX_BINS));
+    }
+    let file = std::fs::File::create(c.out).map_err(|e| format!("{}: {e}", c.out))?;
+    let out = Arc::new(Mutex::new((std::io::BufWriter::new(file), CaptureCount::default())));
+    // SAFETY: libbladeRF calls on the device opened here, closed by the Device's drop.
+    // The stream thread and callback only use `st`, which outlives the join below.
+    unsafe {
+        let mut d = calls.open_loaded(a, c.serial, c.image)?;
+        let mut actual: c_uint = 0;
+        check(a, "sample rate", (a.set_sample_rate)(d.dev, RX0, RATE, &mut actual))?;
+        check(a, "bandwidth", (a.set_bandwidth)(d.dev, RX0, RATE, &mut actual))?;
+        check(a, "frequency", (a.set_frequency)(d.dev, RX0, c.center_hz.round() as u64))?;
+        check(a, "gain mode", (a.set_gain_mode)(d.dev, RX0, GAIN_MGC))?;
+        check(a, "gain", (a.set_gain)(d.dev, RX0, c.gain_db))?;
+
+        let (bins, sink) = (c.bins.len(), Arc::clone(&out));
+        let mut st = Box::new(BankRx::new(
+            c.seconds + BANK_STARTUP.as_secs_f64(),
+            Box::new(move |bytes| {
+                let mut g = sink.lock().unwrap();
+                let (w, n) = &mut *g;
+                n.on_packet(w, bins, bytes);
+            }),
+        ));
+        let (stream, streamer) = calls.start(a, d.dev, &mut *st)?;
+        std::thread::sleep(BANK_STARTUP);
+        let setup = (|| -> Result<u32, String> {
+            check(a, "enable RX", (a.enable_module)(d.dev, RX0, true))?;
+            check(a, "gain", (a.set_gain)(d.dev, RX0, c.gain_db))?;
+            // Starting RX clears these, so they're written after it, the enable last.
+            calls.commit(a, d.dev, c.bins, 1)?;
+            calls.write(a, d.dev, REG_CONTROL, 1 | c.gain_shift << 4)?;
+            calls.read(a, d.dev, REG_DROPPED)
+        })();
+        d.enabled = setup.is_ok();
+        if setup.is_err() {
+            st.stop.store(true, Ordering::Relaxed);
+        }
+        let t = Instant::now();
+        let r = streamer.join().unwrap_or(ERR_TIMEOUT);
+        let seconds = t.elapsed().as_secs_f64();
+        (calls.deinit)(stream);
+        let dropped_before = setup?;
+        check(a, "stream", r)?;
+        let (saturated, dropped, rx_rate) = (calls.read(a, d.dev, REG_SATURATED)?, calls.read(a, d.dev, REG_DROPPED)?, calls.read(a, d.dev, REG_RX_RATE)?);
+        let bad_transfers = st.bad_parse.load(Ordering::Relaxed);
+        drop(st);
+        let mut g = out.lock().unwrap();
+        g.0.flush().map_err(|e| format!("{}: {e}", c.out))?;
+        if let Some(e) = &g.1.error {
+            return Err(format!("{}: {e}", c.out));
+        }
+        let n = &g.1;
+        let list: Vec<String> = c.bins.iter().map(u16::to_string).collect();
+        std::fs::write(format!("{}.bins", c.out), list.join(",") + "\n").map_err(|e| e.to_string())?;
+        Ok(serde_json::json!({
+            "serial": c.serial, "bins": c.bins.len(), "seconds": seconds, "out": c.out, "gainShift": c.gain_shift,
+            "packets": n.packets, "skipped": n.skipped, "badParse": n.bad_parse + bad_transfers, "badTime": n.bad_time, "blocksLost": n.lost,
+            "fpgaDropped": dropped.wrapping_sub(dropped_before), "saturated": saturated, "rxClockHz": rx_rate as u64 * 256,
+        }))
+    }
+}
+
+/// One packet on its way from the stream callback to the driver's thread.
+struct BankPacket {
+    packet: trunk_core::dsp::bank_wire::Packet,
+    at: std::time::Instant,
+}
+
+/// The tables committed lately, by generation: a packet says which it was made with.
+struct BankTables {
+    recent: std::collections::VecDeque<(u8, Arc<[u16]>)>,
+    next: u8,
+}
+
+impl BankTables {
+    fn new() -> BankTables {
+        let mut recent = std::collections::VecDeque::new();
+        // Generation 0, from reset, has no bins.
+        recent.push_back((0, Arc::from(Vec::new())));
+        BankTables { recent, next: 0 }
+    }
+
+    /// The generation for `bins` (0 is reset's, so it's skipped on wrapping).
+    fn add(&mut self, bins: &[u16]) -> u8 {
+        self.next = self.next.wrapping_add(1).max(1);
+        self.recent.push_back((self.next, Arc::from(bins)));
+        if self.recent.len() > 8 {
+            self.recent.pop_front();
+        }
+        self.next
+    }
+
+    fn bins(&self, generation: u8) -> Option<Arc<[u16]>> {
+        self.recent.iter().rev().find(|(g, _)| *g == generation).map(|(_, b)| Arc::clone(b))
+    }
+}
+
+/// The stream with a filter bank: [`Block::Bank`]s instead of wideband samples.
+fn stream_bank(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
+    use trunk_core::dsp::bank_wire::{parse, Body};
+    use std::sync::mpsc;
+    use std::time::Instant;
+    let a = api()?;
+    let calls = BankCalls::of(a)?;
+    let image = cfg.fpga_image.as_deref().ok_or("no filter bank image")?;
+    let center = cfg.center_hz;
+    let (d_, serial) = {
+        let (image, serial) = (image.to_string(), cfg.serial.clone());
+        let calls = BankCalls::of(a)?;
+        // (Loading the image takes seconds, and a stuck radio shouldn't hang the thread for good.)
+        let d = super::open(&format!("bladeRF {serial}"), Deadline::Slow, true, move || {
+            // SAFETY: libbladeRF's calls.
+            let d = unsafe { calls.open_loaded(a, &serial, &image) }?;
+            Ok(Handed(d))
+        })?;
+        (d, cfg.serial.clone())
+    };
+    let mut d = d_.0;
+    d.ppm = cfg.ppm;
+    let (tx, rx) = mpsc::sync_channel::<BankPacket>(256);
+    // SAFETY: libbladeRF calls on the device opened above, which outlives the stream thread;
+    // the callback only uses `st`, kept alive until that thread is joined.
+    unsafe {
+        let mut actual: c_uint = 0;
+        check(a, "sample rate", (a.set_sample_rate)(d.dev, RX0, cfg.rate_hz.round() as c_uint, &mut actual))?;
+        let bw = if cfg.bandwidth_hz > 0.0 { cfg.bandwidth_hz } else { cfg.rate_hz };
+        check(a, "bandwidth", (a.set_bandwidth)(d.dev, RX0, bw.round() as c_uint, &mut actual))?;
+        d.tune(center)?;
+        set_gain(a, d.dev, cfg)?;
+        if let Some(f) = a.set_bias_tee {
+            let r = f(d.dev, RX0, cfg.bias_tee);
+            if cfg.bias_tee {
+                check(a, "bias-T", r)?;
+            }
+        }
+        let unparsed = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let unparsed2 = Arc::clone(&unparsed);
+        // On the callback's thread: parsed and queued; if the queue is full it's a lost block.
+        let mut st = Box::new(BankRx::new(
+            f64::INFINITY,
+            Box::new(move |bytes| {
+                match parse(bytes) {
+                    Ok((packet, _)) => {
+                        let _ = tx.try_send(BankPacket { packet, at: Instant::now() });
+                    }
+                    Err(_) => {
+                        unparsed2.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }),
+        ));
+        let (stream, streamer) = calls.start(a, d.dev, &mut *st)?;
+        // (Only its atomics and mutex, while the stream's thread has the rest.)
+        let st_ref: &BankRx = &*(&*st as *const BankRx);
+        std::thread::sleep(BANK_STARTUP);
+        let mut tables = BankTables::new();
+        let result = (|| -> Result<(), String> {
+            check(a, "enable RX", (a.enable_module)(d.dev, RX0, true))?;
+            d.enabled = true;
+            set_gain(a, d.dev, cfg)?;
+            // Starting RX clears the registers, so they're written now, the enable last.
+            let first = ctl.and_then(|c| c.bins.lock().unwrap().take().or_else(|| c.current_bins.lock().unwrap().clone()));
+            if let Some(b) = &first {
+                calls.commit(a, d.dev, b, tables.add(b))?;
+                if let Some(c) = ctl {
+                    *c.current_bins.lock().unwrap() = Some(b.clone());
+                }
+            }
+            calls.write(a, d.dev, REG_CONTROL, 1 | GAIN_SHIFT << 4)?;
+            let version = calls.read(a, d.dev, REG_ID)?;
+            log::info!("bladeRF {serial}: filter bank {version:#x}, {:.4} MHz, {} bins", center / 1e6, first.as_ref().map_or(0, Vec::len));
+            let mut last_block = None;
+            let (mut metered, mut clips) = (Instant::now(), calls.read(a, d.dev, REG_ADC_CLIPS)?);
+            calls.read(a, d.dev, REG_ADC_PEAK)?;
+            let (mut silent_since, mut checked, mut saturated, mut dropped) = (Instant::now(), Instant::now(), calls.read(a, d.dev, REG_SATURATED)?, calls.read(a, d.dev, REG_DROPPED)?);
+            while !stop.load(Ordering::Relaxed) {
+                match rx.recv_timeout(Duration::from_millis(5)) {
+                    Ok(BankPacket { packet: p, at }) => {
+                        silent_since = at;
+                        let lost = last_block.map_or(0, |b: u32| p.block.wrapping_sub(b).wrapping_sub(1) as u64);
+                        last_block = Some(p.block);
+                        let (Some(bins), Body::Channels { bins: n, iq, power_start, power }) = (tables.bins(p.generation), p.body) else { continue };
+                        if n != bins.len() {
+                            continue;
+                        }
+                        let iq = sink.bank_buffer(&iq);
+                        // The ADC's meters, about once a second: full scale is 2048.
+                        let meter = if metered.elapsed() >= Duration::from_secs(1) {
+                            let looked = (metered.elapsed().as_secs_f64() * cfg.rate_hz) as u64;
+                            metered = Instant::now();
+                            let (peak, now) = (calls.read(a, d.dev, REG_ADC_PEAK)?, calls.read(a, d.dev, REG_ADC_CLIPS)?);
+                            let clipped = now.wrapping_sub(clips) as u64;
+                            clips = now;
+                            Some(trunk_app::stats::meter::BankMeter { peak: peak as f32 / 2048.0, clipped, looked })
+                        } else {
+                            None
+                        };
+                        if !sink.send(Block::Bank { bins, iq, power_start, power, meter }, lost * SAMPLES_PER_BLOCK, at) {
+                            return Ok(());
+                        }
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) if st_ref.first.lock().unwrap().as_ref().is_some_and(|(_, b)| is_wideband_header(b)) => {
+                        return Err(format!(
+                            "bladeRF: the radio is sending wideband samples, not packets: libbladeRF {} doesn't number its sample formats as expected (packet format {} tried)",
+                            a.version_text, a.packet_format
+                        ));
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) if silent_since.elapsed() > Duration::from_secs(10) => {
+                        return Err(format!(
+                            "bladeRF: no packets for 10 s (unplugged?): {} USB transfers, {} with a wrong header, {} unparseable, first {:02x?}; core generation {}, {} blocks dropped, RX clock {} Hz",
+                            st_ref.transfers.load(Ordering::Relaxed),
+                            st_ref.bad_parse.load(Ordering::Relaxed),
+                            unparsed.load(Ordering::Relaxed),
+                            st_ref.first.lock().unwrap(),
+                            calls.read(a, d.dev, REG_COMMIT)?,
+                            calls.read(a, d.dev, REG_DROPPED)?,
+                            calls.read(a, d.dev, REG_RX_RATE)? as u64 * 256,
+                        ));
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return Err("bladeRF: the stream stopped".into()),
+                }
+                if let Some(c) = ctl {
+                    if let Some(b) = c.bins.lock().unwrap().take() {
+                        calls.commit(a, d.dev, &b, tables.add(&b))?;
+                        *c.current_bins.lock().unwrap() = Some(b);
+                    }
+                    match c.apply(&mut d, center, sink)? {
+                        Applied::Tuned => last_block = None,
+                        Applied::Closed => return Ok(()),
+                        Applied::Nothing => {}
+                    }
+                }
+                // Now and then: the core's own counters, for a live run to show them.
+                if checked.elapsed() > Duration::from_secs(5) {
+                    checked = Instant::now();
+                    let (s, l) = (calls.read(a, d.dev, REG_SATURATED)?, calls.read(a, d.dev, REG_DROPPED)?);
+                    if s != saturated || l != dropped {
+                        log::warn!("bladeRF {serial}: filter bank: {} more saturated, {} more blocks dropped", s.wrapping_sub(saturated), l.wrapping_sub(dropped));
+                    }
+                    (saturated, dropped) = (s, l);
+                }
+            }
+            Ok(())
+        })();
+        st.stop.store(true, Ordering::Relaxed);
+        let _ = streamer.join();
+        (calls.deinit)(stream);
+        result
     }
 }
 
@@ -466,6 +1008,77 @@ mod tests {
         assert_eq!(identifier(""), "");
         assert_eq!(identifier(" f12ce103 "), "*:serial=f12ce103");
         assert_eq!(identifier("libusb:instance=1"), "libusb:instance=1");
+    }
+
+    #[test]
+    fn packets_cut_into_usb_pieces_are_put_back_together() {
+        use trunk_core::dsp::bank_wire::{parse, Body, Packet};
+        use std::sync::{Arc, Mutex};
+        let kept = Arc::new(Mutex::new((Vec::new(), CaptureCount::default())));
+        let sink = Arc::clone(&kept);
+        let mut rx = BankRx::new(1.0, Box::new(move |b| {
+            let mut g = sink.lock().unwrap();
+            let (w, n): &mut (Vec<u8>, CaptureCount) = &mut g;
+            n.on_packet(w, 42, b);
+        }));
+        let packet = |block: u32, generation| {
+            let iq: Vec<[i16; 2]> = (0..48 * 42).map(|k| [k as u16 as i16, block as i16]).collect();
+            let mut bytes = Packet { timestamp: 12288 * block as u64, generation, block, body: Body::Channels { bins: 42, iq, power_start: 0, power: Vec::new() } }.encode();
+            // Padded to whole pieces, as a transfer is.
+            bytes.resize(bytes.len().next_multiple_of(2048), 0);
+            bytes
+        };
+        // The first is from before the table took effect: not kept.
+        let stream: Vec<u8> = (0..3).flat_map(|b| packet(b, if b == 0 { 0 } else { 1 })).collect();
+        for piece in stream.chunks(2048) {
+            rx.on_buffer(piece);
+        }
+        let count = |f: &dyn Fn(&CaptureCount) -> u64| f(&kept.lock().unwrap().1);
+        assert_eq!((count(&|n| n.packets), count(&|n| n.skipped), count(&|n| n.bad_parse), count(&|n| n.bad_time), count(&|n| n.lost)), (2, 1, 0, 0, 0));
+        let bytes = kept.lock().unwrap().0.clone();
+        let (first, more) = parse(&bytes).unwrap();
+        assert_eq!((first.block, parse(more).unwrap().0.block), (1, 2));
+        // A piece that isn't a packet's start is dropped, and the next packet still reads.
+        rx.on_buffer(&[0xee; 2048]);
+        assert_eq!(rx.bad_parse.load(Ordering::Relaxed), 1);
+        rx.on_buffer(&packet(3, 1));
+        assert_eq!((count(&|n| n.packets), count(&|n| n.lost)), (3, 0));
+    }
+
+    #[test]
+    fn the_packet_format_follows_the_library_version() {
+        assert_eq!((packet_format(2, 5), packet_format(2, 6), packet_format(2, 7), packet_format(3, 0)), (2, 3, 3, 3));
+        assert_eq!(version_warning(2, 5, 0), None);
+        assert!(version_warning(2, 6, 0).is_some_and(|w| !w.contains("tested") && w.contains("overruns")));
+        let unknown = version_warning(2, 5, 3).unwrap();
+        assert!(unknown.contains("2.5.3") && !unknown.contains("overruns"), "{unknown}");
+        let newer = version_warning(2, 6, 1).unwrap();
+        assert!(newer.contains("overruns"), "{newer}");
+    }
+
+    #[test]
+    fn a_wideband_stream_is_told_from_packets() {
+        assert!(is_wideband_header(&[0x21, 0x43, 0x34, 0x12, 9, 0, 0, 0]));
+        // A packet's header starts with its length.
+        assert!(!is_wideband_header(&[0xe2, 0x07, 0, 0x25, 0, 0, 0, 0]));
+        assert!(!is_wideband_header(&[0x21]));
+    }
+
+    #[test]
+    fn a_packet_finds_the_table_it_was_made_with() {
+        let mut t = BankTables::new();
+        assert_eq!(t.bins(0).as_deref(), Some(&[][..]));
+        let one = t.add(&[1, 2]);
+        let two = t.add(&[3]);
+        assert_eq!((one, two), (1, 2));
+        assert_eq!(t.bins(one).as_deref(), Some(&[1u16, 2][..]));
+        assert_eq!(t.bins(7), None);
+        // Generation 0 is never reused, and old tables are forgotten.
+        for _ in 0..300 {
+            let g = t.add(&[9]);
+            assert_ne!(g, 0);
+        }
+        assert_eq!(t.bins(0), None);
     }
 
     #[test]

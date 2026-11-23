@@ -20,11 +20,15 @@ use trunk_core::trunk::{Call, Message, MessageType};
 /// Caps per system: the least talkgroups kept ([`Caps`] sets the rest), and frequencies and logs.
 const MAX_TGS: usize = 5000;
 const MAX_FREQS: usize = 512;
-pub const MAX_AFFILIATIONS: usize = 2000;
+/// The affiliation log: months of a busy county system (a radio's join is
+/// logged when its talkgroup changes).
+pub const MAX_AFFILIATIONS: usize = 200_000;
 pub const MAX_LENGTHS: usize = 5000;
 pub const MAX_TONES: usize = 5000;
-const MAX_RECENT_TX: usize = 30;
-const TOP_TGS: usize = 8;
+const MAX_RECENT_TX: usize = 100;
+const TOP_TGS: usize = 32;
+/// Talkgroups a radio's affiliation tally keeps ([`Unit::affs`]).
+const MAX_UNIT_AFFS: usize = 64;
 /// Ciphers (ALGID, key ID) kept per talkgroup.
 const MAX_CIPHERS: usize = 16;
 
@@ -62,8 +66,10 @@ impl Caps {
     }
 }
 
-/// Hours of per-hour activity kept (a week).
-const HOURS: i64 = 168;
+/// Hours of per-hour activity kept, and the longest a query asks (30 days).
+const HOURS: i64 = 720;
+/// A talkgroup's week, as its detail lays it out by day.
+const WEEK: i64 = 168;
 /// A registry this young has no baseline: everything in it is "new".
 const BASELINE_S: i64 = 3600;
 /// "New": first heard within this long.
@@ -195,6 +201,11 @@ pub struct Unit {
     /// "FLEETSYNC"; empty: the system's own).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub signal: String,
+    /// Every talkgroup it affiliated with: (talkgroup, times it joined,
+    /// first, last heard affiliated), most recently heard first. Outlives
+    /// the affiliation log: who belongs to a talkgroup, though it's never
+    /// heard to talk on it.
+    pub affs: Vec<(u32, u32, i64, i64)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
@@ -384,6 +395,22 @@ fn bump_hour<T>(hours: &mut VecDeque<(i64, T)>, h: i64, f: impl FnOnce(&mut T), 
     let last = hours.back().map_or(h, |(hh, _)| *hh);
     while hours.front().is_some_and(|(hh, _)| *hh <= last - HOURS) {
         hours.pop_front();
+    }
+}
+
+/// Radio's affiliation tally: `tg` heard at `t`, a join when `joined`.
+fn note_aff(affs: &mut Vec<(u32, u32, i64, i64)>, tg: u32, joined: bool, t: i64) {
+    match affs.iter().position(|x| x.0 == tg) {
+        Some(i) => {
+            let mut a = affs.remove(i);
+            a.1 += joined as u32;
+            a.3 = a.3.max(t);
+            affs.insert(0, a);
+        }
+        None => {
+            affs.insert(0, (tg, 1, t, t));
+            affs.truncate(MAX_UNIT_AFFS);
+        }
     }
 }
 
@@ -718,6 +745,7 @@ impl Registry {
                 let changed = u.aff != Some(m.talkgroup);
                 u.aff = Some(m.talkgroup);
                 u.aff_t = t;
+                note_aff(&mut u.affs, m.talkgroup, changed, t);
                 if changed {
                     append(&mut s.affiliations, &[(t, unit, m.talkgroup)], MAX_AFFILIATIONS);
                     s.changed.affiliations += 1;
@@ -981,6 +1009,7 @@ fn unit_row(system: SystemId, s: &SystemRadio, id: u32, u: &Unit, now: i64, name
         "tx": u.tx, "txSecs": (u.tx_secs as f64 * 10.0).round() / 10.0,
         "aff": u.aff, "affT": if u.aff.is_some() { Some(u.aff_t) } else { None }, "reg": u.reg,
         "tgs": u.tgs,
+        "affs": u.affs,
         "partners": if partners_n > 0 { partners(s, id, partners_n) } else { Vec::new() },
         "new": is_new(s, u.first, now),
     })
@@ -1003,13 +1032,18 @@ fn tg_detail(system: SystemId, s: &SystemRadio, tg: u32, now: i64, hours: i64, n
     talkers.sort_by_key(|x| std::cmp::Reverse(x.1));
     talkers.truncate(60);
     let affiliated: Vec<u32> = s.units.iter().filter(|(_, u)| u.aff == Some(tg)).map(|(k, _)| *k).take(200).collect();
+    // Everyone ever heard affiliated with it, the most joins first.
+    let mut joined: Vec<(u32, u32, i64)> = s.units.iter().filter_map(|(k, u)| u.affs.iter().find(|x| x.0 == tg).map(|x| (*k, x.1, x.3))).collect();
+    joined.sort_by_key(|x| (std::cmp::Reverse(x.1), std::cmp::Reverse(x.2)));
+    joined.truncate(500);
     let alias = |u: u32| (names.unit)(system, u).unwrap_or_default();
     json!({
         "tg": tg,
         "row": tg_row(system, s, tg, g, now, hours, names),
-        "week": hourly(g, now, HOURS).0,
+        "week": hourly(g, now, WEEK).0,
         "talkers": talkers.iter().map(|&(u, n, t)| json!({ "unit": u, "alias": alias(u), "n": n, "lastTx": t })).collect::<Vec<_>>(),
         "affiliated": affiliated.iter().map(|&u| json!({ "unit": u, "alias": alias(u) })).collect::<Vec<_>>(),
+        "joined": joined.iter().map(|&(u, n, t)| json!({ "unit": u, "alias": alias(u), "n": n, "last": t })).collect::<Vec<_>>(),
         "lengths": histogram(s.lengths.iter().filter(|l| l.1 == tg && l.0 > now - hours * 3600).map(|l| l.2)),
     })
 }
@@ -1341,6 +1375,30 @@ mod tests {
         assert_eq!(q["rows"][0]["errPerFrame"], 0.05);
     }
 
+    /// A radio's affiliations are tallied by talkgroup (joins, first, last),
+    /// kept and saved, and a talkgroup's detail names everyone who joined it.
+    #[test]
+    fn affiliations_are_tallied_by_talkgroup() {
+        let mut r = Registry::default();
+        let aff = |tg| Message { kind: MessageType::Affiliation, source: 42, talkgroup: tg, ..Default::default() };
+        r.message(sid("x"), &aff(100), 10);
+        r.message(sid("x"), &aff(100), 11);
+        r.message(sid("x"), &aff(200), 20);
+        r.message(sid("x"), &aff(100), 30);
+        r.message(sid("x"), &Message { kind: MessageType::Deregistration, source: 42, ..Default::default() }, 40);
+        r.message(sid("x"), &aff(100), 50);
+        assert_eq!(r.systems[&sid("x")].units[&42].affs, vec![(100, 3, 10, 50), (200, 1, 20, 20)], "joins counted, re-affirmations not");
+        let mut back = Registry::default();
+        back.load(sid("x"), &serde_json::to_string(&r.systems[&sid("x")].whole()).unwrap());
+        assert_eq!(back.systems[&sid("x")].units[&42].affs, r.systems[&sid("x")].units[&42].affs, "saved");
+        let (tg, unit) = names();
+        let n = Names { tg: &tg, unit: &unit, signals: &no_signals, name: &sname, id: &sidof };
+        r.call_end(sid("x"), &call(200, &[], 0.0, 2.0), 60);
+        let q = r.query(&json!({ "what": "tg", "system": "x", "key": 200, "hours": 720 }), 70, &n);
+        assert_eq!((q["joined"][0]["unit"].as_u64(), q["joined"][0]["n"].as_u64(), q["affiliated"].as_array().map(Vec::len)), (Some(42), Some(1), Some(0)));
+        assert_eq!(q["week"].as_array().map(Vec::len), Some(WEEK as usize), "the detail's week stays a week");
+    }
+
     #[test]
     fn tones_log_groups_alike_pages() {
         use trunk_recorder_plugin::TonePattern;
@@ -1475,7 +1533,7 @@ mod tests {
         let t = 1_790_000_000i64;
         let mut s = SystemRadio::new(t);
         for u in 0..6_000u32 {
-            s.units.insert(1_000_000 + u, Unit { first: t, last: t, last_tx: t, tx: 1, tx_secs: 1.0, aff: None, aff_t: 0, reg: None, tgs: Default::default(), recent: Default::default(), signal: String::new() });
+            s.units.insert(1_000_000 + u, Unit { first: t, last: t, last_tx: t, tx: 1, tx_secs: 1.0, aff: None, aff_t: 0, reg: None, tgs: Default::default(), recent: Default::default(), signal: String::new(), affs: Vec::new() });
         }
         let mut r = Registry::default();
         r.put(sid("x"), s);
@@ -1606,7 +1664,7 @@ mod tests {
     }
 
     /// How big a system's registry file gets, and how long turning it into
-    /// JSON and copying it take: at every cap (a week of a very large
+    /// JSON and copying it take: at every cap (30 days of a very large
     /// system), and at about half. `cargo test --release -p trunk-app --lib
     /// registry_size -- --ignored --nocapture`.
     #[test]
@@ -1621,7 +1679,7 @@ mod tests {
             }
             for u in 0..units as u32 {
                 let recent = (0..MAX_RECENT_TX as i64).map(|k| (t + k * 60, 10_000 + u % 500, 4.25f32)).collect();
-                s.units.insert(1_000_000 + u, Unit { first: t, last: t + 600_000, last_tx: t + 599_000, tx: 321, tx_secs: 1234.5, aff: Some(10_001), aff_t: t, reg: Some(true), tgs: (0..TOP_TGS as u32).map(|k| (10_000 + k, 40 - k)).collect(), recent, signal: String::new() });
+                s.units.insert(1_000_000 + u, Unit { first: t, last: t + 600_000, last_tx: t + 599_000, tx: 321, tx_secs: 1234.5, aff: Some(10_001), aff_t: t, reg: Some(true), tgs: (0..TOP_TGS as u32).map(|k| (10_000 + k, 40 - k)).collect(), recent, signal: String::new(), affs: (0..8u32).map(|k| (10_000 + k, 3, t, t + 500_000)).collect() });
             }
             for p in 0..pairs as u64 {
                 s.pairs.insert(pair_key(1_000_000 + (p % 20_000) as u32, 1_020_000 + p as u32), Pair { n: 17, last: t });

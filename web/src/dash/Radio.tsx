@@ -17,10 +17,11 @@ import { ActiveCalls, aliasOf, Log, unitIdOf } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
 import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, scoped, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
-type Hours = "24" | "168";
+type Hours = "24" | "168" | "720";
 const HOURS: { v: Hours; label: string }[] = [
   { v: "24", label: "24 h" },
   { v: "168", label: "7 days" },
+  { v: "720", label: "30 days" },
 ];
 
 /** Why calls weren't recorded (and were), in the order shown; `at`: the part of the system's page listing them. */

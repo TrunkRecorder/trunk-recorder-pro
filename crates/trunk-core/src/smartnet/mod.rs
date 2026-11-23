@@ -159,7 +159,7 @@ mod tests {
                 protocol: crate::trunk::Protocol::SmartNet(SmartnetConfig { bandplan, analog_default: false }),
                 ..Default::default()
             }])],
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, filter_bank: false }],
             ..Default::default()
         };
         let e = Engine::new(cfg).unwrap();

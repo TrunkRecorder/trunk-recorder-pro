@@ -160,6 +160,7 @@ impl Chunk {
             Block::U8(b) => Chunk::Bytes(b[..keep * 2].to_vec()),
             Block::Iq(b) => Chunk::Iq(b[..keep].to_vec()),
             Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
+            Block::Bank { .. } => unreachable!("Tap::take leaves filter bank blocks out"),
         }
     }
 }
@@ -174,6 +175,11 @@ impl Tap {
     }
 
     fn take(&self, block: &Block, dropped: u64, at: Instant) {
+        // ponytail: a filter bank source sends channels, not the band, so it isn't captured;
+        // capturing it would need its own SigMF data type (bank_wire packets) and replay of it.
+        if matches!(block, Block::Bank { .. }) {
+            return;
+        }
         let mut state = self.job.lock().unwrap();
         let n = block.len() as u64;
         if let Some(r) = &mut state.ring {

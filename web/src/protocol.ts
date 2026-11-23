@@ -52,7 +52,7 @@ export type Source = (
    * bladeRF 2.0 micro (xA4 / xA9) or original bladeRF through libbladeRF (desktop app). `serial` "" = the first;
    * `bandwidthHz` the analog filter, 0 = the sample rate; `agc` the board's AGC instead of `gainDb`; `biasTee` bladeRF 2.0 only.
    */
-  | { type: "bladerf"; serial: string; bandwidthHz: number; gainDb: number; agc: boolean; biasTee: boolean }
+  | { type: "bladerf"; serial: string; bandwidthHz: number; gainDb: number; agc: boolean; biasTee: boolean; fpgaChannelizer?: string }
   /**
    * HackRF One, natively (desktop app; nothing to install). `serial` "" = the first. Gain by stage: `lnaDb` the IF LNA
    * 0–40 (8 dB steps), `vgaDb` the baseband VGA 0–62 (2 dB steps), `amp` the +14 dB RF amp; `biasTee` powers an LNA on the antenna port.
@@ -2013,6 +2013,8 @@ export interface UnitRow {
   reg: boolean | null;
   /** [talkgroup, transmissions], most first. */
   tgs: [number, number][];
+  /** Every talkgroup it was heard affiliated with: [talkgroup, times it joined, first, last (Unix s)], most recently heard first. */
+  affs: [number, number, number, number][];
   /** [radio, calls together], most first. */
   partners: [number, number][];
   new: boolean;
@@ -2096,6 +2098,8 @@ export interface RadioResultBody {
   week?: number[];
   talkers?: { unit: number; alias: string; n: number; lastTx: number }[];
   affiliated?: { unit: number; alias: string }[];
+  /** tg: every radio ever heard affiliated with it, the most joins first (`last`: Unix s). */
+  joined?: { unit: number; alias: string; n: number; last: number }[];
   lengths?: LengthHistogram;
   /** unit: its latest transmissions, affiliations, talkgroups, and the radios it's heard with. */
   recent?: { t: number; tg: number; alphaTag: string; secs: number }[];
