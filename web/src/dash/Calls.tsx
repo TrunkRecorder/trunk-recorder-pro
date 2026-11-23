@@ -7,6 +7,7 @@ import { formatMhz, systemColor } from "../config.ts";
 import { setListen, setView, useTopic, type AppState } from "../controller.ts";
 import type { CallView, TalkgroupName, UnitName } from "../protocol.ts";
 import { unitNameOf } from "../rules.ts";
+import { ToneName } from "../ToneName.tsx";
 import { unitIdText } from "../units.ts";
 import { tgText } from "./Systems.tsx";
 
@@ -174,7 +175,7 @@ export function ActiveCalls({ s, system }: { s: AppState; system: string }) {
                     <td className="mono">
                       {formatMhz(c.freqHz, 4)}
                       {c.slot !== null && <span className="muted"> · s{c.slot}</span>}
-                      {c.analog && <span className="muted"> · {isAm(s, c) ? "AM" : "FM"}{c.tone ? ` ${c.tone}` : ""}</span>}
+                      {c.analog && <span className="muted"> · {isAm(s, c) ? "AM" : "FM"}{c.tone ? <> <ToneName code={c.tone} freqHz={c.freqHz} /></> : ""}</span>}
                       {c.nxdn && <span className="muted"> · {c.nxdn.toUpperCase()}{c.ran != null ? ` RAN ${c.ran}` : ""}</span>}
                     </td>
                     <td className="unit-cell">

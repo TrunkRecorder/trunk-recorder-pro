@@ -1384,6 +1384,8 @@ table.calls tr.ignored td { opacity: 0.55; }
 .match-line:disabled { cursor: default; }
 .match-chip { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 6px; border: 1px solid transparent; font-size: 12px; line-height: 18px; white-space: nowrap; font-family: ui-monospace, monospace; color: var(--text); }
 .match-chip.k-tone { background: color-mix(in srgb, #a371f7 20%, transparent); }
+/* An FRS/GMRS privacy code beside its tone (ToneName.tsx). */
+.privacy-code { margin-left: 0.4em; color: var(--muted); font-size: 0.9em; }
 .match-chip.k-code { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .match-chip.k-slot { background: color-mix(in srgb, var(--warn) 20%, transparent); }
 .match-chip.k-tg { background: color-mix(in srgb, var(--ok) 20%, transparent); }

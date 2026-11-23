@@ -104,7 +104,8 @@ import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldTe
 import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
 import { openTodos } from "./todo.ts";
 import { allModes, modeInfo } from "./modes.ts";
-import { parseAccess, sameAccess, type AccessParts } from "./rules.ts";
+import { parseAccess, sameAccess, toneLabel, type AccessParts, type ToneLabel } from "./rules.ts";
+import { PrivacyCode, ToneName } from "./ToneName.tsx";
 
 /** Each card's key (the controller's `cardKey`), seeded from what its entry is now; `all`: its list. */
 const srcKey = (x: Source, i: number, all: Source[]) => cardKey(x, `src:${i}`, all);
@@ -341,15 +342,16 @@ const KIND_TITLE: Record<MatchKind, string> = {
 };
 
 /** What a row records, as chips: each code it gives, coloured by kind; none: everything (else). */
-function matchChips(ch: Channel, shared: boolean): { kind: MatchKind; text: string; bad?: string }[] {
+function matchChips(ch: Channel, shared: boolean): { kind: MatchKind; text: string; bad?: string; privacy?: ToneLabel["privacy"] }[] {
   const code = ch.code ?? "";
   const parsed = parseAccess(ch.mode, code);
   const bad = "error" in parsed ? parsed.error : undefined;
-  const out: { kind: MatchKind; text: string; bad?: string }[] = [];
+  const out: { kind: MatchKind; text: string; bad?: string; privacy?: ToneLabel["privacy"] }[] = [];
   if (code) {
     const named = modeInfo(ch.mode).chip(code);
-    // (What doesn't read is shown as typed.)
-    out.push({ kind: ch.mode === "fm" ? "tone" : "code", text: bad ? code : named, bad });
+    // (What doesn't read is shown as typed.) A tone on FRS/GMRS: its privacy code too.
+    const privacy = ch.mode === "fm" && !bad ? toneLabel(code, ch.freqHz).privacy : null;
+    out.push({ kind: ch.mode === "fm" ? "tone" : "code", text: bad ? code : named, bad, privacy });
   }
   if (ch.slot !== undefined) out.push({ kind: "slot", text: `slot ${ch.slot}` });
   if (ch.matchTalkgroup !== undefined) out.push({ kind: "tg", text: `TG ${ch.matchTalkgroup}` });
@@ -372,6 +374,7 @@ function MatchLine(props: { ch: Channel; shared: boolean; open: boolean; onToggl
       {chips.map((c, k) => (
         <span key={k} className={`match-chip k-${c.kind}${c.bad ? " bad" : ""}`} title={c.bad ?? KIND_TITLE[c.kind]}>
           {c.text}
+          {c.privacy && <PrivacyCode p={c.privacy} />}
         </span>
       ))}
     </button>
@@ -506,7 +509,7 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
   if (!codes.length) return null;
   // Already recorded by a row of its own (not just by the catch-all).
   const listed = (p: AccessParts) => props.rows.some((r) => sameAccess(mode, { code: r.code ?? "", slot: r.slot, matchTalkgroup: r.matchTalkgroup }, p));
-  const label = (code: string) => (!code ? modeInfo(mode).none : mode === "fm" && /^\d/.test(code) ? `${code} Hz` : code);
+  const label = (code: string) => (!code ? modeInfo(mode).none : mode === "fm" ? modeInfo(mode).chip(code) : code);
   const shown = codes.slice(0, SHOWN_CODES);
   return (
     <tr className="heard-row">
@@ -515,7 +518,7 @@ function HeardRow(props: { rows: Channel[]; heard: HeardCode[]; linked: boolean;
         <span className="muted small">Heard:</span>
         {shown.map((h) => (
           <span key={h.code} className="heard-code" title={`Last heard ${new Date(h.lastMs).toLocaleString()}`}>
-            <span className="mono">{label(h.code)}</span>
+            <span className="mono">{mode === "fm" && h.code ? <ToneName code={h.code} freqHz={props.rows[0].freqHz} /> : label(h.code)}</span>
             {h.calls > 0 && <Fig v={h.calls} u={h.calls === 1 ? "call" : "calls"} />}
             {h.skipped > 0 && <Fig v={h.skipped} u="not recorded" level="warn" />}
             {listed(h.parts) ? (

@@ -2,7 +2,7 @@
 // rules.ts: convModes); how Setup and the dashboard show it is here.
 
 import type { Channel } from "./protocol.ts";
-import { convModes, type ModeFacts } from "./rules.ts";
+import { convModes, toneLabel, type ModeFacts } from "./rules.ts";
 
 export type Mode = Channel["mode"];
 
@@ -33,7 +33,7 @@ const LOOK: Record<Mode, ModeLook> = {
     short: "FM",
     code: { placeholder: "any", title: "CTCSS tone or DCS code (151.4 PL, 023 DPL). Empty: any." },
     none: "no tone",
-    chip: (code) => (/^\d/.test(code) ? `${code} Hz` : code),
+    chip: (code) => toneLabel(code).text,
     addButton: "+ tone",
   },
   am: { label: "Analog AM", short: "AM", code: { ...NO_CODE, title: "AM carries no tone or code." }, none: "no code", chip: (code) => code },

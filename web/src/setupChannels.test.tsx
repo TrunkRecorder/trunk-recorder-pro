@@ -60,6 +60,21 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
   assert.ok(tagList && html.includes(`<datalist id="${tagList}"><option value="Law Dispatch"></option></datalist>`), "the system's tags offered");
 });
 
+test("Setup's channels: a tone on an FRS/GMRS channel shows its privacy code, Motorola's for DCS; elsewhere none", () => {
+  const c = defaultConfig();
+  c.conventional.push(
+    newConventional(c, {
+      shortName: "gmrs",
+      channels: [row(462_562_500, "fm", { code: "151.4", name: "GMRS 1" }), row(462_587_500, "fm", { code: "023 DPL", name: "GMRS 2" }), row(154_325_000, "fm", { code: "151.4", name: "County" })],
+    }),
+  );
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const html = renderToString(<ConventionalPanel c={c} k={0} />);
+  const chips = [...html.matchAll(/class="match-line[^"]*"[^>]*>(.*?)<\/button>/g)].map((m) => text(m[1]).trim());
+  assert.deepEqual(chips, ["151.4 Hz #24", "D023N Moto #39", "151.4 Hz"]);
+  assert.match(html, /title="Motorola&#x27;s FRS\/GMRS privacy code 39/, "says whose number it is");
+});
+
 test("Setup's channels: a digital row can correct its source's AutoTune; an analog row can't", () => {
   const c = defaultConfig();
   c.conventional.push(

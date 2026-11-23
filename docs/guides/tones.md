@@ -45,6 +45,20 @@ Some values mean "any code", the same as leaving the box empty: `0`, `S` (Trunk 
 radio's "receive any" NAC) for P25; `RAN 0` for NXDN. So a DMR colour code 0 is written `CC 0`. A bare number on an analog row is read as a CTCSS tone when it is one, otherwise as a DCS
 code. RadioReference's scan-list field (`SL 2`) on a DMR code is ignored.
 
+### FRS/GMRS privacy codes
+
+FRS and GMRS radios number their tones as "privacy codes". On an FRS/GMRS frequency (462.550–462.725
+and 467.550–467.725 MHz), a tone is shown with its code in Setup's channel rows, the codes heard on a
+frequency and the call list:
+
+| Tone | Shown as | Code |
+|---|---|---|
+| CTCSS, 38 tones | `151.4 Hz #24` | 1–38, the same on every brand |
+| DCS, 83 codes | `D023N Moto #39` | 39–121, Motorola's numbers (other brands number DCS codes differently) |
+
+A DCS code by another name (`D047I` is the same signal as `D023N`) gets the same code. Elsewhere, and
+for the tones those radios don't have (`69.3`), no code is shown.
+
 ## Splitting a shared frequency
 
 To split a frequency, list it once per code. In the channel table, the **+ tone** button on an analog
