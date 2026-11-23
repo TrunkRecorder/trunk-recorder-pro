@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Airspy R2 / Mini in Docker.** The Docker image now has the Airspy's driver (libairspy, about 230 kB), so Airspy
+  sources work in it as RTL-SDRs and HackRFs do (#207).
+
 - **The recordings folder is a full path.** A relative `captureDir` (`recordings`) meant one folder to the recorder and
   another to each plugin, which runs in a folder of its own, so every upload failed with "can't read" (#211). A relative
   recordings folder or IQ capture folder now stops Start with a message saying so, and Setup shows it under the field.
