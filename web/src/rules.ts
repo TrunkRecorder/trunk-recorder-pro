@@ -391,3 +391,8 @@ export function toneLabel(code: string, freqHz = 0): ToneLabel {
 export function folderProblem(path: string): string | null {
   return rules().folderProblem(path) ?? null;
 }
+
+/** A frequency as written (a field, a list, an imported config): Hz, from MHz under 10 000, else as given; undefined when not above 0. channels::hz_of. */
+export function hzOf(v: number): number | undefined {
+  return rules().hzOf(v) ?? undefined;
+}

@@ -31,7 +31,7 @@ Radios** says what's missing and how to install it.
 | | macOS (Homebrew) | Debian / Ubuntu / Raspberry Pi OS | Windows |
 |---|---|---|---|
 | USRP | `brew install uhd` | `sudo apt install libuhd-dev uhd-host` | Ettus's UHD installer (puts `uhd.dll` on the `PATH`) |
-| Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll` from the airspy-tools release, next to `trunk-pro.exe` |
+| Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll`, `libusb-1.0.dll` and `pthreadVC2.dll` from the `x64` folder of [airspy_host_tools](https://github.com/airspy/airspyone_host/releases) (v1.0.10), next to `trunk-pro.exe`; and the Microsoft Visual C++ 2010 Redistributable (x64), which `pthreadVC2.dll` needs |
 | HydraSDR | `libhydrasdr.1.dylib` from the [hydrasdr-host release](https://github.com/hydrasdr/hydrasdr-host/releases) (point `TRUNK_PRO_HYDRASDR` at it unless it's in `/usr/local/lib`) | the `hydrasdr-host-tools` package for your distribution from the same release | `hydrasdr.dll` and `libusb-1.0.dll` from the Windows zip of the same release, next to `trunk-pro.exe` |
 | bladeRF | `brew install libbladerf` | `sudo apt install libbladerf2 bladerf-fpga-hostedxa4` (xA9: `bladerf-fpga-hostedxa9`; or Nuand's PPA `ppa:nuandllc/bladerf`) | Nuand's bladeRF installer (`bladeRF.dll`) |
 | SoapySDR | `brew install soapysdr` and the device's module, e.g. `brew install soapyhackrf` | `sudo apt install libsoapysdr0.8` and the device's module, e.g. `soapysdr0.8-module-hackrf` (or `soapysdr0.8-module-all`) | PothosSDR or radioconda |
