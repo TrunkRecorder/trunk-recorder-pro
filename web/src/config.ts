@@ -666,12 +666,26 @@ export function sameOnTheAir(c: Config, live: SystemStatus[]): [System, System][
 const hexText = (v: number | null | undefined) => (v === null || v === undefined ? "?" : v.toString(16).toUpperCase());
 
 /** "WACN BEE00 · SysID 445 · site 1-3" from what is known. */
+/** A site's number as its protocol states it: P25's RFSS-site ("1-3"), else the site alone; null: not known. */
+export function siteNumber(id: SiteIdentity): string | null {
+  if (id.site == null) return null;
+  return id.rfss != null ? `${id.rfss}-${id.site}` : `${id.site}`;
+}
+
+/** A site in words: "site 1-3" (P25), "net 12 · site 4" (a DMR Tier III network's), "site 4"; null: not known. */
+export function siteLabel(id: SiteIdentity): string | null {
+  const n = siteNumber(id);
+  if (n === null) return null;
+  return id.network != null && id.rfss == null ? `net ${id.network} · site ${n}` : `site ${n}`;
+}
+
 export function siteText(id: SiteIdentity): string {
   const parts: string[] = [];
   if (id.wacn != null) parts.push(`WACN ${hexText(id.wacn)}`);
   if (id.sysId != null) parts.push(`SysID ${hexText(id.sysId)}`);
   if (id.nac != null) parts.push(`NAC ${hexText(id.nac)}`);
-  if (id.site != null) parts.push(id.rfss != null ? `site ${id.rfss}-${id.site}` : `site ${id.site}`);
+  const site = siteLabel(id);
+  if (site !== null) parts.push(site);
   else if (id.rfss != null) parts.push(`RFSS ${id.rfss}`);
   return parts.join(" · ");
 }
