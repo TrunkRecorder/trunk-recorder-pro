@@ -11,6 +11,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   shared by systems, stay. SDK: `Manifest::per_system` and `topic::per_system` are gone, and `PluginInfo.perSystem` with
   them; `health::Recorder::of(&setup.host)` gives the recorder's name as the node health spec has it.
 
+- **Plugins answer a service's HTTP status alike** (SDK). `http::Failure::from_status` reads a status once for uploads
+  and health reports: `429`/`503` busy (waiting as long as `Retry-After` says), `408` and other `5xx` retried, `401`/`403`
+  refused, `404`/`405`/`410` nothing there, any other `4xx` rejected. `Attempt::from_status` makes an upload's outcome of
+  it, and the new `Attempt::Wait` holds the call back as long as the service asked (at most an hour). A health report
+  answered "not found" now backs off to hourly instead of stopping for the run (the node health spec says so too).
+
 - **SoapySDR over SoapyRemote: no false drops or clock re-anchors** (#209). SoapyRemote stamps only the first read of a
   network buffer that's split over several reads; the rest of it was left out of the count, so the next buffer looked
   late by that much. That was about 4.5% of an RTL-SDR's samples "dropped" (filled with silence), and the clock was

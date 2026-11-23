@@ -210,7 +210,7 @@ lean on what it sees itself as well: which node delivers transmissions the other
 | `400` with `{ "error": "…" }` | The report is wrong: logs it and keeps sending; the window isn't sent again |
 | `401`, `403` | The node's credentials are wrong: says so and stops reporting that node until its settings change |
 | `429`, `503` | Busy, or reports turned off for now: waits as in [When to send](#when-to-send), then carries on. A service pauses every recorder with `503` and `Retry-After` |
-| `404`, `405`, or a `2xx` that isn't a JSON object | The service doesn't take reports: says so once and stops sending to it until recording restarts |
+| `404`, `405`, `410`, or a `2xx` that isn't a JSON object | The service doesn't take reports (or something else answered, such as a proxy's page): says so once and backs off as for `429` without `Retry-After`, up to hourly |
 | Anything else, or no answer | Not delivered: the next report carries the window |
 
 ## For services: reading a report (informative)

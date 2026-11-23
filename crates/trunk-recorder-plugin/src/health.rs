@@ -249,18 +249,8 @@ pub struct Answer {
     pub role: Option<Value>,
 }
 
-/// Why a report wasn't delivered ([`Reporter::failed`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Failure {
-    /// Not reached, or a server error: the next report covers this one's window too.
-    Unreachable,
-    /// `429` / `503`: wait this long if the service said (`Retry-After`), else back off.
-    Busy(Option<f64>),
-    /// `401` / `403`: the node's credentials are wrong; no more reports for it.
-    Refused,
-    /// `400`: the report was wrong. Logged; the next goes as usual.
-    Rejected,
-}
+/// Why a report wasn't delivered ([`Reporter::failed`]): its answer's status, as every plugin reads one.
+pub use crate::http::Failure;
 
 // ─── Which sites and channels a node is ──────────────────────────────────────
 
@@ -622,8 +612,9 @@ impl Reporter {
     pub fn failed(&mut self, now: &Totals, why: Failure) {
         match why {
             Failure::Refused => self.stopped = true,
-            Failure::Busy(Some(after)) => self.next_at = Some(now.time + after.clamp(1.0, MAX_INTERVAL_S)),
-            Failure::Busy(None) => {
+            Failure::Busy(Some(after)) => self.next_at = Some(now.time + after.as_secs_f64().clamp(1.0, MAX_INTERVAL_S)),
+            // Not taking reports (or a page in the way): less and less often, as when busy.
+            Failure::Busy(None) | Failure::NotThere => {
                 self.backoff = Some((self.backoff.unwrap_or(self.interval) * 2.0).min(MAX_INTERVAL_S));
                 self.advance(now.time + 1.0);
             }
@@ -768,7 +759,7 @@ mod tests {
             let mut h = totals(1000.0, 0, 0, 0);
             assert!(!n.due(&h));
             let first = n.next_at().unwrap();
-            assert!(first >= 1000.0 + FIRST_AFTER_S && first <= 1000.0 + FIRST_AFTER_S + INTERVAL_S + JITTER_S, "{first}");
+            assert!((1000.0 + FIRST_AFTER_S..=1000.0 + FIRST_AFTER_S + INTERVAL_S + JITTER_S).contains(&first), "{first}");
             starts.push(first);
             // The next ones keep to the phase, give or take the jitter.
             h.time = first;
@@ -851,14 +842,17 @@ mod tests {
     }
 
     #[test]
-    fn a_busy_service_is_backed_off_and_a_refusal_stops_the_node() {
+    fn a_busy_service_or_one_not_taking_reports_is_backed_off_and_a_refusal_stops_the_node() {
         let mut n = Reporter::seeded(Select::system("dcfd"), 3);
         let h = totals(5000.0, 0, 0, 0);
         n.due(&h);
-        n.failed(&h, Failure::Busy(Some(120.0)));
+        n.failed(&h, Failure::Busy(Some(std::time::Duration::from_secs(120))));
         assert_eq!(n.next_at(), Some(5120.0));
         n.failed(&h, Failure::Busy(None));
         assert!(n.next_at().unwrap() - 5000.0 <= 2.0 * INTERVAL_S + JITTER_S);
+        // Not taking reports: backed off further, not given up on.
+        n.failed(&h, Failure::NotThere);
+        assert!(n.next_at().unwrap() - 5000.0 > 2.0 * INTERVAL_S + JITTER_S);
         n.failed(&h, Failure::Refused);
         assert!(!n.due(&totals(99_999.0, 0, 0, 0)));
     }
