@@ -210,3 +210,17 @@ Tests use anonymous, generated coordinates for packet and embedded-LC vectors.
 They cover all hemispheres for embedded GPS; compressed GPS remains limited
 to the observed flag profile. Positions are checked through conventional and
 trunked engine events and saved call JSON.
+
+To replay a published voice sample through the call recorder, download its
+files into a folder, then use its recorded channel rate and frequency:
+
+```bash
+trunk-pro replay --source SAMPLE/source-0.sigmf-data,460287500,32000,cf32 \
+  --dmr 460287500 --guard 0 --out replay-output --keep-silent --record-encrypted
+```
+
+For the two pending samples above, each saved call JSON has a non-null
+`lat`/`lon` on the source entry for the radio that sent GPS. Compare voice
+frame hashes with the upstream binary using `tool corpus run`; its voice-tier
+comparison checks voice frames rather than GPS output, so inspect call JSON
+separately to verify the new position path.
