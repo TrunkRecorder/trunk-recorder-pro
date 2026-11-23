@@ -618,7 +618,7 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
         check(a, "start", (a.activate)(d.dev, d.stream, 0, 0, 0))?;
         d.active = true;
 
-        let mut next_ns: Option<f64> = None;
+        let mut stamps = Stamps::new(cfg.rate_hz);
         let mut overflowed = false;
         let mut timeouts = 0;
         while !stop.load(Ordering::Relaxed) {
@@ -636,17 +636,9 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
                 let n = (a.read_stream)(d.dev, d.stream, ptrs.as_ptr(), per - got, &mut flags, &mut t, 1_000_000);
                 if n > 0 {
                     timeouts = 0;
-                    if flags & HAS_TIME != 0 {
-                        // Samples lost show as a jump in the buffer time.
-                        if let Some(want) = next_ns {
-                            let gap = ((t as f64 - want) * cfg.rate_hz / 1e9).round();
-                            if gap > 0.0 {
-                                dropped += gap as u64;
-                            }
-                        }
-                        next_ns = Some(t as f64 + n as f64 * 1e9 / cfg.rate_hz);
-                    } else if overflowed {
-                        // No timestamps: an overflow lost about one transfer.
+                    dropped += stamps.read(n as usize, (flags & HAS_TIME != 0).then_some(t));
+                    if overflowed && !stamps.timed() {
+                        // No timestamps (or none to go by): an overflow lost about one transfer.
                         dropped += mtu as u64;
                     }
                     overflowed = false;
@@ -678,9 +670,160 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
     Ok(())
 }
 
+/// A stream's timestamps, as what they say of samples lost: a buffer that
+/// starts later than the samples before it end lost the difference.
+///
+/// A read without a time continues the one before: SoapyRemote stamps only
+/// the first read of a network buffer split over several (the rest of it
+/// comes back with no time), so those samples count too, or the next
+/// buffer's time looks ahead by them (#209). And timestamps that don't keep
+/// to the sample count — SoapyRTLSDR before 0.3.4 counts bytes, so its run at
+/// twice real time — are noticed over the first reads, said once, and
+/// ignored: samples lost are then counted by overflows, as with none.
+struct Stamps {
+    rate: f64,
+    /// Where the next sample's time should be, ns.
+    next_ns: Option<f64>,
+    /// The last time given, and the samples since it (timed or not).
+    last: Option<(f64, u64)>,
+    trust: Trust,
+    /// While learning: each step's time against its samples', and the
+    /// samples the steps say were lost (counted once they're trusted).
+    ratios: Vec<f64>,
+    held: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Trust {
+    Learning,
+    Yes,
+    /// They run at this many times real time.
+    No(f64),
+}
+
+impl Stamps {
+    /// Steps between timed reads looked at before deciding.
+    const LEARN: usize = 64;
+
+    fn new(rate: f64) -> Stamps {
+        Stamps { rate, next_ns: None, last: None, trust: Trust::Learning, ratios: Vec::new(), held: 0 }
+    }
+
+    /// Whether lost samples are going by the timestamps.
+    fn timed(&self) -> bool {
+        self.last.is_some() && !matches!(self.trust, Trust::No(_))
+    }
+
+    /// `n` samples read, stamped `time_ns` (none: continuing the read
+    /// before); the samples lost before them.
+    fn read(&mut self, n: usize, time_ns: Option<i64>) -> u64 {
+        let rate = self.rate;
+        let ns = |k: u64| k as f64 * 1e9 / rate;
+        let Some(t) = time_ns.map(|t| t as f64) else {
+            if let Some((_, k)) = self.last.as_mut() {
+                *k += n as u64;
+            }
+            self.next_ns = self.next_ns.map(|x| x + ns(n as u64));
+            return 0;
+        };
+        let gap = self.next_ns.map_or(0, |want| ((t - want) * rate / 1e9).round().max(0.0) as u64);
+        if self.trust == Trust::Learning {
+            if let Some((t0, k)) = self.last.filter(|(_, k)| *k > 0) {
+                self.ratios.push((t - t0) / ns(k));
+            }
+            self.held += gap;
+            if self.ratios.len() >= Self::LEARN {
+                self.decide();
+            }
+        }
+        self.last = Some((t, n as u64));
+        self.next_ns = Some(t + ns(n as u64));
+        match self.trust {
+            Trust::Yes => gap + std::mem::take(&mut self.held),
+            Trust::No(_) | Trust::Learning => 0,
+        }
+    }
+
+    /// Steps that keep to the samples (most, when they're right: a loss is
+    /// rare) or, when few do, a steady rate other than real time.
+    fn decide(&mut self) {
+        let mut r = std::mem::take(&mut self.ratios);
+        let kept = r.iter().filter(|x| (*x - 1.0).abs() < 0.01).count();
+        r.sort_by(f64::total_cmp);
+        let median = r[r.len() / 2];
+        self.trust = if kept * 2 >= r.len() || (median - 1.0).abs() < 0.05 { Trust::Yes } else { Trust::No(median) };
+        if let Trust::No(k) = self.trust {
+            self.held = 0;
+            let hint = if (k - 2.0).abs() < 0.05 { " (SoapyRTLSDR before 0.3.4 does: it counts bytes, not samples; update it)" } else { "" };
+            log::warn!("SoapySDR: this driver's timestamps run at {k:.2}× real time{hint}; going by the sample count instead");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RATE: f64 = 2_400_000.0;
+
+    /// Reads of `sizes`, as SoapyRemote gives them: a network buffer of `buf`
+    /// samples split over the reads asked for, only each buffer's first read
+    /// stamped; `scale`: the time's rate against real time; `lost`: buffers
+    /// (by number) the network lost. The samples lost, in all.
+    fn remote(stamps: &mut Stamps, reads: usize, ask: usize, buf: usize, scale: f64, lost: &[usize]) -> u64 {
+        let (mut total, mut b, mut left) = (0, 0usize, 0usize);
+        for _ in 0..reads {
+            let mut time = None;
+            if left == 0 {
+                while lost.contains(&b) {
+                    b += 1;
+                }
+                time = Some((b as f64 * buf as f64 * 1e9 / RATE * scale) as i64);
+                left = buf;
+                b += 1;
+            }
+            let n = ask.min(left);
+            left -= n;
+            total += stamps.read(n, time);
+        }
+        total
+    }
+
+    /// #209: SoapyRemote's buffers of 2012 split by reads of a 10 ms block:
+    /// the unstamped rest of each continues it, so nothing is lost.
+    #[test]
+    fn a_split_buffers_unstamped_rest_continues_it() {
+        let mut s = Stamps::new(RATE);
+        assert_eq!(remote(&mut s, 5000, 1500, 2012, 1.0, &[]), 0);
+        assert_eq!(s.trust, Trust::Yes);
+    }
+
+    /// A buffer the network lost: its samples, once.
+    #[test]
+    fn a_buffer_lost_is_counted() {
+        let mut s = Stamps::new(RATE);
+        assert_eq!(remote(&mut s, 5000, 1500, 2012, 1.0, &[500]), 2012);
+        // (While learning too: held until the times are trusted.)
+        let mut s = Stamps::new(RATE);
+        assert_eq!(remote(&mut s, 5000, 1500, 2012, 1.0, &[3]), 2012);
+    }
+
+    /// SoapyRTLSDR before 0.3.4: times at twice real time aren't believed, and nothing's counted lost.
+    #[test]
+    fn timestamps_at_twice_real_time_are_ignored() {
+        let mut s = Stamps::new(RATE);
+        assert_eq!(remote(&mut s, 5000, 16384, 16384, 2.0, &[]), 0);
+        assert!(matches!(s.trust, Trust::No(k) if (k - 2.0).abs() < 0.01), "{:?}", s.trust);
+        assert!(!s.timed(), "overflows count instead");
+    }
+
+    /// No timestamps at all: nothing from them.
+    #[test]
+    fn no_timestamps_counts_nothing() {
+        let mut s = Stamps::new(RATE);
+        assert_eq!((0..100).map(|_| s.read(2012, None)).sum::<u64>(), 0);
+        assert!(!s.timed());
+    }
 
     #[test]
     fn rates_from_ranges() {
