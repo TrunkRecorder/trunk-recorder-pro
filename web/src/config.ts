@@ -16,7 +16,7 @@ void sameKinds;
 export const kindLabel = (type: System["type"] | undefined) => SYSTEM_KINDS[type ?? "p25"].label;
 import { readUnitNamesFile } from "./units.ts";
 import { fromNow } from "./origins.ts";
-import { defaultConfig, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth } from "./rules.ts";
+import { defaultConfig, folderProblem, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
 export { receivers, sourceInputs, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceAdvice, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
@@ -1283,7 +1283,11 @@ export function importTrunkRecorderConfig(
   if (other.length) todo.push({ kind: "plugins", names: other });
   const added = { sources: addedSources, systems: mine.map((o) => (o as System | Conventional).shortName) };
   if (merge) return { config: cfg, talkgroups, unitNames, notes, todo, plugins, added };
-  if (typeof j.captureDir === "string") cfg.recording.captureDir = j.captureDir;
+  if (typeof j.captureDir === "string") {
+    // Trunk Recorder reads a relative one from the folder it's started in; the recorder takes full paths only.
+    if (folderProblem(j.captureDir)) notes.push(`Its captureDir "${j.captureDir}" isn't a full path, so recordings go to ${cfg.recording.captureDir}: set the folder in Setup → Recording.`);
+    else cfg.recording.captureDir = j.captureDir;
+  }
   if (typeof j.callTimeout === "number") cfg.recording.callTimeoutS = j.callTimeout;
   if (typeof j.recordUUVCalls === "boolean") cfg.recording.recordUnitToUnit = j.recordUUVCalls;
   if (typeof j.archiveFilesOnFailure === "boolean") cfg.recording.archiveFilesOnFailure = j.archiveFilesOnFailure;

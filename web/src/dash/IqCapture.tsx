@@ -2,6 +2,7 @@
 // the next call or every radio, by hand; the list of those on disk; and the
 // rules that make them by themselves, for the corner cases.
 
+import { folderProblem } from "../rules.ts";
 import { useEffect, useRef, useState } from "react";
 import { iqCaptureCancel, iqCaptureDelete, iqCaptureReview, iqCaptures, iqCaptureSend, iqCaptureStart, iqCaptureWithdraw, iqRuleCheck, updateConfig, useApp, type IqCaptureReview, type IqCaptures } from "../controller.ts";
 import { Card, Choice, Figs, Hint, Info } from "../charts.tsx";
@@ -334,6 +335,7 @@ export function CaptureFolder({ onSaved }: { onSaved: () => void }) {
       <div className="row">
         <input className="search grow" aria-label="Capture folder" placeholder="iq-captures in the recordings folder" value={text} onChange={(e) => setText(e.target.value)} onBlur={commit} />
       </div>
+      {text.trim() && folderProblem(text) && <p className="small bad-text">{folderProblem(text)}</p>}
       <Hint>
         A fast disk helps<Info>A capture of several radios can write tens of MB per second, and a busy disk can slow your recordings too. Captures already made stay where they are.</Info>
       </Hint>

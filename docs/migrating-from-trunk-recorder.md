@@ -177,7 +177,7 @@ not always Trunk Recorder's:
 | `archiveFilesOnFailure` | off | on |
 | `multiSite` / duplicate calls | off: every copy saved | on (`dropDuplicateCalls: true`): a call heard on several sites is saved once. The import notes this; turn off **One copy per multi-site call** to keep every copy |
 | `modulation` | `qpsk` | `auto` (both receivers) |
-| `captureDir` | the folder it was started from | `~/TrunkRecorderPro` |
+| `captureDir` | the folder it was started from | `~/TrunkRecorderPro`; a full path only, so a relative one (`./audio`) isn't imported |
 | `frequencyFormat` | `exp` | `mhz` |
 
 ## Concepts that work differently

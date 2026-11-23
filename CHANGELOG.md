@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **The recordings folder is a full path.** A relative `captureDir` (`recordings`) meant one folder to the recorder and
+  another to each plugin, which runs in a folder of its own, so every upload failed with "can't read" (#211). A relative
+  recordings folder or IQ capture folder now stops Start with a message saying so, and Setup shows it under the field.
+  `~/…` is the home folder's, expanded when the recorder reads its config. A Trunk Recorder config's relative
+  `captureDir` isn't imported (a note says so). Plugins are always given full paths.
+
 - **FRS/GMRS privacy codes beside tones.** On an FRS/GMRS channel (462.550–462.725 and 467.550–467.725 MHz), Setup's
   channel rows, the codes heard on a frequency and the call list show the privacy code radios call a tone: `151.4 Hz #24`.
   Codes 1–38 (CTCSS) are the same on every brand; a DCS code shows Motorola's number, `D023N Moto #39`, since other brands

@@ -386,3 +386,8 @@ export function toneLabel(code: string, freqHz = 0): ToneLabel {
   const t = JSON.parse(rules().toneLabel(code, freqHz)) as { text: string; privacy?: ToneLabel["privacy"] };
   return { text: t.text, privacy: t.privacy ?? null };
 }
+
+/** Why `path` can't be a folder the recorder writes to (it must be a full path, or ~/…), or null: config::folder_problem. */
+export function folderProblem(path: string): string | null {
+  return rules().folderProblem(path) ?? null;
+}

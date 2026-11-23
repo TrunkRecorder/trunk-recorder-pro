@@ -473,7 +473,8 @@ fn replay(a: &Args) {
         }
         None => replay_config(a, sources),
     };
-    cfg.recording.capture_dir = out_dir.clone();
+    // (A command line's folder is the shell's: the config's is a full path.)
+    cfg.recording.capture_dir = std::path::absolute(&out_dir).map_or(out_dir.clone(), |p| p.display().to_string());
     cfg.recording.capture_frames = a.flag("capture-frames");
     let multi = cfg.active_systems().count() > 1;
     let plan_of = cfg.engine_config(0.0, &names);

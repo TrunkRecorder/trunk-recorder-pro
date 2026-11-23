@@ -138,6 +138,13 @@ pub fn config_problem(json: &str) -> Option<String> {
     read(json).map_or_else(Some, |c| c.problem())
 }
 
+/// Why `path` can't be a folder the recorder writes to (it must be a full path), or none:
+/// [`trunk_app::config::folder_problem`].
+#[wasm_bindgen(js_name = folderProblem)]
+pub fn folder_problem(path: &str) -> Option<String> {
+    trunk_app::config::folder_problem(path)
+}
+
 /// Why its short names don't work (two systems share one, one is empty), or none.
 #[wasm_bindgen(js_name = configNameProblem)]
 pub fn config_name_problem(json: &str) -> Option<String> {

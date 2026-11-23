@@ -2513,7 +2513,36 @@ pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> std::io::Result<()> 
 }
 
 pub fn default_capture_dir() -> PathBuf {
+    // (The browser build has no home folder, and writes no folder: the default stays as said.)
+    if cfg!(target_arch = "wasm32") {
+        return PathBuf::from("~/TrunkRecorderPro");
+    }
     home().join("TrunkRecorderPro")
+}
+
+/// Why `path` can't be a folder the recorder writes to, or none. It must be a full path
+/// (`/data/recordings`, `C:\Recordings`, `\\server\share`), or the home folder's (`~/…`, which a
+/// config the recorder reads expands): not one relative to wherever the recorder was started,
+/// which a plugin, run in a folder of its own, would read as somewhere else (#211). Judged the
+/// same on every platform: Setup runs it in the browser.
+pub fn folder_problem(path: &str) -> Option<String> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Some("Choose a folder.".into());
+    }
+    let b = p.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+    let full = drive || p.starts_with('/') || p.starts_with('\\') || p == "~" || p.starts_with("~/") || p.starts_with("~\\");
+    (!full).then(|| format!("\"{p}\" isn't a full path: give one such as /data/recordings or ~/TrunkRecorderPro, not one that depends on the folder the recorder is started from."))
+}
+
+/// `~` or `~/…` as the home folder's own path (the recorder's: a config it reads).
+fn expand_home(path: &mut String) {
+    let p = path.trim();
+    let rest = if p == "~" { Some("") } else { p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) };
+    if let Some(rest) = rest {
+        *path = if rest.is_empty() { home() } else { home().join(rest) }.display().to_string();
+    }
 }
 
 /// A source's `type` names its kind (the tag of [`Source`]), read in any case
@@ -2605,6 +2634,10 @@ impl Config {
         let mut c: Config = serde_json::from_value(v)?;
         c.notes = notes;
         c.numbered = c.assign_system_ids();
+        if !cfg!(target_arch = "wasm32") {
+            expand_home(&mut c.recording.capture_dir);
+            expand_home(&mut c.diagnostics.capture_dir);
+        }
         Ok(c)
     }
 
@@ -3075,6 +3108,12 @@ impl Config {
         if self.sources.is_empty() {
             return Some("Add a source (a dongle or a capture file).".into());
         }
+        if let Some(p) = folder_problem(&self.recording.capture_dir) {
+            return Some(format!("Recordings folder: {p}"));
+        }
+        if let Some(p) = Some(&self.diagnostics.capture_dir).filter(|d| !d.trim().is_empty()).and_then(|d| folder_problem(d)) {
+            return Some(format!("IQ capture folder: {p}"));
+        }
         if self.sources.iter().any(|s| matches!(&s.kind, SourceKind::File { path, .. } if path.trim().is_empty())) {
             return Some("Choose the capture file to replay.".into());
         }
@@ -3451,6 +3490,25 @@ fn system_kinds_ts() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The folders the recorder writes to are full paths (#211): a relative one would be read
+    /// from another folder by a plugin. `~` is the recorder's home, expanded when it reads a config.
+    #[test]
+    fn folders_are_full_paths() {
+        for p in ["/data/recordings", "C:\\Recordings", "d:/calls", "\\\\nas\\calls", "~", "~/TrunkRecorderPro", " /x "] {
+            assert_eq!(folder_problem(p), None, "{p}");
+        }
+        for p in ["recordings", "./recordings", "../calls", "~bob/calls", "C:calls"] {
+            assert!(folder_problem(p).unwrap().contains("isn't a full path"), "{p}");
+        }
+        assert_eq!(folder_problem("  ").as_deref(), Some("Choose a folder."));
+        let cfg = |dir: &str, iq: &str| Config::from_value(serde_json::json!({ "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 851000000, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 }], "recording": { "captureDir": dir }, "diagnostics": { "captureDir": iq } })).unwrap();
+        let home = cfg("~/calls", "~");
+        assert_eq!((home.recording.capture_dir.as_str(), home.diagnostics.capture_dir.as_str()), (super::home().join("calls").display().to_string().as_str(), super::home().display().to_string().as_str()));
+        assert!(cfg("recordings", "").problem().unwrap().starts_with("Recordings folder: \"recordings\" isn't a full path"));
+        assert!(cfg("/data/recordings", "iq").problem().unwrap().starts_with("IQ capture folder:"));
+        assert!(!cfg("/data/recordings", "").problem().unwrap_or_default().contains("folder"), "an empty IQ capture folder is the recordings folder's");
+    }
 
     /// The interface's table of system kinds is this one's (`TRP_WRITE=1` writes it).
     #[test]

@@ -24,7 +24,7 @@ plugin fails**).
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `captureDir` | | `~/TrunkRecorderPro` | string | The recordings folder. Write an absolute path: `~` isn't expanded, and a relative path is taken from wherever the app was started |
+| `captureDir` | | `~/TrunkRecorderPro` | string | The recordings folder: a full path (`/data/recordings`, `C:\Recordings`), or `~/…` for the home folder. A relative path (`recordings`) won't start: it would mean a different folder to the recorder and to each plugin |
 | `prerollS` | | `1` | number | Seconds of air from before each grant added to the start of a trunked call. The interface allows 0–3 |
 | `maxRecorders` | | `32` | integer | Calls recorded at once, across all trunked systems. The interface allows 1–64 |
 | `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or update came in (or its last audio), s. Trunk Recorder checks once a second, so the same value there ends calls up to 2 s later. The interface allows 1–30 |

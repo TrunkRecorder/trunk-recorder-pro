@@ -87,6 +87,7 @@ pub struct Setup<C, S> {
     /// Every system, with the plugin's settings for it (not those it's turned off for).
     pub systems: Vec<System<C, S>>,
     pub host: HostInfo,
+    /// Where calls are stored: always a full path, as are the paths of each call's files.
     pub capture_dir: PathBuf,
     /// The plugin's own folder, kept across restarts and upgrades.
     pub data_dir: PathBuf,

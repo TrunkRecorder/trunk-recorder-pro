@@ -97,7 +97,8 @@ The container runs as root, so the files in `./data` belong to root on the host.
 edit or remove them.
 
 If you change the **Recordings folder** in the settings, keep it under `/data` (for example
-`/data/recordings`), or mount another host folder into the container and point it there.
+`/data/recordings`), or mount another host folder into the container and point it there. Give
+the full path: a relative one such as `recordings` won't start.
 Anything written elsewhere in the container is lost when the container is replaced.
 
 ## Security
