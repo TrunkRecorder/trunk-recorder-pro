@@ -11,6 +11,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   shared by systems, stay. SDK: `Manifest::per_system` and `topic::per_system` are gone, and `PluginInfo.perSystem` with
   them; `health::Recorder::of(&setup.host)` gives the recorder's name as the node health spec has it.
 
+- **SoapySDR over SoapyRemote: no false drops or clock re-anchors** (#209). SoapyRemote stamps only the first read of a
+  network buffer that's split over several reads; the rest of it was left out of the count, so the next buffer looked
+  late by that much. That was about 4.5% of an RTL-SDR's samples "dropped" (filled with silence), and the clock was
+  re-anchored every few seconds, which made DMR control channels flap. The unstamped reads now continue the one before.
+  Timestamps that run at a steady multiple of real time are noticed over the first reads, logged once (with a hint for
+  SoapyRTLSDR before 0.3.4, which counts bytes, so its run at twice real time), and ignored, as with a driver that has
+  none.
 - **Airspy R2 / Mini in Docker.** The Docker image now has the Airspy's driver (libairspy, about 230 kB), so Airspy
   sources work in it as RTL-SDRs and HackRFs do (#207).
 
