@@ -51,7 +51,7 @@ import { ToneList } from "./ToneList.tsx";
 import { openTodos } from "./todo.ts";
 import { copyOwn, copyPerSite, pluginCopies } from "./protocol.ts";
 import { fieldsOf, ignoredOf, offFor, offForSite, overridable, overridableSchema, overrideOf, siteOverridable, siteSchema } from "./pluginSettings.ts";
-import { applies, fillTemplate, followRenames, mentions, refOptions, summarize, type KeyMemory } from "./pluginForm.ts";
+import { applies, fillTemplate, followRenames, mentions, refOptions, summarize, summaryValue, type KeyMemory } from "./pluginForm.ts";
 import { signalChoices, signalRef } from "./Signals.tsx";
 import type { Config, System, InstallProgress, PluginContribution, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList, SignalDef } from "./protocol.ts";
 import { Author, InstallStage, newer, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
@@ -484,8 +484,9 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
     if (f["x-multiline"]) {
       control = <TextArea id={id} rows={4} value={text} placeholder={placeholder} onChange={set} />;
     } else if (f["x-secret"]) {
-      // A placeholder is never masked, even in a password box: one set above is shown as dots until Show.
-      const secretHint = !emptyValue(inherited) && !shown ? "•••••••• (set above)" : placeholder;
+      // A placeholder is never masked, even in a password box: one set above is shown as a secret is (summaryValue)
+      // until Show.
+      const secretHint = !emptyValue(inherited) && !shown ? `${summaryValue(f, inherited)} (set above)` : placeholder;
       control = (
         <span className="secret">
           <TextInput id={id} className="mono" type={shown ? "text" : "password"} autoComplete="off" value={text} placeholder={secretHint} onChange={set} />
