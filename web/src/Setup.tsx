@@ -2157,11 +2157,45 @@ const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = 
   { key: "site", label: "Site", hex: false },
 ];
 
+/** A site's voice channels: where the radios are placed (with its channel table's), recorded when a grant names one. */
+function VoiceChannelsField(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { site, edit } = props;
+  return (
+    <Field
+      label="Voice channels, MHz"
+      hint={
+        <>
+          Optional · places the radios{" "}
+          <Info>
+            Auto places the radios over the control channels, then these (and a DMR or NXDN site's channel table). Nothing listens to one until a grant names it, so a site that learns its
+            channels from the air still records a channel left out, when a radio reaches it.
+          </Info>
+        </>
+      }
+      wide
+    >
+      <DraftInput className="mono" codec={mhzList} value={site.voiceChannelsHz} placeholder="452.5125, 453.3875" onChange={(list) => edit((x) => void (x.voiceChannelsHz = list))} />
+    </Field>
+  );
+}
+
 function DmrFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
   const { site, edit } = props;
   return (
     <>
-      <Field label="Voice frequencies, MHz" hint="Tier III, Capacity Max, Connect Plus" wide>
+      <Field
+        label="Watched frequencies, MHz"
+        hint={
+          <>
+            Optional · teaches channel numbers{" "}
+            <Info>
+              Each is listened to all the time, as the site frequencies are: a call on one is found by its own link control, and a grant naming a channel the table doesn't have is learned from it. To
+              place the radios over voice channels without watching them, list them under Voice channels.
+            </Info>
+          </>
+        }
+        wide
+      >
         <DraftInput
           className="mono"
           codec={mhzList}
@@ -2533,6 +2567,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
           />
         </Field>
         {sys.type === "smartnet" && <SmartnetFields site={site} edit={edit} />}
+        {sys.type !== "edacs" && !typeD && <VoiceChannelsField site={site} edit={edit} />}
         {sys.type === "dmr" && <DmrFields site={site} edit={edit} />}
         {sys.type === "nxdn" && <NxdnFields sys={sys} site={site} edit={edit} />}
         {sys.type === "edacs" && <EdacsFields site={site} edit={edit} />}
