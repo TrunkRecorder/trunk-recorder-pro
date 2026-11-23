@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-23
+
+**Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or
+`~/TrunkRecorderPro`. A relative one (`recordings`) now stops Start, with a message saying so: change it in Setup →
+Recording first. The default, and the Docker image's, are already full paths.
+
 - **A system set to receive on a source that isn't one no longer stops the rest** (#216). It's left out of the run,
   and so is a conventional channel set so; everything else records. The log and the dashboard's banner say why, naming
   the sources there are ("…isn't one of the sources ("RTL-SDR SN 1", "SoapySDR driver=remote,…")"). And a source's
