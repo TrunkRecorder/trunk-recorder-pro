@@ -5,6 +5,23 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-23
+
+**Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or
+`~/TrunkRecorderPro`. A relative one (`recordings`) now stops Start, with a message saying so: change it in Setup →
+Recording first. The default, and the Docker image's, are already full paths.
+
+- **A system set to receive on a source that isn't one no longer stops the rest** (#216). It's left out of the run,
+  and so is a conventional channel set so; everything else records. The log and the dashboard's banner say why, naming
+  the sources there are ("…isn't one of the sources ("RTL-SDR SN 1", "SoapySDR driver=remote,…")"). And a source's
+  label edited in Setup (its serial, address or SoapySDR args) is followed by every `receiveOn` that named it.
+
+- **An Airspy on Windows: what it needs, and why it didn't load** (#219). `airspy.dll` needs `libusb-1.0.dll` and
+  `pthreadVC2.dll` beside it, from the same `x64` folder of Airspy's airspy_host_tools, and `pthreadVC2.dll` needs the
+  Visual C++ 2010 runtime; Setup's hint and the docs said only `airspy.dll`. A driver that's there but won't load now
+  says why (Windows' reason, and for a missing DLL or a 32-bit one what to do) instead of only "LoadLibraryExW failed",
+  and a DLL beside `trunk-pro.exe` is seen there whatever folder the app was started from.
+
 - **Every plugin can be off for a system or site.** One that takes `totals` (the Broadcastify plugin's node health
   reports, from its next release) couldn't be, and was on for every system with a warning in its log. Now it's sent the
   figures of the systems and sites it's on for: the others' sites, channels and series are left out, and the radios',
@@ -25,9 +42,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   network buffer that's split over several reads; the rest of it was left out of the count, so the next buffer looked
   late by that much. That was about 4.5% of an RTL-SDR's samples "dropped" (filled with silence), and the clock was
   re-anchored every few seconds, which made DMR control channels flap. The unstamped reads now continue the one before.
-  Timestamps that run at a steady multiple of real time are noticed over the first reads, logged once (with a hint for
+  Timestamps that run at a steady multiple of real time are noticed over the first second, logged once (with a hint for
   SoapyRTLSDR before 0.3.4, which counts bytes, so its run at twice real time), and ignored, as with a driver that has
-  none.
+  none. That's judged over windows of samples, not read by read: behind SoapyRemote, most of an old SoapyRTLSDR's reads
+  keep to the count and only each of its buffers jumps ahead.
 - **Airspy R2 / Mini in Docker.** The Docker image now has the Airspy's driver (libairspy, about 230 kB), so Airspy
   sources work in it as RTL-SDRs and HackRFs do (#207).
 

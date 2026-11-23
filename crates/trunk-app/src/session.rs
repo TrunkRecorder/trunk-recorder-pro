@@ -373,6 +373,8 @@ pub struct Session {
     log: Vec<Value>,
     /// Log records not yet handed out.
     records: Vec<Record>,
+    /// What the config set to receive on a source that isn't one, left out of this run, and why ([`Session::left_out`]).
+    left_out: Vec<String>,
     local_offset: LocalOffset,
     busy_ms: f64,
     start_ms: Option<f64>,
@@ -424,9 +426,11 @@ impl Session {
     /// ([`Session::bandplans`], [`bandplan_key`]).
     /// `names`: each system's talkgroups and radio names ([`crate::config::NameLists`]).
     pub fn new(mut cfg: Config, names: &crate::config::NameLists, epoch_ms: f64, bandplan: &dyn Fn(&str) -> Option<String>, local_offset: LocalOffset) -> Result<Session, String> {
+        // What's set to receive on a source that isn't one is left out, and said; the rest records (#216).
         if let Some(p) = cfg.problem() {
             return Err(p);
         }
+        let aside = cfg.set_aside_unreceivable();
         // (A config read is numbered; one built in code may not be.)
         cfg.assign_system_ids();
         let engine = Engine::new(cfg.engine_config(epoch_ms, names))?;
@@ -462,6 +466,7 @@ impl Session {
             busy: (0..n).map(|_| Default::default()).collect(),
             log: Vec::new(),
             records: Vec::new(),
+            left_out: Vec::new(),
             local_offset,
             busy_ms: 0.0,
             start_ms: None,
@@ -490,6 +495,10 @@ impl Session {
             watch: None,
         };
         session.share = crate::share::Ledger::new(session.cfg.systems.iter());
+        for why in &aside {
+            session.records.push(Record::text(Level::Error, None, format!("Not started: {why}")));
+        }
+        session.left_out = aside;
         Ok(session)
     }
 
@@ -504,6 +513,12 @@ impl Session {
         let mut book = self.meas.shared().names.lock().unwrap();
         book.set_systems(&self.engine.systems());
         book.set_rows(&self.cfg);
+    }
+
+    /// What was left out of this run (set to receive on a source that isn't one), as said while it
+    /// records: "Not started: …"; none when nothing was.
+    pub fn left_out(&self) -> Option<String> {
+        (!self.left_out.is_empty()).then(|| format!("Not started: {}", self.left_out.join(" ")))
     }
 
     /// The registry and monitor this session feeds.

@@ -89,3 +89,9 @@ test("a field typed in is kept once, when it's done", () => {
   assert.equal(finishDraft("12", 12, decimal), null);
   assert.deepEqual(finishDraft(" - ", "", verbatim), { value: " - " }, "verbatim keeps spaces");
 });
+
+test("frequencies as typed: MHz under 10 000, else Hz, in every field (the recorder's channels::hz_of)", () => {
+  assert.deepEqual(mhzList.parse("147, 452.275 154430000"), [147_000_000, 452_275_000, 154_430_000]);
+  assert.equal(mhz.parse("147"), 147_000_000, "Excel's 147.000");
+  assert.deepEqual(lcnTable.parse("101=452.275, 102=452300000, 103=0"), { "101": 452_275_000, "102": 452_300_000 });
+});

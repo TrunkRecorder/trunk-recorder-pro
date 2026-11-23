@@ -9,26 +9,56 @@
       "homepage": "https://www.broadcastify.com/calls/",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.9",
+      "version": "0.2.0",
       "api": 1,
-      "tag": "v0.1.9",
-      "commit": "7b43477e23f2b459f1c80e395c5709afa3c5751e",
+      "tag": "v0.2.0",
+      "commit": "a63a7ef33447e503d84923d6eff062cb125d7300",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.9/broadcastify-0.1.9-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "99ed23d7b8ebbf83aa39b48a72f01c3d78902e65332d1f9720746cf70fdae252"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.2.0/broadcastify-0.2.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "b3cf29d111ca5df26b0b20a0f0b5845b5296660417d9d794fa10f83ae524678b"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.9/broadcastify-0.1.9-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "2e05bb26ddcc611bd71b206f2a081bb79d85cc1bc63befdada7c9bd0d5256d28"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.2.0/broadcastify-0.2.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "a7d9f6f373edb6c8e642ac354dfd9a313ce4a597a29307e8000e43289ca7c57d"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.9/broadcastify-0.1.9-universal-apple-darwin.tar.gz",
-          "sha256": "6f3a74e07854761d40ca312ccf867066c6865e55c0478523aadc4016fee32812"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.2.0/broadcastify-0.2.0-universal-apple-darwin.tar.gz",
+          "sha256": "35bf77db30bcbbbd736121ef160f9642381e80e4c2feefcb8e5660e81c53f934"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.1.9/broadcastify-0.1.9-x86_64-pc-windows-msvc.zip",
-          "sha256": "466ffb80609c00c6100df8ac0136fa26925087eff1d5eb56193a87b64cefab09"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-broadcastify/releases/download/v0.2.0/broadcastify-0.2.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "bb8b91aa5be215481c07e7292a05b687bf6b52aac39bef8dde1df8c7d5c38bba"
+        }
+      }
+    },
+    {
+      "id": "decode-rate-notifications",
+      "name": "Decode Rate Notifications",
+      "description": "Sends decode-rate alerts through Pushover, webhooks, or email",
+      "repository": "https://github.com/penguinzephyr/trunk-plugin-decode-rate-alerts",
+      "license": "MIT",
+      "tier": "community",
+      "version": "0.1.0",
+      "api": 1,
+      "tag": "v0.1.0",
+      "commit": "bef9c1c452b1f15afa047f88c9c054c839791965",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/penguinzephyr/trunk-plugin-decode-rate-alerts/releases/download/v0.1.0/decode-rate-notifications-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "ba12fb586988f60b7eba64fa0794fb5d11be26af07b9b60f6227f44fd3eac822"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/penguinzephyr/trunk-plugin-decode-rate-alerts/releases/download/v0.1.0/decode-rate-notifications-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "5087fff65af1fd28312de8cae557baa264eacdb1ced821153d1fd66819cee0ca"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/penguinzephyr/trunk-plugin-decode-rate-alerts/releases/download/v0.1.0/decode-rate-notifications-0.1.0-universal-apple-darwin.tar.gz",
+          "sha256": "8621519ec995ac99067355a86c0f5dee79c9513f473ddbd118ae99e6e2b0d274"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/penguinzephyr/trunk-plugin-decode-rate-alerts/releases/download/v0.1.0/decode-rate-notifications-0.1.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "7120fb45af9e98a58bdb65d084217f2d40836eb5756f677b5dbb65e18448684a"
         }
       }
     },
@@ -39,26 +69,26 @@
       "repository": "https://github.com/jschmall/icecast-endpoint",
       "license": "MIT",
       "tier": "community",
-      "version": "0.5.0",
+      "version": "0.5.2",
       "api": 1,
-      "tag": "v0.5.0",
-      "commit": "4203fca2b660bfc3dfcdc2f1a81dd0b36cfc18f1",
+      "tag": "v0.5.2",
+      "commit": "4924996bd2666f9fbc9cd4b6ca6c75a4886ef958",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.0/icecast-endpoint-0.5.0-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "0b36bcfbf557a7b8d3e95c5eec2e27f5c0326eeea7a4228bc7515ea3395c5246"
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.2/icecast-endpoint-0.5.2-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "19d492f83d2b1976e17c657522dec935d5eb9621e8450b30f31d94a403fc9367"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.0/icecast-endpoint-0.5.0-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "6f0c7b6a6b45a799ba17f5568c30163a47c1ea8ddc17d814fc0987d376603be4"
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.2/icecast-endpoint-0.5.2-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "b69a2f5f47227e7a186eee5c5dcc83fc2c6a855265d041f89091e3475885bfb0"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.0/icecast-endpoint-0.5.0-universal-apple-darwin.tar.gz",
-          "sha256": "cf442408b78139e62675c811060d50eb2b6ba4b64d016c60743295608f798ffb"
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.2/icecast-endpoint-0.5.2-universal-apple-darwin.tar.gz",
+          "sha256": "f13efc1acd3648ef51e872f5e03fc26fad0564c8f952b9bc60de265bf97aa358"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.0/icecast-endpoint-0.5.0-x86_64-pc-windows-msvc.zip",
-          "sha256": "1e4a548bc4c9bc5d04545b40b96bc1950183412d79973738f2ad402f83c96328"
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.2/icecast-endpoint-0.5.2-x86_64-pc-windows-msvc.zip",
+          "sha256": "460da015644ca5a1d063db677c5ad6b9740bb1264a36ddff69c39484420c5818"
         }
       }
     },
@@ -99,26 +129,26 @@
       "repository": "https://github.com/TrunkRecorder/trunk-plugin-mqtt",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.7",
+      "version": "0.1.9",
       "api": 1,
-      "tag": "v0.1.7",
-      "commit": "d7c5659cbcd1e0e7bf1f862caf87e225dc760493",
+      "tag": "v0.1.9",
+      "commit": "ba48d8f9cd3c194a143efd5fd258e11b454d1894",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.7/mqtt-0.1.7-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "c26a21006a7c2d8ed6b62491ded4ed5e2141e2706a24c4c2277c64d5405cd0a7"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.9/mqtt-0.1.9-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "53c75ca060097d75b76157cd82743586713447918ba74c8876b0677f6f0067fe"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.7/mqtt-0.1.7-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "50a2d0c865fee5f338d2ca80b49361097a6b61acaecd33fb3a0818d39577f4db"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.9/mqtt-0.1.9-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "4f382818663a1a26fc8f3cd627cd285cda4771e030047fd60d6d6b61ede5bf3b"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.7/mqtt-0.1.7-universal-apple-darwin.tar.gz",
-          "sha256": "af203b73c351a49f6eb00a809027434ff4b6bbc3bee6dc058553eee57f8e2d99"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.9/mqtt-0.1.9-universal-apple-darwin.tar.gz",
+          "sha256": "eba908ee105c3b0520fb19940d9b4302f0cf1c84b79b20ed78ac48b354528263"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.7/mqtt-0.1.7-x86_64-pc-windows-msvc.zip",
-          "sha256": "2ffc3ee975504dffd32844d275b52092bbc490ef652690f2f5cf19706e70c325"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-mqtt/releases/download/v0.1.9/mqtt-0.1.9-x86_64-pc-windows-msvc.zip",
+          "sha256": "8b4a3f7d856552a7e53ede049324c6b695e158e7d9f00bea7afc7431b17510b6"
         }
       }
     },
@@ -160,26 +190,26 @@
       "homepage": "https://openmhz.com",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.10",
+      "version": "0.1.11",
       "api": 1,
-      "tag": "v0.1.10",
-      "commit": "4779010bd8bd55822e9e39e895794c7dfbf177d6",
+      "tag": "v0.1.11",
+      "commit": "f34eab325c8683c9bb745ee3c83911e4fb064fe4",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.10/openmhz-0.1.10-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "4527cc81690b4aa27b744c2d3f0e7e388d68339e08f121e7a93bc78f19340016"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.11/openmhz-0.1.11-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "02442036736f179bd464ae0557d7c5045353878d261bbd38411fe33d02428e15"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.10/openmhz-0.1.10-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "769f13bf17304c30e6e2649e180e5d1f224f0d506233bbc39cc2b2351ade7bac"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.11/openmhz-0.1.11-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "918a156e354695f1ff7dd4aa5fdf1c68c6741af201c961b5b033fbaf7b5b99ca"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.10/openmhz-0.1.10-universal-apple-darwin.tar.gz",
-          "sha256": "bb7629325a8ae4a368d61d9f71c85617e564e35f21109529ace862934d975d4d"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.11/openmhz-0.1.11-universal-apple-darwin.tar.gz",
+          "sha256": "f28ccc24fffd26c217018e1a51746095bb1e2704e1ceb69ab90f68a1bb2eb052"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.10/openmhz-0.1.10-x86_64-pc-windows-msvc.zip",
-          "sha256": "38477f657b3c32165c3ee7a881d986b1894010edaef7cbf999c73e197b49441f"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.11/openmhz-0.1.11-x86_64-pc-windows-msvc.zip",
+          "sha256": "0e50e088e4b4d39c5a04141638a6273ce6f2d33d48b7b1596e9221d021f58b10"
         }
       }
     },
@@ -191,26 +221,26 @@
       "homepage": "https://github.com/chuot/rdio-scanner",
       "license": "GPL-3.0-or-later",
       "tier": "official",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "api": 1,
-      "tag": "v0.1.8",
-      "commit": "dadf21f6f11bec4450f7ee5bbfca38c0b4807155",
+      "tag": "v0.1.9",
+      "commit": "807e07485c7d6ac93a85139dee31374ec539b2fb",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.8/rdioscanner-0.1.8-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "7c1ab9cb45a6b2630b71bb5964a670fbbf0ebaa1c70c563342031cf238f26214"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.9/rdioscanner-0.1.9-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "d34f03cf62da9ae0df3e096f9de9e04b0c41212db82ffed8c16a81ecc45a6f21"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.8/rdioscanner-0.1.8-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "893a01196da3bd5df4be9e57f1fa5034e5a6330e1f159ca46856400116fe8d3f"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.9/rdioscanner-0.1.9-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "b1c3f4965efec84f29bc708def0176c2457150a4a382b6ffd29eab454f3fb1bd"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.8/rdioscanner-0.1.8-universal-apple-darwin.tar.gz",
-          "sha256": "94e7c8310c1d98e8aa4b2ade5db56b075571be53f492cce30fad821f6926275c"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.9/rdioscanner-0.1.9-universal-apple-darwin.tar.gz",
+          "sha256": "77d55caabf1015f6f0f9c9ca846d7338c2f9d5c74161d8624b579dd9fe696f27"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.8/rdioscanner-0.1.8-x86_64-pc-windows-msvc.zip",
-          "sha256": "ddc8bcdc43a2bb1fd0864262e7b5f4ecdae40e6c1850e045296f8b0cf0b27c2a"
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-rdioscanner/releases/download/v0.1.9/rdioscanner-0.1.9-x86_64-pc-windows-msvc.zip",
+          "sha256": "510d2e66eb9e5ce4c6b7fcaa1f8b402fed0fdedea27756a54f8ef7ac3a26fbe3"
         }
       }
     },
@@ -311,26 +341,26 @@
       "repository": "https://github.com/kb2ear/trunk-plugin-unit-script",
       "license": "MIT",
       "tier": "community",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "api": 1,
-      "tag": "v0.1.1",
-      "commit": "4dccc5d3dbce951864d67b7011ffa57b5ed740a6",
+      "tag": "v0.1.3",
+      "commit": "c6c7937682874a21629e56d6735ec53ad1c5704a",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/kb2ear/trunk-plugin-unit-script/releases/download/v0.1.1/unit-script-0.1.1-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "40e88ba590eb93eb69940de87a3b00f5fc5f0ec808502be7d8c158a7a4e3e503"
+          "url": "https://github.com/kb2ear/trunk-plugin-unit-script/releases/download/v0.1.3/unit-script-0.1.3-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "ed9de6f68abca7c237879ea09666b64958589f9090798682dc6e8cbcb39ea5d5"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/kb2ear/trunk-plugin-unit-script/releases/download/v0.1.1/unit-script-0.1.1-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "e2d424b0961ecb1c97c9d1856066af7ca92a5ad6b7cf4464d4721428ca4be427"
+          "url": "https://github.com/kb2ear/trunk-plugin-unit-script/releases/download/v0.1.3/unit-script-0.1.3-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "19ea672a7e4d431f9beb28298dfe6e388d79ab92c00138ec93764d6b1a20e37b"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/kb2ear/trunk-plugin-unit-script/releases/download/v0.1.1/unit-script-0.1.1-universal-apple-darwin.tar.gz",
-          "sha256": "3191a61ed34243f6a3079b55801abbd5fac617f64d7758d2646f12bc78ab5e7c"
+          "url": "https://github.com/kb2ear/trunk-plugin-unit-script/releases/download/v0.1.3/unit-script-0.1.3-universal-apple-darwin.tar.gz",
+          "sha256": "1fe6c48964949caea722a44bf519a1c02beea1b7ea358d18b08ae1688a799893"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/kb2ear/trunk-plugin-unit-script/releases/download/v0.1.1/unit-script-0.1.1-x86_64-pc-windows-msvc.zip",
-          "sha256": "6d0cc051a8170f86b6f4f3e9d615f4071d7632f9c1d17ab28ad736d35cd13e00"
+          "url": "https://github.com/kb2ear/trunk-plugin-unit-script/releases/download/v0.1.3/unit-script-0.1.3-x86_64-pc-windows-msvc.zip",
+          "sha256": "673b67d42a816bd6bd0e75da79f8e47fed8d67f3d4dfc882e132a27e3b3e6c73"
         }
       }
     },

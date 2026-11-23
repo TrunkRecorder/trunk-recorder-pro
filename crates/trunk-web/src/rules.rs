@@ -138,6 +138,13 @@ pub fn config_problem(json: &str) -> Option<String> {
     read(json).map_or_else(Some, |c| c.problem())
 }
 
+/// A frequency as written ([`trunk_app::channels::hz_of`]): Hz, from MHz under 10 000, else as
+/// given; none when not above 0.
+#[wasm_bindgen(js_name = hzOf)]
+pub fn hz_of(v: f64) -> Option<f64> {
+    trunk_app::channels::hz_of(v)
+}
+
 /// Why `path` can't be a folder the recorder writes to (it must be a full path), or none:
 /// [`trunk_app::config::folder_problem`].
 #[wasm_bindgen(js_name = folderProblem)]

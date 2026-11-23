@@ -110,7 +110,7 @@ fn api() -> Result<&'static Api, String> {
             names.push("libbladeRF.so".into());
         }
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let (lib, path) = super::load("TRUNK_PRO_BLADERF", &names, "bladeRF", false)?;
+        let (lib, path) = super::load("TRUNK_PRO_BLADERF", &names, "bladeRF", false, "")?;
         // SAFETY: the signatures are libbladeRF's (libbladeRF.h / bladeRF2.h, 2.x).
         unsafe {
             macro_rules! f {

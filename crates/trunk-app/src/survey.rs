@@ -135,9 +135,9 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
     sc.ppm = src.ppm;
     match &src.kind {
         // (Behind `rtl_tcp`, what the link has queued from before a retune arrives after it: each step waits longer.)
-        SourceKind::Rtlsdr { address, .. } => {
+        SourceKind::Rtlsdr { .. } => {
             sc.tune_range_hz = (24e6, 1766e6);
-            sc.settle_s = if address.trim().is_empty() { 0.03 } else { 0.5 };
+            sc.settle_s = if src.server().is_none() { 0.03 } else { 0.5 };
             if req.find_gain {
                 sc.gains = RTL_GAINS.iter().map(|&i| crate::gain::R82XX_DB[i] as f32).collect();
             }

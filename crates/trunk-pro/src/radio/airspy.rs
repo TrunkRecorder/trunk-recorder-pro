@@ -157,7 +157,12 @@ fn load(lib: Lib) -> Result<Api, String> {
         names.push(format!("lib{id}.so"));
     }
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let (l, path) = super::load(env, &names, id, false)?;
+    // (What its Windows DLL needs beside it: Airspy's from the x64 folder of airspy_host_tools; HydraSDR's from its zip.)
+    let win_needs = match lib {
+        Lib::Airspy => ": airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it (all three from the x64 folder of Airspy's airspy_host_tools zip), and pthreadVC2.dll needs the Microsoft Visual C++ 2010 runtime (x64)",
+        Lib::Hydrasdr => ": hydrasdr.dll needs libusb-1.0.dll beside it (both from the hydrasdr-host release's Windows zip)",
+    };
+    let (l, path) = super::load(env, &names, id, false, win_needs)?;
     // SAFETY: the signatures are airspy.h's (1.0.x) and hydrasdr.h's (1.1.x): the same, but for those in `Own`.
     unsafe {
         macro_rules! f {
