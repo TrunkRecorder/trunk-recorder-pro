@@ -184,8 +184,17 @@ pub trait ControlChannel: Send {
     /// What the dashboard shows of it beyond what every system shows.
     fn status(&self) -> ProtocolStatus;
     /// Its receivers' measurements for the dashboard's history (framing,
-    /// eye opening, deviation…; see [`crate::metrics`]). Default: none.
-    fn report(&self, _sink: &mut dyn Sink) {}
+    /// eye opening, deviation…; see [`crate::metrics`]). Default: what every
+    /// control channel knows of its carrier, its offset and eye opening (a
+    /// protocol with more says those too).
+    fn report(&self, sink: &mut dyn Sink) {
+        if let Some(off) = self.offset_hz() {
+            sink.gauge("offset", off as f64);
+        }
+        if let Some(sep) = self.quality().sep {
+            sink.gauge("sep", sep as f64);
+        }
+    }
     /// How well its receiver hears the control channel (the dashboard's).
     fn quality(&self) -> super::voice::ChannelQuality;
 }
