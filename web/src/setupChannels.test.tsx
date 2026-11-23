@@ -5,10 +5,11 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, newConventional, normalizeSystem } from "./config.ts";
+import { defaultConfig, newConventional, newSoapy, normalizeSystem } from "./config.ts";
 import { transport } from "./controller.ts";
 import type { Channel, Config } from "./protocol.ts";
 import { ConventionalPanel, SystemCard } from "./Setup.tsx";
+import { shorten } from "./charts.tsx";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 const row = (freqHz: number, mode: Channel["mode"], more: Partial<Channel> = {}): Channel => ({ freqHz, mode, name: "", enabled: true, ...more });
@@ -150,11 +151,28 @@ test("a system kept on a source: Setup offers the radios by name, and says the o
   // Both radios reach it; it's kept on SN 2 (named Whip: still pinned by its label), so that's the one.
   assert.match(text(card), /CC → 2/);
   assert.match(text(card), /Receive on Source 1 · RTL-SDR SN 1 Source 2 \(Whip\) · RTL-SDR SN 2 Only those ticked/);
-  assert.match(card, /<input type="checkbox" checked=""\/><span class="small">Source 2 \(Whip\) · RTL-SDR SN 2/);
+  assert.match(card, /<input type="checkbox" checked=""\/><span class="clip small" title="Source 2 \(Whip\) · RTL-SDR SN 2">Source 2 \(Whip\) · RTL-SDR SN 2/);
   // SN 2 taken out: still named (to untick), and not received anywhere else.
   const gone = { ...c, sources: [rtl("1")] };
   transport.onMessage({ type: "config", config: gone, version: 2 } as never);
   const page = text(renderToString(<SystemCard c={gone} i={0} />));
   assert.match(page, /RTL-SDR SN 2 \(not a source now\)/);
   assert.doesNotMatch(page, /CC → \d/);
+});
+
+test("#210: a SoapyRemote source's long label is cut off where it doesn't fit, the whole of it on hover; a channel's list shortens it in the middle", () => {
+  const c = defaultConfig();
+  const args = "driver=remote,remote=tcp://10.0.0.5:55132,remote:driver=rtlsdr,serial=00000102,remote:prot=tcp";
+  const soapy = (serial: string) => ({ ...newSoapy(), args: args.replace("00000102", serial), centerHz: 851_000_000, rateHz: 2_400_000 }) as Config["sources"][number];
+  c.sources = [soapy("00000101"), soapy("00000102")];
+  c.systems = [normalizeSystem({ shortName: "dmr", type: "dmr", controlChannelsHz: [851_012_500] } as never)];
+  c.conventional.push(newConventional(c, { shortName: "town", channels: [row(851_325_000, "fm", { name: "Town", receiveOn: [`SoapySDR ${args}`] })] }));
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const label = `Source 2 · SoapySDR ${args}`;
+  assert.ok(renderToString(<SystemCard c={c} i={0} />).includes(`<span class="clip small" title="${label}">${label}</span>`));
+  const list = renderToString(<ConventionalPanel c={c} k={0} />);
+  const short = shorten(label);
+  assert.ok(short.length === 56 && short.startsWith("Source 2 · SoapySDR driver=remote") && short.endsWith("remote:prot=tcp"), short);
+  assert.ok(list.includes(`title="${label}"`) && list.includes(`>${short}</option>`), "the option: shortened, the whole on hover");
+  assert.equal(shorten("Source 1 · RTL-SDR SN 1"), "Source 1 · RTL-SDR SN 1", "a short one as it is");
 });

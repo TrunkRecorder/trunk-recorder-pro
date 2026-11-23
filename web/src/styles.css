@@ -1057,8 +1057,13 @@ h2.big { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: 
 .card-bad { border-color: color-mix(in srgb, var(--bad) 50%, var(--line)); }
 .card-warn { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
 .card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.card-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.card-title h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.card-title { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+/* (A long title with nowhere to break, a SoapySDR source's: cut off, the whole of it on hover.) */
+.card-title h3 { margin: 0; font-size: 15px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-title .linkish { min-width: 0; max-width: 100%; }
+.clip { display: inline-block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.toggle:has(> .clip) { min-width: 0; max-width: 100%; }
+select.clip-options { max-width: 100%; }
 .card .why { margin: 0; }
 .card-opens { cursor: pointer; }
 .card-opens:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
