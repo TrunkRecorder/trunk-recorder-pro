@@ -23,7 +23,7 @@ use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
     format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
-    SiteInfo, Status, SystemInfo, VoiceChunk, API_VERSION, EXIT_CONFIG,
+    SiteInfo, Status, SystemInfo, Totals, VoiceChunk, API_VERSION, EXIT_CONFIG,
 };
 use trunk_core::trunk::{LiveAudio, SiteId, SystemId};
 
@@ -241,12 +241,6 @@ impl PluginHost {
                     if s.share_decrypted {
                         notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: "is given calls decrypted with your keys (shareDecrypted)".into() });
                     }
-                    // (Some of what it takes is every system's: it can't be off for one.)
-                    if (!s.off.is_empty() || !s.sites_off.is_empty()) && !m.per_system() {
-                        notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: "takes every system's figures (totals), so it can't be off for a system or site: it's on for all of them".into() });
-                        s.off.clear();
-                        s.sites_off.clear();
-                    }
                     let site_props = m.system_config.as_ref().and_then(|c| c.get("properties")).and_then(Value::as_object);
                     for k in m.site_overrides.iter().filter(|k| !site_props.is_some_and(|p| p.contains_key(*k))) {
                         notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("says a site can set \"{k}\" again, but it has no such setting for a system") });
@@ -463,7 +457,21 @@ impl PluginHost {
                 }
                 return;
             }
-            HostMessage::Totals(_) => (topic::TOTALS, About::default()),
+            // (Every system's figures: each plugin is sent those of the systems and sites it's on for.)
+            HostMessage::Totals(totals) => {
+                if !sh.wants(topic::TOTALS) {
+                    return;
+                }
+                let all = line(m);
+                for p in sh.plugins.iter().filter(|p| p.manifest.subscribes(topic::TOTALS)) {
+                    let l = match totals_for(totals, |index| p.off.contains(&sh.id_at(index)), |site| p.sites_off.contains(&SiteId(site))) {
+                        None => all.clone(),
+                        Some(t) => line(&HostMessage::Totals(t)),
+                    };
+                    sh.offer(p, topic::TOTALS, &l, &About::default(), None, None);
+                }
+                return;
+            }
             // (Live media and concluded calls may be decrypted ones: they go only by `live` and
             // `concluded`, which know.)
             _ => return,
@@ -638,6 +646,34 @@ pub const OVERRIDE: &str = "override";
 /// The key in a system's settings for a plugin that holds each of its sites'
 /// own (by site id): `{ "apiKey": "…", "perSite": { "3": { "systemId": 77 } } }`.
 pub const PER_SITE: &str = "perSite";
+
+/// `t` without the systems (by [`SystemInfo::index`]) and sites a plugin is off for: their sites
+/// and channels, and every series under their keys. A radio's stay, shared as it may be. (A
+/// system's own series, of all its sites, stay with a site off.) None: nothing is left out.
+fn totals_for(t: &Totals, system_off: impl Fn(u16) -> bool, site_off: impl Fn(u32) -> bool) -> Option<Totals> {
+    // A system's key: its site's or channel's, up to the site or frequency.
+    let system_key = |key: &str| key.split_once("/site/").or_else(|| key.split_once("/ch/")).map_or(key, |(k, _)| k).to_string();
+    let mut gone: BTreeSet<String> = BTreeSet::new();
+    for s in &t.sites {
+        if system_off(s.index) {
+            gone.insert(system_key(&s.key));
+        } else if site_off(s.site_id) {
+            gone.insert(s.key.clone());
+        }
+    }
+    gone.extend(t.channels.iter().filter(|c| system_off(c.index)).map(|c| system_key(&c.key)));
+    gone.retain(|k| !k.is_empty());
+    if gone.is_empty() {
+        return None;
+    }
+    let under = |key: &str| gone.iter().any(|g| key.strip_prefix(g.as_str()).is_some_and(|rest| rest.is_empty() || rest.starts_with('/')));
+    Some(Totals {
+        series: t.series.iter().filter(|(k, _)| !under(k)).map(|(k, v)| (k.clone(), v.clone())).collect(),
+        sites: t.sites.iter().filter(|s| !under(&s.key)).cloned().collect(),
+        channels: t.channels.iter().filter(|c| !under(&c.key)).cloned().collect(),
+        ..t.clone()
+    })
+}
 
 /// What recorded call `r` of `system` is about: its talkgroup, and the sites
 /// that heard it (none named: its own, if any).
@@ -1253,7 +1289,7 @@ mod tests {
         let (mut all, all_rx) = test_plugin("mqtt", false);
         let (mut some, some_rx) = test_plugin("notify", false);
         for p in [&mut all, &mut some] {
-            p.manifest.subscribe.extend([topic::STATUS.to_string(), topic::CALL_START.to_string(), topic::UNIT.to_string()]);
+            p.manifest.subscribe.extend([topic::STATUS.to_string(), topic::CALL_START.to_string(), topic::UNIT.to_string(), topic::TOTALS.to_string()]);
         }
         some.off.insert(SystemId(2));
         some.sites_off.insert(SiteId(5));
@@ -1295,6 +1331,22 @@ mod tests {
         host.event(&HostMessage::Unit(trunk_recorder_plugin::UnitEvent { system: 0, site_id: 5, ..Default::default() }));
         host.event(&HostMessage::Unit(trunk_recorder_plugin::UnitEvent { system: 0, site_id: 6, ..Default::default() }));
         assert_eq!((got(&all_rx).len(), got(&some_rx).len()), (2, 1));
+        // Of the totals, the figures of the systems and sites it's on for, and every radio's.
+        let site = |index: u16, site_id: u32, key: &str| trunk_recorder_plugin::SiteScope { index, site_id, key: key.into(), ..Default::default() };
+        let keys = ["sys/a/calls/started", "sys/a/site/north/cc/good", "sys/a/site/south/cc/good", "sys/b/cc/good", "sys/b/ch/1/open", "sys/bb/cc/good", "src/800/samples"];
+        let totals = Totals {
+            series: keys.iter().map(|k| (k.to_string(), Default::default())).collect(),
+            sites: vec![site(0, 5, "sys/a/site/north"), site(0, 6, "sys/a/site/south"), site(1, 9, "sys/b")],
+            channels: vec![trunk_recorder_plugin::ChannelScope { key: "sys/b/ch/1".into(), index: 1, ..Default::default() }],
+            ..Default::default()
+        };
+        host.event(&HostMessage::Totals(totals));
+        let (to_all, to_some) = (got(&all_rx), got(&some_rx));
+        let series = |m: &serde_json::Value| m["series"].as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(series(&to_all[0]).len(), keys.len());
+        assert_eq!(series(&to_some[0]), ["src/800/samples", "sys/a/calls/started", "sys/a/site/south/cc/good", "sys/bb/cc/good"]);
+        assert_eq!(to_some[0]["sites"].as_array().unwrap().iter().map(|x| x["key"].as_str().unwrap()).collect::<Vec<_>>(), ["sys/a/site/south"]);
+        assert!(to_some[0]["channels"].as_array().unwrap().is_empty());
         // Held, then off for its system: not given.
         let off = About { system: SystemId(2), ..Default::default() };
         assert_eq!(Outlet::offer(&*host.shared, "notify", &"x\n".into(), &off), Offer::Gone);

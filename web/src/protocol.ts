@@ -372,7 +372,7 @@ export interface PluginSetup {
   path?: string;
   /** Give it calls decrypted with the recorder's keys (their audio and files). Off: none are. */
   shareDecrypted?: boolean;
-  /** The systems (by `id`) it's turned off for: nothing about them is sent to it. Only for a plugin that can be (`PluginInfo.perSystem`). */
+  /** The systems (by `id`) it's turned off for: nothing about them is sent to it (of `totals`, their sites' and channels' figures; the radios' still are). */
   systemsOff?: number[];
   /** The sites (by `id`) it's turned off for: their unit events and status aren't sent, nor a recorded call only they heard. */
   sitesOff?: number[];
@@ -1600,8 +1600,6 @@ export interface PluginInfo {
   unlistedFrom?: string | null;
   /** Null when it can't be asked (see `problem`). */
   manifest: PluginManifest | null;
-  /** It can be turned off for a system: everything it takes is one system's (not `totals`). */
-  perSystem: boolean;
   problem: string | null;
   runtime: PluginRuntime;
 }

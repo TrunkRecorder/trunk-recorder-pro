@@ -80,6 +80,13 @@ impl Recorder {
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Recorder {
         Recorder { name: name.into(), version: version.into(), up_s: None }
     }
+
+    /// The recorder a plugin runs in ([`crate::Setup::host`]), by the spec's name for it
+    /// (Trunk Recorder Pro: `trunk-recorder-pro`).
+    pub fn of(host: &crate::HostInfo) -> Recorder {
+        let name = if host.name == "trunk-pro" { "trunk-recorder-pro" } else { &host.name };
+        Recorder::new(name, host.version.clone())
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -643,6 +650,13 @@ mod tests {
     /// A gauge held at `v` for `s` seconds.
     fn g(v: f64, s: f64) -> Total {
         Total { sum: v * s, s, now: Some(v) }
+    }
+
+    #[test]
+    fn the_recorder_goes_by_the_specs_name() {
+        let host = |name: &str| crate::HostInfo { name: name.into(), version: "0.4.1".into() };
+        assert_eq!(Recorder::of(&host("trunk-pro")), Recorder::new("trunk-recorder-pro", "0.4.1"));
+        assert_eq!(Recorder::of(&host("other")).name, "other");
     }
 
     fn totals(time: f64, good: u64, frames: u64, bad: u64) -> Totals {

@@ -582,10 +582,9 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
   const sys = systemAt(c, props.system);
   // A trunked system's sites, when it has several: each can be set up on its own.
   const sites = sys && "sites" in sys && sys.sites.length > 1 ? sys.sites : [];
-  const perSite = (p: PluginInfo) => sites.length > 0 && (p.perSystem || siteOverridable(p.manifest!).length > 0);
   // (Off for this system, or with nothing for one system to set: not here.)
   const plugins = s.plugins.plugins.filter(
-    (p) => pluginOn(c, p.id) && p.manifest && !offFor(c, p.id, sys?.id) && (hasFields(p.manifest.system_config) || overridable(p.manifest).length > 0 || perSite(p)),
+    (p) => pluginOn(c, p.id) && p.manifest && !offFor(c, p.id, sys?.id) && (hasFields(p.manifest.system_config) || overridable(p.manifest).length > 0 || sites.length > 0),
   );
   // A copy of its own makes sense for a plugin that's told which systems are its.
   const copyable = plugins.filter((p) => hasFields(p.manifest!.system_config));
@@ -627,7 +626,7 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
                   </Held>
                 </>
               )}
-              {i === 0 && p.perSystem && sites.length > 0 && (
+              {i === 0 && sites.length > 0 && (
                 <div className="plugin-systems small" role="group" aria-label={`Sites ${m.name} is on for`}>
                   <span className="muted">Sites</span>{" "}
                   {sites.map((site) => {
@@ -800,7 +799,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config }) {
           </div>
         )
       )}
-      {m && on && p.perSystem && systems.length > 0 && (
+      {m && on && systems.length > 0 && (
         <div className="plugin-systems small" role="group" aria-label={`Systems ${m.name} is on for`}>
           <span className="muted">Systems</span>{" "}
           {systems.map((x) => {

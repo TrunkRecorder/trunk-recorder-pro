@@ -100,7 +100,7 @@ far behind loses events (counted on the dashboard) rather than slowing the recor
 | `audio` | `AudioChunk` | Live audio of recording calls: 16-bit mono PCM at 8 kHz, base64 |
 | `voice` | `VoiceChunk` | The vocoder frames each `audio` chunk of a recording digital call is made from, FEC-corrected and in order, with the call, talkgroup and who is talking (`unit`, `unit_name`). Each frame (`VoiceFrame`, as a line of a call's `.frames.jsonl`) has its `codec` (`imbe`: P25 Phase 1, ProVoice, 88 bits; `ambe`: AMBE+2 half rate, P25 Phase 2, DMR, NXDN, 49 bits), its `bits` as hex, the bit errors FEC corrected (`errs`, and IMBE's `e0`), and what the vocoder made of it (`kind`: `voice`, `repeat`, `muted`, `erasure`, `tone`). Voice goes where live audio goes: not to a plugin delayed for the call, decrypted only to plugins with `shareDecrypted`, and encrypted voice the recorder can't decrypt not at all. (Since SDK 0.11.0.) |
 | `status` | `Status` | Every system's state every few seconds: control channel, decode rate, active and recording calls, and what the site says it is (`identity`: P25 `nac`, `wacn`, `sysId`, `rfss`, `site`; DMR `colorCode`, Tier III also `network`, `site`; NXDN `ran`, Type-C also `sysId`, `site`) |
-| `totals` | `Totals` | Every series the recorder measures, as running totals since recording started, every 10 s ([Series](#series)): with the sites, conventional channels and radios they're of. Take the difference of two for a window of your own (`Totals::since`). Node health reports are made of them: the SDK's `health` module turns them into one ([node health reports](../api/node-health.md)). (Since SDK 0.12.0.) |
+| `totals` | `Totals` | Every series the recorder measures, as running totals since recording started, every 10 s ([Series](#series)): with the sites, conventional channels and radios they're of. Take the difference of two for a window of your own (`Totals::since`). Node health reports are made of them: the SDK's `health` module turns them into one ([node health reports](../api/node-health.md)), and `health::Recorder::of(&setup.host)` names the recorder as the spec does. (Since SDK 0.12.0.) |
 | `log` | `LogLine` | Each line TRP logs, at the level its log is set to: `time` (Unix s), `level` (`trace` … `fatal`), `system` (when it's one's), `text`, and `line`, the whole line as the console prints it (no colour). For sending the log on (to MQTT, a chat). A plugin isn't sent its own lines; don't log for each one you get. (Since SDK 0.10.0.) |
 
 Every event carries the system's `system_id`, its identity: the same across runs and renames, never
@@ -305,14 +305,15 @@ for t in system.targets(&call.call) {
 
 ### Systems and sites a plugin is off for
 
-The user can turn your plugin off for a system, in Setup → Plugins, when every topic you take is one
-system's (`Manifest::per_system`: all but `totals`). Then nothing about that system reaches you:
-it isn't in `hello`, its events and live media aren't sent, `status` leaves it out, `log` lines
-about it aren't sent (lines about no one system still are), and `calls.query` doesn't find its
-calls.
+The user can turn your plugin off for a system, in Setup → Plugins. Then nothing about that system
+reaches you: it isn't in `hello`, its events and live media aren't sent, `status` leaves it out,
+`totals` leaves out its sites, channels and their series (the radios', shared by systems, stay),
+`log` lines about it aren't sent (lines about no one system still are), and `calls.query` doesn't
+find its calls.
 
 A site of a system can be turned off for it too, on the system's card. Then it isn't among the
-system's `sites` in `hello`, its unit events and `status` entry aren't sent, and nor is a recorded call
+system's `sites` in `hello`, its unit events, `status` entry and `totals` site and series aren't sent
+(the system's own series, of all its sites, still are), and nor is a recorded call
 only it heard (a call another site heard as well still comes). Calls as they go (`call.start`,
 `call.update`, `call.end`, live audio) are the system's, and still come. Nothing to do in the plugin;
 just don't count on hearing of every system or site.

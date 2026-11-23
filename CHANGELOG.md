@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Every plugin can be off for a system or site.** One that takes `totals` (the Broadcastify plugin's node health
+  reports, from its next release) couldn't be, and was on for every system with a warning in its log. Now it's sent the
+  figures of the systems and sites it's on for: the others' sites, channels and series are left out, and the radios',
+  shared by systems, stay. SDK: `Manifest::per_system` and `topic::per_system` are gone, and `PluginInfo.perSystem` with
+  them; `health::Recorder::of(&setup.host)` gives the recorder's name as the node health spec has it.
+
 - **Airspy R2 / Mini in Docker.** The Docker image now has the Airspy's driver (libairspy, about 230 kB), so Airspy
   sources work in it as RTL-SDRs and HackRFs do (#207).
 

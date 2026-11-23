@@ -10,7 +10,7 @@ import { PluginSetupPanel, PluginsPage, SystemPluginSettings } from "./Plugins.t
 import type { Config, PluginInfo, PluginManifest } from "./protocol.ts";
 
 const plugin = (id: string, more: Partial<PluginInfo>): PluginInfo => ({
-  id, path: `/plugins/${id}/${id}`, custom: false, problem: null, perSystem: true,
+  id, path: `/plugins/${id}/${id}`, custom: false, problem: null,
   manifest: { id, name: id, version: "1.0.0", description: "", api: 1, subscribe: [], audio_formats: [] },
   runtime: { state: "off", message: "", ok: 0, skipped: 0, failed: 0, lastFailure: "", log: [] },
   ...more,
@@ -39,7 +39,7 @@ function uploaderSetup(more: Partial<PluginManifest> = {}): Config {
   return c;
 }
 
-test("Setup → Plugins: a plugin is turned on and off system by system, when everything it takes is one system's", () => {
+test("Setup → Plugins: a plugin is turned on and off system by system", () => {
   const c = uploaderSetup();
   c.plugins!.up.systemsOff = [2];
   transport.onMessage({ type: "config", config: c, version: 2 });
@@ -47,9 +47,6 @@ test("Setup → Plugins: a plugin is turned on and off system by system, when ev
   assert.match(panel, /aria-label="Systems Up is on for"/);
   assert.match(panel, /aria-pressed="true"[^>]*>east</);
   assert.match(panel, /aria-pressed="false"[^>]*>west</);
-  // One that takes every system's figures can't be.
-  transport.onMessage({ type: "plugins", encoderFound: null, plugins: [plugin("up", { perSystem: false })] });
-  assert.doesNotMatch(renderToString(<PluginSetupPanel />), /Systems Up is on for/);
 });
 
 test("A system's card offers only the settings a plugin lets a system set again, and not a plugin off for it", () => {

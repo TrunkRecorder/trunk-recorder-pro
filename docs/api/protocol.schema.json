@@ -6354,10 +6354,6 @@
           ],
           "description": "Null when it can't be asked (see `problem`)."
         },
-        "perSystem": {
-          "type": "boolean",
-          "description": "It can be turned off for a system: everything it takes is one system's (not `totals`)."
-        },
         "problem": {
           "type": [
             "string",
@@ -6373,7 +6369,6 @@
         "path",
         "custom",
         "manifest",
-        "perSystem",
         "problem",
         "runtime"
       ],
@@ -6913,7 +6908,7 @@
           "items": {
             "type": "number"
           },
-          "description": "The systems (by `id`) it's turned off for: nothing about them is sent to it. Only for a plugin that can be (`PluginInfo.perSystem`)."
+          "description": "The systems (by `id`) it's turned off for: nothing about them is sent to it (of `totals`, their sites' and channels' figures; the radios' still are)."
         },
         "sitesOff": {
           "type": "array",
