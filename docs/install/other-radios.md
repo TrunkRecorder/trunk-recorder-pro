@@ -3,8 +3,9 @@
 This page covers using radios other than a current RTL-SDR: USRPs, Airspy R2 / Mini, HydraSDR RFOnes, bladeRFs, anything with
 a SoapySDR module, and older RTL-SDR dongles. It explains which driver each needs, how Trunk
 Recorder Pro finds it, and how to check it worked. These radios only work in the desktop app, not
-in the [browser version](browser.md) or the [Docker image](docker.md). The exception is the
-[HackRF One](#hackrf-one), which needs no driver and works in Docker.
+in the [browser version](browser.md) or the [Docker image](docker.md). The exceptions are the
+[HackRF One](#hackrf-one), which needs no driver, and the Airspy R2 / Mini, whose driver is in the
+image: both work in Docker.
 
 ## How drivers are found
 

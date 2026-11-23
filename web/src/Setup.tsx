@@ -108,7 +108,7 @@ import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldTe
 import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
 import { openTodos } from "./todo.ts";
 import { allModes, modeInfo } from "./modes.ts";
-import { parseAccess, sameAccess, toneLabel, type AccessParts, type ToneLabel } from "./rules.ts";
+import { folderProblem, parseAccess, sameAccess, toneLabel, type AccessParts, type ToneLabel } from "./rules.ts";
 import { PrivacyCode, ToneName } from "./ToneName.tsx";
 
 /** Each card's key (the controller's `cardKey`), seeded from what its entry is now; `all`: its list. */
@@ -3473,7 +3473,7 @@ export function Setup() {
                 </p>
               ) : (
                 <>
-                  <Field label="Recordings folder" wide hint={<FolderCheck name="recordings" path={c.recording.captureDir} />}>
+                  <Field label="Recordings folder" wide needs={folderProblem(c.recording.captureDir) ?? undefined} hint={<FolderCheck name="recordings" path={c.recording.captureDir} />}>
                     <TextInput className="mono" value={c.recording.captureDir} onChange={(v) => updateConfig((x) => void (x.recording.captureDir = v))} />
                   </Field>
                   <Toggle

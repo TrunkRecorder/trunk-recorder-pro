@@ -269,7 +269,7 @@ pub struct Hello {
     /// Every system calls can come from, including conventional channels;
     /// not those the plugin is turned off for (nothing about them is sent).
     pub systems: Vec<SystemInfo>,
-    /// Where calls are stored.
+    /// Where calls are stored: always a full path, as are the paths of each call's files.
     pub capture_dir: PathBuf,
     /// A folder of the plugin's own that survives restarts and upgrades (queues, state).
     pub data_dir: PathBuf,
