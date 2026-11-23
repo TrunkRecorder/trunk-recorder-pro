@@ -505,6 +505,39 @@ impl Source {
     }
 }
 
+/// What a config sets to receive on a source that isn't one, left out of a run (the rest records):
+/// each system or conventional channel by its name, with the label it names; and the sources'
+/// labels there are, said once however many were (#216).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Unreceivable {
+    pub items: Vec<(String, String)>,
+    pub sources: Vec<String>,
+}
+
+impl Unreceivable {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+/// "dcfd is set to receive on "RTL-SDR SN 2", which isn't a source — choose its sources again. The
+/// sources: "RTL-SDR SN 1"." For several: "a (on "x"), b (on "y") are set to receive on radios that
+/// aren't sources — choose their sources again. The sources: …".
+impl std::fmt::Display for Unreceivable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.items[..] {
+            [] => return Ok(()),
+            [(name, gone)] => write!(f, "{name} is set to receive on \"{gone}\", which isn't a source — choose its sources again.")?,
+            items => {
+                let each: Vec<String> = items.iter().map(|(name, gone)| format!("{name} (on \"{gone}\")")).collect();
+                write!(f, "{} are set to receive on radios that aren't sources — choose their sources again.", each.join(", "))?
+            }
+        }
+        let labels: Vec<String> = self.sources.iter().map(|l| format!("\"{l}\"")).collect();
+        if labels.is_empty() { write!(f, " There are no sources.") } else { write!(f, " The sources: {}.", labels.join(", ")) }
+    }
+}
+
 /// A trunked system: its talkgroups, radios, rules and plugin settings, and
 /// the sites it is recorded from — each a control channel to follow. A call
 /// heard on several of its sites is one call (saved once, from the site that
@@ -3206,18 +3239,16 @@ impl Config {
     }
 
     /// What's set to receive on a source that isn't one: each system or conventional channel being
-    /// recorded, and why, naming the sources there are (#216).
-    pub fn unreceivable(&self) -> Vec<String> {
-        let labels: Vec<String> = self.sources.iter().map(|s| format!("\"{}\"", s.label())).collect();
-        let why = |name: &str, gone: &str| format!("{name}: it is set to receive on \"{gone}\", which isn't one of the sources ({}) — choose its sources again.", labels.join(", "));
-        let systems = self.active_systems().filter_map(|s| self.missing_source(&s.receive_on).map(|g| why(&s.short_name, g)));
-        let channels = self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).filter_map(move |c| self.missing_source(&c.receive_on).map(|g| why(&format!("{} {:.5} MHz", v.short_name, c.freq_hz / 1e6), g))));
-        systems.chain(channels).collect()
+    /// recorded, with the label it names, and the sources there are (#216).
+    pub fn unreceivable(&self) -> Unreceivable {
+        let systems = self.active_systems().filter_map(|s| self.missing_source(&s.receive_on).map(|g| (s.short_name.clone(), g.clone())));
+        let channels = self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).filter_map(move |c| self.missing_source(&c.receive_on).map(|g| (format!("{} {:.5} MHz", v.short_name, c.freq_hz / 1e6), g.clone()))));
+        Unreceivable { items: systems.chain(channels).collect(), sources: self.sources.iter().map(Source::label).collect() }
     }
 
     /// This config to run with what's [`Config::unreceivable`] left out (a system, a conventional
-    /// channel): the rest records. Why each was, to say.
-    pub fn set_aside_unreceivable(&mut self) -> Vec<String> {
+    /// channel): the rest records. What was, to say.
+    pub fn set_aside_unreceivable(&mut self) -> Unreceivable {
         let why = self.unreceivable();
         let off: Vec<bool> = self.systems.iter().map(|s| self.missing_source(&s.receive_on).is_some()).collect();
         let off_rows: Vec<bool> = self.conventional.iter().flat_map(|v| &v.channels).map(|c| self.missing_source(&c.receive_on).is_some()).collect();
@@ -3261,14 +3292,23 @@ impl Config {
     }
 
     /// Why this config can't start, or None: as it would run, with what's [`Config::unreceivable`]
-    /// left out (that alone doesn't stop the rest); when what's left can't, why both.
+    /// left out (that alone doesn't stop the rest); when what's left can't, why both, and when
+    /// nothing is left, only why it was left out.
     pub fn problem(&self) -> Option<String> {
         if self.unreceivable().is_empty() {
             return self.problem_as_it_runs();
         }
         let mut run = self.clone();
         let aside = run.set_aside_unreceivable();
-        run.problem_as_it_runs().map(|p| aside.into_iter().chain([p]).collect::<Vec<_>>().join(" "))
+        if run.records_nothing() {
+            return Some(aside.to_string());
+        }
+        run.problem_as_it_runs().map(|p| format!("{aside} {p}"))
+    }
+
+    /// No system and no conventional channel to record.
+    fn records_nothing(&self) -> bool {
+        self.active_systems().next().is_none() && self.enabled_channels().next().is_none()
     }
 
     /// [`Config::problem`] of a config as it is, nothing left out.
@@ -3339,8 +3379,7 @@ impl Config {
                 _ => {}
             }
         }
-        let trunked = self.active_systems().next().is_some();
-        if !trunked && self.enabled_channels().next().is_none() {
+        if self.records_nothing() {
             return Some("Add a system with a control channel, or a conventional channel.".into());
         }
         if let Some(p) = self.name_problem() {
@@ -4815,9 +4854,16 @@ mod tests {
         c.sources.remove(0);
         assert_eq!(c.pins(&["file b.cu8".into()]), Pins::only(vec![]), "none, not any");
         let why = c.unreceivable();
-        assert_eq!(why.len(), 2, "{why:?}");
-        assert_eq!(why[0], format!("trunked: it is set to receive on \"file b.cu8\", which isn't one of the sources (\"{}\") — choose its sources again.", c.sources[0].label()));
-        assert!(why[1].starts_with("conv 154.43000 MHz: it is set to receive on \"file b.cu8\""), "{}", why[1]);
+        assert_eq!(why.items, [("trunked".to_string(), "file b.cu8".to_string()), ("conv 154.43000 MHz".to_string(), "file b.cu8".to_string())]);
+        // The sources said once, however many are left out (SoapyRemote labels are long).
+        let a = format!("\"{}\"", c.sources[0].label());
+        assert_eq!(why.to_string(), format!("trunked (on \"file b.cu8\"), conv 154.43000 MHz (on \"file b.cu8\") are set to receive on radios that aren't sources — choose their sources again. The sources: {a}."));
+        let one = Unreceivable { items: why.items[..1].to_vec(), ..why.clone() };
+        assert_eq!(one.to_string(), format!("trunked is set to receive on \"file b.cu8\", which isn't a source — choose its sources again. The sources: {a}."));
+        // All of it left out: why, and not "Add a system…", which it has.
+        let mut none = c.clone();
+        none.conventional[0].channels[1].receive_on = vec!["file b.cu8".into()];
+        assert_eq!(none.problem(), Some(none.unreceivable().to_string()));
         let mut run = c.clone();
         assert_eq!(run.set_aside_unreceivable(), why);
         assert!(!run.systems[0].enabled && !run.conventional[0].channels[0].enabled, "left out of the run");

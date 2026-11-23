@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A shorter message for what's left out** (#216, thanks @jschmall). With several systems set to receive on a source
+  that isn't one, the message names each with the label it gives, and lists the sources there are once instead of for
+  each. And when that leaves nothing to record, it says only that, not "Add a system with a control channel".
+
 - **"Gain may be low" is a suggestion, not a warning** (#222). A source whose samples stay tiny keeps its green light;
   its card suggests *Gain may be low · peaks … dBFS* with the way out (Tune gain, or raise it in Setup), and the event
   feed says it as info. And a source that carried a call in the last day isn't called quiet at all: a source on a few
