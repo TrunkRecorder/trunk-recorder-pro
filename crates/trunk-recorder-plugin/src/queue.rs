@@ -66,6 +66,20 @@ impl Attempt {
             Some(_) => Attempt::Fail(why.into()),
         }
     }
+
+    /// One call's tries, one for each place it went (an upload to several systems or servers),
+    /// as one: tried again if any should be (waiting the longest any service asked), else
+    /// failed if any failed, else done if any took it, else skipped.
+    pub fn together(attempts: impl IntoIterator<Item = Attempt>) -> Attempt {
+        let rank = |a: &Attempt| match a {
+            Attempt::Wait(_, w) => (4, *w),
+            Attempt::Retry(_) => (3, Duration::ZERO),
+            Attempt::Fail(_) => (2, Duration::ZERO),
+            Attempt::Done { .. } => (1, Duration::ZERO),
+            Attempt::Skip(_) => (0, Duration::ZERO),
+        };
+        attempts.into_iter().max_by_key(rank).unwrap_or(Attempt::Skip("nowhere to send it".into()))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -546,6 +560,17 @@ mod tests {
         assert!(matches!(of(503, Some("30")), Attempt::Wait(m, w) if m == "why" && w == Duration::from_secs(30)));
         assert!(matches!((of(503, None), of(429, None), of(500, None), of(408, None)), (Attempt::Retry(_), Attempt::Retry(_), Attempt::Retry(_), Attempt::Retry(_))));
         assert!(matches!((of(401, None), of(404, None), of(413, None)), (Attempt::Fail(_), Attempt::Fail(_), Attempt::Fail(_))));
+    }
+
+    #[test]
+    fn tries_at_several_places_are_one() {
+        let w = |s: u64| Attempt::Wait(format!("{s}"), Duration::from_secs(s));
+        let done = || Attempt::Done { url: String::new() };
+        assert!(matches!(Attempt::together([done(), Attempt::Fail("x".into())]), Attempt::Fail(_)));
+        assert!(matches!(Attempt::together([Attempt::Fail("x".into()), Attempt::Retry("y".into()), done()]), Attempt::Retry(_)));
+        assert!(matches!(Attempt::together([w(30), Attempt::Retry("y".into()), w(90), w(60)]), Attempt::Wait(_, d) if d.as_secs() == 90));
+        assert!(matches!(Attempt::together([done(), Attempt::Skip("s".into())]), Attempt::Done { .. }));
+        assert!(matches!(Attempt::together([]), Attempt::Skip(m) if m == "nowhere to send it"));
     }
 
     /// A service that says how long to wait (`Retry-After`) isn't tried again sooner.
