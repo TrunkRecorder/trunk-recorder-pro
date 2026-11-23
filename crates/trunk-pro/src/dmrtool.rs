@@ -71,7 +71,7 @@ pub fn run_scan(a: &Args) {
                     }
                 }
                 ev.clear();
-                c.chan.burst(b, &mut ev);
+                c.chan.burst_at(b, b.sample / rate, &mut ev);
                 for (_, e) in &ev {
                     match e {
                         SlotEvent::Lc { .. } => c.lcs += 1,
@@ -127,7 +127,7 @@ pub fn run(a: &Args) {
         for b in &bursts {
             let t = b.sample / rate;
             ev.clear();
-            voice.chan.burst(b, &mut ev);
+            voice.chan.burst_at(b, t, &mut ev);
             let slot = ev.first().map(|e| e.0);
             if all {
                 let (tact, _) = dmr::burst::cach(&b.cach);
@@ -157,6 +157,9 @@ pub fn run(a: &Args) {
             for (s, e) in ev.drain(..) {
                 if let Some(xpt) = dmr::xpt::control(&e) {
                     let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "xpt": xpt }));
+                }
+                if let Some(data) = dmr::hytera::data_control(&e) {
+                    let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "busyHint": data.busy_hint(), "hyteraData": data }));
                 }
                 match e.clone() {
                     SlotEvent::Voice { frame, .. } => {
@@ -198,12 +201,24 @@ pub fn run(a: &Args) {
                         *counts.entry("pi_header".into()).or_default() += 1;
                         let _ = writeln!(out, "{{\"t\":{t:.4},\"slot\":{s},\"privacy\":{{\"alg\":{alg},\"key\":{key}}}}}");
                     }
+                    SlotEvent::Block { data_type, bytes } => {
+                        *counts.entry(data_type_name(data_type).into()).or_default() += 1;
+                        let _ = writeln!(out, "{}", serde_json::json!({"t":t,"slot":s,"data_type":data_type,"hex":hex(&bytes)}));
+                    }
+                    SlotEvent::Packet(ref p) => {
+                        *counts.entry("packet".into()).or_default() += 1;
+                        let m = trunk_core::dmr::hytera::packet(p);
+                        let _ = writeln!(out, "{}", serde_json::json!({"t":t,"slot":s,"packet":{"source":p.source(),"destination":p.destination(),"header":hex(&p.header),"payload":hex(&p.payload),"kind":format!("{:?}",m.kind),"meta":m.meta}}));
+                    }
                     SlotEvent::Data { data_type, ok } => {
                         *counts.entry(format!("{}{}", data_type_name(data_type), if ok { "" } else { "_bad" })).or_default() += 1;
                     }
                 }
                 voice.event(s, e, t, &mut vout);
                 for o in vout.drain(..) {
+                    if let TrackerOut::Position(p) = &o.out {
+                        let _ = writeln!(out, "{}", serde_json::json!({"t":t,"slot":s,"position":{"unit":p.unit,"lat":p.lat,"lon":p.lon,"source":p.source}}));
+                    }
                     if let (TrackerOut::Audio(buf, _), Some(w)) = (&o.out, audio_out.as_mut()) {
                         if o.slot == want_slot {
                             w.samples(buf);

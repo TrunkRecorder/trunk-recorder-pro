@@ -403,7 +403,7 @@ pub enum Event {
     /// (Motorola's base station ID: a control channel's for one of its
     /// channels, or a voice channel's for itself). Each time it's heard anew.
     CallSign { system: u16, freq_hz: u64, call_sign: String },
-    /// A radio on a call of system `system` gave a new GPS position (decimal degrees).
+    /// A radio gave a GPS position (decimal degrees); talkgroup 0 for standalone data.
     UnitPosition { system: u16, unit: u32, lat: f64, lon: f64, talkgroup: u32 },
     Concluded(Concluded),
     /// A recorded call wasn't saved: no audio, or less than its system's minimum.
@@ -1597,6 +1597,12 @@ impl Trunk {
                 // Not yet known to be ours (the site comes every few seconds):
                 // hold the grants — a call still going is granted again.
                 continue;
+            }
+            for p in st.msgs.iter().filter_map(|m| m.position) {
+                events.push(Event::UnitPosition { system: self.system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: 0 });
+                for c in &mut self.calls.calls {
+                    if CallManager::note_position(c, &p) { call_events.push(CallEvent::Update(c.clone())); }
+                }
             }
             // What the voice channels need from it (Phase 2's scrambler key), to every source's copy as it changes.
             let was = self.voice_params;

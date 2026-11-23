@@ -1206,6 +1206,16 @@ impl Conventional {
         for (slot, h) in heard.iter_mut().enumerate() {
             let a = o.voice.air(slot as u8);
             (h.air, h.tg, h.nac, h.color_code, h.ran) = (a.air, a.talkgroup, a.nac, a.color_code, a.ran);
+            // Packet positions belong to their own header source, regardless
+            // of voice elsewhere in this block. They never start/extend calls.
+            for p in h.positions.iter().filter(|p| p.source == "HyteraDMRCompressed") {
+                if !ch.rows.iter().any(|r| r.access.is_none_or(|a| a.admits(h.nac, slot, h.color_code, None, h.ran))) { continue; }
+                out.push(ConvOut::Event(Event::UnitPosition { system: ch.system as u16, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: 0 }));
+                if let Some(l) = o.live[slot].as_mut() {
+                    if CallManager::note_position(&mut l.call, p) { out.push(ConvOut::Call(CallEvent::Update(l.call.clone()))); }
+                }
+            }
+            h.positions.retain(|p| p.source != "HyteraDMRCompressed");
             // A run with nothing but the cipher is dropped (no voice, no
             // link control): keep the cipher for the voice after it.
             let ahead = &mut o.cipher_ahead[slot];

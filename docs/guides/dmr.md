@@ -273,3 +273,25 @@ that the other frequencies have been added.
 
 **Calls from another system.** Set **Colour code** to the site's, so a neighbour on a shared
 frequency is ignored.
+
+
+## GPS positions and data services
+
+Standard DMR and Hytera GPS Info embedded in voice calls are decoded for the
+radio named by the current slot's voice link control. Positions use the existing
+call JSON fields `srcList[].lat` and `srcList[].lon`, as P25 positions do; no
+extra setting is required. This adds DMR decoding to the existing position
+recording path rather than introducing another JSON format.
+
+On Hytera systems with a dedicated data carrier, add that frequency to the
+site's monitored frequencies (or a conventional DMR channel). CRC-checked
+compressed GPS reports can then emit positions without a voice call. Matching
+active calls retain the position on the radio's source entry. A standalone
+report produces a position event/log entry and does not create a call JSON or
+audio recording by itself. RRS registration and the observed data-channel
+setup/end/status profiles are also exposed in diagnostic logs.
+
+Compressed GPS and busy indications remain experimental for the observed
+profiles. Other hemisphere/fix flags, motion units and unidentified control
+fields stay raw. See [DMR GPS and data protocol notes](../developer/protocols/dmr-gps.md)
+for supported formats, limitations and validation evidence.

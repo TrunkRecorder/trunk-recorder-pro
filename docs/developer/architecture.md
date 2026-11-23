@@ -382,6 +382,11 @@ frame:
 5. Voice: three AMBE+2 codewords per voice burst, soft decoded.
 6. Both slots share one head; only recorded slots are vocoded (`listen`).
 
+`dmr::gps` reads embedded GPS Info LC (FLCO 8, standard or Hytera FID)
+and emits `TrackerOut::Position` for the slot's recently named talker, through
+the same call-position handling as P25. See [DMR GPS](protocols/dmr-gps.md)
+for wire format, sources and scope.
+
 ### 4.4 NXDN
 
 1. Head (3,400 Hz cutoff for NXDN48, 6,250 Hz for NXDN96) → C4FM at 2,400 or 4,800 Bd, RRC α 0.2.

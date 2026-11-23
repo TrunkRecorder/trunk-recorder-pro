@@ -5,6 +5,23 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Hytera data-channel signalling diagnostics**: identifies the observed
+  beacon, setup, short-status and end profiles; extracts verified radio/slot
+  fields and an experimental busy hint. Raw fields remain available, and
+  these messages do not create voice grants or frequency mappings.
+
+- **Hytera packet GPS and radio registration**: reassembles CRC-checked
+  unconfirmed rate-1/2 short data on each slot. The experimental compressed
+  north/west GPS profile emits standalone unit positions; RRS requests and
+  answers report radio IPs and renewal intervals. Undocumented vendor control
+  words remain visible as raw status without creating voice grants. See
+  [DMR GPS](docs/developer/protocols/dmr-gps.md) for limits, sources, and capture validation.
+
+- **DMR and Hytera embedded GPS positions**, including XPT, are kept on the
+  talking radio in the call JSON (`lat`, `lon` in `srcList`) and emitted as
+  position events, as P25 positions are. See [DMR GPS](docs/developer/protocols/dmr-gps.md)
+  for scope and protocol sources.
+
 ## [0.5.0] — 2026-11-23
 
 **Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or
@@ -164,6 +181,7 @@ Recording first. The default, and the Docker image's, are already full paths.
   longer read: give those sites their accounts in their rows on the system's card.
 - **Held plugin items** (delayed calls) from before this release are dropped, and a multi-site call's copies share one
   `call_num`.
+
 
 ## [0.3.9] — 2026-11-20
 
