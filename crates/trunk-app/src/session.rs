@@ -1137,6 +1137,11 @@ impl Session {
     }
 
     fn call_info(&self, c: &Call) -> CallInfo {
+        // A patched talkgroup's name ("": none). The call's own is by its name on the call: a conventional row names its calls more closely than a number can.
+        let tag = |t: u32| match c.talkgroup_info.as_ref().filter(|_| t == c.talkgroup) {
+            Some(i) => i.alpha_tag.clone(),
+            None => self.alpha_tag(c.system, t),
+        };
         CallInfo {
             id: c.id,
             system: c.system,
@@ -1171,6 +1176,7 @@ impl Session {
                 })
                 .collect(),
             patched_talkgroups: c.patched_talkgroups.clone(),
+            patched_talkgroup_tags: c.patched_talkgroups.iter().map(|&t| tag(t)).collect(),
         }
     }
 
@@ -1831,6 +1837,33 @@ mod wall_tests {
         assert_eq!(s.wall(0.5), 1_750_000_000.5);
     }
 }
+
+#[cfg(test)]
+mod patch_tag_tests {
+    use super::*;
+
+    /// A patched call's plugin event names each talkgroup in the patch, in its order: the
+    /// call's own by its name on the call, the others by the system's talkgroups ("": none).
+    #[test]
+    fn a_calls_patched_talkgroups_are_named() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let named = |number: u32, tag: &str| trunk_core::trunk::Talkgroup { number, alpha_tag: tag.into(), ..Default::default() };
+        let system = s.system_id(0);
+        s.set_talkgroup(system, 202, Some(named(202, "EMS")));
+        let patched = Call { talkgroup: 101, talkgroup_info: Some(named(101, "Fire Dispatch")), patched_talkgroups: vec![101, 202, 303], ..Default::default() };
+        let info = s.call_info(&patched);
+        assert_eq!(info.patched_talkgroups, [101, 202, 303]);
+        assert_eq!(info.patched_talkgroup_tags, ["Fire Dispatch", "EMS", ""]);
+        let alone = Call { talkgroup: 101, talkgroup_info: Some(named(101, "Fire Dispatch")), ..Default::default() };
+        assert!(s.call_info(&alone).patched_talkgroup_tags.is_empty(), "not patched: none");
+    }
+}
+
 #[cfg(test)]
 mod tone_tests {
     use super::*;

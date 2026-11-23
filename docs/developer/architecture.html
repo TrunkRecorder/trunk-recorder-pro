@@ -1698,7 +1698,7 @@ const OBJ = [
     ["config · system_config", "Option<JSON Schema>", "the Plugins page's forms"], ["homepage · repository · authors · license", "", ""]]],
   ["HostMessage", "plugin", "trunk-recorder-plugin/src/protocol.rs", "Recorder → plugin, one JSON line on stdin, tagged by type.", [
     ["hello", "api, host, config, systems [SystemInfo { index, short_name, kind, config, settings }], capture_dir, data_dir, audio_formats", "index: from 0, trunked then conventional, this run only"],
-    ["call.start · call.end", "CallInfo { id, system, short_name, site, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources, patched_talkgroups }", "once per call, from its first copy"],
+    ["call.start · call.end", "CallInfo { id, system, short_name, site, talkgroup, talkgroup_tag, freq_hz, tdma_slot, analog, encrypted, algid, key_id, decrypted, emergency, duplex, packet, priority, recording, reason, start_time, units, sources, patched_talkgroups, patched_talkgroup_tags }", "once per call, from its first copy"],
     ["call.concluded", "path, system, call: CallRecord, files { json, wav, m4a }", "CallRecord = the call JSON, every field named, unknown keys in extra"], ["unit", "system, short_name, site, kind, unit, talkgroup, emergency, time", ""],
     ["audio", "call_id, system, short_name, talkgroup, sample_rate, pcm (base64 i16)", ""], ["status", "time, systems [{ index, short_name, site_name, control_channel_hz, decode_rate, active_calls, recording, nac, wacn, sys_id, rfss, site }]", ""], ["shutdown", "grace_s", ""]]],
   ["PluginMessage", "plugin", "trunk-recorder-plugin/src/protocol.rs", "Plugin → recorder, one JSON line on stdout.", [

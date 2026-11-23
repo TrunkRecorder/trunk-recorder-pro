@@ -418,6 +418,9 @@ pub struct CallInfo {
     /// Talkgroups patched with this one so far, its own included, ascending;
     /// empty when it isn't patched.
     pub patched_talkgroups: Vec<u32>,
+    /// The alpha tag of each of `patched_talkgroups`, in the same order (empty
+    /// for one with no tag); empty when `patched_talkgroups` is. (Since SDK 0.15.1.)
+    pub patched_talkgroup_tags: Vec<String>,
 }
 
 /// A radio heard on a call, and what its transmission said of itself: P25's
