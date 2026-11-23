@@ -30,3 +30,25 @@ test("plugin form: a slider in its steps, and read-only fields the plugin fills 
   assert.match(page, /Invite Invite the bot ↗ https:\/\/example\.com\/invite Copy/);
   assert.match(page, /Channel Not known yet/);
 });
+
+test("plugin form: a secret set above isn't in the placeholder, which a password box shows as it is", () => {
+  const schema: PluginSchema = { type: "object", properties: { apiKey: { type: "string", title: "API key", "x-secret": true } } };
+  const inherited = renderToString(<SchemaFields schema={schema} values={{}} inherited={{ apiKey: "KEY-FROM-SYSTEM" }} onChange={() => {}} id="p" />);
+  assert.doesNotMatch(inherited, /KEY-FROM-SYSTEM/, inherited);
+  assert.match(inherited, /<input[^>]*type="password"[^>]*placeholder="•+ \(set above\)"/, inherited);
+  const own = renderToString(<SchemaFields schema={schema} values={{ apiKey: "OWN-KEY" }} onChange={() => {}} id="p" />);
+  assert.match(own, /<input[^>]*type="password"[^>]*value="OWN-KEY"/, "its own value is in a password box, masked");
+  const none = renderToString(<SchemaFields schema={schema} values={{}} onChange={() => {}} id="p" />);
+  assert.match(none, /<input[^>]*type="password"[^>]*placeholder=""/, none);
+});
+
+test("plugin form: a secret is dots wherever it's shown, as an item's summary too", async () => {
+  const { summarize, summaryValue, SECRET_SHOWN } = await import("./pluginForm.ts");
+  const key: PluginSchema = { type: "string", title: "API key", "x-secret": true };
+  assert.equal(summaryValue(key, "KEY-1"), SECRET_SHOWN);
+  assert.equal(summaryValue(key, ""), "", "nothing set: nothing shown");
+  const site: PluginSchema = { type: "object", properties: { name: { type: "string" }, apiKey: key }, "x-summary": ["{name}", "{apiKey}"] };
+  const line = summarize(site, { name: "North", apiKey: "KEY-NORTH" });
+  assert.equal(line, `North · ${SECRET_SHOWN}`);
+  assert.doesNotMatch(line, /KEY-NORTH/);
+});

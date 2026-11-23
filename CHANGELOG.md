@@ -5,6 +5,37 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A shorter message for what's left out** (#216, thanks @jschmall). With several systems set to receive on a source
+  that isn't one, the message names each with the label it gives, and lists the sources there are once instead of for
+  each. And when that leaves nothing to record, it says only that, not "Add a system with a control channel".
+
+- **"Gain may be low" is a suggestion, not a warning** (#222). A source whose samples stay tiny keeps its green light;
+  its card suggests *Gain may be low · peaks … dBFS* with the way out (Tune gain, or raise it in Setup), and the event
+  feed says it as info. And a source that carried a call in the last day isn't called quiet at all: a source on a few
+  rarely used voice channels hears nothing for hours, and its samples stay small at a working gain. Gain too high
+  (clipping) still warns, since clipped samples lose calls.
+
+- **DMR, NXDN and EDACS control channels have a history like P25's and SmartNet's** (#218, thanks @taclane). Their
+  sites now record the control channel's offset, eye opening, signal, noise and SNR, so the Decode page's charts show
+  them.
+
+## [0.5.0] — 2026-11-23
+
+**Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or
+`~/TrunkRecorderPro`. A relative one (`recordings`) now stops Start, with a message saying so: change it in Setup →
+Recording first. The default, and the Docker image's, are already full paths.
+
+- **A system set to receive on a source that isn't one no longer stops the rest** (#216). It's left out of the run,
+  and so is a conventional channel set so; everything else records. The log and the dashboard's banner say why, naming
+  the sources there are ("…isn't one of the sources ("RTL-SDR SN 1", "SoapySDR driver=remote,…")"). And a source's
+  label edited in Setup (its serial, address or SoapySDR args) is followed by every `receiveOn` that named it.
+
+- **An Airspy on Windows: what it needs, and why it didn't load** (#219). `airspy.dll` needs `libusb-1.0.dll` and
+  `pthreadVC2.dll` beside it, from the same `x64` folder of Airspy's airspy_host_tools, and `pthreadVC2.dll` needs the
+  Visual C++ 2010 runtime; Setup's hint and the docs said only `airspy.dll`. A driver that's there but won't load now
+  says why (Windows' reason, and for a missing DLL or a 32-bit one what to do) instead of only "LoadLibraryExW failed",
+  and a DLL beside `trunk-pro.exe` is seen there whatever folder the app was started from.
+
 - **Every plugin can be off for a system or site.** One that takes `totals` (the Broadcastify plugin's node health
   reports, from its next release) couldn't be, and was on for every system with a warning in its log. Now it's sent the
   figures of the systems and sites it's on for: the others' sites, channels and series are left out, and the radios',

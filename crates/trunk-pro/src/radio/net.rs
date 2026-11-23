@@ -11,6 +11,12 @@ pub const POLL: Duration = Duration::from_millis(50);
 /// A stream that has said nothing for this long has stopped.
 pub const SILENT: Duration = Duration::from_secs(3);
 
+/// What a radio on the network of `kind` ("rtlsdr", "spyserver") at `server` (`host:port`) is remembered by
+/// ([`super::remember`]).
+pub fn key(kind: &str, server: &str) -> String {
+    format!("{kind}:{}", server.to_lowercase())
+}
+
 /// A TCP connection to `target` (`host:port`): each address it names is tried in turn, `within` each.
 /// Commands are small and wait for nothing, so Nagle's delay is off.
 pub fn dial(name: &str, target: &str, within: Duration) -> Result<TcpStream, String> {

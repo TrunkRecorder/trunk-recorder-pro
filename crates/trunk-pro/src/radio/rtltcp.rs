@@ -22,7 +22,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rtlsdr_nusb::TunerKind;
-use trunk_app::config::{endpoint, RTL_TCP_PORT};
 
 use super::net::{read_up_to, timed_out, CONNECT, POLL, SILENT};
 use super::rtl::RtlConfig;
@@ -117,9 +116,9 @@ fn rsp_is_16_bit(b: &[u8]) -> bool {
     b.len() >= RSP_LEN && u32::from_be_bytes([b[20], b[21], b[22], b[23]]) == 2
 }
 
-/// What a radio behind `rtl_tcp` at `address` is remembered by ([`super::remember`]).
-pub fn key(address: &str) -> String {
-    format!("rtltcp:{}", endpoint(address, RTL_TCP_PORT).to_lowercase())
+/// What a radio behind the `rtl_tcp` at `server` (`host:port`) is remembered by ([`super::remember`]).
+pub fn key(server: &str) -> String {
+    super::net::key("rtlsdr", server)
 }
 
 /// A connected server.
@@ -155,9 +154,10 @@ impl Conn {
     }
 }
 
-/// Connect to the server at `address` (as `name`) and read its greeting, and the `RSP0` block or first samples after it.
-fn connect(name: &str, address: &str) -> Result<Conn, String> {
-    let mut sock = super::net::dial(name, &endpoint(address, RTL_TCP_PORT), CONNECT)?;
+/// Connect to the server at `server` (`host:port`, as `name`) and read its greeting, and the `RSP0` block or first
+/// samples after it.
+fn connect(name: &str, server: &str) -> Result<Conn, String> {
+    let mut sock = super::net::dial(name, server, CONNECT)?;
     let mut hello = [0u8; GREETING_LEN];
     let (n, late) = read_up_to(&mut sock, &mut hello, CONNECT).map_err(|e| format!("{name}: {e}"))?;
     if late && n < GREETING_LEN {
@@ -181,16 +181,15 @@ fn connect(name: &str, address: &str) -> Result<Conn, String> {
         }
         first.clear();
     }
-    super::remember(&key(address), greeting.caps());
+    super::remember(&key(server), greeting.caps());
     let steps = greeting.steps();
     Ok(Conn { sock, first, greeting, steps })
 }
 
-/// What the RTL-SDR behind the server at `address` is, for a list of radios: connect, read its greeting, hang up
-/// (remembered, as when it's recorded from). One that has a client already doesn't answer.
-pub fn ask(address: &str) -> Result<Caps, String> {
-    let name = format!("rtl_tcp {}", endpoint(address, RTL_TCP_PORT));
-    connect(&name, address).map(|c| c.greeting.caps())
+/// What the RTL-SDR behind the server at `server` (`host:port`) is, for a list of radios: connect, read its
+/// greeting, hang up (remembered, as when it's recorded from). One that has a client already doesn't answer.
+pub fn ask(server: &str) -> Result<Caps, String> {
+    connect(&format!("rtl_tcp {server}"), server).map(|c| c.greeting.caps())
 }
 
 /// Everything a connection is told before it streams, and the gain it ended up at. A server keeps what its last
@@ -234,13 +233,13 @@ impl Tunable for Conn {
 }
 
 /// [`super::rtl`]'s stream, from a dongle behind `rtl_tcp`.
-pub(super) fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
+pub(super) fn stream_once(cfg: &RtlConfig, server: &str, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     use crate::sdr::Radio;
     let name = cfg.name();
     // (Not under the lock radios open under: it keeps USB radios from being opened over each other.)
     let mut conn = {
-        let (name, address) = (name.clone(), cfg.address.clone());
-        super::open(&name.clone(), Deadline::Loads, false, move || connect(&name, &address))?
+        let (name, server) = (name.clone(), server.to_string());
+        super::open(&name.clone(), Deadline::Loads, false, move || connect(&name, &server))?
     };
     log::info!("{name}: connected, a {} tuner with {} gain steps", tuner_name(conn.greeting.tuner_code), conn.greeting.gains);
     let set = configure(&mut conn, cfg)?;
@@ -401,11 +400,11 @@ mod tests {
     }
 
     fn cfg(port: u16) -> RtlConfig {
-        RtlConfig { serial: String::new(), address: format!("127.0.0.1:{port}"), center_hz: 154_430_000, rate_hz: 2_400_000, gain_db: Some(19.7), ppm: -2.4, buf_len: 0, buffers: 0, bias_tee: false }
+        RtlConfig { serial: String::new(), server: Some(format!("127.0.0.1:{port}")), center_hz: 154_430_000, rate_hz: 2_400_000, gain_db: Some(19.7), ppm: -2.4, buf_len: 0, buffers: 0, bias_tee: false }
     }
 
     fn open(c: &RtlConfig) -> Result<Conn, String> {
-        connect(&c.name(), &c.address)
+        connect(&c.name(), c.server.as_deref().unwrap())
     }
 
     #[test]
@@ -416,7 +415,7 @@ mod tests {
         let mut conn = open(&c).unwrap();
         assert_eq!(tuner_name(conn.greeting.tuner_code), "R820T");
         // What it said is remembered, as any radio's is when opened: for a list of radios, and the gain-tuning tool.
-        let caps = super::super::known(&key(&c.address)).unwrap();
+        let caps = super::super::known(&key(c.server.as_deref().unwrap())).unwrap();
         assert_eq!((caps.model.as_str(), caps.gains.len(), caps.gains[11]), ("R820T", 29, 19.7));
         assert_eq!(conn.first, samples[..4], "the first bytes are samples, and are kept");
         configure(&mut conn, &c).unwrap();

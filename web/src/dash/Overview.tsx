@@ -234,7 +234,7 @@ export function eventText(e: MonitorEvent): string {
     case "sourceClipping":
       return `${e.source}: gain too high · ${e.pct}% clipping`;
     case "sourceQuiet":
-      return `${e.source}: gain too low · peaks ${e.peakDb} dBFS`;
+      return `${e.source}: gain may be low · peaks ${e.peakDb} dBFS`;
     case "sourceRecovered":
       return `${e.source}: clean again`;
     case "pluginHealth":

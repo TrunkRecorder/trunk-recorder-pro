@@ -214,16 +214,18 @@ use libloading::Library;
 /// name (the system's search path), else versioned files in the usual
 /// install folders (`lib<stem>.so.<version>`, highest first). `global`: its
 /// symbols resolve the plug-ins it loads itself (SoapySDR's modules).
-pub fn load(env: &str, names: &[&str], stem: &str, global: bool) -> Result<(Library, String), String> {
+/// `win_needs`: what it needs beside it on Windows, said when it's there but
+/// one of those isn't (" (airspy.dll needs libusb-1.0.dll …)").
+pub fn load(env: &str, names: &[&str], stem: &str, global: bool, win_needs: &str) -> Result<(Library, String), String> {
     let try_one = |p: &str| -> Result<Library, String> {
         // SAFETY: loading a vendor driver runs its initialisers; that is the point.
         #[cfg(unix)]
         if global {
             use libloading::os::unix::{Library as Unix, RTLD_GLOBAL, RTLD_NOW};
-            return unsafe { Unix::open(Some(p), RTLD_NOW | RTLD_GLOBAL) }.map(Library::from).map_err(|e| e.to_string());
+            return unsafe { Unix::open(Some(p), RTLD_NOW | RTLD_GLOBAL) }.map(Library::from).map_err(|e| load_error(&e, win_needs));
         }
         let _ = global;
-        unsafe { Library::new(p) }.map_err(|e| e.to_string())
+        unsafe { Library::new(p) }.map_err(|e| load_error(&e, win_needs))
     };
     if let Ok(p) = std::env::var(env) {
         return try_one(&p).map(|l| (l, p.clone())).map_err(|e| format!("{env}={p}: {e}"));
@@ -234,7 +236,7 @@ pub fn load(env: &str, names: &[&str], stem: &str, global: bool) -> Result<(Libr
     let mut refused: Option<String> = None;
     let mut note = |p: &str, e: String| {
         tried.push(p.to_string());
-        if refused.is_none() && std::path::Path::new(p).exists() {
+        if refused.is_none() && beside_or_here(p) {
             refused = Some(e);
         }
     };
@@ -259,6 +261,39 @@ pub fn load(env: &str, names: &[&str], stem: &str, global: bool) -> Result<(Libr
     match refused {
         Some(e) => Err(format!("found but couldn't be loaded: {e}")),
         None => Err(format!("not found (looked for {})", tried.join(", "))),
+    }
+}
+
+/// Whether library `p` is there: as given, or (a bare name, on Windows) beside the program, the
+/// first place Windows looks, whatever folder it was started from.
+fn beside_or_here(p: &str) -> bool {
+    let path = std::path::Path::new(p);
+    path.exists() || (cfg!(windows) && path.components().count() == 1 && std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(p).exists())).unwrap_or(false))
+}
+
+/// Why a library didn't load, all of it: on Windows libloading says only "LoadLibraryExW failed",
+/// the system's reason being its source. With that reason, what it means there: a DLL it needs
+/// is missing (126: `win_needs` says which), or it's not a 64-bit Windows DLL (193).
+fn load_error(e: &libloading::Error, win_needs: &str) -> String {
+    let mut text = e.to_string();
+    let mut code = None;
+    let mut src = std::error::Error::source(e);
+    while let Some(c) = src {
+        text.push_str(&format!(": {c}"));
+        code = code.or_else(|| c.downcast_ref::<std::io::Error>().and_then(std::io::Error::raw_os_error));
+        src = c.source();
+    }
+    let hint = if cfg!(windows) { code.map_or(String::new(), |c| windows_hint(c, win_needs)) } else { String::new() };
+    text + &hint
+}
+
+/// What Windows' error `code` loading a DLL that's there means: a DLL it needs is missing (126,
+/// `win_needs` says which), or it isn't a 64-bit Windows DLL (193, a 32-bit one say).
+fn windows_hint(code: i32, win_needs: &str) -> String {
+    match code {
+        126 => format!(" — a DLL it needs is missing{win_needs}"),
+        193 => " — it isn't a 64-bit Windows DLL: take the x64 one".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -303,14 +338,23 @@ pub fn radios_json(search: bool, sources: &[Source], ask: bool) -> serde_json::V
     serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search), "network": network })
 }
 
-/// A source's radio on the network, if it is one: its kind ("rtlsdr", "spyserver"), its address as given, and
-/// what it's remembered by ([`remember`]).
-pub fn on_network(src: &Source) -> Option<(&'static str, &str, String)> {
-    match &src.kind {
-        SourceKind::Rtlsdr { address, .. } if !address.trim().is_empty() => Some(("rtlsdr", address.as_str(), rtltcp::key(address))),
-        SourceKind::Spyserver { address, .. } if !address.trim().is_empty() => Some(("spyserver", address.as_str(), spyserver::key(address))),
-        _ => None,
-    }
+/// A source's radio on the network, if it is one ([`Source::server`]).
+pub struct OnNetwork<'a> {
+    /// "rtlsdr", "spyserver".
+    pub kind: &'static str,
+    /// As the source gives it (what Setup matches its listing by).
+    pub address: &'a str,
+    /// `host:port`.
+    pub server: String,
+    /// What it's remembered by ([`remember`]).
+    pub key: String,
+}
+
+pub fn on_network(src: &Source) -> Option<OnNetwork<'_>> {
+    let server = src.server()?;
+    let (SourceKind::Rtlsdr { address, .. } | SourceKind::Spyserver { address, .. }) = &src.kind else { return None };
+    let kind = src.kind_name();
+    Some(OnNetwork { kind, address: address.trim(), key: net::key(kind, &server), server })
 }
 
 /// The radios on the network `sources` name (an RTL-SDR's `rtl_tcp` server, a SpyServer), as a list of radios has
@@ -322,20 +366,20 @@ pub fn network_json(sources: &[Source], ask: bool) -> Vec<serde_json::Value> {
     sources
         .iter()
         .filter_map(on_network)
-        .filter(|(_, _, key)| seen.insert(key.clone()))
-        .map(|(kind, address, key)| {
-            let mut j = serde_json::json!({ "kind": kind, "address": address.trim(), "label": address.trim() });
-            let caps = match known(&key) {
+        .filter(|n| seen.insert(n.key.clone()))
+        .map(|n| {
+            let mut j = serde_json::json!({ "kind": n.kind, "address": n.address, "label": n.address });
+            let caps = match known(&n.key) {
                 Some(c) => Ok(c),
-                None if ask => match kind {
-                    "rtlsdr" => rtltcp::ask(address),
-                    _ => spyserver::ask(address),
+                None if ask => match n.kind {
+                    "rtlsdr" => rtltcp::ask(&n.server),
+                    _ => spyserver::ask(&n.server),
                 },
                 None => Err(String::new()),
             };
             match caps {
                 Ok(c) => {
-                    j["label"] = format!("{} at {}", c.model, address.trim()).into();
+                    j["label"] = format!("{} at {}", c.model, n.address).into();
                     c.add_to(&mut j);
                 }
                 Err(e) if !e.is_empty() => j["error"] = e.into(),
@@ -349,8 +393,7 @@ pub fn network_json(sources: &[Source], ask: bool) -> Vec<serde_json::Value> {
 /// The gains `src`'s radio said it can be set to when it was last opened, where they aren't its kind's own (an
 /// RTL-SDR's tuner behind `rtl_tcp`, a SpyServer's steps): what the gain-tuning tool walks.
 pub fn reported_gains(src: &Source) -> Option<Vec<f64>> {
-    let (_, _, key) = on_network(src)?;
-    known(&key).map(|c| c.gains).filter(|g| !g.is_empty())
+    known(&on_network(src)?.key).map(|c| c.gains).filter(|g| !g.is_empty())
 }
 
 fn bladerf_json() -> serde_json::Value {
@@ -399,6 +442,26 @@ impl DriverInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #219: a Windows DLL that's there but won't load says why, not only "LoadLibraryExW failed".
+    #[test]
+    fn a_driver_that_wont_load_says_why() {
+        let airspy = ": airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it";
+        assert_eq!(windows_hint(126, airspy), " — a DLL it needs is missing: airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it");
+        assert_eq!(windows_hint(193, airspy), " — it isn't a 64-bit Windows DLL: take the x64 one");
+        assert_eq!(windows_hint(5, airspy), "");
+        // A library that isn't there at all: not found, with where it was looked for.
+        let e = load("TRUNK_PRO_TEST_NONE", &["libtrunk-pro-none.so.0"], "trunk-pro-none", false, airspy).err().unwrap();
+        assert!(e.starts_with("not found (looked for libtrunk-pro-none.so.0"), "{e}");
+        // One that's there but isn't a library: refused, with the system's reason.
+        let dir = std::env::temp_dir().join(format!("trp-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("libbad.so.0");
+        std::fs::write(&bad, b"not a library").unwrap();
+        let e = load("TRUNK_PRO_TEST_NONE", &[bad.to_str().unwrap()], "bad", false, airspy).err().unwrap();
+        assert!(e.starts_with("found but couldn't be loaded: ") && e.len() > "found but couldn't be loaded: ".len() + 10, "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// An open that hangs is given up at its deadline, the radio refused at
     /// once while it stays stuck, others opened meanwhile, and it opens again

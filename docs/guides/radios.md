@@ -175,7 +175,9 @@ How to set it:
   goes back unless you pass `--apply`. See the [command line](../command-line.md#tune).
 - **Watch the dashboard.** While recording, a source's line warns *Gain too high · 2.1% clipping*
   when more than 0.5 % of samples are at full scale, or *Gain too high · peaks at full scale*, and
-  *Gain too low · peaks −40 dBFS* when its peaks stay a few steps tall. Each ends with the way out:
+  suggests *Gain may be low · peaks −40 dBFS* when its peaks stay a few steps tall for a minute
+  and it carried no call in the last day (only a suggestion: its light stays green, since a source
+  on rarely used voice channels can be that quiet at a working gain). Each ends with the way out:
   **Tune gain** where you can run it, else *lower it in Setup* or *raise it in Setup*. The **RF**
   page has a **Tune gain** button for each source, which tries gains while recording and keeps the
   best (unlike `trunk-pro tune`, it applies the result), and shows each radio's headroom and noise

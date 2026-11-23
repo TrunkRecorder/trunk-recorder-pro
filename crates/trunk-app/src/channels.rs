@@ -86,15 +86,17 @@ fn split(line: &str, delim: char) -> Vec<String> {
     out
 }
 
-/// A frequency cell: MHz under 10 000 (up to 10 GHz), else Hz. Not by its
-/// decimal point: Excel saves 147.000 as 147.
+/// A frequency as written anywhere (a CSV cell, a field in Setup, an imported Trunk Recorder config),
+/// Hz: MHz under 10 000 (up to 10 GHz), else Hz. Not by a decimal point: Excel saves 147.000 as 147
+/// (#195). None: not above 0.
+pub fn hz_of(v: f64) -> Option<f64> {
+    (v.is_finite() && v > 0.0).then(|| if v < 10_000.0 { (v * 1e6).round() } else { v.round() })
+}
+
+/// A frequency cell ([`hz_of`]).
 fn freq(cell: &str, decimal_comma: bool) -> Option<f64> {
     let t = if decimal_comma { cell.replace(',', ".") } else { cell.to_string() };
-    let v: f64 = t.trim().parse().ok()?;
-    if !v.is_finite() || v <= 0.0 {
-        return None;
-    }
-    Some(if v < 10_000.0 { (v * 1e6).round() } else { v.round() })
+    hz_of(t.trim().parse().ok()?)
 }
 
 fn rows_list(rows: &[usize]) -> String {
@@ -301,6 +303,13 @@ pub fn write(channels: &[Channel]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One rule for a frequency as written, wherever: MHz under 10 000, else Hz (#195).
+    #[test]
+    fn a_frequency_is_mhz_under_ten_thousand() {
+        assert_eq!([hz_of(147.0), hz_of(452.275), hz_of(9_999.0), hz_of(154_430_000.0)], [Some(147e6), Some(452_275_000.0), Some(9_999e6), Some(154_430_000.0)]);
+        assert_eq!([hz_of(0.0), hz_of(-1.0), hz_of(f64::NAN)], [None, None, None]);
+    }
 
     #[test]
     fn trunk_recorder_channel_file() {

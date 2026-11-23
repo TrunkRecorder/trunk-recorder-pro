@@ -16,7 +16,7 @@ void sameKinds;
 export const kindLabel = (type: System["type"] | undefined) => SYSTEM_KINDS[type ?? "p25"].label;
 import { readUnitNamesFile } from "./units.ts";
 import { fromNow } from "./origins.ts";
-import { defaultConfig, folderProblem, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth } from "./rules.ts";
+import { defaultConfig, folderProblem, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth, hzOf } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
 export { receivers, sourceInputs, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceAdvice, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
@@ -145,7 +145,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     get rates() { return sourceRates("airspy"); },
     rateHint: "R2: 10 or 2.5; Mini: 6 or 3",
     device: "serial",
-    driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
+    driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll, libusb-1.0.dll and pthreadVC2.dll (the x64 folder of airspy_host_tools) next to trunk-pro.exe, and install the Visual C++ 2010 runtime (x64)" },
     soapyDriver: "airspy",
     biasT: "Powers an LNA on the antenna cable",
     liveAgc: true,
@@ -356,9 +356,9 @@ export function newConventional(c: Config, patch: Partial<Conventional> = {}): C
   return normalizeConventional({ ...patch, shortName: uniqueShortName(c, patch.shortName ?? "conv") });
 }
 
-/** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies), in Hz (a value under 100000 read as MHz). */
+/** Trunk Recorder's trunked DMR settings: `lcnTable` { "<lcn>": Hz } and `channels` (candidate voice frequencies), in Hz (or MHz: hzOf). */
 function dmrImport(sys: Record<string, unknown>): SystemInput {
-  const hz = (v: unknown) => (typeof v === "number" && v > 0 ? (v < 1e5 ? Math.round(v * 1e6) : v) : undefined);
+  const hz = (v: unknown) => (typeof v === "number" ? hzOf(v) : undefined);
   const out: SystemInput = { type: "dmr" };
   if (sys.lcnTable && typeof sys.lcnTable === "object") {
     const t: Record<string, number> = {};
@@ -787,8 +787,8 @@ export function parseFreqList(text: string): number[] {
     .map((t) => t.trim())
     .filter(Boolean)
     .map(Number)
-    .filter((v) => Number.isFinite(v) && v > 0)
-    .map((v) => (v < 10_000 ? Math.round(v * 1e6) : Math.round(v)));
+    .map(hzOf)
+    .filter((v): v is number => v !== undefined);
 }
 
 export function formatMhz(hz: number, digits = 5): string {

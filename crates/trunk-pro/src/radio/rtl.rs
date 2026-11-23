@@ -15,8 +15,8 @@ use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, StreamC
 pub struct RtlConfig {
     /// Serial number ("" = first dongle).
     pub serial: String,
-    /// Its `rtl_tcp` server, `host` or `host:port` ("" = on USB).
-    pub address: String,
+    /// Its `rtl_tcp` server, `host:port` ([`trunk_app::config::Source::server`]); none: on USB.
+    pub server: Option<String>,
     pub center_hz: u64,
     pub rate_hz: u32,
     /// None = tuner AGC.
@@ -45,17 +45,13 @@ impl RtlConfig {
     }
 
     pub(super) fn name(&self) -> String {
-        if self.on_network() {
-            format!("rtl_tcp {}", trunk_app::config::endpoint(&self.address, trunk_app::config::RTL_TCP_PORT))
+        if let Some(server) = &self.server {
+            format!("rtl_tcp {server}")
         } else {
             format!("RTL-SDR {}", if self.serial.is_empty() { "(first)" } else { &self.serial })
         }
     }
 
-    /// Whether it's on another machine, through `rtl_tcp`.
-    pub(super) fn on_network(&self) -> bool {
-        !self.address.trim().is_empty()
-    }
 }
 
 /// Opening a dongle whose tuner rtlsdr-nusb doesn't drive (only R820T / R828D / E4000).
@@ -135,8 +131,8 @@ impl Radio for RtlConfig {
         Some(self.gain_db.map_or(Gain::Agc, Gain::Db))
     }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
-        if self.on_network() {
-            super::rtltcp::stream_once(self, sink, stop, ctl)
+        if let Some(server) = &self.server {
+            super::rtltcp::stream_once(self, server, sink, stop, ctl)
         } else {
             stream_once(self, sink, stop, ctl)
         }

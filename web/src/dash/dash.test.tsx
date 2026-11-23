@@ -7,7 +7,7 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, dashSystems, pageHealth, rangesFor, type DetailedSite } from "./data.ts";
+import { coverage, dashSystems, pageHealth, rangesFor, sourceHealth, type DetailedSite } from "./data.ts";
 import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
 import { DmrSites } from "./Systems.tsx";
@@ -612,7 +612,7 @@ test("RF: a HackRF's stages, and the sample clock's error once measured", () => 
   assert.match(text(renderToString(<RfPage />)), /LNA 24 · VGA 30 · amp/);
 });
 
-test("RF: a source whose gain is low says so and offers Tune gain; the tuning's progress, then what it kept", () => {
+test("RF: a source whose gain may be low suggests so (no warning) and offers Tune gain; the tuning's progress, then what it kept", () => {
   const c = defaultConfig();
   c.sources = [{ type: "rtlsdr", serial: "1", gainDb: 25.4, agc: false, biasTee: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 }];
   running(c, []);
@@ -622,16 +622,18 @@ test("RF: a source whose gain is low says so and offers Tune gain; the tuning's 
   transport.onMessage({ type: "stats", t: Date.now() / 1000, values: { "src/RTL-SDR SN 1/peak": -32, "src/RTL-SDR SN 1/clipPct": 0, "src/RTL-SDR SN 1/quiet": 1 } });
   setView("rf");
   let page = text(renderToString(<RfPage />));
-  assert.match(page, /Gain too low · peaks -32 dBFS — raise it in Setup/, "no tuner here: the fix by hand");
+  assert.match(page, /Gain may be low · peaks -32 dBFS — raise it in Setup/, "no tuner here: the fix by hand");
+  assert.match(page, /Suggestion Gain may be low/);
+  assert.equal(sourceHealth(snapshot(), src).level, "ok", "a suggestion, not a warning (#222)");
   assert.doesNotMatch(page, /Tune gain/);
   // A View user: what's wrong, not what they can't do about it.
   transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "listen", surveyBands: [], capabilities: ["service", "drivers", "tuneGain"] });
   page = text(renderToString(<RfPage />));
-  assert.match(page, /Gain too low · peaks -32 dBFS(?! —)/);
+  assert.match(page, /Gain may be low · peaks -32 dBFS(?! —)/);
   assert.doesNotMatch(page, /Tune gain|in Setup/);
   transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers", "tuneGain"] });
   page = text(renderToString(<RfPage />));
-  assert.match(page, /Gain too low · peaks -32 dBFS — Tune gain/);
+  assert.match(page, /Gain may be low · peaks -32 dBFS — Tune gain/);
   assert.match(renderToString(<RfPage />), /<button class="btn primary small"[^>]*>Tune gain<\/button>/, "the button, standing out");
   const report = { source: 0, radio: "Source 1", plan: [], scored: ["dcfd"], watched: [], start: [["gain", 25.4]] as [string, number][], estimateS: 1482, applied: false };
   transport.onMessage({ type: "tune", ...report, phase: "running", tried: [], now: [["gain", 33.8]], elapsedS: 60 });
@@ -644,14 +646,14 @@ test("RF: a source whose gain is low says so and offers Tune gain; the tuning's 
   const tried = [{ candidate: [["gain", 33.8]] as [string, number][], against: report.start, kept: false, systems: [], clipPct: 0, cmp: { diff: 0, se: 0.2, incumbent: 99.8, candidate: 99.8 } }];
   transport.onMessage({ type: "tune", ...report, phase: "done", tried, elapsedS: 600 });
   page = text(renderToString(<RfPage />));
-  assert.doesNotMatch(page, /Gain too low/, "the tuner's word wins");
+  assert.doesNotMatch(page, /Gain may be low/, "the tuner's word wins");
   assert.match(page, /Tune gain Best as it is Tried 1/);
   // Setup changed the radio since: the warning is back.
   transport.onMessage({ type: "tune", ...report, phase: "done", tried, elapsedS: 600, outdated: true });
   page = text(renderToString(<RfPage />));
-  assert.match(page, /Gain too low · peaks -32 dBFS — Tune gain/);
+  assert.match(page, /Gain may be low · peaks -32 dBFS — Tune gain/);
   assert.match(page, /Best changed since/);
-  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain too low · peaks -32 dBFS");
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain may be low · peaks -32 dBFS");
 });
 
 test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {
