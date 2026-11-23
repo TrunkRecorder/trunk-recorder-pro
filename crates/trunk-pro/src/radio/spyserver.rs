@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use num_complex::Complex32;
-use trunk_app::config::{endpoint, SampleFormat, SPYSERVER_PORT};
+use trunk_app::config::SampleFormat;
 
 use super::net::{timed_out, CONNECT, POLL, SILENT};
 use super::{Caps, Deadline, Rates};
@@ -28,8 +28,8 @@ use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, Tunable
 
 #[derive(Clone, Debug)]
 pub struct SpyserverConfig {
-    /// The server: `host` or `host:port` (port 5555 if left off).
-    pub address: String,
+    /// The server, `host:port` ([`trunk_app::config::Source::server`]).
+    pub server: String,
     pub center_hz: f64,
     pub rate_hz: f64,
     pub format: SampleFormat,
@@ -41,7 +41,7 @@ pub struct SpyserverConfig {
 
 impl SpyserverConfig {
     fn name(&self) -> String {
-        format!("SpyServer {}", endpoint(&self.address, SPYSERVER_PORT))
+        format!("SpyServer {}", self.server)
     }
 }
 
@@ -447,9 +447,9 @@ fn handshake(sock: &mut TcpStream, name: &str) -> Result<(Info, ClientSync, Vec<
     }
 }
 
-/// What a SpyServer at `address` is remembered by ([`super::remember`]).
-pub fn key(address: &str) -> String {
-    format!("spyserver:{}", endpoint(address, SPYSERVER_PORT).to_lowercase())
+/// What the SpyServer at `server` (`host:port`) is remembered by ([`super::remember`]).
+pub fn key(server: &str) -> String {
+    super::net::key("spyserver", server)
 }
 
 impl Info {
@@ -459,29 +459,28 @@ impl Info {
     }
 }
 
-/// Connect to the server at `address` (as `name`), and read its hello: the receiver behind it (remembered, as any
+/// Connect to the server at `server` (`host:port`, as `name`), and read its hello: the receiver behind it (remembered, as any
 /// radio is when opened), where it's tuned, and bytes already read beyond them.
-fn hello(name: &str, address: &str) -> Result<(TcpStream, Info, ClientSync, Vec<u8>), String> {
-    let mut sock = super::net::dial(name, &endpoint(address, SPYSERVER_PORT), CONNECT)?;
+fn hello(name: &str, server: &str) -> Result<(TcpStream, Info, ClientSync, Vec<u8>), String> {
+    let mut sock = super::net::dial(name, server, CONNECT)?;
     let (info, sync, pending) = handshake(&mut sock, name)?;
     if info.device == 0 {
         return Err(format!("{name}: the server has no receiver attached"));
     }
-    super::remember(&key(address), info.caps());
+    super::remember(&key(server), info.caps());
     Ok((sock, info, sync, pending))
 }
 
-/// What the receiver behind the SpyServer at `address` is, for a list of radios: connect, read the hello, hang up.
-/// Nothing is set, so a receiver another client is using is left as it is.
-pub fn ask(address: &str) -> Result<Caps, String> {
-    let name = format!("SpyServer {}", endpoint(address, SPYSERVER_PORT));
-    hello(&name, address).map(|(_, info, ..)| info.caps())
+/// What the receiver behind the SpyServer at `server` (`host:port`) is, for a list of radios: connect, read the
+/// hello, hang up. Nothing is set, so a receiver another client is using is left as it is.
+pub fn ask(server: &str) -> Result<Caps, String> {
+    hello(&format!("SpyServer {server}"), server).map(|(_, info, ..)| info.caps())
 }
 
 /// Connect, introduce, and settle what the stream will be (the stage, the format, where the window can sit).
 fn connect(cfg: &SpyserverConfig) -> Result<(Client, Vec<u8>), String> {
     let name = cfg.name();
-    let (sock, info, sync, pending) = hello(&name, &cfg.address)?;
+    let (sock, info, sync, pending) = hello(&name, &cfg.server)?;
     let rates = info.rates();
     let Some(&(stage, rate)) = rates.iter().find(|&&(_, r)| (r - cfg.rate_hz).abs() < 1.0) else {
         return Err(format!("{name}: {}", super::rate_refusal(&format!("SpyServer ({})", info.model()), &Rates::List(info.offered()), cfg.rate_hz)));
@@ -820,7 +819,7 @@ mod tests {
     }
 
     fn cfg(port: u16, center_hz: f64, rate_hz: f64) -> SpyserverConfig {
-        SpyserverConfig { address: format!("127.0.0.1:{port}"), center_hz, rate_hz, format: SampleFormat::Cs16, gain: 14, digital_gain_db: None }
+        SpyserverConfig { server: format!("127.0.0.1:{port}"), center_hz, rate_hz, format: SampleFormat::Cs16, gain: 14, digital_gain_db: None }
     }
 
     #[test]
@@ -860,7 +859,7 @@ mod tests {
         assert!(ask("127.0.0.1:1").is_err(), "nothing there");
         // Remembered, as any radio is when opened: a list of radios and the gain-tuning tool read it.
         assert_eq!(super::super::known(&key(&address)), Some(caps));
-        assert_eq!(super::super::known(&key("never.asked")), None);
+        assert_eq!(super::super::known(&key("never.asked:5555")), None);
     }
 
     #[test]

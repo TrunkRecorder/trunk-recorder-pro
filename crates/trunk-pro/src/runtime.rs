@@ -831,10 +831,12 @@ pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, names: &NameL
 pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<sdr::Control>>, name: &str) -> std::io::Result<JoinHandle<()>> {
     let src = src.clone();
     std::thread::Builder::new().name(name.to_string()).spawn(move || {
+        // (A radio on the network by its server, `host:port`: Source::server.)
+        let server = src.server();
         let Source { kind, rate_hz, ppm, .. } = src;
         match kind {
-            SourceKind::Rtlsdr { serial, address, gain_db, agc, bias_tee, buf_len, buffers } => {
-                sdr::run_with(i, rtl::RtlConfig { serial, address, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers, bias_tee }, tx, stop, ctl)
+            SourceKind::Rtlsdr { serial, gain_db, agc, bias_tee, buf_len, buffers, .. } => {
+                sdr::run_with(i, rtl::RtlConfig { serial, server: server.clone(), center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers, bias_tee }, tx, stop, ctl)
             }
             SourceKind::Usrp { args, gain_db, agc, antenna, wire_format } => {
                 sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
@@ -842,8 +844,8 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
             SourceKind::Hackrf { serial, lna_db, vga_db, amp, bias_tee } => {
                 sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf_gain(lna_db, vga_db, amp), bias_tee, ppm }, tx, stop, ctl)
             }
-            SourceKind::Spyserver { address, iq_format, gain, digital_gain_db } => {
-                sdr::run_with(i, spyserver::SpyserverConfig { address, center_hz: center, rate_hz, format: iq_format, gain, digital_gain_db }, tx, stop, ctl)
+            SourceKind::Spyserver { iq_format, gain, digital_gain_db, .. } => {
+                sdr::run_with(i, spyserver::SpyserverConfig { server: server.clone().unwrap_or_default(), center_hz: center, rate_hz, format: iq_format, gain, digital_gain_db }, tx, stop, ctl)
             }
             SourceKind::Airspy { serial, gains, bias_tee, packing } => {
                 sdr::run_with(i, airspy::AirspyConfig { lib: airspy::Lib::Airspy, serial, center_hz: center, rate_hz, gain: airspy_gain(gains), bias_tee, packing, rf_port: 0, ppm }, tx, stop, ctl)

@@ -1312,7 +1312,7 @@ pub(crate) fn apply_config(ctx: &Ctx, old: &crate::config::Config, new: &crate::
     }
     // A radio on the network named anew: asked what it is (its model, rates and gains), in the background, and the
     // list of radios sent again, as a search would (Setup shows them; nothing else asks).
-    let network = |c: &crate::config::Config| c.sources.iter().filter_map(crate::radio::on_network).map(|(_, _, key)| key).collect::<Vec<_>>();
+    let network = |c: &crate::config::Config| c.sources.iter().filter_map(crate::radio::on_network).map(|n| n.key).collect::<Vec<_>>();
     if network(old) != network(new) {
         let (hub, sources) = (ctx.hub.clone(), new.sources.clone());
         std::thread::spawn(move || crate::runtime::publish(&hub, ToClient::Radios { radios: crate::radio::radios_json(false, &sources, true) }));

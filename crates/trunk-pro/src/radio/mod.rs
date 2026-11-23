@@ -338,14 +338,23 @@ pub fn radios_json(search: bool, sources: &[Source], ask: bool) -> serde_json::V
     serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search), "network": network })
 }
 
-/// A source's radio on the network, if it is one: its kind ("rtlsdr", "spyserver"), its address as given, and
-/// what it's remembered by ([`remember`]).
-pub fn on_network(src: &Source) -> Option<(&'static str, &str, String)> {
-    match &src.kind {
-        SourceKind::Rtlsdr { address, .. } if !address.trim().is_empty() => Some(("rtlsdr", address.as_str(), rtltcp::key(address))),
-        SourceKind::Spyserver { address, .. } if !address.trim().is_empty() => Some(("spyserver", address.as_str(), spyserver::key(address))),
-        _ => None,
-    }
+/// A source's radio on the network, if it is one ([`Source::server`]).
+pub struct OnNetwork<'a> {
+    /// "rtlsdr", "spyserver".
+    pub kind: &'static str,
+    /// As the source gives it (what Setup matches its listing by).
+    pub address: &'a str,
+    /// `host:port`.
+    pub server: String,
+    /// What it's remembered by ([`remember`]).
+    pub key: String,
+}
+
+pub fn on_network(src: &Source) -> Option<OnNetwork<'_>> {
+    let server = src.server()?;
+    let (SourceKind::Rtlsdr { address, .. } | SourceKind::Spyserver { address, .. }) = &src.kind else { return None };
+    let kind = src.kind_name();
+    Some(OnNetwork { kind, address: address.trim(), key: net::key(kind, &server), server })
 }
 
 /// The radios on the network `sources` name (an RTL-SDR's `rtl_tcp` server, a SpyServer), as a list of radios has
@@ -357,20 +366,20 @@ pub fn network_json(sources: &[Source], ask: bool) -> Vec<serde_json::Value> {
     sources
         .iter()
         .filter_map(on_network)
-        .filter(|(_, _, key)| seen.insert(key.clone()))
-        .map(|(kind, address, key)| {
-            let mut j = serde_json::json!({ "kind": kind, "address": address.trim(), "label": address.trim() });
-            let caps = match known(&key) {
+        .filter(|n| seen.insert(n.key.clone()))
+        .map(|n| {
+            let mut j = serde_json::json!({ "kind": n.kind, "address": n.address, "label": n.address });
+            let caps = match known(&n.key) {
                 Some(c) => Ok(c),
-                None if ask => match kind {
-                    "rtlsdr" => rtltcp::ask(address),
-                    _ => spyserver::ask(address),
+                None if ask => match n.kind {
+                    "rtlsdr" => rtltcp::ask(&n.server),
+                    _ => spyserver::ask(&n.server),
                 },
                 None => Err(String::new()),
             };
             match caps {
                 Ok(c) => {
-                    j["label"] = format!("{} at {}", c.model, address.trim()).into();
+                    j["label"] = format!("{} at {}", c.model, n.address).into();
                     c.add_to(&mut j);
                 }
                 Err(e) if !e.is_empty() => j["error"] = e.into(),
@@ -384,8 +393,7 @@ pub fn network_json(sources: &[Source], ask: bool) -> Vec<serde_json::Value> {
 /// The gains `src`'s radio said it can be set to when it was last opened, where they aren't its kind's own (an
 /// RTL-SDR's tuner behind `rtl_tcp`, a SpyServer's steps): what the gain-tuning tool walks.
 pub fn reported_gains(src: &Source) -> Option<Vec<f64>> {
-    let (_, _, key) = on_network(src)?;
-    known(&key).map(|c| c.gains).filter(|g| !g.is_empty())
+    known(&on_network(src)?.key).map(|c| c.gains).filter(|g| !g.is_empty())
 }
 
 fn bladerf_json() -> serde_json::Value {

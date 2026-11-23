@@ -443,13 +443,28 @@ impl Source {
         let kind = self.kind_name();
         Choices { movable: true, rates: crate::rates::offered(kind, found), steady_max: crate::rates::steady_max(kind) }
     }
+    /// Its server, `host:port`, when it's a radio on the network: an RTL-SDR behind `rtl_tcp` (a port
+    /// left off is 1234), a SpyServer (5555). The one answer to whether a source is one, and where.
+    pub fn server(&self) -> Option<String> {
+        let (address, port) = match &self.kind {
+            SourceKind::Rtlsdr { address, .. } => (address, RTL_TCP_PORT),
+            SourceKind::Spyserver { address, .. } => (address, SPYSERVER_PORT),
+            _ => return None,
+        };
+        (!address.trim().is_empty()).then(|| endpoint(address, port))
+    }
+
     /// Whether the two may open the same radio (one program at a time can):
     /// of a kind and naming one device, or either "the first found". (A
     /// bladeRF may be named by the start of its serial.)
     pub fn may_be(&self, other: &Source) -> bool {
         let id = |s: &Source| -> Option<(u8, String)> {
+            // (A radio on the network by its server: one `rtl_tcp` serves one client at a time; a SpyServer's
+            // second client can't move its receiver.)
+            if let Some(server) = s.server() {
+                return Some((if matches!(s.kind, SourceKind::Spyserver { .. }) { 7 } else { 6 }, server.to_lowercase()));
+            }
             match &s.kind {
-                SourceKind::Rtlsdr { address, .. } if !address.trim().is_empty() => Some((6, endpoint(address, RTL_TCP_PORT).to_lowercase())),
                 SourceKind::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
                 SourceKind::Usrp { args, .. } => Some((1, args.trim().to_string())),
                 // (libairspy opens an RFOne as "the first" when it comes first.)
@@ -457,9 +472,7 @@ impl Source {
                 SourceKind::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
                 SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
                 SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
-                // (One `rtl_tcp` serves one client at a time; a SpyServer's second client can't move its receiver.)
-                SourceKind::Spyserver { address, .. } => Some((7, endpoint(address, SPYSERVER_PORT).to_lowercase())),
-                SourceKind::File { .. } => None,
+                SourceKind::Spyserver { .. } | SourceKind::File { .. } => None,
             }
         };
         match (id(self), id(other)) {
@@ -470,8 +483,10 @@ impl Source {
 
     /// For the interface: "RTL-SDR SN 200", "USRP serial=…", "file x.cu8".
     pub fn label(&self) -> String {
+        if let Some(server) = self.server() {
+            return format!("{} {server}", if matches!(self.kind, SourceKind::Spyserver { .. }) { "SpyServer" } else { "rtl_tcp" });
+        }
         match &self.kind {
-            SourceKind::Rtlsdr { address, .. } if !address.trim().is_empty() => format!("rtl_tcp {}", endpoint(address, RTL_TCP_PORT)),
             SourceKind::Rtlsdr { serial, .. } => format!("RTL-SDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Usrp { args, .. } => {
                 // Which device, not how it's driven: buffer sizes and the like
@@ -483,7 +498,7 @@ impl Source {
             SourceKind::Hydrasdr { serial, .. } => format!("HydraSDR {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Bladerf { serial, .. } => format!("bladeRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
             SourceKind::Hackrf { serial, .. } => format!("HackRF {}", if serial.is_empty() { "(first)".into() } else { format!("SN {serial}") }),
-            SourceKind::Spyserver { address, .. } => format!("SpyServer {}", endpoint(address, SPYSERVER_PORT)),
+            SourceKind::Spyserver { .. } => "SpyServer (no address)".into(),
             SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
             SourceKind::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
         }
