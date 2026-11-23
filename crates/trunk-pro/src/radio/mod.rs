@@ -214,16 +214,18 @@ use libloading::Library;
 /// name (the system's search path), else versioned files in the usual
 /// install folders (`lib<stem>.so.<version>`, highest first). `global`: its
 /// symbols resolve the plug-ins it loads itself (SoapySDR's modules).
-pub fn load(env: &str, names: &[&str], stem: &str, global: bool) -> Result<(Library, String), String> {
+/// `win_needs`: what it needs beside it on Windows, said when it's there but
+/// one of those isn't (" (airspy.dll needs libusb-1.0.dll …)").
+pub fn load(env: &str, names: &[&str], stem: &str, global: bool, win_needs: &str) -> Result<(Library, String), String> {
     let try_one = |p: &str| -> Result<Library, String> {
         // SAFETY: loading a vendor driver runs its initialisers; that is the point.
         #[cfg(unix)]
         if global {
             use libloading::os::unix::{Library as Unix, RTLD_GLOBAL, RTLD_NOW};
-            return unsafe { Unix::open(Some(p), RTLD_NOW | RTLD_GLOBAL) }.map(Library::from).map_err(|e| e.to_string());
+            return unsafe { Unix::open(Some(p), RTLD_NOW | RTLD_GLOBAL) }.map(Library::from).map_err(|e| load_error(&e, win_needs));
         }
         let _ = global;
-        unsafe { Library::new(p) }.map_err(|e| e.to_string())
+        unsafe { Library::new(p) }.map_err(|e| load_error(&e, win_needs))
     };
     if let Ok(p) = std::env::var(env) {
         return try_one(&p).map(|l| (l, p.clone())).map_err(|e| format!("{env}={p}: {e}"));
@@ -234,7 +236,7 @@ pub fn load(env: &str, names: &[&str], stem: &str, global: bool) -> Result<(Libr
     let mut refused: Option<String> = None;
     let mut note = |p: &str, e: String| {
         tried.push(p.to_string());
-        if refused.is_none() && std::path::Path::new(p).exists() {
+        if refused.is_none() && beside_or_here(p) {
             refused = Some(e);
         }
     };
@@ -259,6 +261,39 @@ pub fn load(env: &str, names: &[&str], stem: &str, global: bool) -> Result<(Libr
     match refused {
         Some(e) => Err(format!("found but couldn't be loaded: {e}")),
         None => Err(format!("not found (looked for {})", tried.join(", "))),
+    }
+}
+
+/// Whether library `p` is there: as given, or (a bare name, on Windows) beside the program, the
+/// first place Windows looks, whatever folder it was started from.
+fn beside_or_here(p: &str) -> bool {
+    let path = std::path::Path::new(p);
+    path.exists() || (cfg!(windows) && path.components().count() == 1 && std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(p).exists())).unwrap_or(false))
+}
+
+/// Why a library didn't load, all of it: on Windows libloading says only "LoadLibraryExW failed",
+/// the system's reason being its source. With that reason, what it means there: a DLL it needs
+/// is missing (126: `win_needs` says which), or it's not a 64-bit Windows DLL (193).
+fn load_error(e: &libloading::Error, win_needs: &str) -> String {
+    let mut text = e.to_string();
+    let mut code = None;
+    let mut src = std::error::Error::source(e);
+    while let Some(c) = src {
+        text.push_str(&format!(": {c}"));
+        code = code.or_else(|| c.downcast_ref::<std::io::Error>().and_then(std::io::Error::raw_os_error));
+        src = c.source();
+    }
+    let hint = if cfg!(windows) { code.map_or(String::new(), |c| windows_hint(c, win_needs)) } else { String::new() };
+    text + &hint
+}
+
+/// What Windows' error `code` loading a DLL that's there means: a DLL it needs is missing (126,
+/// `win_needs` says which), or it isn't a 64-bit Windows DLL (193, a 32-bit one say).
+fn windows_hint(code: i32, win_needs: &str) -> String {
+    match code {
+        126 => format!(" — a DLL it needs is missing{win_needs}"),
+        193 => " — it isn't a 64-bit Windows DLL: take the x64 one".to_string(),
+        _ => String::new(),
     }
 }
 
@@ -399,6 +434,26 @@ impl DriverInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #219: a Windows DLL that's there but won't load says why, not only "LoadLibraryExW failed".
+    #[test]
+    fn a_driver_that_wont_load_says_why() {
+        let airspy = ": airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it";
+        assert_eq!(windows_hint(126, airspy), " — a DLL it needs is missing: airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it");
+        assert_eq!(windows_hint(193, airspy), " — it isn't a 64-bit Windows DLL: take the x64 one");
+        assert_eq!(windows_hint(5, airspy), "");
+        // A library that isn't there at all: not found, with where it was looked for.
+        let e = load("TRUNK_PRO_TEST_NONE", &["libtrunk-pro-none.so.0"], "trunk-pro-none", false, airspy).err().unwrap();
+        assert!(e.starts_with("not found (looked for libtrunk-pro-none.so.0"), "{e}");
+        // One that's there but isn't a library: refused, with the system's reason.
+        let dir = std::env::temp_dir().join(format!("trp-load-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("libbad.so.0");
+        std::fs::write(&bad, b"not a library").unwrap();
+        let e = load("TRUNK_PRO_TEST_NONE", &[bad.to_str().unwrap()], "bad", false, airspy).err().unwrap();
+        assert!(e.starts_with("found but couldn't be loaded: ") && e.len() > "found but couldn't be loaded: ".len() + 10, "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// An open that hangs is given up at its deadline, the radio refused at
     /// once while it stays stuck, others opened meanwhile, and it opens again

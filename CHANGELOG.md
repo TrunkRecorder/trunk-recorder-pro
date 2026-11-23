@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **An Airspy on Windows: what it needs, and why it didn't load** (#219). `airspy.dll` needs `libusb-1.0.dll` and
+  `pthreadVC2.dll` beside it, from the same `x64` folder of Airspy's airspy_host_tools, and `pthreadVC2.dll` needs the
+  Visual C++ 2010 runtime; Setup's hint and the docs said only `airspy.dll`. A driver that's there but won't load now
+  says why (Windows' reason, and for a missing DLL or a 32-bit one what to do) instead of only "LoadLibraryExW failed",
+  and a DLL beside `trunk-pro.exe` is seen there whatever folder the app was started from.
+
 - **Every plugin can be off for a system or site.** One that takes `totals` (the Broadcastify plugin's node health
   reports, from its next release) couldn't be, and was on for every system with a warning in its log. Now it's sent the
   figures of the systems and sites it's on for: the others' sites, channels and series are left out, and the radios',

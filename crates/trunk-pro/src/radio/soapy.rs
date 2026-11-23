@@ -121,7 +121,7 @@ fn api() -> Result<&'static Api, String> {
             names.extend(["libSoapySDR.so.0.7".to_string(), "libSoapySDR.so".to_string()]);
         }
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let (lib, path) = super::load("TRUNK_PRO_SOAPY", &names, "SoapySDR", true)?;
+        let (lib, path) = super::load("TRUNK_PRO_SOAPY", &names, "SoapySDR", true, "")?;
         // SAFETY: the signatures are SoapySDR's C API (0.7 / 0.8).
         unsafe {
             macro_rules! f {

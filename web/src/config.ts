@@ -145,7 +145,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     get rates() { return sourceRates("airspy"); },
     rateHint: "R2: 10 or 2.5; Mini: 6 or 3",
     device: "serial",
-    driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll (from airspy-tools) next to trunk-pro.exe" },
+    driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll, libusb-1.0.dll and pthreadVC2.dll (the x64 folder of airspy_host_tools) next to trunk-pro.exe, and install the Visual C++ 2010 runtime (x64)" },
     soapyDriver: "airspy",
     biasT: "Powers an LNA on the antenna cable",
     liveAgc: true,
