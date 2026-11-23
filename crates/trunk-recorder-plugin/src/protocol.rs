@@ -47,7 +47,8 @@ pub mod topic {
     /// Every system's state, every few seconds ([`super::Status`]).
     pub const STATUS: &str = "status";
     /// Every series the recorder measures, as running totals since recording started, every
-    /// 10 s ([`super::Totals`]): node health reports ([`crate::health`]) are made of them.
+    /// 10 s ([`super::Totals`]): node health reports ([`crate::health`]) are made of them. A
+    /// plugin off for a system or site isn't sent its sites', channels' or series; the radios' are.
     pub const TOTALS: &str = "totals";
     /// A call's tones made a pattern ([`super::TonePatternEvent`]): every page,
     /// alert tone, DTMF string and Morse ID heard, named by the system's signals or not.
@@ -63,14 +64,6 @@ pub mod topic {
     /// delayed for the call, or catching up, isn't given it.
     pub fn is_live(topic: &str) -> bool {
         topic == AUDIO || topic == VOICE
-    }
-
-    /// What it sends can be kept from a plugin system by system, so a plugin
-    /// taking only such topics can be turned off for a system ([`super::Manifest::per_system`]):
-    /// every topic but [`TOTALS`], whose series add up every system's. Of [`STATUS`],
-    /// a plugin is sent the systems it's on for; of [`LOG`], lines about no one system too.
-    pub fn per_system(topic: &str) -> bool {
-        topic != TOTALS
     }
 }
 
@@ -184,10 +177,6 @@ impl Manifest {
     }
     pub fn wants_format(&self, format: &str) -> bool {
         self.audio_formats.iter().any(|f| f == format)
-    }
-    /// It can be turned off for a system: each topic it takes is [`topic::per_system`].
-    pub fn per_system(&self) -> bool {
-        self.subscribe.iter().all(|t| topic::per_system(t))
     }
 }
 
@@ -1685,9 +1674,6 @@ mod tests {
     /// figures; it offers no system its settings unless it names them.
     #[test]
     fn what_a_plugin_lets_systems_do() {
-        let takes = |t: &[&str]| Manifest { subscribe: t.iter().map(|x| x.to_string()).collect(), ..Default::default() };
-        assert!(takes(&[topic::CALL_CONCLUDED, topic::STATUS, topic::LOG]).per_system() && takes(&[]).per_system());
-        assert!(!takes(&[topic::CALL_START, topic::TOTALS]).per_system());
         let m: Manifest = serde_json::from_str(r#"{"id":"x","system_overrides":["server"]}"#).unwrap();
         assert_eq!(m.system_overrides, ["server"]);
         assert!(!serde_json::to_string(&Manifest::default()).unwrap().contains("system_overrides"), "none: left out");

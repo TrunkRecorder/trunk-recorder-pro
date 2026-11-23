@@ -6,10 +6,11 @@
 //!
 //! ```ignore
 //! let queue = CallQueue::start(host.clone(), QueueOptions::saved_in(&setup.data_dir), move |call| {
-//!     match upload(call) {
-//!         Ok(url) => Attempt::Done { url },
-//!         Err(e) if e.is_temporary() => Attempt::Retry(e.to_string()),
-//!         Err(e) => Attempt::Fail(e.to_string()),
+//!     match post(call) {
+//!         Ok(resp) if resp.ok() => Attempt::Done { url: resp.url() },
+//!         // Retried, waited on (`Retry-After`) or given up on, as its status says.
+//!         Ok(resp) => Attempt::from_status(resp.status(), resp.header("retry-after"), format!("HTTP {}", resp.status())),
+//!         Err(e) => Attempt::Retry(e.to_string()),
 //!     }
 //! });
 //! // in call_concluded:   queue.push(call);
@@ -29,6 +30,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::http::Failure;
 use crate::protocol::{ConcludedCall, Endpoint, EndpointState, Metrics, Outcome, State};
 use crate::sdk::Host;
 
@@ -41,8 +43,43 @@ pub enum Attempt {
     Skip(String),
     /// Failed for now (the service is down, the network's out): try again later.
     Retry(String),
+    /// Failed for now, and the service said how long to wait (`Retry-After`): try again no
+    /// sooner than that (and no later than an hour), or than the next retry would be.
+    Wait(String, Duration),
     /// Failed for good (it was refused): report it and move on.
     Fail(String),
+}
+
+/// The longest a service's `Retry-After` holds a call back.
+const LONGEST_WAIT: Duration = Duration::from_secs(3600);
+
+impl Attempt {
+    /// What an HTTP answer with `status` (and its `Retry-After` header, if any) makes of a try,
+    /// as [`Failure::from_status`] reads it: `2xx` done (no URL), busy waited on, a server
+    /// error or timeout retried, anything else (a refused key, a wrong address or request)
+    /// failed. `why`: what to report if it isn't done.
+    pub fn from_status(status: u16, retry_after: Option<&str>, why: impl Into<String>) -> Attempt {
+        match Failure::from_status(status, retry_after) {
+            None => Attempt::Done { url: String::new() },
+            Some(Failure::Busy(Some(wait))) => Attempt::Wait(why.into(), wait),
+            Some(f) if f.retry() => Attempt::Retry(why.into()),
+            Some(_) => Attempt::Fail(why.into()),
+        }
+    }
+
+    /// One call's tries, one for each place it went (an upload to several systems or servers),
+    /// as one: tried again if any should be (waiting the longest any service asked), else
+    /// failed if any failed, else done if any took it, else skipped.
+    pub fn together(attempts: impl IntoIterator<Item = Attempt>) -> Attempt {
+        let rank = |a: &Attempt| match a {
+            Attempt::Wait(_, w) => (4, *w),
+            Attempt::Retry(_) => (3, Duration::ZERO),
+            Attempt::Fail(_) => (2, Duration::ZERO),
+            Attempt::Done { .. } => (1, Duration::ZERO),
+            Attempt::Skip(_) => (0, Duration::ZERO),
+        };
+        attempts.into_iter().max_by_key(rank).unwrap_or(Attempt::Skip("nowhere to send it".into()))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -404,11 +441,11 @@ fn worker(sh: &Shared, key: &str, host: &Host, work: &Work, o: &QueueOptions) {
                     let f = &it.call.files;
                     t.bytes += f.m4a.as_ref().and_then(|m| std::fs::metadata(m).ok()).or_else(|| std::fs::metadata(&f.wav).ok()).map_or(0, |m| m.len());
                 }
-                Attempt::Retry(_) | Attempt::Fail(_) => {
+                Attempt::Retry(_) | Attempt::Wait(..) | Attempt::Fail(_) => {
                     t.tried = true;
                     t.in_a_row += 1;
                     t.last_error = Some(unix_now());
-                    t.retries += matches!(r, Attempt::Retry(_)) as u64;
+                    t.retries += !matches!(r, Attempt::Fail(_)) as u64;
                 }
                 Attempt::Skip(_) => {}
             }
@@ -416,6 +453,8 @@ fn worker(sh: &Shared, key: &str, host: &Host, work: &Work, o: &QueueOptions) {
         // What went wrong, and where (when there's more than one place).
         let said = |m: &str| if key.is_empty() { m.to_string() } else { format!("{key}: {m}") };
         let mut error = None;
+        // How long the service asked for, if it did: the next try waits for it.
+        let wait = if let Attempt::Wait(_, w) = &r { (*w).min(LONGEST_WAIT) } else { Duration::ZERO };
         match r {
             Attempt::Done { url } => host.call_result_took(&it.call.path, Outcome::Ok, "", url, took),
             Attempt::Skip(m) => host.call_result(&it.call.path, Outcome::Skipped, m, ""),
@@ -424,10 +463,10 @@ fn worker(sh: &Shared, key: &str, host: &Host, work: &Work, o: &QueueOptions) {
                 error = Some(said(&m));
                 host.call_result(&it.call.path, Outcome::Failed, m, "");
             }
-            Attempt::Retry(m) => match o.retry_after.get(it.tries) {
+            Attempt::Retry(m) | Attempt::Wait(m, _) => match o.retry_after.get(it.tries) {
                 Some(d) => {
                     it.tries += 1;
-                    it.due = Instant::now() + *d;
+                    it.due = Instant::now() + (*d).max(wait);
                     it.last_error = m.clone();
                     lane.last_error = m.clone();
                     error = Some(said(&m));
@@ -512,6 +551,50 @@ mod tests {
         assert_eq!(tries.load(Ordering::SeqCst), 2);
         assert_eq!(out.results(), vec![(call.path, Outcome::Ok, String::new(), "u".into())]);
         assert!(matches!(out.status(), Some((State::Ok, _))));
+    }
+
+    #[test]
+    fn an_answers_status_says_what_becomes_of_the_try() {
+        let of = |status: u16, after: Option<&str>| Attempt::from_status(status, after, "why");
+        assert!(matches!(of(200, None), Attempt::Done { url } if url.is_empty()));
+        assert!(matches!(of(503, Some("30")), Attempt::Wait(m, w) if m == "why" && w == Duration::from_secs(30)));
+        assert!(matches!((of(503, None), of(429, None), of(500, None), of(408, None)), (Attempt::Retry(_), Attempt::Retry(_), Attempt::Retry(_), Attempt::Retry(_))));
+        assert!(matches!((of(401, None), of(404, None), of(413, None)), (Attempt::Fail(_), Attempt::Fail(_), Attempt::Fail(_))));
+    }
+
+    #[test]
+    fn tries_at_several_places_are_one() {
+        let w = |s: u64| Attempt::Wait(format!("{s}"), Duration::from_secs(s));
+        let done = || Attempt::Done { url: String::new() };
+        assert!(matches!(Attempt::together([done(), Attempt::Fail("x".into())]), Attempt::Fail(_)));
+        assert!(matches!(Attempt::together([Attempt::Fail("x".into()), Attempt::Retry("y".into()), done()]), Attempt::Retry(_)));
+        assert!(matches!(Attempt::together([w(30), Attempt::Retry("y".into()), w(90), w(60)]), Attempt::Wait(_, d) if d.as_secs() == 90));
+        assert!(matches!(Attempt::together([done(), Attempt::Skip("s".into())]), Attempt::Done { .. }));
+        assert!(matches!(Attempt::together([]), Attempt::Skip(m) if m == "nowhere to send it"));
+    }
+
+    /// A service that says how long to wait (`Retry-After`) isn't tried again sooner.
+    #[test]
+    fn a_retry_waits_as_long_as_the_service_asked() {
+        let dir = testing::temp_dir("queue");
+        let (host, out) = testing::capture();
+        let tries = Arc::new(Mutex::new(Vec::new()));
+        let t = tries.clone();
+        let mut q = CallQueue::start(host, quick(&dir), move |_| {
+            let mut t = t.lock().unwrap();
+            t.push(Instant::now());
+            if t.len() == 1 { Attempt::Wait("busy".into(), Duration::from_millis(300)) } else { Attempt::Done { url: String::new() } }
+        });
+        q.push(testing::call(&dir, "sys1", 5));
+        let t0 = Instant::now();
+        while !q.is_empty() && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        q.shutdown(Duration::from_secs(1));
+        let t = tries.lock().unwrap();
+        assert_eq!(t.len(), 2);
+        assert!(t[1] - t[0] >= Duration::from_millis(300), "{:?}, not the queue's 20 ms", t[1] - t[0]);
+        assert_eq!(out.output().results()[0].1, Outcome::Ok);
     }
 
     #[test]

@@ -33,7 +33,7 @@ The top-level `plugins` object is keyed by plugin id. Each entry:
 | `path` | | `""` | string | Run this executable instead of the installed one: a build of your own, while developing a plugin. Use an absolute path |
 | `shareDecrypted` | | `false` | bool | Give it calls decrypted with your keys (their audio and files). See [Decrypted calls](../plugins/README.md#decrypted-calls) |
 | `sitesOff` | | `[]` | integer array | The sites (by their `id`) it's turned off for: their radio activity and status aren't sent to it, nor a recorded call only they heard. In Setup: **Sites** on the system's card |
-| `systemsOff` | | `[]` | integer array | The systems (by `id`) it's turned off for: nothing about them is sent to it. Not for a plugin that takes `totals` (every system's figures): it's on for all of them, with a warning in its log. In Setup: **Systems** on its card |
+| `systemsOff` | | `[]` | integer array | The systems (by `id`) it's turned off for: nothing about them is sent to it (of `totals`, their sites' and channels' figures; the radios' still are). In Setup: **Systems** on its card |
 
 A plugin with no entry is off. Unknown keys in an entry are dropped on save.
 

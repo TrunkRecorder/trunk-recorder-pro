@@ -548,7 +548,7 @@ function uploader(id: string): void {
   const c = defaultConfig();
   c.plugins = { [id]: { enabled: true, settings: {} } } as Config["plugins"];
   const p: PluginInfo = {
-    id, path: `/plugins/${id}/${id}`, custom: false, problem: null, perSystem: true,
+    id, path: `/plugins/${id}/${id}`, custom: false, problem: null,
     manifest: { id, name: "Broadcastify Calls", version: "0.1.7", description: "", api: 1, subscribe: ["call.concluded"], audio_formats: [] },
     runtime: { state: "ok", message: "", ok: 30, skipped: 0, failed: 0, lastFailure: "", log: [] },
   };

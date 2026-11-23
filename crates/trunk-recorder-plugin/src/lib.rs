@@ -33,6 +33,7 @@
 // (The recorder matches talkgroups as plugins do: its plugin delays.)
 pub mod filter;
 pub mod health;
+pub mod http;
 mod multipart;
 pub mod protocol;
 #[cfg(feature = "sdk")]

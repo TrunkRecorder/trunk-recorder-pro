@@ -139,8 +139,8 @@ the systems you've given an API key, and skips the rest.
 A plugin is on for every system and site until you turn it off for some.
 
 - **Systems.** On the plugin's card in Setup, a chip for each system: turn one off and nothing
-  about that system is sent to the plugin. A plugin that takes `totals` (every system's figures)
-  stays on for all of them.
+  about that system is sent to the plugin. Of `totals`, its sites' and channels' figures are left
+  out; the radios' stay.
 - **Sites.** On a multi-site system's card, a **Sites** row of chips under the plugin: turn a site
   off and its radio activity and status aren't sent, nor a recorded call only it heard.
 - **Shared settings.** A plugin that lets a system set again some of its recorder-wide settings

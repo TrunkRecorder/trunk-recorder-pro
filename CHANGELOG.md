@@ -5,6 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Every plugin can be off for a system or site.** One that takes `totals` (the Broadcastify plugin's node health
+  reports, from its next release) couldn't be, and was on for every system with a warning in its log. Now it's sent the
+  figures of the systems and sites it's on for: the others' sites, channels and series are left out, and the radios',
+  shared by systems, stay. SDK: `Manifest::per_system` and `topic::per_system` are gone, and `PluginInfo.perSystem` with
+  them; `health::Recorder::of(&setup.host)` gives the recorder's name as the node health spec has it.
+
+- **Plugins answer a service's HTTP status alike** (SDK). `http::Failure::from_status` reads a status once for uploads
+  and health reports: `429`/`503` busy (waiting as long as `Retry-After` says), `408` and other `5xx` retried, `401`/`403`
+  refused, `404`/`405`/`410` nothing there, any other `4xx` rejected. `Attempt::from_status` makes an upload's outcome of
+  it, and the new `Attempt::Wait` holds the call back as long as the service asked (at most an hour). A health report
+  answered "not found" now backs off to hourly instead of stopping for the run (the node health spec says so too).
+
 - **Long source labels fit** (#210). A SoapySDR source's label is its device arguments, which have no spaces to break
   at (`SoapySDR driver=remote,remote=tcp://…`), and it pushed the layout wider. It's now cut off where it doesn't fit,
   with the whole label on hover: in Setup's **Receive on**, and in the dashboard's card titles. In a channel's source
