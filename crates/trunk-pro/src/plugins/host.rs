@@ -23,7 +23,7 @@ use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
     format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
-    SiteInfo, Status, SystemInfo, Totals, VoiceChunk, API_VERSION, EXIT_CONFIG,
+    RawVoiceChunk, SiteInfo, Status, SystemInfo, Totals, VoiceChunk, API_VERSION, EXIT_CONFIG,
 };
 use trunk_core::trunk::{LiveAudio, SiteId, SystemId};
 
@@ -119,6 +119,8 @@ struct Plugin {
     off: BTreeSet<SystemId>,
     /// The sites it's turned off for (`sitesOff`): what's of them alone isn't given it.
     sites_off: BTreeSet<SiteId>,
+    /// It was given `rawVoice`: the `voice.raw` topic (frames as received, before decryption).
+    raw_voice: bool,
     withheld_said: AtomicBool,
     /// Whether it was said that it isn't streamed the live media of calls it's delayed for.
     audio_held_said: AtomicBool,
@@ -180,6 +182,8 @@ pub struct Spec {
     pub off: BTreeSet<SystemId>,
     /// The sites it's turned off for (`sitesOff`).
     pub sites_off: BTreeSet<SiteId>,
+    /// It may be given the `voice.raw` topic (`rawVoice`).
+    pub raw_voice: bool,
 }
 
 impl Spec {
@@ -199,6 +203,7 @@ impl Spec {
                     share_decrypted: p.share_decrypted && cfg.has_keys(),
                     off: p.systems_off.iter().copied().collect(),
                     sites_off: p.sites_off.iter().copied().collect(),
+                    raw_voice: p.raw_voice,
                 })
             })
             .collect()
@@ -327,6 +332,7 @@ impl PluginHost {
             topics.totals |= m.subscribes(topic::TOTALS);
             topics.tone_patterns |= m.subscribes(topic::TONE_PATTERN);
             topics.voice |= m.subscribes(topic::VOICE);
+            topics.voice_raw |= s.raw_voice && m.subscribes(topic::VOICE_RAW);
             live |= topic::ALL.iter().any(|&t| topic::is_live(t) && m.subscribes(t));
             let data_dir = s.data_dir.clone().unwrap_or_else(|| super::data_dir(&s.id));
             if let Err(p) = trunk_app::files::make_dir(&data_dir) {
@@ -381,6 +387,7 @@ impl PluginHost {
                 share_decrypted: s.share_decrypted,
                 off: s.off,
                 sites_off: s.sites_off,
+                raw_voice: s.raw_voice,
                 withheld_said: AtomicBool::new(false),
                 audio_held_said: AtomicBool::new(false),
             });
@@ -538,6 +545,20 @@ impl PluginHost {
         }
         if let Some(chunk) = voice.filter(|_| self.topics.voice) {
             self.shared.dispatch(topic::VOICE, &line(&HostMessage::Voice(chunk.clone())), &about, None, None);
+        }
+    }
+
+    /// A frame of a call's voice as received, before decryption ([`topic::VOICE_RAW`]), to the plugins the
+    /// user gave `rawVoice` and that aren't off for its system. Ciphertext stays ciphertext: nothing is
+    /// decrypted for this, so it isn't withheld as a decrypted call is.
+    pub fn live_raw(&self, chunk: &RawVoiceChunk) {
+        if !self.live || !self.topics.voice_raw {
+            return;
+        }
+        let about = About { system: self.shared.id_at(chunk.system), talkgroup: Some(chunk.talkgroup), ..Default::default() };
+        let l = line(&HostMessage::VoiceRaw(chunk.clone()));
+        for p in self.shared.plugins.iter().filter(|p| p.raw_voice && p.manifest.subscribes(topic::VOICE_RAW)) {
+            self.shared.offer(p, topic::VOICE_RAW, &l, &about, None, None);
         }
     }
 
@@ -1235,6 +1256,7 @@ mod tests {
             share_decrypted,
             off: Default::default(),
             sites_off: Default::default(),
+            raw_voice: false,
             withheld_said: AtomicBool::new(false),
             audio_held_said: AtomicBool::new(false),
         };
@@ -1410,7 +1432,7 @@ mod tests {
         let exe = dir.join("asker");
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{{\"type\":\"calls.query\",\"request\":7,\"talkgroup\":101}}'\nwhile read l; do case \"$l\" in *'\"type\":\"calls\"'*) echo \"$l\" > answer.json;; esac; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let spec = Spec { id: "asker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
+        let spec = Spec { id: "asker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default(), raw_voice: false };
         let calls: Calls = Arc::new(|q| CallsPage { next: (q.talkgroup == Some(101)).then(|| "42:x".into()), ..Default::default() });
         let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, Some(calls), None);
         let answer = dir.join("data/answer.json");
@@ -1443,7 +1465,7 @@ mod tests {
         let cfg = json!({ "systems": [{ "shortName": "dcfd", "pluginDelays": [{ "talkgroups": ["5"], "delayS": 3600 }] }] });
         hold.set_delays(super::super::delay::Delays::of(&trunk_app::Config::from_value(cfg).unwrap()));
         let systems = vec![RunSystem { id: SystemId(1), info: SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() } }];
-        let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
+        let spec = Spec { id: "taker".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default(), raw_voice: false };
         let notes: Notes = Arc::new(|_| {});
         let mut host = PluginHost::start_when(vec![spec], &super::super::AudioSettings::default(), &systems, &dir, notes, Arc::new(AtomicBool::new(true)), Some(hold.clone()), None, None);
         hold.attach(Some(host.outlet()));
@@ -1470,6 +1492,38 @@ mod tests {
         }
         host.shutdown(Duration::from_secs(1));
         assert!(lines().contains("dcfd/held"), "it goes once the delay is lifted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `voice.raw` goes only to a plugin the user gave `rawVoice`, though others subscribe to it too.
+    #[cfg(unix)]
+    #[test]
+    fn raw_voice_goes_only_to_a_plugin_given_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-raw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let spec = |name: &str, raw_voice: bool| {
+            let exe = dir.join(name);
+            let manifest = format!(r#"{{"id":"{name}","name":"{name}","version":"1.0.0","api":1,"subscribe":["voice.raw"]}}"#);
+            std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\necho '{{\"type\":\"ready\"}}'\ncat >> got.jsonl\n")).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Spec { id: name.into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join(format!("{name}.d"))), share_decrypted: false, off: Default::default(), sites_off: Default::default(), raw_voice }
+        };
+        let systems = vec![RunSystem { id: SystemId(1), info: SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() } }];
+        let mut host = PluginHost::start(vec![spec("given", true), spec("plain", false)], &super::super::AudioSettings::default(), &systems, &dir, super::super::notes_to_log());
+        assert!(host.topics.voice_raw, "the session is told a plugin takes it");
+        let frame = trunk_recorder_plugin::RawFrame { codec: trunk_recorder_plugin::Codec::Ambe, bits: vec![1; 49], e0: 0, errs: 0, erased: false, n: Some(0) };
+        host.live_raw(&RawVoiceChunk { call_id: 1, short_name: "dcfd".into(), talkgroup: 5, encrypted: Some(true), algid: Some(0x84), frames: vec![frame], ..Default::default() });
+        let got = |name: &str| std::fs::read_to_string(dir.join(format!("{name}.d/got.jsonl"))).unwrap_or_default();
+        let t0 = Instant::now();
+        while !got("given").contains("voice.raw") && t0.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        host.shutdown(Duration::from_secs(1));
+        assert!(got("given").contains(r#""type":"voice.raw""#) && got("given").contains(r#""algid":132"#), "{}", got("given"));
+        assert!(!got("plain").contains("voice.raw"), "a plugin not given rawVoice gets none");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1502,6 +1556,7 @@ mod tests {
             share_decrypted: false,
             off: Default::default(),
             sites_off: Default::default(),
+            raw_voice: false,
         };
         let audio = super::super::AudioSettings::default();
 
@@ -1579,6 +1634,7 @@ mod tests {
             share_decrypted: false,
             off: Default::default(),
             sites_off: Default::default(),
+            raw_voice: false,
         };
         let wait = |cond: &dyn Fn() -> bool| {
             let t0 = Instant::now();
@@ -1615,7 +1671,7 @@ mod tests {
         let manifest = r#"{"id":"logger","name":"L","version":"1.0.0","api":1,"subscribe":["log"]}"#;
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let spec = Spec { id: "logger".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
+        let spec = Spec { id: "logger".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default(), raw_voice: false };
         let hold = Hold::new(Arc::default());
         let cfg = serde_json::json!({ "systems": [{ "shortName": "held", "pluginDelays": [{ "delayS": 3600 }] }] });
         hold.set_delays(super::super::delay::Delays::of(&trunk_app::Config::from_value(cfg).unwrap()));
@@ -1657,7 +1713,7 @@ mod tests {
             let save = format!(r#"{{"type":"settings.save","request":7,"settings":{save}}}"#);
             std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\necho '{save}'\nwhile read l; do echo \"$l\" >> lines.jsonl; done\n")).unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-            Spec { id: name.into(), copy: 0, exe, config: json!({ "token": "t" }), systems: BTreeMap::new(), data_dir: Some(dir.join(name).with_extension("d")), share_decrypted: false, off: Default::default(), sites_off: Default::default() }
+            Spec { id: name.into(), copy: 0, exe, config: json!({ "token": "t" }), systems: BTreeMap::new(), data_dir: Some(dir.join(name).with_extension("d")), share_decrypted: false, off: Default::default(), sites_off: Default::default(), raw_voice: false }
         };
         let saved: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
         let s2 = saved.clone();
@@ -1708,7 +1764,7 @@ mod tests {
         let answer = r#"r=$(echo "$l" | sed 's/.*"request":\([0-9]*\).*/\1/'); echo "{\"type\":\"action.result\",\"request\":$r,\"ok\":true,\"message\":\"sent to $(echo "$l" | sed 's/.*"to":"\([^"]*\)".*/\1/')\"}""#;
         std::fs::write(&exe, format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho '{{\"type\":\"ready\"}}'\nwhile read l; do case \"$l\" in *'\"action\":\"test\"'*) {answer};; esac; done\n")).unwrap();
         std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let spec = Spec { id: "act".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
+        let spec = Spec { id: "act".into(), copy: 0, exe, config: Value::Null, systems: BTreeMap::new(), data_dir: Some(dir.join("data")), share_decrypted: false, off: Default::default(), sites_off: Default::default(), raw_voice: false };
         let mut host = PluginHost::start(vec![spec], &super::super::AudioSettings::default(), &[], &dir, Arc::new(|_| {}));
         let wait = Duration::from_secs(5);
         assert_eq!(host.action("act", "test".into(), json!({ "to": "discord" }), wait), Ok((true, "sent to discord".into())));

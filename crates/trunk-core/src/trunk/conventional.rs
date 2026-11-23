@@ -1202,6 +1202,8 @@ impl Conventional {
                     h.frames.push(f);
                 }
                 TrackerOut::AnalogAudio(a) => h.audio.extend_from_slice(&a),
+                // (Raw voice is for trunked calls.)
+                TrackerOut::Raw(_) => {}
                 TrackerOut::Subaudible(l) => h.low.extend_from_slice(&l),
                 TrackerOut::Info { source, flags } => h.infos.push((source, flags)),
                 TrackerOut::Cipher(id) => h.cipher = Some(id),

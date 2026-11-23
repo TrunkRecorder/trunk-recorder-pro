@@ -135,11 +135,33 @@ pub struct CipherId {
     pub keyid: u16,
 }
 
+/// One P25 vocoder frame as received: still encrypted if the call is. Held
+/// in arrays so a call's 50 frames a second cost no allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawOut {
+    pub codec: super::frames::Codec,
+    /// Information bits after FEC, 0 / 1: the first `codec.bits()`.
+    pub bits: [u8; 88],
+    pub e0: u32,
+    pub errs: u32,
+    pub erased: bool,
+    /// Its place in the superframe (0-17 in both phases; None: unknown).
+    pub n: Option<u8>,
+    /// Whether the call is encrypted on the air (None: not known yet: a frame heard before any
+    /// sync or link control said, which may well be ciphertext).
+    pub encrypted: Option<bool>,
+    /// The encryption sync the voice is under, as far as heard.
+    pub es: Option<crate::p25::voice::EncryptionSync>,
+}
+
 /// What a voice tracker heard, for the call on its slot.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrackerOut {
     /// 20 ms of 8 kHz audio in [−1, 1], and the vocoder frame it came from.
     Audio(Vec<f32>, VoiceFrame),
+    /// A vocoder frame as it came off the air, before any decryption (and
+    /// whether or not it is ever vocoded): for [`Event::RawVoice`].
+    Raw(RawOut),
     /// Who is talking (none: whoever was), and what the voice channel says
     /// of the transmission: an emergency, encrypted, …
     Info { source: Option<u32>, flags: Flags },
@@ -198,7 +220,8 @@ impl TrackerOut {
     /// What it says of the protocol that put it out.
     pub fn evidence(&self) -> Evidence {
         match self {
-            TrackerOut::AnalogAudio(_) | TrackerOut::Subaudible(_) => Evidence::None,
+            // (A raw frame comes with the audio it's of, which is the evidence.)
+            TrackerOut::AnalogAudio(_) | TrackerOut::Subaudible(_) | TrackerOut::Raw(_) => Evidence::None,
             TrackerOut::Audio(..) => Evidence::Frame,
             TrackerOut::Info { .. }
             | TrackerOut::Cipher(_)
@@ -237,6 +260,11 @@ pub(super) enum Encryption {
 }
 
 impl Encryption {
+    /// Known to be encrypted or clear (None: nothing has said yet).
+    pub fn known(&self) -> Option<bool> {
+        (*self != Encryption::Unknown).then(|| self.encrypted())
+    }
+
     pub(super) fn encrypted(self) -> bool {
         matches!(self, Encryption::Hinted | Encryption::Encrypted(_))
     }

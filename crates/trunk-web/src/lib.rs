@@ -64,7 +64,7 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
         let obj = Object::new();
         match o {
             // (No plugins in the browser; none are asked for.)
-            Output::Plugin(_) | Output::Log(_) => continue,
+            Output::Plugin(_) | Output::RawVoice(_) | Output::Log(_) => continue,
             // (Capture rules are the desktop app's.)
             Output::Fact { .. } => {}
             Output::Rollup(r) => {

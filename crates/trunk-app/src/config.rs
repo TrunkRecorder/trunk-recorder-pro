@@ -1856,6 +1856,11 @@ pub struct PluginSetup {
     /// unit events and status aren't sent, nor a recorded call only they heard.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sites_off: Vec<SiteId>,
+    /// Give it each P25 call's voice frames as received, before any decryption (topic `voice.raw`):
+    /// encrypted calls too, still encrypted and never decrypted for it. For a plugin that passes
+    /// calls on as they were sent, such as an ISSI link. Off: it gets none.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub raw_voice: bool,
 }
 
 /// Plugins wait this long for some calls: those its fields pick, each left
@@ -3650,6 +3655,7 @@ impl Config {
             capture_frames: self.recording.capture_frames,
             tapes: self.diagnostics.needs_tapes(),
             drop_duplicates: self.recording.drop_duplicate_calls,
+            raw_voice: self.plugins.values().any(|p| p.enabled && p.raw_voice),
             vocoder: self.recording.vocoder.engine(),
         }
     }

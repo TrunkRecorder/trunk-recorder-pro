@@ -14,7 +14,7 @@ use crate::p25::gps::LcPositions;
 use crate::p25::lc::{self, Lc, LinkControl};
 use crate::p25::voice::{decode_tdulc, imbe_bits_to_params, imbe_params_to_bits, ldu_codeword_end_bit, EncryptionSync, ALGID_CLEAR};
 use super::calls::Flags;
-use super::voice::{Crypt, Encryption, TrackerOut};
+use super::voice::{Crypt, Encryption, RawOut, TrackerOut};
 use std::sync::Arc;
 
 /// An LDU's length, s (1728 symbols at 4800 baud).
@@ -389,6 +389,9 @@ impl VoiceTracker {
     fn voice_frame(&mut self, ldu: usize, k: usize, u: [u32; 8], e0: u32, errs: u32, erased: bool, out: &mut Vec<TrackerOut>) {
         self.frames += 1;
         self.call_frames += 1;
+        let mut raw = [0u8; 88];
+        raw.copy_from_slice(&imbe_params_to_bits(&u));
+        out.push(TrackerOut::Raw(RawOut { codec: Codec::Imbe, bits: raw, e0, errs, erased, n: Some((ldu * 9 + k) as u8), encrypted: self.crypt.voice.known(), es: self.crypt.es }));
         let unsure = self.crypt.voice == Encryption::Unknown;
         let waiting = self.crypt.voice.encrypted() && self.crypt.keystream().is_none() && self.keys.is_some();
         if ldu == 0 && (unsure || waiting) {
@@ -509,7 +512,7 @@ mod tests {
         t.set_es(None);
         let mut out = Vec::new();
         t.voice_frame(0, 0, imbe_bits_to_params(&clear), 0, 0, false, &mut out);
-        assert!(out.is_empty());
+        assert!(audio(&out).is_empty());
         // …and muted, not dropped, if none comes; so is LDU2 voice.
         t.release_held(&mut out);
         t.voice_frame(1, 0, imbe_bits_to_params(&clear), 0, 0, false, &mut out);
@@ -530,6 +533,37 @@ mod tests {
         t.set_keys(None);
         let out = superframe(&mut t, &ks, &clear);
         assert!(audio(&out).iter().all(|f| f.erased && f.bits == [0; 88]));
+    }
+
+    /// `voice.raw` is the voice as it came off the air: ciphertext, with the sync it is under,
+    /// whether or not the system holds the key (and so whether or not any of it is vocoded).
+    #[test]
+    fn raw_voice_is_the_ciphertext_whether_or_not_it_is_decrypted() {
+        let (keys, es, ks) = adp();
+        let clear = clear_voice();
+        for keys in [None, Some(Keyring::default()), Some(keys)] {
+            let mut t = tracker(keys);
+            begin(&mut t, es);
+            let out = superframe(&mut t, &ks, &clear);
+            let raws: Vec<&RawOut> = out.iter().filter_map(|o| if let TrackerOut::Raw(r) = o { Some(r) } else { None }).collect();
+            assert_eq!(raws.len(), 18);
+            assert_eq!(raws.iter().map(|r| r.n).collect::<Vec<_>>(), (0..18).map(Some).collect::<Vec<_>>());
+            for (i, r) in raws.iter().enumerate() {
+                assert!(r.encrypted == Some(true) && r.es == Some(es) && r.codec == Codec::Imbe && !r.erased);
+                assert_ne!(r.bits, clear, "frame {i} is not ciphertext");
+                // Untouched ciphertext: the keystream turns it into the voice.
+                let mut bits = r.bits;
+                ks.apply_p1(i / 9, i % 9, &mut bits);
+                assert_eq!(bits, clear, "frame {i}");
+            }
+        }
+        // Clear voice is raw too, said not encrypted.
+        let mut t = tracker(None);
+        t.start(0.0, Some(100));
+        t.crypt.voice = Encryption::Clear;
+        let mut out = Vec::new();
+        t.voice_frame(0, 0, imbe_bits_to_params(&clear), 0, 0, false, &mut out);
+        assert!(matches!(&out[0], TrackerOut::Raw(r) if r.encrypted == Some(false) && r.bits == clear));
     }
 
     /// A wrong key's "voice" is noise, much of it pitches no encoder sends:

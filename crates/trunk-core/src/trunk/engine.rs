@@ -328,6 +328,9 @@ pub struct EngineConfig {
     pub tapes: bool,
     /// Save a call heard on several sites of one system once ([`super::multisite`]).
     pub drop_duplicates: bool,
+    /// Give each P25 trunked call's vocoder frames as received, before decryption, as
+    /// [`Event::RawVoice`] (a plugin wants `voice.raw`). Off, they cost nothing.
+    pub raw_voice: bool,
     /// The IMBE vocoder for P25 Phase 1 voice, trunked and conventional.
     pub vocoder: mbe::Profile,
 }
@@ -346,6 +349,7 @@ impl Default for EngineConfig {
             capture_frames: false,
             tapes: false,
             drop_duplicates: true,
+            raw_voice: false,
             vocoder: mbe::Profile::Enhanced,
         }
     }
@@ -377,6 +381,17 @@ pub struct LiveAudio {
     pub decrypted: bool,
 }
 
+/// One vocoder frame of a call as received, before decryption, and who it is for.
+#[derive(Clone, Debug)]
+pub struct LiveRaw {
+    pub call_id: CallId,
+    pub system: u16,
+    pub talkgroup: u32,
+    /// Who is talking (0: not known).
+    pub unit: u32,
+    pub frame: super::voice::RawOut,
+}
+
 #[derive(Clone, Debug)]
 pub enum Event {
     /// Site `site` tuned a control channel.
@@ -397,6 +412,8 @@ pub enum Event {
     CopyStart(Call),
     CopyEnd(Call),
     Audio(LiveAudio),
+    /// One vocoder frame of a recording P25 call as it came off the air ([`EngineConfig::raw_voice`]).
+    RawVoice(LiveRaw),
     /// System `system` (any of its sites) heard a radio's talker alias it didn't know (or knew by another name).
     UnitAlias { system: u16, unit: u32, alias: String, talkgroup: u32 },
     /// A frequency of system `system` is identified by this FCC call sign
@@ -1735,6 +1752,8 @@ struct Core {
     wall: WallEpoch,
     /// One copy of a call heard on several sites ([`EngineConfig::drop_duplicates`]).
     drop_duplicates: bool,
+    /// [`EngineConfig::raw_voice`].
+    raw_voice: bool,
 }
 
 impl Core {
@@ -1857,6 +1876,7 @@ impl Core {
             call_events: Vec::new(),
             wall: WallEpoch::new(cfg.epoch_ms_at_zero),
             drop_duplicates: cfg.drop_duplicates,
+            raw_voice: cfg.raw_voice,
         })
     }
 
@@ -2306,6 +2326,14 @@ impl Core {
                     if live.is_none_or(|key| self.multisite.audio_lead(key, site, now)) {
                         // (By its call's id, as the calls in progress are: not this copy's.)
                         self.events.push(Event::Audio(LiveAudio { call_id: self.multisite.call_of(id), system, talkgroup: tg, unit, samples, frames, decrypted }));
+                    }
+                }
+                TrackerOut::Raw(frame) => {
+                    if self.raw_voice && rec.is_some() {
+                        let (tg, unit) = call.as_ref().map_or((0, 0), |c| (c.talkgroup, c.talker().map_or(0, |s| s.src)));
+                        if live.is_none_or(|key| self.multisite.audio_lead(key, site, now)) {
+                            self.events.push(Event::RawVoice(LiveRaw { call_id: id, system, talkgroup: tg, unit, frame }));
+                        }
                     }
                 }
                 TrackerOut::Info { source, flags } => match call {

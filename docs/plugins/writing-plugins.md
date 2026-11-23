@@ -383,7 +383,7 @@ The main pieces:
 
 | Item | What it does |
 |---|---|
-| `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_update`, `call_end`, `call_concluded`, `unit`, `audio`, `voice`, `status`, `tone_pattern`, `log_line`, `totals`), `action(a, reply)`, `settings(setup)`, `calls(request, page)`, `settings_saved(request, ok, message)` and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages |
+| `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_update`, `call_end`, `call_concluded`, `unit`, `audio`, `voice`, `voice_raw`, `status`, `tone_pattern`, `log_line`, `totals`), `action(a, reply)`, `settings(setup)`, `calls(request, page)`, `settings_saved(request, ok, message)` and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages |
 | `manifest!()` | A `Manifest` with the id, version, description, homepage, repository, authors and license from `Cargo.toml` |
 | `run::<P>()` | Answers `--describe` (and `--version`), parses `hello` and your settings, calls your methods, and exits with 78 when `start` returns `Err` |
 | `Setup` | What `start` gets: `config`, `systems` (each a `System`: `index`, `id`, `short_name`, `kind`, `name`, its FCC licenses (`fcc`, `fcc_call_sign`, `fcc_name`), `sites`, `config` (your `SystemConfig` or `None`) and `settings` (your `Config` as it is for the system)), `host` (the recorder's `name` and `version`), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |

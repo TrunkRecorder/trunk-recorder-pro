@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value};
 use trunk_core::metrics;
-use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus, SystemId};
+use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, LiveRaw, MessageType, NoteLevel, ProtocolStatus, SystemId};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -33,6 +33,8 @@ pub enum Output {
     /// vocoder frames ([`voice_chunk`]) while plugins take topic `voice` or
     /// interfaces listen with it (`voice_listened`); none for analog.
     Audio { short_name: String, audio: LiveAudio, voice: Option<trunk_recorder_plugin::VoiceChunk>, voice_listened: bool },
+    /// A frame of a call's voice as received, before decryption: for plugins with `rawVoice` ([`raw_voice_chunk`]).
+    RawVoice(trunk_recorder_plugin::RawVoiceChunk),
     /// A concluded call to store at `<rel>.wav` / `<rel>.json` (relative to
     /// the recordings folder); `record` is its call JSON, and [`call_entry`]
     /// its history entry, which the platform sends as a `concluded` message
@@ -97,6 +99,7 @@ pub struct PluginTopics {
     pub totals: bool,
     pub tone_patterns: bool,
     pub voice: bool,
+    pub voice_raw: bool,
 }
 
 /// Live audio as the browsers take it, a binary frame: `[2][u16 system][u32 call][u32 tg][i16…]`.
@@ -125,6 +128,24 @@ pub fn voice_chunk(system_id: u32, short_name: &str, unit_name: &str, a: &LiveAu
         decrypted: a.decrypted,
         frames: a.frames.clone(),
     })
+}
+
+/// One frame of a call's voice as received, as the `voice.raw` plugin topic gives it.
+pub fn raw_voice_chunk(system_id: u32, short_name: &str, r: &LiveRaw) -> trunk_recorder_plugin::RawVoiceChunk {
+    let f = &r.frame;
+    trunk_recorder_plugin::RawVoiceChunk {
+        call_id: r.call_id,
+        system: r.system,
+        system_id,
+        short_name: short_name.to_string(),
+        talkgroup: r.talkgroup,
+        unit: r.unit,
+        encrypted: f.encrypted,
+        algid: f.es.map(|e| e.algid),
+        keyid: f.es.map(|e| e.keyid),
+        mi: f.es.map(|e| e.mi.iter().map(|b| format!("{b:02x}")).collect()),
+        frames: vec![trunk_recorder_plugin::RawFrame { codec: f.codec, bits: f.bits[..f.codec.bits()].to_vec(), e0: f.e0, errs: f.errs, erased: f.erased, n: f.n }],
+    }
 }
 
 /// Local time's offset from UTC at a Unix time, s (east positive) — Trunk
@@ -1310,6 +1331,12 @@ impl Session {
                     .flatten();
                 out.push(Output::Audio { short_name, audio, voice, voice_listened });
             }
+            Event::RawVoice(raw) => {
+                if self.plugin_topics.voice_raw {
+                    let short_name = self.system_name(raw.system).to_string();
+                    out.push(Output::RawVoice(raw_voice_chunk(self.system_id(raw.system).0, &short_name, &raw)));
+                }
+            }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;
                 self.heard.note(freq_hz, &code, false, ms);
@@ -1933,6 +1960,36 @@ mod tone_tests {
         assert_eq!(seconds(&mut s, &iq(20), 60), [("sourceRecovered".to_string(), None)]);
         let rails: Vec<u8> = (0..4096).map(|i| if i % 2 == 0 { 255 } else { 0 }).collect();
         assert_eq!(seconds(&mut s, &rails, 3).first().map(|k| k.0.as_str()), Some("sourceClipping"));
+    }
+
+    /// Raw voice (as received, before decryption) is built only for plugins given `rawVoice`, and
+    /// says what is known of the cipher: nothing, until a sync has been heard.
+    #[test]
+    fn raw_voice_is_built_only_for_plugins_that_take_it() {
+        use trunk_core::p25::voice::EncryptionSync;
+        use trunk_core::trunk::voice::RawOut;
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let mut bits = [0u8; 88];
+        bits[..49].fill(1);
+        let es = EncryptionSync { algid: 0x84, keyid: 0x1b50, mi: [1, 2, 3, 4, 5, 6, 7, 8, 0] };
+        let raw = |es, encrypted| LiveRaw { call_id: 7, system: 0, talkgroup: 5, unit: 42, frame: RawOut { codec: trunk_recorder_plugin::Codec::Ambe, bits, e0: 0, errs: 2, erased: false, n: Some(3), encrypted, es } };
+        let heard = |s: &mut Session, r: LiveRaw| {
+            let mut out = Vec::new();
+            s.handle(Event::RawVoice(r), &mut out);
+            out.into_iter().find_map(|o| if let Output::RawVoice(c) = o { Some(c) } else { None })
+        };
+        assert!(heard(&mut s, raw(None, None)).is_none(), "nobody takes it");
+        s.plugin_topics.voice_raw = true;
+        let c = heard(&mut s, raw(None, None)).unwrap();
+        assert_eq!((c.encrypted, c.algid, c.keyid, c.mi.as_deref()), (None, None, None, None));
+        assert_eq!((c.talkgroup, c.unit, c.frames.len(), c.frames[0].bits.len(), c.frames[0].n), (5, 42, 1, 49, Some(3)));
+        let c = heard(&mut s, raw(Some(es), Some(true))).unwrap();
+        assert_eq!((c.encrypted, c.algid, c.keyid, c.mi.as_deref()), (Some(true), Some(0x84), Some(0x1b50), Some("010203040506070800")));
     }
 
     /// Live voice's frames are built only while plugins take topic `voice` or

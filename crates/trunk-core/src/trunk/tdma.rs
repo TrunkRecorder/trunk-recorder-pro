@@ -9,7 +9,7 @@
 
 use super::frames::{Codec, VoiceFrame};
 use super::calls::Flags;
-use super::voice::{CipherId, Crypt, Encryption, TrackerOut};
+use super::voice::{CipherId, Crypt, Encryption, RawOut, TrackerOut};
 use crate::ambe::decode_vcw;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_msg, AliasLc, MacAliases};
@@ -456,6 +456,9 @@ impl TdmaTracker {
                 BURST_2V => Some(16 + j),
                 _ => (0..4).contains(&s.burst_id).then(|| 4 * s.burst_id as usize + j),
             };
+            let mut raw = [0u8; 88];
+            raw[..49].copy_from_slice(&v.bits);
+            out.push((c, TrackerOut::Raw(RawOut { codec: Codec::Ambe, bits: raw, e0: 0, errs: v.errs, erased: false, n: f.map(|f| f as u8), encrypted: s.crypt.voice.known(), es: s.crypt.es })));
             if s.crypt.voice == Encryption::Unknown || (s.crypt.voice.encrypted() && s.crypt.keystream().is_none() && keys.is_some()) {
                 s.held.push((f, v.bits, v.errs));
             } else {
@@ -589,6 +592,8 @@ mod tests {
         cipher: Vec<CipherId>,
         decrypted: usize,
         voice: Vec<([u8; 49], bool)>,
+        /// `voice.raw`: each frame as received.
+        raw: Vec<RawOut>,
     }
 
     fn hear(packets: &[(Packet, f64)], keys: Option<Arc<Keyring>>) -> Heard {
@@ -598,13 +603,14 @@ mod tests {
         for (p, at) in packets {
             t.packet(p, *at, &mut out);
         }
-        let mut h = Heard { cipher: Vec::new(), decrypted: 0, voice: Vec::new() };
+        let mut h = Heard { cipher: Vec::new(), decrypted: 0, voice: Vec::new(), raw: Vec::new() };
         for (c, o) in out {
             assert_eq!(c, 0);
             match o {
                 TrackerOut::Cipher(id) => h.cipher.push(id),
                 TrackerOut::Decrypted => h.decrypted += 1,
                 TrackerOut::Audio(_, f) => h.voice.push((f.bits.try_into().unwrap(), f.erased)),
+                TrackerOut::Raw(r) => h.raw.push(r),
                 _ => {}
             }
         }
@@ -648,6 +654,32 @@ mod tests {
         let h = hear(&t.packets(), Some(keyring(ALGID_AES_256, 0x370E, &[2; 32])));
         assert_eq!(h.voice.len(), 54);
         assert!(h.voice.iter().zip(&t.voice).all(|((b, _), v)| b != v));
+    }
+
+    /// `voice.raw` is the Phase 2 voice as received: ciphertext with or without the key, in
+    /// superframe order, the keystream turning it into the clear voice.
+    #[test]
+    fn raw_phase2_voice_is_the_ciphertext() {
+        let key = (0..16).map(|i| (i * 37 + 11) as u8).collect::<Vec<u8>>();
+        let e = es(ALGID_AES_128, 0x0009);
+        let t = tx(Some((e, key.clone())), 3);
+        for keys in [None, Some(Arc::new(Keyring::default())), Some(keyring(ALGID_AES_128, 0x0009, &key))] {
+            let h = hear(&t.packets(), keys);
+            assert_eq!(h.raw.len(), t.voice.len());
+            // Frames heard before the ESS said it's encrypted are not known to be: never "clear".
+            assert!(h.raw.iter().all(|r| r.encrypted != Some(false) && r.codec == Codec::Ambe));
+            assert!(h.raw.iter().any(|r| r.encrypted == Some(true)));
+            assert_eq!(h.raw.iter().map(|r| r.n.unwrap() as usize).collect::<Vec<_>>(), (0..h.raw.len()).map(|i| i % 18).collect::<Vec<_>>());
+            // The first superframe is under an MI the ESS gave later: held until then, so only
+            // the later ones are known to be under `e` when received.
+            assert!(h.raw.iter().any(|r| r.es.is_some_and(|x| x.algid == e.algid && x.keyid == e.keyid)));
+            for (i, r) in h.raw.iter().enumerate() {
+                assert_ne!(r.bits[..49], t.voice[i], "frame {i} is not ciphertext");
+            }
+        }
+        // (With the key the same frames also decrypt: see `each_cipher_decrypts_phase2_voice`.)
+        let h = hear(&t.packets(), None);
+        assert!(h.voice.is_empty() && h.raw.len() == t.voice.len());
     }
 
     /// An ESS that fails its FEC: the next MI follows from the LFSR.

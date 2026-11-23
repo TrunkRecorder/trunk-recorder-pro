@@ -17,6 +17,7 @@ frequencies are in hertz, unless a field says otherwise.
 | [`unit`](#unit) | `unit` | `UnitEvent` | A radio registers, affiliates, … | Many a second on a busy system |
 | [`audio`](#audio) | `audio` | `AudioChunk` | Live audio of recording calls | Many a second for each call |
 | [`voice`](#voice) | `voice` | `VoiceChunk` | Live voice of recording digital calls, as vocoder frames | One beside each `audio` chunk |
+| [`voice.raw`](#voiceraw) | `voice_raw` | `RawVoiceChunk` | A trunked P25 call's vocoder frames as they came off the air, before any decryption | One beside each `voice` chunk, for a plugin with `rawVoice` |
 | [`status`](#status) | `status` | `Status` | Every site's state | Every 5 s |
 | [`totals`](#totals) | `totals` | `Totals` | Every series the recorder measures, as running totals | Every 10 s |
 | [`tone_pattern`](#tone_pattern) | `tone_pattern` | `TonePatternEvent` | A call's tones made a pattern: a page, an alert tone, a DTMF or KNOX string, a Morse ID | As heard |
@@ -245,6 +246,20 @@ Each frame:
 Voice goes where live audio goes: not to a plugin delayed for the call, decrypted only to plugins
 allowed decrypted calls, and encrypted voice the recorder can't decrypt not at all. This topic is as
 busy as `audio`.
+
+## `voice.raw`
+
+A trunked P25 call's vocoder frames exactly as they came off the air, before any decryption, for a plugin that passes calls on in the
+frames they were sent in (an ISSI link). *Since SDK 0.17.0.*
+
+Each `RawFrame` has its `codec` (`imbe`: Phase 1, 88 bits; `ambe`: Phase 2, 49), its `bits` as hex, the errors FEC corrected (`errs`,
+IMBE's `e0`), `erased`, and `n`, its place in the 18-frame superframe (Phase 1: LDU1's nine frames then LDU2's; Phase 2: the four 4V
+bursts' sixteen then the 2V's two). The chunk says what is known of the cipher the voice is under: `encrypted` (absent until a sync or
+link control has said: frames heard before may be ciphertext), `algid`, `keyid` and the 72-bit message indicator `mi` (hex).
+
+Encrypted voice is given as it is, ciphertext, whether or not the recorder holds its key, and is never decrypted for this topic. Only a
+plugin the user gave `rawVoice` (in its entry in `plugins`, like `shareDecrypted`) gets it, and not one delayed for the call. Phase 1 and
+Phase 2 trunked calls only: conventional, DMR, NXDN and EDACS aren't given.
 
 ## `status`
 

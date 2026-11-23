@@ -1428,6 +1428,11 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                 let voice = voice.filter(|_| voice_listened).map(|chunk| ToClient::Voice { chunk }.to_json());
                 let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg: audio.talkgroup, frame: trunk_app::session::audio_frame(&audio), voice }));
             }
+            Output::RawVoice(chunk) => {
+                if let Some(p) = plugins {
+                    p.live_raw(&chunk);
+                }
+            }
             Output::Plugin(m) => {
                 if let Some(p) = plugins {
                     p.event(&m);

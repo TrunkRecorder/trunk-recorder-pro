@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Plugins can take P25 voice as it came off the air, still encrypted.** The `voice.raw` topic (SDK 0.17.0:
+  `Plugin::voice_raw`) gives a plugin each trunked P25 call's vocoder frames before any decryption, with their place
+  in the superframe and the encryption sync (algorithm, key id, message indicator) they are under, for a plugin that
+  passes a call on frame for frame, such as an ISSI link. Encrypted voice is given as ciphertext whether or not the
+  recorder holds the key, and nothing is decrypted for it. Off unless a plugin's entry in `plugins` has
+  `rawVoice: true`; with it off the frames are dropped at once.
+
+
 - **Airspy R2 / Mini: a driver built in** (#225). An Airspy now works with nothing installed, like an RTL-SDR or
   a HackRF: no `brew install airspy` or `libairspy0`, and on Windows no `airspy.dll`, `libusb-1.0.dll`,
   `pthreadVC2.dll` or Visual C++ 2010 runtime (#219). The driver is libairspy ported to Rust

@@ -44,6 +44,13 @@ pub mod topic {
     /// made from ([`super::VoiceChunk`]): the same frames, at the same
     /// moments, as the `audio` topic's PCM.
     pub const VOICE: &str = "voice";
+    /// Live voice of digital P25 calls as it came off the air, before any
+    /// decryption ([`super::RawVoiceChunk`]): for a plugin that passes a call
+    /// on in the same vocoder frames, such as an ISSI link. Encrypted voice
+    /// the recorder can't decrypt is given too, still encrypted, with the
+    /// cipher it named; it is never decrypted for this topic. Only plugins
+    /// the user gave `rawVoice` get it.
+    pub const VOICE_RAW: &str = "voice.raw";
     /// Every system's state, every few seconds ([`super::Status`]).
     pub const STATUS: &str = "status";
     /// Every series the recorder measures, as running totals since recording started, every
@@ -58,12 +65,12 @@ pub mod topic {
     /// elsewhere. A plugin isn't sent its own lines.
     pub const LOG: &str = "log";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, TOTALS, TONE_PATTERN, LOG];
+    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, VOICE_RAW, STATUS, TOTALS, TONE_PATTERN, LOG];
 
     /// A call's live media ([`AUDIO`], [`VOICE`]): late isn't live, so a plugin
     /// delayed for the call, or catching up, isn't given it.
     pub fn is_live(topic: &str) -> bool {
-        topic == AUDIO || topic == VOICE
+        topic == AUDIO || topic == VOICE || topic == VOICE_RAW
     }
 }
 
@@ -204,6 +211,8 @@ pub enum HostMessage {
     Audio(AudioChunk),
     #[serde(rename = "voice")]
     Voice(VoiceChunk),
+    #[serde(rename = "voice.raw")]
+    VoiceRaw(RawVoiceChunk),
     #[serde(rename = "status")]
     Status(Status),
     #[serde(rename = "totals")]
@@ -1181,6 +1190,80 @@ pub fn hex_bits(hex: &str, n: usize) -> Option<Vec<u8>> {
     Some(bits)
 }
 
+/// One vocoder frame of a digital P25 call exactly as it was received
+/// ([`topic::VOICE_RAW`]): FEC-corrected information bits like a
+/// [`VoiceFrame`]'s, but before decryption, so of an encrypted call they are
+/// still its ciphertext. In JSON its `bits` are hex ([`bits_hex`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawFrameJson")]
+pub struct RawFrame {
+    pub codec: Codec,
+    /// Information bits (0 / 1), after FEC, before any decryption: [`Codec::bits`] of them.
+    #[serde(serialize_with = "serialize_bits")]
+    pub bits: Vec<u8>,
+    /// IMBE: bit errors corrected in u0. AMBE: 0.
+    pub e0: u32,
+    /// Bit errors the FEC corrected in the whole frame.
+    pub errs: u32,
+    /// Known lost (a cut LDU); `errs` is then meaningless.
+    pub erased: bool,
+    /// Its place in the superframe: 0-17 in both phases: Phase 1's LDU1 nine frames, then LDU2's; Phase 2's four 4V
+    /// bursts' frames (0-15), then the 2V burst's (16, 17). None: the burst count was off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<u8>,
+}
+
+#[derive(Deserialize)]
+struct RawFrameJson {
+    codec: Codec,
+    bits: String,
+    #[serde(default)]
+    e0: u32,
+    #[serde(default)]
+    errs: u32,
+    #[serde(default)]
+    erased: bool,
+    #[serde(default)]
+    n: Option<u8>,
+}
+
+impl TryFrom<RawFrameJson> for RawFrame {
+    type Error = String;
+    fn try_from(f: RawFrameJson) -> Result<Self, String> {
+        let bits = hex_bits(&f.bits, f.codec.bits()).ok_or_else(|| format!("bits {:?} aren't {} bits of hex", f.bits, f.codec.bits()))?;
+        Ok(RawFrame { codec: f.codec, bits, e0: f.e0, errs: f.errs, erased: f.erased, n: f.n })
+    }
+}
+
+/// A digital P25 call's voice as received ([`topic::VOICE_RAW`]): frames in
+/// order, with the encryption sync the voice is under, as far as it's known.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct RawVoiceChunk {
+    pub call_id: u32,
+    /// [`SystemInfo::index`]: for this run only.
+    pub system: u16,
+    /// [`SystemInfo::id`]: the system's identity.
+    pub system_id: u32,
+    pub short_name: String,
+    pub talkgroup: u32,
+    /// Who is talking (0: not known yet).
+    pub unit: u32,
+    /// The voice is encrypted on the air (the frames are ciphertext), whether or not we hold its
+    /// key. Absent: not known yet; frames heard before a sync or link control said may be ciphertext.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted: Option<bool>,
+    /// The encryption sync the frames are under, once heard: cipher, key id, and the 72-bit
+    /// message indicator (9 bytes, hex). All absent until a sync has been heard.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algid: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keyid: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mi: Option<String>,
+    pub frames: Vec<RawFrame>,
+}
+
 /// A line TRP logged ([`topic::LOG`]), at the level its log is set to.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -1779,6 +1862,22 @@ mod tests {
         assert_eq!(v["patched_talkgroups"], serde_json::json!([101, 65001]));
         let unpatched = serde_json::to_value(CallRecord::default()).unwrap();
         assert!(unpatched.get("patched_talkgroups").is_none());
+    }
+
+    #[test]
+    fn raw_voice_round_trips_and_names_what_it_does_not_know() {
+        let frame = RawFrame { codec: Codec::Ambe, bits: (0..49).map(|i| (i % 3 == 1) as u8).collect(), e0: 0, errs: 1, erased: false, n: Some(17) };
+        let chunk = RawVoiceChunk { call_id: 9, talkgroup: 101, frames: vec![frame.clone()], ..Default::default() };
+        let line = serde_json::to_string(&HostMessage::VoiceRaw(chunk.clone())).unwrap();
+        // Before any sync is heard, nothing is claimed of the cipher.
+        assert!(line.contains(r#""type":"voice.raw""#) && !line.contains("encrypted") && !line.contains("algid") && !line.contains("mi"), "{line}");
+        let HostMessage::VoiceRaw(back) = serde_json::from_str(&line).unwrap() else { panic!("not voice.raw") };
+        assert_eq!(back, chunk);
+        let enc = RawVoiceChunk { encrypted: Some(true), algid: Some(0x84), keyid: Some(0x1b50), mi: Some("0102030405060708".to_string() + "00"), ..chunk };
+        let line = serde_json::to_string(&enc).unwrap();
+        assert!(line.contains(r#""encrypted":true"#) && line.contains(r#""algid":132"#) && line.contains(r#""keyid":6992"#), "{line}");
+        assert!(serde_json::from_str::<RawFrame>(r#"{"codec":"ambe","bits":"00"}"#).is_err());
+        assert!(topic::ALL.contains(&topic::VOICE_RAW) && topic::is_live(topic::VOICE_RAW));
     }
 
     #[test]

@@ -228,12 +228,12 @@ fn run_calls(a: &Args) {
     let (_, cfg) = load_config(a);
     // An executable, or an installed plugin's id (with its settings from the config).
     // (Decrypted calls go to it only as the config allows: an executable named directly gets none.)
-    let (id, exe, config, systems, share_decrypted) = if Path::new(target).is_file() {
+    let (id, exe, config, systems, share_decrypted, raw_voice) = if Path::new(target).is_file() {
         let m = describe(Path::new(target)).unwrap_or_else(|e| die(&e));
-        (m.id, PathBuf::from(target), Value::Null, BTreeMap::new(), false)
+        (m.id, PathBuf::from(target), Value::Null, BTreeMap::new(), false, false)
     } else {
         match all_plugins(&cfg).get(target) {
-            Some(e) => (target.clone(), executable(target, e), e.settings.clone(), super::system_settings(&cfg, target, 0), e.share_decrypted),
+            Some(e) => (target.clone(), executable(target, e), e.settings.clone(), super::system_settings(&cfg, target, 0), e.share_decrypted, e.raw_voice),
             None => die(&format!("{target}: no such file, and no plugin by that id")),
         }
     };
@@ -243,7 +243,7 @@ fn run_calls(a: &Args) {
         None => std::env::temp_dir().join(format!("trunk-pro-plugin-run-{id}")),
     };
     eprintln!("Data folder: {}", data_dir.display());
-    let mut spec = Spec { id, copy: 0, exe, config, systems, data_dir: Some(data_dir), share_decrypted, off: Default::default(), sites_off: Default::default() };
+    let mut spec = Spec { id, copy: 0, exe, config, systems, data_dir: Some(data_dir), share_decrypted, off: Default::default(), sites_off: Default::default(), raw_voice };
     if let Some(s) = a.get("settings") {
         let v: Value = std::fs::read_to_string(s).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| die(&format!("{s}: not JSON")));
         spec.config = v.get("config").cloned().unwrap_or(Value::Null);
