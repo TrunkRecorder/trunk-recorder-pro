@@ -17,6 +17,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   it, and the new `Attempt::Wait` holds the call back as long as the service asked (at most an hour). A health report
   answered "not found" now backs off to hourly instead of stopping for the run (the node health spec says so too).
 
+- **Long source labels fit** (#210). A SoapySDR source's label is its device arguments, which have no spaces to break
+  at (`SoapySDR driver=remote,remote=tcp://…`), and it pushed the layout wider. It's now cut off where it doesn't fit,
+  with the whole label on hover: in Setup's **Receive on**, and in the dashboard's card titles. In a channel's source
+  list, which can't be cut by the browser, it's shortened in the middle.
 - **SoapySDR over SoapyRemote: no false drops or clock re-anchors** (#209). SoapyRemote stamps only the first read of a
   network buffer that's split over several reads; the rest of it was left out of the count, so the next buffer looked
   late by that much. That was about 4.5% of an RTL-SDR's samples "dropped" (filled with silence), and the clock was

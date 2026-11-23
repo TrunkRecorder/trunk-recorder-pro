@@ -1,6 +1,6 @@
 import { Fragment, useId, useMemo, useRef, useState } from "react";
 import { INDEX_USES } from "./storeIndexes.ts";
-import { Fig, Figs, Info, SystemDot, SystemTag } from "./charts.tsx";
+import { Clip, Fig, Figs, Info, shorten, SystemDot, SystemTag } from "./charts.tsx";
 import {
   activeSites,
   activeSystems,
@@ -916,7 +916,7 @@ function ReceiveOn(props: { c: Config; on: string[] | undefined; onChange: (on: 
                 props.onChange(next.length ? next : undefined);
               }}
             />
-            <span className="small">{x.name}</span>
+            <Clip className="small" text={x.name} />
           </label>
         ))}
       </div>
@@ -931,14 +931,18 @@ function ReceiveOnSelect(props: { c: Config; ch: Channel; disabled?: boolean; on
   const value = JSON.stringify(on);
   const choices = receiveChoices(props.c, on);
   return (
-    <select value={on.length ? value : ""} disabled={props.disabled} aria-label="Source" onChange={(e) => props.onChange(e.target.value ? (JSON.parse(e.target.value) as string[]) : undefined)}>
+    <select className="clip-options" value={on.length ? value : ""} disabled={props.disabled} aria-label="Source" onChange={(e) => props.onChange(e.target.value ? (JSON.parse(e.target.value) as string[]) : undefined)}>
       <option value="">Any</option>
       {choices.map((x) => (
-        <option key={x.label} value={JSON.stringify([x.label])}>
-          {x.name}
+        <option key={x.label} value={JSON.stringify([x.label])} title={x.name}>
+          {shorten(x.name)}
         </option>
       ))}
-      {on.length > 1 && <option value={value}>{on.join(", ")}</option>}
+      {on.length > 1 && (
+        <option value={value} title={on.join(", ")}>
+          {shorten(on.join(", "))}
+        </option>
+      )}
     </select>
   );
 }

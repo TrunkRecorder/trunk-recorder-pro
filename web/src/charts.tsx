@@ -772,6 +772,26 @@ const OWN_CLICK = "a, button, input, select, textarea, label, summary, [role=but
  * A card: title, a status light and why, actions, and a body. `open` /
  * `onToggle`: a part that expands for detail (remembered per `id`).
  */
+/**
+ * Text that may be long with nowhere to break (a SoapySDR source's label is
+ * its device arguments): cut off with an ellipsis where it doesn't fit, the
+ * whole of it on hover (#210).
+ */
+export function Clip({ text, className }: { text: string; className?: string }) {
+  return (
+    <span className={`clip${className ? ` ${className}` : ""}`} title={text}>
+      {text}
+    </span>
+  );
+}
+
+/** `text` at most `max` characters, the middle cut (an option in a list can't be cut by CSS); the whole goes in its title. */
+export function shorten(text: string, max = 56): string {
+  if (text.length <= max) return text;
+  const head = Math.ceil((max - 1) * 0.6);
+  return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`;
+}
+
 export function Card(props: { title: ReactNode; level?: Level; why?: string; onWhy?: () => void; actions?: ReactNode; children?: ReactNode; className?: string; onTitle?: () => void; detail?: ReactNode; id?: string }) {
   const key = props.id ? `trp.card.${props.id}` : null;
   const [open, setOpen] = useState(() => {
@@ -805,10 +825,10 @@ export function Card(props: { title: ReactNode; level?: Level; why?: string; onW
           {props.level && props.level !== "idle" && <Light level={props.level} title={props.why} />}
           {props.onTitle ? (
             <button className="linkish" onClick={props.onTitle}>
-              <h3>{props.title}</h3>
+              <h3 title={typeof props.title === "string" ? props.title : undefined}>{props.title}</h3>
             </button>
           ) : (
-            <h3>{props.title}</h3>
+            <h3 title={typeof props.title === "string" ? props.title : undefined}>{props.title}</h3>
           )}
         </div>
         <div className="row">{props.actions}</div>
