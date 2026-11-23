@@ -370,3 +370,19 @@ export function parseAccess(mode: Channel["mode"], text: string): AccessParts | 
 export function sameAccess(mode: Channel["mode"], a: AccessParts, b: AccessParts): boolean {
   return rules().accessSame(mode, JSON.stringify(a), JSON.stringify(b));
 }
+
+/** A tone as shown, and what FRS/GMRS radios call it there (privacy code 1–38 on every brand; 39–121 Motorola's). */
+export interface ToneLabel {
+  text: string;
+  privacy: { code: number; motorola: boolean } | null;
+}
+
+/**
+ * A CTCSS tone or DCS code, written any way a channel's Code may be, as it's shown ("151.4 Hz",
+ * "D023N"), and on FRS/GMRS frequency `freqHz` its privacy code: Tone::label, Tone::privacy_code.
+ * As written when it isn't one.
+ */
+export function toneLabel(code: string, freqHz = 0): ToneLabel {
+  const t = JSON.parse(rules().toneLabel(code, freqHz)) as { text: string; privacy?: ToneLabel["privacy"] };
+  return { text: t.text, privacy: t.privacy ?? null };
+}

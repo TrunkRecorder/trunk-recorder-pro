@@ -12,7 +12,6 @@ use sdr_core::clock::{ClockEvent, SampleClock};
 use crate::log::{Body, CallState, CallTag, Level, Record};
 use crate::heard::HeardCodes;
 use crate::saving::Saved;
-use trunk_core::dsp::inband::subaudible::Tone;
 use trunk_core::Complex32;
 
 use crate::config::{Config, SourceKind};
@@ -1609,10 +1608,7 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
         "nxdn": c.voice.nxdn().map(|r| r.name()),
         "ran": c.ran,
         // "151.4 Hz" or "D023N".
-        "tone": c.tone.map(|h| match h.tone {
-            Tone::Ctcss(_) => format!("{} Hz", h.tone),
-            Tone::Dcs(..) => h.tone.to_string(),
-        }),
+        "tone": c.tone.map(|h| h.tone.label()),
         "state": if c.recording { "recording" } else { "monitoring" },
         "reason": c.reason.map(|r| r.as_str()),
         "encrypted": c.encrypted,

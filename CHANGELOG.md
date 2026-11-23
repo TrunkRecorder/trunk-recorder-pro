@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **FRS/GMRS privacy codes beside tones.** On an FRS/GMRS channel (462.550–462.725 and 467.550–467.725 MHz), Setup's
+  channel rows, the codes heard on a frequency and the call list show the privacy code radios call a tone: `151.4 Hz #24`.
+  Codes 1–38 (CTCSS) are the same on every brand; a DCS code shows Motorola's number, `D023N Moto #39`, since other brands
+  number those differently. A DCS code by another name (D047I) gets its code too. (PR #205 by devicenull.)
+
 - **Interfaces can follow what radios do.** A connection that subscribes to the topic `unit` gets a `unitEvent` each
   time a radio registers, deregisters, affiliates, reports its location, acknowledges, asks for data, answers a call
   alert or sends an emergency alarm. Each carries the system, site, radio and talkgroup with their names: the same

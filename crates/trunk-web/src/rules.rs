@@ -7,6 +7,7 @@
 use trunk_app::config::usable_half_width;
 use trunk_app::place::{place_sources, Placing, Targets};
 use trunk_app::Config;
+use trunk_core::dsp::inband::subaudible::{PrivacyCode, Tone};
 use trunk_core::trunk::{Access, ConvMode};
 use wasm_bindgen::prelude::*;
 
@@ -279,6 +280,20 @@ pub fn access_parse(mode: &str, text: &str) -> String {
         Ok(a) => access_json(a),
         Err(e) => serde_json::json!({ "error": e }).to_string(),
     }
+}
+
+/// A CTCSS tone or DCS code, written any way a channel's Code may be ([`Tone::parse`]), as it's
+/// shown ([`Tone::label`]: `151.4 Hz`, `D023N`), and on `freq_hz` what FRS/GMRS radios call it
+/// ([`Tone::privacy_code`]): JSON `{ text, privacy?: { code, motorola } }`. As written when it
+/// isn't one.
+#[wasm_bindgen(js_name = toneLabel)]
+pub fn tone_label(code: &str, freq_hz: f64) -> String {
+    let Ok(Some(tone)) = Tone::parse(code) else { return serde_json::json!({ "text": code }).to_string() };
+    let privacy = tone.privacy_code(freq_hz).map(|p| match p {
+        PrivacyCode::Any(n) => serde_json::json!({ "code": n, "motorola": false }),
+        PrivacyCode::Motorola(n) => serde_json::json!({ "code": n, "motorola": true }),
+    });
+    serde_json::json!({ "text": tone.label(), "privacy": privacy }).to_string()
 }
 
 /// Whether two rows of `mode` (each `{ code, slot?, matchTalkgroup? }`) record the same transmissions
