@@ -71,7 +71,7 @@ import {
   fccPrimary,
   newConventional,
   newSiteName,
-  needsDriver,
+  desktopOnly,
   newSystem,
   normalizeSite,
   resolvedCenters,
@@ -1687,7 +1687,7 @@ export function findOnAir(l: LookingFor): string | null {
   if (holdsRadios(state.phase) && !spare) return "Recording has the radios: stop recording to scan, or plug in a spare radio to scan with meanwhile.";
   if (!src && !spare) return "Add a radio first (Setup → Radios).";
   const radio = spare ?? src!;
-  if (needsDriver(radio) && !can("drivers")) return "Its radio needs the desktop app.";
+  if (desktopOnly(radio) && !can("drivers")) return "Its radio needs the desktop app.";
   startSurvey(spare ?? 0, bandsHolding(lookedFreqs(l), state.surveyBands), radio.type === "rtlsdr");
   return null;
 }

@@ -1,4 +1,5 @@
-//! RTL-SDR over USB (rtlsdr-nusb: pure Rust, no libusb/librtlsdr).
+//! RTL-SDR over USB (rtlsdr-nusb: pure Rust, no libusb/librtlsdr), or on another machine through its
+//! `rtl_tcp` server ([`super::rtltcp`]): one radio, set up the same either way.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,6 +15,8 @@ use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, StreamC
 pub struct RtlConfig {
     /// Serial number ("" = first dongle).
     pub serial: String,
+    /// Its `rtl_tcp` server, `host` or `host:port` ("" = on USB).
+    pub address: String,
     pub center_hz: u64,
     pub rate_hz: u32,
     /// None = tuner AGC.
@@ -23,6 +26,8 @@ pub struct RtlConfig {
     pub buf_len: u32,
     /// USB transfers in flight, 0 = enough for about 2 MiB.
     pub buffers: u32,
+    /// Power for an LNA on the antenna cable.
+    pub bias_tee: bool,
 }
 
 /// About this much is kept in flight when only the transfer size is set:
@@ -39,8 +44,17 @@ impl RtlConfig {
         RxBuffers { len, count }
     }
 
-    fn name(&self) -> String {
-        format!("RTL-SDR {}", if self.serial.is_empty() { "(first)" } else { &self.serial })
+    pub(super) fn name(&self) -> String {
+        if self.on_network() {
+            format!("rtl_tcp {}", trunk_app::config::endpoint(&self.address, trunk_app::config::RTL_TCP_PORT))
+        } else {
+            format!("RTL-SDR {}", if self.serial.is_empty() { "(first)" } else { &self.serial })
+        }
+    }
+
+    /// Whether it's on another machine, through `rtl_tcp`.
+    pub(super) fn on_network(&self) -> bool {
+        !self.address.trim().is_empty()
     }
 }
 
@@ -114,14 +128,18 @@ impl Radio for RtlConfig {
         match g {
             Gain::Agc => self.gain_db = None,
             Gain::Db(db) => self.gain_db = Some(db),
-            Gain::Stages(_) | Gain::Preset(..) => {}
+            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) => {}
         }
     }
     fn gain(&self) -> Option<Gain> {
         Some(self.gain_db.map_or(Gain::Agc, Gain::Db))
     }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
-        stream_once(self, sink, stop, ctl)
+        if self.on_network() {
+            super::rtltcp::stream_once(self, sink, stop, ctl)
+        } else {
+            stream_once(self, sink, stop, ctl)
+        }
     }
 }
 
@@ -158,7 +176,7 @@ impl Tunable for Rtl<'_> {
         let gain = match g {
             Gain::Agc => GainConfig::Auto,
             Gain::Db(db) => GainConfig::Manual(db),
-            Gain::Stages(_) | Gain::Preset(..) => return Ok(Regained::LEFT_ALONE),
+            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) => return Ok(Regained::LEFT_ALONE),
         };
         let gap = self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))?;
         Ok(Regained { gap, gain: Some(gain_set(self.dev)) })
@@ -192,7 +210,7 @@ pub(crate) fn take(check: &mut StreamCheck, sink: &mut Sink, raw: &[u8], dropped
 
 fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let mut b = Device::builder().raw_iq().frequency_hz(cfg.center_hz).sample_rate_hz(cfg.rate_hz).correction_ppm(cfg.ppm.round() as i32);
-    b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual));
+    b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual)).bias_tee(cfg.bias_tee);
     if !cfg.serial.is_empty() {
         b = b.serial(cfg.serial.clone());
     }

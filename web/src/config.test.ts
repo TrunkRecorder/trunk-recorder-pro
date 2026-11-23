@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, desktopOnly, desktopOnlyWhy, hasBiasT, highestRate, kindDesktopOnly, kindNeedsDriver, networkAddress, networkRadio, onNetwork, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -120,6 +120,53 @@ test("SOURCE_KINDS: each kind's new source is that kind, and names its device wh
   assert.equal(sourceKey(sourceFor("bladerf", "f12ce103")), "bladerf:f12ce103");
 });
 
+const none = () => ({ available: true, detail: "", devices: [] });
+
+test("rtl_tcp and SpyServer: radios on the network, found by their address, in the desktop app only", () => {
+  // An RTL-SDR on the network is an RTL-SDR with an address: the same kind, gain and bias-T as on USB.
+  const dongle = SOURCE_KINDS.rtlsdr.fresh();
+  const net = { ...dongle, address: " Pi.local " } as Config["sources"][number];
+  assert.deepEqual(SOURCE_KINDS.spyserver.fresh(), { type: "spyserver", address: "", centerHz: 0, rateHz: 2_500_000, iqFormat: "cu8", gain: 14, ppm: 0 });
+  assert.equal(SOURCE_KINDS.spyserver.driver, undefined, "nothing to install");
+  assert.ok(SOURCE_KINDS.spyserver.network && !kindNeedsDriver("spyserver") && kindDesktopOnly("spyserver"), "a radio on the network, not a driver's");
+  assert.deepEqual([networkAddress(net), networkAddress(dongle), networkAddress(SOURCE_KINDS.spyserver.fresh())], ["Pi.local", undefined, ""]);
+  assert.ok(onNetwork(net) && !onNetwork(dongle) && onNetwork(SOURCE_KINDS.spyserver.fresh()) && !onNetwork(SOURCE_KINDS.hackrf.fresh()));
+  assert.ok(desktopOnly(net) && !desktopOnly(dongle), "the browser opens a dongle on USB, not one on the network");
+  assert.equal(desktopOnlyWhy(net), "An RTL-SDR on the network needs the desktop app.");
+  assert.equal(desktopOnlyWhy(SOURCE_KINDS.spyserver.fresh()), "SpyServer needs the desktop app.");
+  assert.equal(deviceId(sourceFor("spyserver", "10.0.0.5:5555")), "10.0.0.5:5555");
+  assert.deepEqual([sourceKey(net), sourceKey(dongle)], ["rtlsdr:Pi.local", "rtlsdr:"], "by its address, not a serial");
+  // What a radio on the network said is in the recorder's list of radios (`network`), by its address as given.
+  const sp = { ...SOURCE_KINDS.spyserver.fresh(), address: " pi:5555 " } as Config["sources"][number];
+  assert.equal(foundRadio(null, sp), undefined, "not listed yet");
+  const radios: Radios = {
+    usrp: none(),
+    hackrf: none(),
+    airspy: none(),
+    hydrasdr: none(),
+    bladerf: none(),
+    network: {
+      available: true,
+      detail: "built in",
+      devices: [
+        { kind: "spyserver", address: "pi:5555", label: "Airspy R2 / Mini at pi:5555", model: "Airspy R2 / Mini", rates: [2_500_000, 1_250_000], gains: [0, 1, 2] },
+        { kind: "spyserver", address: "gone:5555", label: "gone:5555", error: "can't connect" },
+        { kind: "rtlsdr", address: "Pi.local", label: "R820T at Pi.local", model: "R820T", rates: [2_400_000] },
+      ],
+    },
+  };
+  assert.deepEqual(foundRadio(radios, sp)?.rates, [2_500_000, 1_250_000]);
+  assert.equal(foundRadio(radios, net)?.model, "R820T", "an RTL-SDR on the network, by its address");
+  assert.equal(foundRadio(radios, { ...net, type: "rtlsdr", address: "" } as Config["sources"][number]), undefined, "one on USB isn't a network radio");
+  assert.equal(networkRadio(radios, { ...sp, address: "gone:5555" } as Config["sources"][number])?.error, "can't connect");
+  assert.equal(highestRate(foundRadio(radios, sp)), 2_500_000, "the rate a source starts at once its server has said");
+  assert.equal(highestRate({ label: "", rates: [1_250_000, 10_000_000, 2_500_000] }), 10_000_000);
+  assert.equal(highestRate(undefined), undefined);
+  assert.equal(ratesText(foundRadio(radios, sp)), "2.5 or 1.25");
+  assert.equal(ratesText({ label: "", rates: [2_048_000, 625_000, 312_500] }), "2.048 or 0.625 or 0.313", "to the kHz, the zeros that mean nothing left off");
+  assert.ok(hasBiasT(net) && hasBiasT(dongle) && !hasBiasT(SOURCE_KINDS.spyserver.fresh()), "a dongle's bias-T, on USB or the network; not a server's");
+});
+
 test("a new HackRF source: the driver's gain defaults, a native kind with a device list", () => {
   const h = SOURCE_KINDS.hackrf.fresh();
   assert.deepEqual(h, { type: "hackrf", serial: "", centerHz: 0, rateHz: 8_000_000, lnaDb: 16, vgaDb: 20, amp: false, biasTee: false, ppm: 0 });
@@ -175,7 +222,7 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
   assert.equal(rateFor(6_000_000, busy), 6_000_000, "unknown: kept");
   assert.equal(rateFor(80_000_000, blade), 61_440_000, "past a range: its end");
   assert.equal(ratesText(r2), "10 or 2.5");
-  assert.equal(ratesText(blade), "0.52–61.44");
+  assert.equal(ratesText(blade), "0.521–61.44");
   assert.equal(ratesText(busy), null);
   assert.equal(radioName("airspy", r2), "Airspy R2");
   assert.equal(radioName("bladerf", blade), "bladeRF 2.0");
@@ -189,7 +236,7 @@ test("foundRadio: what the picked radio runs at, once its driver has asked it; a
 
 test("advice for the sources (the recorder's Config::advice): a typed-in centre that misses the site's voice channels moves, and can go back to auto", () => {
   const c = defaultConfig();
-  c.sources = [{ type: "rtlsdr", serial: "", centerHz: 849_500_000, rateHz: 2_400_000, gainDb: 25, agc: false, ppm: 0, bufLen: 0, buffers: 0 }];
+  c.sources = [{ type: "rtlsdr", serial: "", centerHz: 849_500_000, rateHz: 2_400_000, gainDb: 25, agc: false, biasTee: false, ppm: 0, bufLen: 0, buffers: 0 }];
   c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_012_500] }));
   c.systems[0].sites[0].voiceChannelsHz = [851_512_500, 852_012_500];
   const a = sourceAdvice(c, [undefined]);
@@ -205,4 +252,12 @@ test("each kind of system is as the recorder's table says: named, and locked by 
   assert.deepEqual([systemType("edacs"), systemType("nope"), systemType(3)], ["edacs", "p25", "p25"]);
   assert.deepEqual(siteLockFields({ type: "p25" }), ["nac", "wacn", "sysId", "rfss", "site"]);
   assert.deepEqual([siteLockFields({ type: "nxdn" }), siteLockFields({ type: "nxdn", nxdnType: "typeD" }), siteLockFields({ type: "dmr" })], [["sysId", "site"], [], []]);
+});
+
+test("importing a Trunk Recorder source on rtl_tcp: an RTL-SDR with its server's address, bias-T as gr-osmosdr says", () => {
+  const tr = JSON.stringify({ sources: [{ center: 851e6, rate: 2.4e6, gain: 30, device: "rtl_tcp=pi.local:1234,bias=1" }, { center: 853e6, rate: 2.4e6, device: "rtl=00000002" }], systems: [] });
+  const [net, usb] = importTrunkRecorderConfig(tr, defaultConfig()).config.sources;
+  assert.ok(net.type === "rtlsdr" && usb.type === "rtlsdr");
+  assert.deepEqual([net.address, net.serial, net.biasTee, onNetwork(net)], ["pi.local:1234", "", true, true]);
+  assert.deepEqual([usb.address, usb.serial, usb.biasTee, onNetwork(usb)], [undefined, "00000002", false, false]);
 });

@@ -30,7 +30,7 @@ use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use crate::config::{AirspyGain, AirspyGains, Config, SampleFormat, Source, SourceKind};
 use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, uhd};
+use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, uhd};
 use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
@@ -424,7 +424,7 @@ pub struct Runner {
 /// The gain to set on a source running with `old` now that it is `new`:
 /// when the gain is all that changed and the radio takes it while running.
 /// The gain in dB always; AGC on or off only on an RTL-SDR, an Airspy or a
-/// HydraSDR (the others take that at the next start).
+/// HydraSDR (an RTL-SDR on USB or behind `rtl_tcp`; the others take that at the next start).
 pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     // `old` with `new`'s gain: equal to `new` when only the gain differs (a name aside).
     let (mut o, new) = (old.radio(), &new.radio());
@@ -441,6 +441,10 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
         | (SourceKind::Bladerf { gain_db, agc: false, .. }, SourceKind::Bladerf { gain_db: g, agc: false, .. }) => {
             *gain_db = *g;
             Gain::Db(*g as f32)
+        }
+        (SourceKind::Spyserver { gain, .. }, SourceKind::Spyserver { gain: g, .. }) => {
+            *gain = *g;
+            Gain::Step(*g)
         }
         (SourceKind::Hackrf { lna_db, vga_db, amp, .. }, SourceKind::Hackrf { lna_db: l, vga_db: v, amp: a, .. }) => {
             (*lna_db, *vga_db, *amp) = (*l, *v, *a);
@@ -828,14 +832,17 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
     std::thread::Builder::new().name(name.to_string()).spawn(move || {
         let Source { kind, rate_hz, ppm, .. } = src;
         match kind {
-            SourceKind::Rtlsdr { serial, gain_db, agc, buf_len, buffers } => {
-                sdr::run_with(i, rtl::RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
+            SourceKind::Rtlsdr { serial, address, gain_db, agc, bias_tee, buf_len, buffers } => {
+                sdr::run_with(i, rtl::RtlConfig { serial, address, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers, bias_tee }, tx, stop, ctl)
             }
             SourceKind::Usrp { args, gain_db, agc, antenna, wire_format } => {
                 sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
             }
             SourceKind::Hackrf { serial, lna_db, vga_db, amp, bias_tee } => {
                 sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf_gain(lna_db, vga_db, amp), bias_tee, ppm }, tx, stop, ctl)
+            }
+            SourceKind::Spyserver { address, iq_format, gain, digital_gain_db } => {
+                sdr::run_with(i, spyserver::SpyserverConfig { address, center_hz: center, rate_hz, format: iq_format, gain, digital_gain_db }, tx, stop, ctl)
             }
             SourceKind::Airspy { serial, gains, bias_tee, packing } => {
                 sdr::run_with(i, airspy::AirspyConfig { lib: airspy::Lib::Airspy, serial, center_hz: center, rate_hz, gain: airspy_gain(gains), bias_tee, packing, rf_port: 0, ppm }, tx, stop, ctl)
@@ -1693,6 +1700,8 @@ mod live_tests {
         assert_eq!(live_gain(&rtl(33.8, false), &rtl(33.8, true)), Some(Gain::Agc), "an RTL-SDR's AGC, live");
         let named = trunk_app::config::Source { name: "Whip".into(), ..rtl(22.9, false) };
         assert_eq!(live_gain(&rtl(33.8, false), &named), Some(Gain::Db(22.9)), "named in the same edit: still live");
+        let spy = |gain: u32| src("spyserver", json!({ "address": "pi:5555", "centerHz": 154e6, "rateHz": 2.5e6, "gain": gain }));
+        assert_eq!(live_gain(&spy(14), &spy(9)), Some(Gain::Step(9)), "a SpyServer's gain step, live");
         let usrp = |gain: f64, agc: bool| src("usrp", json!({ "args": "", "antenna": "", "centerHz": 853e6, "rateHz": 8e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
         assert_eq!(live_gain(&usrp(40.0, false), &usrp(30.0, false)), Some(Gain::Db(30.0)));
         assert_eq!(live_gain(&usrp(40.0, false), &usrp(40.0, true)), None, "USRP AGC waits for the start");

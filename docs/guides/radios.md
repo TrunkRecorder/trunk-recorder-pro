@@ -8,9 +8,10 @@ Installing drivers for USRP, Airspy, HydraSDR, bladeRF and SoapySDR radios is co
 
 All of these settings are on the **Radios** tab of **Setup**, one card per source. **Add a
 source** adds another; the buttons at the top of a card pick its kind: **RTL-SDR**, **HackRF**, **USRP**,
-**Airspy**, **HydraSDR**, **bladeRF**, **SoapySDR** or **Capture file**. Only RTL-SDR and Capture file work in the
-browser; the other kinds need the desktop app. Besides its kind, a card has a **Name** (shown in the
-**Receive on** labels) and, on an RTL-SDR, a **USB transfer size**.
+**Airspy**, **HydraSDR**, **bladeRF**, **SpyServer**, **SoapySDR** or **Capture file**. Only RTL-SDR (on USB) and
+Capture file work in the browser; the other kinds need the desktop app. An RTL-SDR's **Connection** is **USB** or **rtl_tcp**: a dongle
+on another machine, found by its **Server address**, as a SpyServer is. Besides its kind, a card has a **Name** (shown in the
+**Receive on** labels) and, on an RTL-SDR on USB, a **USB transfer size**.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../img/shots/setup-radios-dark.png">
@@ -43,6 +44,7 @@ The sample rates offered for each kind:
 |---|---|---|
 | RTL-SDR | 2.4, 2.048, 2.56, 3.2, 1.92, 1.024 MSPS | 2.4 MSPS is the default; above 2.4 the card says *May drop samples · 2.4 is dependable* |
 | HackRF | 1 to 20 MSPS | |
+| SpyServer | 2.5, 3, 2.4, 5, 6, 10, 1.25 MSPS, or any rate typed in | one the server offers: its top rate halved, to the nearest whole Hz (an R2's usually starts at 2.5, then 1.25…); another is refused, with the ones it offers (the recorder asks the server at the address, and Setup lists those) |
 | USRP | 2.4 to 20 MSPS, or any rate typed in | any rate its master clock divides to; default 8 MSPS |
 | Airspy | 10, 6, 3, 2.5 MSPS | R2: 10 or 2.5; Mini: 6 or 3 |
 | HydraSDR | 10, 5, 2.5, 1.25 MSPS | |
@@ -144,6 +146,8 @@ usually works better for trunked systems, so the default is AGC off (except on S
 | Kind | Gain setting | Default |
 |---|---|---|
 | RTL-SDR | **Gain, dB**, 0 to 49.6 on most dongles, or **AGC** | 25.4 dB, AGC off |
+| rtl_tcp | as an RTL-SDR: **Gain, dB** or **AGC** (taken by the far end), and **Bias-T** | 25.4 dB, AGC off |
+| SpyServer | **Gain step**, the server's own (R2: 0 to 21), and **Digital gain, dB** (blank: automatic) | step 14, automatic |
 | HackRF | **LNA (IF) gain** 0 to 40 dB in steps of 8, **VGA (baseband) gain** 0 to 62 dB in steps of 2, and the **Amp** (+14 dB, overloads near strong signals) | LNA 16, VGA 20, amp off |
 | USRP | **Gain, dB** (B200/B210: 0 to 76), or **AGC** (B200 / B210 and E3xx only) | 40 dB, AGC off |
 | Airspy | **Gain**: **Linearity** or **Sensitivity**, a step 0 to 21; or **Each stage**: **LNA** 0 to 14, **Mixer** and **VGA (IF)** 0 to 15, with **AGC** for the LNA and mixer | Linearity, step 14 |

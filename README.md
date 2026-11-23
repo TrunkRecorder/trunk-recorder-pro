@@ -26,7 +26,8 @@ The same engine also runs in the browser with nothing to install. On a Raspberry
 - Several systems and several sites at once; a call heard on more than one site is saved once,
   from the best copy
 
-**With:** RTL-SDR dongles and HackRF Ones (nothing else to install), Ettus USRPs, Airspy R2 / Mini, HydraSDR RFOne, and anything
+**With:** RTL-SDR dongles and HackRF Ones (nothing else to install), radios on another machine through `rtl_tcp` or an Airspy
+SpyServer (likewise), Ettus USRPs, Airspy R2 / Mini, HydraSDR RFOne, and anything
 with a SoapySDR module (SDRplay, LimeSDR…).
 
 ## Install

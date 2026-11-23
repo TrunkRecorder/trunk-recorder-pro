@@ -166,7 +166,7 @@ const LNA_STEPS: [i32; 16] = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 
 const MIXER_STEPS: [i32; 16] = [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8];
 /// The gains librtlsdr offers, tenths of a dB (`r82xx_gains`): what Trunk
 /// Recorder (through gr-osmosdr) takes the nearest of.
-const GAINS: [i32; 29] = [0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480, 496];
+pub(super) const GAINS: [i32; 29] = [0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480, 496];
 
 /// The offered gain nearest `db` (first of equals), tenths of a dB.
 pub(super) fn nearest_gain(db: f32) -> i32 {

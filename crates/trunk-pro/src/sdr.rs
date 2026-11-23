@@ -313,6 +313,8 @@ pub enum Gain {
     Stages(Stages),
     /// A step of one of the radio's own gain tables (libairspy's).
     Preset(Preset, u8),
+    /// A step of a server's own gain index (a SpyServer's), 0 up.
+    Step(u32),
 }
 
 /// A radio's own table of gains, one step setting every stage.
@@ -372,6 +374,7 @@ impl std::fmt::Display for Gain {
             Gain::Stages(s) => write!(f, "{s}"),
             Gain::Preset(Preset::Linearity, step) => write!(f, "linearity {step}"),
             Gain::Preset(Preset::Sensitivity, step) => write!(f, "sensitivity {step}"),
+            Gain::Step(step) => write!(f, "step {step}"),
         }
     }
 }

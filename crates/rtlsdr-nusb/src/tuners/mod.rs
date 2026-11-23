@@ -25,6 +25,28 @@ pub enum TunerKind {
     E4000,
 }
 
+impl TunerKind {
+    /// The gains it offers, tenths of a dB, lowest first (librtlsdr's tables: what a gain is set to the
+    /// nearest of). The R820T and R828D share one.
+    pub fn gains_tenths(self) -> Vec<i32> {
+        match self {
+            TunerKind::R820T | TunerKind::R828D => r82xx::GAINS.to_vec(),
+            TunerKind::E4000 => e4k::gain_steps().map(|(g, ..)| g).collect(),
+        }
+    }
+
+    /// Its kind from the tuner number librtlsdr gives it (`rtlsdr_tuner`, which `rtl_tcp` sends in its
+    /// greeting: 1 E4000, 5 R820T, 6 R828D); none for one not driven here (FC0012, FC0013, FC2580).
+    pub fn from_librtlsdr(code: u32) -> Option<TunerKind> {
+        match code {
+            1 => Some(TunerKind::E4000),
+            5 => Some(TunerKind::R820T),
+            6 => Some(TunerKind::R828D),
+            _ => None,
+        }
+    }
+}
+
 /// The board around the tuner, known by its USB strings. The RTL-SDR Blog
 /// boards add an HF upconverter (below 28.8 MHz, so no direct sampling) and
 /// switch the tuner's inputs themselves.

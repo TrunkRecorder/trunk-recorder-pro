@@ -31,23 +31,23 @@ function connected(phase: "idle" | "running", radios: Radios | null, serials: st
   return sent;
 }
 
-test("an Airspy, a HydraSDR, a bladeRF and a HackRF have a bias-T; the others don't", () => {
+test("an RTL-SDR (on USB or rtl_tcp), an Airspy, a HydraSDR, a bladeRF and a HackRF have a bias-T; the others don't", () => {
   const airspy = detectRadios([], RADIOS)[0].source;
   assert.equal(airspy.type, "airspy");
   assert.ok(hasBiasT(airspy));
   const kinds = (Object.keys(SOURCE_KINDS) as (keyof typeof SOURCE_KINDS)[]).filter((k) => hasBiasT(SOURCE_KINDS[k].fresh()));
-  assert.deepEqual(kinds, ["airspy", "hydrasdr", "bladerf", "hackrf"]);
-  assert.ok(!hasBiasT(defaultConfig().sources[0]), "the default source is an RTL-SDR");
+  assert.deepEqual(kinds, ["rtlsdr", "airspy", "hydrasdr", "bladerf", "hackrf"]);
 });
 
-test("the setup guide's radio cards offer bias-T on an Airspy, not on a dongle", () => {
+test("the setup guide's radio cards offer bias-T on an Airspy and, in the desktop app, a dongle", () => {
   connected("idle", RADIOS, ["00000001"]);
   const html = renderToString(<RadiosStep s={snapshot()} c={snapshot().config!} onNext={() => {}} onBack={() => {}} />);
-  assert.equal((html.match(/Bias-T/g) ?? []).length, 1, html);
+  assert.equal((html.match(/Bias-T/g) ?? []).length, 2, html);
   assert.ok(html.includes(SOURCE_KINDS.airspy.biasT!), "its hint from SOURCE_KINDS");
   connected("idle", NO_RADIOS, ["00000001"]);
   const dongle = renderToString(<RadiosStep s={snapshot()} c={snapshot().config!} onNext={() => {}} onBack={() => {}} />);
-  assert.ok(!dongle.includes("Bias-T"), dongle);
+  assert.equal((dongle.match(/Bias-T/g) ?? []).length, 1, dongle);
+  assert.ok(dongle.includes(SOURCE_KINDS.rtlsdr.biasT!), "the dongle's, from SOURCE_KINDS");
 });
 
 test("Find my system offers bias-T when the scan's radio is a spare Airspy", () => {

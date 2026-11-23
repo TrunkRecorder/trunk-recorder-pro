@@ -40,6 +40,20 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   and the roll-off plot's edges straight away; it's saved once the field is left, as before (Escape puts it back). The
   roll-off plot and the field show the same guard band, so a value typed while the plot is open shows there too. (#105)
 
+- **Radios on the network: RTL-SDRs through `rtl_tcp`, and SpyServer.** An RTL-SDR on another machine is an RTL-SDR source
+  with the `address` of its `rtl_tcp` server (Setup → Radios → **Connection**: **rtl_tcp**): the same gain, AGC, bias-T, ppm,
+  rates and gain tuning as one on USB, its gain set to the nearest step of the tuner the server names (R820T, R828D, E4000). An
+  Airspy R2 / Mini / HF+ (or an RTL-SDR) served by Airspy's `spyserver` is a `spyserver` source: I/Q at a decimation stage the
+  server offers (a rate it doesn't is refused with the ones it does), as `cu8`, `cs16` or `cf32` like a capture file's, with the
+  server's gain step (set live) and digital gain divided out; a second client of one server keeps to the window of the first.
+  Nothing to install, and they work in Docker; the desktop app only (plain TCP). When a saved config names one, the recorder
+  asks it what it is, and the list of radios carries its model, rates and gain steps: Setup offers its rates (a new SpyServer
+  starts at its highest) or says it isn't answering, and the gain-tuning tool walks its steps. A survey step waits longer on
+  these, for what the link has queued from before a retune. Importing a Trunk Recorder config takes `rtl_tcp=host:port`.
+  (PR #208 by gofaster.)
+- **RTL-SDRs on USB have a bias-T switch** (desktop app), for an LNA on the antenna cable of an RTL-SDR Blog V3 or V4.
+- **Sample rates to the kHz.** A radio's rates read 2.048 and 0.625 MSPS, not 2.05 and 0.63.
+
 ## [0.4.1] — 2026-11-22
 
 - **The recordings folder is checked, and a failure to write says why.** At startup and whenever the folder changes in
@@ -114,7 +128,6 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   `tool submission` reports them beside live's for each site (`sites`, `live_good` / `replay_good`, …).
 
 ### Updating
-
 
 - **Plugins' per-system settings.** A system's overrides of a setting its plugin doesn't name are ignored: update the
   plugins (above) with this release. OpenMHz's **Separate sites** and Broadcastify's **Sites of their own** are no

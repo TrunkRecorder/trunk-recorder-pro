@@ -4,14 +4,19 @@
 //! from RTL-SDRs out of the box and from these once their driver is
 //! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_HYDRASDR` / `TRUNK_PRO_BLADERF` /
 //! `TRUNK_PRO_SOAPY` name a library file to use instead of searching.
+//! An RTL-SDR on another machine (through `rtl_tcp`, [`rtl`]) and a SpyServer ([`spyserver`]) are
+//! radios on the network, over plain TCP ([`net`]): nothing to install either.
 
 pub mod airspy;
 pub mod bladerf;
 pub mod hackrf;
+pub mod net;
 pub mod priority;
 pub mod rtl;
+pub mod rtltcp;
 mod sdrplay;
 pub mod soapy;
+pub mod spyserver;
 pub mod uhd;
 mod usb_speed;
 
@@ -126,12 +131,16 @@ pub fn usb_memory_hint(e: &str) -> String {
 
 /// The sample rates a radio runs at, as it said when opened (trunk-app's: Setup and advice read it too).
 pub use trunk_app::rates::Rates;
+use trunk_app::config::{Source, SourceKind};
 
-/// What a radio said it is when it was opened: its model ("R2", "bladeRF 2.0") and rates.
+/// What a radio said it is when it was opened: its model ("R2", "bladeRF 2.0"), rates, and gains
+/// where they aren't its kind's own (an RTL-SDR's tuner behind `rtl_tcp`, a SpyServer's steps).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Caps {
     pub model: String,
     pub rates: Rates,
+    /// The gains it can be set to ([`trunk_app::gain::GainPlan::of_with`]); empty: its kind's.
+    pub gains: Vec<f64>,
 }
 
 impl Caps {
@@ -143,6 +152,9 @@ impl Caps {
         match &self.rates {
             Rates::List(v) => j["rates"] = serde_json::json!(v),
             Rates::Range { min, max } => j["rateRange"] = serde_json::json!([min, max]),
+        }
+        if !self.gains.is_empty() {
+            j["gains"] = serde_json::json!(self.gains);
         }
     }
 }
@@ -269,10 +281,10 @@ pub fn candidates(unix_name: &str, mac_name: &str, win_names: &[&'static str]) -
 }
 
 /// Drivers and the devices found through them, for the interface:
-/// `{usrp: {available, detail, devices}, airspy: {…}, hydrasdr: {…}, bladerf: {…}, soapy: {…, modules}}`.
-/// USRPs and SoapySDR devices are searched only with `search` (a device
-/// search can take seconds).
-pub fn radios_json(search: bool) -> serde_json::Value {
+/// `{usrp: {available, detail, devices}, hackrf: {…}, airspy: {…}, hydrasdr: {…}, bladerf: {…}, soapy: {…, modules},
+/// network: {…}}`. USRPs and SoapySDR devices are searched only with `search` (a device search can take seconds).
+/// `network`: the radios on the network `sources` name ([`network_json`]), asked now with `ask`.
+pub fn radios_json(search: bool, sources: &[Source], ask: bool) -> serde_json::Value {
     let u = uhd::info();
     let mut uj = u.json();
     uj["devices"] = if search && u.loaded {
@@ -287,7 +299,58 @@ pub fn radios_json(search: bool) -> serde_json::Value {
         serde_json::Value::Null
     };
     let hackrf = serde_json::json!({ "available": true, "detail": "built in", "devices": hackrf::devices() });
-    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search) })
+    let network = serde_json::json!({ "available": true, "detail": "built in", "devices": network_json(sources, ask) });
+    serde_json::json!({ "usrp": uj, "hackrf": hackrf, "airspy": airspy_json(airspy::Lib::Airspy), "hydrasdr": airspy_json(airspy::Lib::Hydrasdr), "bladerf": bladerf_json(), "soapy": soapy::json(search), "network": network })
+}
+
+/// A source's radio on the network, if it is one: its kind ("rtlsdr", "spyserver"), its address as given, and
+/// what it's remembered by ([`remember`]).
+pub fn on_network(src: &Source) -> Option<(&'static str, &str, String)> {
+    match &src.kind {
+        SourceKind::Rtlsdr { address, .. } if !address.trim().is_empty() => Some(("rtlsdr", address.as_str(), rtltcp::key(address))),
+        SourceKind::Spyserver { address, .. } if !address.trim().is_empty() => Some(("spyserver", address.as_str(), spyserver::key(address))),
+        _ => None,
+    }
+}
+
+/// The radios on the network `sources` name (an RTL-SDR's `rtl_tcp` server, a SpyServer), as a list of radios has
+/// them: `{kind, address, model, rates, gains}`, what each said when it was last opened in this run, or (`ask`, and
+/// not opened yet) what it says when asked now; `error` when it can't be. (Asked only when wanted: a server another
+/// client has may take seconds to say it won't answer, and one `rtl_tcp` serves one client.)
+pub fn network_json(sources: &[Source], ask: bool) -> Vec<serde_json::Value> {
+    let mut seen = std::collections::HashSet::new();
+    sources
+        .iter()
+        .filter_map(on_network)
+        .filter(|(_, _, key)| seen.insert(key.clone()))
+        .map(|(kind, address, key)| {
+            let mut j = serde_json::json!({ "kind": kind, "address": address.trim(), "label": address.trim() });
+            let caps = match known(&key) {
+                Some(c) => Ok(c),
+                None if ask => match kind {
+                    "rtlsdr" => rtltcp::ask(address),
+                    _ => spyserver::ask(address),
+                },
+                None => Err(String::new()),
+            };
+            match caps {
+                Ok(c) => {
+                    j["label"] = format!("{} at {}", c.model, address.trim()).into();
+                    c.add_to(&mut j);
+                }
+                Err(e) if !e.is_empty() => j["error"] = e.into(),
+                Err(_) => {}
+            }
+            j
+        })
+        .collect()
+}
+
+/// The gains `src`'s radio said it can be set to when it was last opened, where they aren't its kind's own (an
+/// RTL-SDR's tuner behind `rtl_tcp`, a SpyServer's steps): what the gain-tuning tool walks.
+pub fn reported_gains(src: &Source) -> Option<Vec<f64>> {
+    let (_, _, key) = on_network(src)?;
+    known(&key).map(|c| c.gains).filter(|g| !g.is_empty())
 }
 
 fn bladerf_json() -> serde_json::Value {
@@ -365,9 +428,9 @@ mod tests {
         assert_eq!(rate_refusal("Airspy R2", &r2, 6e6), "this Airspy R2 runs at 10 / 2.5 MSPS, not 6: pick one of those in Setup → Radios");
         let blade = Rates::Range { min: 520_834.0, max: 61_440_000.0 };
         assert!(blade.allows(10e6) && !blade.allows(0.5e6) && !blade.allows(80e6));
-        assert_eq!(rate_refusal("bladeRF 2.0", &blade, 80e6), "this bladeRF 2.0 runs at 0.52–61.44 MSPS, not 80: pick one in that range in Setup → Radios");
+        assert_eq!(rate_refusal("bladeRF 2.0", &blade, 80e6), "this bladeRF 2.0 runs at 0.521–61.44 MSPS, not 80: pick one in that range in Setup → Radios");
         let mut j = serde_json::json!({ "serial": "1" });
-        Caps { model: "bladeRF 2.0".into(), rates: blade }.add_to(&mut j);
+        Caps { model: "bladeRF 2.0".into(), rates: blade, gains: Vec::new() }.add_to(&mut j);
         assert_eq!(j, serde_json::json!({ "serial": "1", "model": "bladeRF 2.0", "rateRange": [520_834.0, 61_440_000.0] }));
     }
 

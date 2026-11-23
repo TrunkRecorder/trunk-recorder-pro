@@ -134,9 +134,10 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
     }
     sc.ppm = src.ppm;
     match &src.kind {
-        SourceKind::Rtlsdr { .. } => {
+        // (Behind `rtl_tcp`, what the link has queued from before a retune arrives after it: each step waits longer.)
+        SourceKind::Rtlsdr { address, .. } => {
             sc.tune_range_hz = (24e6, 1766e6);
-            sc.settle_s = 0.03;
+            sc.settle_s = if address.trim().is_empty() { 0.03 } else { 0.5 };
             if req.find_gain {
                 sc.gains = RTL_GAINS.iter().map(|&i| crate::gain::R82XX_DB[i] as f32).collect();
             }
@@ -159,6 +160,12 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
         SourceKind::Hackrf { .. } => {
             sc.tune_range_hz = (1e6, 6e9);
             sc.settle_s = 0.05;
+        }
+        // The server's receiver isn't known here (an Airspy R2 / Mini, an HF+, an RTL-SDR): the widest of them; a tune
+        // it refuses shows as a source error. The link's queue, as behind `rtl_tcp`.
+        SourceKind::Spyserver { .. } => {
+            sc.tune_range_hz = (24e6, 1800e6);
+            sc.settle_s = 0.5;
         }
         // The device's range isn't known here: the widest any module offers; a
         // tune it refuses shows as a source error.

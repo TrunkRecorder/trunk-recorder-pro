@@ -12,7 +12,7 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"hydrasdr"`, `"bladerf"`, `"hackrf"`, `"soapy"` or `"file"` (any case). Any other
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"hydrasdr"`, `"bladerf"`, `"hackrf"`, `"spyserver"`, `"soapy"` or `"file"` (any case). Any other
 `type`, or none, makes the file unreadable.
 
 The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
@@ -108,21 +108,26 @@ gains on the air and keeps the best. The trial gains aren't saved to the config.
 
 ## `"type": "rtlsdr"`
 
-An RTL-SDR dongle, driven directly over USB (no driver library needed).
+An RTL-SDR dongle, driven directly over USB (no driver library needed), or on another machine through its `rtl_tcp`
+server ([below](#an-rtl-sdr-on-the-network-rtl_tcp)).
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `type` | ✓ | | string | `"rtlsdr"` |
-| `serial` | ✓ | | string | The dongle's serial number. `""` = the first free dongle |
+| `serial` | | `""` | string | The dongle's serial number. `""` = the first free dongle |
+| `address` | | | string | Its `rtl_tcp` server, `host` or `host:port`, when it's on another machine. Left out: on USB |
 | `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
 | `rateHz` | ✓ | | number | Sample rate. 2 400 000 is typical; the interface offers 2 048 000, 2 560 000, 3 200 000, 1 920 000 and 1 024 000 too |
 | `gainDb` | | `25.4` | number | Tuner gain, dB. Ignored with `agc`. Most dongles go 0–49.6 |
 | `agc` | | `false` | bool | Use the tuner's AGC instead of `gainDb` |
+| `biasTee` | | `false` | bool | Power an LNA through the antenna port (an RTL-SDR Blog V3 or V4). The desktop app's; the browser version leaves it as it is |
 | `ppm` | | `0` | number | Frequency correction, ppm. An RTL-SDR rounds it to a whole number |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 | `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512, at most 16 MiB. `0` = 16 384. **USB transfer size** in Setup |
 | `buffers` | | `0` | integer | USB transfers kept in flight (Trunk Recorder's `buffers`), at most 256. `0` = enough for about 2 MiB: 128 at the default size, 32 at 65 536 |
+
+`rateHz` is one of an RTL2832U's two ranges, 225 001–300 000 or 900 001–3 200 000, and `gainDb` 0–50: anything else won't start.
 
 The defaults (128 transfers of 16 KiB) suit any number of dongles on one bus, so `bufLen` and
 `buffers` rarely need setting. A retune or gain change halts the dongle's output for a moment and
@@ -182,6 +187,49 @@ one is refused when opened, with a message to update it (`hackrf_spiflash`).
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 
 A `soapy` source with `driver=hackrf` still works, for a rad1o or a HackRF behind SoapyRemote. On Windows the built-in HackRF driver isn't available yet: use a `soapy` source with `driver=hackrf` there.
+
+### An RTL-SDR on the network (`rtl_tcp`)
+
+An `rtlsdr` source with an `address` is a dongle on another machine, through its `rtl_tcp` server. Nothing to install here, and it
+works in Docker (not in the browser version, which can't open a TCP connection). Start the server where the dongle is
+(`rtl_tcp -a 0.0.0.0`, or with `-p` for another port); it serves **one client at a time**, so two sources can't share one address.
+
+```json
+{ "type": "rtlsdr", "address": "pi.local", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "biasTee": false, "ppm": 0 }
+```
+
+The port is `1234` unless the address gives one: `pi.local` is `pi.local:1234`, and a server started with `-p 4321` is
+`pi.local:4321`. An IPv6 address is written in brackets: `[fe80::1]` or `[fe80::1]:4321`. Its keys are a dongle's, but for `serial`,
+`bufLen` and `buffers`, which are USB's. A gain is set to the nearest step of the tuner the server names (an R820T / R828D has 29,
+0–49.6; an E4000 has 14), from the same tables as on USB; for any other tuner it is sent as given.
+
+`rtl_tcp` answers nothing, so what a source reports as its gain is the step it set (the log says when that isn't the `gainDb` asked). Whatever a previous client left set on the
+server (direct sampling, the digital AGC, the bias-T) is set again when a source connects. A lost connection is retried every few
+seconds, as an unplugged dongle is. The samples are 8-bit, as a dongle's own: 4.8 MB/s (38 Mbit/s) at 2.4 MSPS. A link too slow for
+that makes the server drop samples at its end; wire it where you can.
+An `rsp_tcp` server (an SDRplay) speaks the same protocol, in its 8-bit mode (not `-b 16`).
+
+## `"type": "spyserver"`
+
+A receiver on another machine, through Airspy's `spyserver`: an Airspy R2, Mini or HF+, or an RTL-SDR behind it. Nothing to
+install here, and it works in Docker. The source reads the server's I/Q stream at one of its decimation stages, so the samples are the
+receiver's own; its FFT stream isn't used.
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `type` | ✓ | | string | `"spyserver"` |
+| `address` | ✓ | | string | The server, `host` or `host:port` (port `5555` if left off) |
+| `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
+| `rateHz` | ✓ | | number | Sample rate: one the server offers, its top rate halved some number of times, each to the nearest whole Hz (an Airspy R2's server usually starts at 2.5, then 1.25 …). Another is refused, with the ones offered. The recorder asks the server when the address is saved, and Setup lists the rates it says, starting at the highest |
+| `iqFormat` | | `"cu8"` | string | How the I/Q travels, as a capture file's samples are: `"cu8"`, `"cs16"` or `"cf32"` (2, 4 or 8 bytes a sample). The server may insist on one of its own |
+| `gain` | | `14` | integer | The server's own gain step (an index into its gain table, not dB: an Airspy R2 has 0–21, an HF+ 0–8, an RTL-SDR 0–28), held to what the server has |
+| `digitalGainDb` | | automatic | integer | What the server multiplies the stream by before quantising it for the link, 0–60 dB; it is divided out again here, so levels don't change. Left out: 3 dB for each decimation stage, and for an R2 a dB more for each gain step below its top |
+| `autoTune` | | `false` | bool | Not used |
+| `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
+
+A server lets any number of clients listen but **only the first to connect can move the receiver**. A source that connects second
+keeps to a window inside what the first has tuned (it is refused with the window's limits when `centerHz` is outside it), and its `gain`
+is the first client's. `ppm` is not used: the receiver's own crystal is the server's.
 
 ## `"type": "airspy"`
 

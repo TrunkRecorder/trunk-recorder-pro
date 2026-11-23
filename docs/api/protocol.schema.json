@@ -2370,6 +2370,13 @@
           },
           "minItems": 2,
           "maxItems": 2
+        },
+        "gains": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The gains it can be set to, where they aren't its kind's own (an RTL-SDR's tuner behind `rtl_tcp`; a SpyServer's steps, 0 up)."
         }
       },
       "required": [
@@ -5567,6 +5574,65 @@
       ],
       "additionalProperties": false
     },
+    "NetworkRadio": {
+      "type": "object",
+      "properties": {
+        "args": {
+          "type": "string"
+        },
+        "serial": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "rates": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
+        },
+        "rateRange": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "gains": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "The gains it can be set to, where they aren't its kind's own (an RTL-SDR's tuner behind `rtl_tcp`; a SpyServer's steps, 0 up)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "rtlsdr",
+            "spyserver"
+          ]
+        },
+        "address": {
+          "type": "string",
+          "description": "As the source gives it."
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "address",
+        "kind",
+        "label"
+      ],
+      "additionalProperties": false,
+      "description": "A radio on the network a source names (an RTL-SDR's `rtl_tcp` server, a SpyServer): what it said when it was last opened, or when asked (a search, or its address entered); `error` when it couldn't be; neither: not asked yet."
+    },
     "NxdnSiteStatus": {
       "type": "object",
       "properties": {
@@ -7010,6 +7076,30 @@
         },
         "soapy": {
           "$ref": "#/definitions/SoapyState"
+        },
+        "network": {
+          "type": "object",
+          "properties": {
+            "available": {
+              "type": "boolean"
+            },
+            "detail": {
+              "type": "string"
+            },
+            "devices": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/NetworkRadio"
+              }
+            }
+          },
+          "required": [
+            "available",
+            "detail",
+            "devices"
+          ],
+          "additionalProperties": false,
+          "description": "The radios on the network the sources name: built in, always available."
         }
       },
       "required": [
@@ -7326,7 +7416,8 @@
         "cu8",
         "cs16",
         "cf32"
-      ]
+      ],
+      "description": "I/Q samples as bytes: 8-bit offset, 16-bit signed or 32-bit float (a capture file's, a SpyServer's on the link)."
     },
     "SeriesData": {
       "type": "object",
@@ -7928,6 +8019,13 @@
                     },
                     "minItems": 2,
                     "maxItems": 2
+                  },
+                  "gains": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "description": "The gains it can be set to, where they aren't its kind's own (an RTL-SDR's tuner behind `rtl_tcp`; a SpyServer's steps, 0 up)."
                   }
                 },
                 "required": [
@@ -8004,10 +8102,16 @@
             "serial": {
               "type": "string"
             },
+            "address": {
+              "type": "string"
+            },
             "gainDb": {
               "type": "number"
             },
             "agc": {
+              "type": "boolean"
+            },
+            "biasTee": {
               "type": "boolean"
             },
             "bufLen": {
@@ -8019,6 +8123,7 @@
           },
           "required": [
             "agc",
+            "biasTee",
             "centerHz",
             "gainDb",
             "ppm",
@@ -8348,6 +8453,58 @@
             "serial",
             "type",
             "vgaDb"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
+            "type": {
+              "type": "string",
+              "const": "spyserver"
+            },
+            "address": {
+              "type": "string"
+            },
+            "iqFormat": {
+              "$ref": "#/definitions/SampleFormat"
+            },
+            "gain": {
+              "type": "number"
+            },
+            "digitalGainDb": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "address",
+            "centerHz",
+            "gain",
+            "iqFormat",
+            "ppm",
+            "rateHz",
+            "type"
           ]
         },
         {

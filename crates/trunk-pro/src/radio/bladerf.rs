@@ -355,7 +355,7 @@ fn stream_once(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
         let mut range: *const Range = std::ptr::null();
         if (a.get_devinfo)(d.dev, &mut info) == 0 && (a.get_sample_rate_range)(d.dev, RX0, &mut range) == 0 && !range.is_null() {
             let r = &*range;
-            let caps = Caps { model: carr(&info.product), rates: Rates::Range { min: r.min as f64 * r.scale as f64, max: r.max as f64 * r.scale as f64 } };
+            let caps = Caps { model: carr(&info.product), rates: Rates::Range { min: r.min as f64 * r.scale as f64, max: r.max as f64 * r.scale as f64 }, gains: Vec::new() };
             super::remember(&key(&carr(&info.serial)), caps.clone());
             if !caps.rates.allows(cfg.rate_hz) {
                 let what = if caps.model.is_empty() { "bladeRF".to_string() } else { caps.model.clone() };

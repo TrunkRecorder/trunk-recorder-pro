@@ -771,7 +771,7 @@ Every message is a JSON object with a `type`. Exact fields are in
 | `configSaved` | Answers `setConfig`, to its sender | `version` (the config's now), `error` when the edit wasn't taken (the config changed elsewhere meanwhile, or it's bad) or couldn't be saved |
 | `tokenCreated` | Answers `createToken`, to its sender | `id`, `name`, `secret` (the new user's access token's, shown this once: the config keeps its hash) or `error` (a bad or taken name) |
 | `devices` | On connecting (control access); answers `devices` | `devices`: RTL-SDR dongles plugged in (`busy` when another program has one) |
-| `radios` | On connecting; answers `findRadios` | `radios`: the optional USRP / Airspy / SoapySDR drivers and their devices |
+| `radios` | On connecting; answers `findRadios`; again when a saved config names a radio on the network anew | `radios`: the optional USRP / Airspy / SoapySDR drivers and their devices, and `network`: the radios on the network the sources name (an RTL-SDR's `rtl_tcp` server, a SpyServer), each `kind`, `address`, and what it said (`model`, `rates`, `gains`) or `error` |
 | `dir` | Answers `listDir` | a folder: `path`, `parent`, `dirs`, `files` (.json), `home`, `sep`, `error` |
 | `trConfig` | Answers `readTrConfig` | a Trunk Recorder config.json's `text`, the `files` it names, or `error` |
 | `survey` | The survey's progress | `stage` (`idle` / `scanning` / `monitoring` / `done`), candidates, the channel monitored, the suggested system |
@@ -812,7 +812,7 @@ too.
 | `setTalkgroup` | `system`, `talkgroup`, `edit`: any of `alphaTag`, `description`, `tag`, `category` (text), `ignore` (true/false) | Change one talkgroup's row: only the cells given (a row added when there's none and something is set). An edit that changes its names makes `edited` its origin. Everyone gets it as `talkgroupEdited`; a recording takes it at once. For an Ignore button or a name edit, rather than sending them all. |
 | `channelFile` | `index`, `path` | Link conventional system `index`'s channels to a CSV, reload it (same path), or unlink (`""`). |
 | `devices` | — | List RTL-SDR dongles (→ `devices`). |
-| `findRadios` | — | Look for USRP / Airspy / SoapySDR devices (→ `radios`; takes a few seconds). |
+| `findRadios` | — | Look for USRP / Airspy / SoapySDR devices, and ask the radios on the network the sources name (→ `radios`; takes a few seconds). |
 | `listDir` | `path` (`""` = home) | List a folder on the recorder's computer (→ `dir`). |
 | `readTrConfig` | `path` | Read a Trunk Recorder config.json and its files, to import (→ `trConfig`). |
 | `surveyStart` | `source`, `radio` (optional: a spare radio no source uses, to survey beside the recording), `bands` (ids from `hello.surveyBands`), `findGain`, `lookFor` (optional: just its sites' frequencies, `freqsHz`, `sites[]`, `type?`, `listenS?`, the sites judged) | Scan for systems with radio `source` (or `radio`), or look for one (not while recording, unless on a spare `radio`). |
