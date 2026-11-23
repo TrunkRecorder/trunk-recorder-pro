@@ -547,9 +547,11 @@ pub struct CallRecord {
     /// synchronized (this recorder's addition; absent when the clock was fine).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub clock_off: bool,
-    /// Seconds of audio.
+    /// Seconds of audio, to the nearest second as Trunk Recorder writes it
+    /// (a 0.4 s call says 0): [`CallRecord::audio_ms`] is exact.
     #[serde(serialize_with = "plain")]
     pub call_length: f64,
+    /// Milliseconds of audio (0 in a record from before it).
     pub call_length_ms: i64,
     pub talkgroup: u32,
     /// Conventional P25 / DMR / NXDN: the talkgroup the air named (this
@@ -691,6 +693,15 @@ impl Default for CallRecord {
 }
 
 impl CallRecord {
+    /// Its audio, ms: `call_length_ms`, else (a record without it) `call_length`.
+    pub fn audio_ms(&self) -> i64 {
+        Some(self.call_length_ms).filter(|&l| l > 0).unwrap_or((self.call_length * 1000.0).round() as i64)
+    }
+    /// It has audio: not a call kept with none (the recorder's "Keep calls with
+    /// no audio", or an encrypted one), which has nothing to play or upload.
+    pub fn has_audio(&self) -> bool {
+        self.audio_ms() > 0
+    }
     /// Voice frames with bit errors, over the call.
     pub fn error_count(&self) -> u64 {
         self.freq_list.iter().map(|f| f.error_count).sum()
@@ -1699,6 +1710,15 @@ mod tests {
         assert!(back.ends_with("\"rec_state_type\":\"STOPPED\"}"), "{back}");
         // Read and written again, it's the same.
         assert_eq!(serde_json::from_str::<CallRecord>(&back).unwrap().to_json(), back);
+    }
+
+    /// A call's audio: exact from `call_length_ms`; a record without it, whole seconds.
+    #[test]
+    fn audio_ms() {
+        let r = |len: f64, ms: i64| CallRecord { call_length: len, call_length_ms: ms, ..Default::default() };
+        assert_eq!((r(0.0, 400).audio_ms(), r(0.0, 400).has_audio()), (400, true), "a 0.4 s call says 0 s");
+        assert_eq!(r(4.0, 0).audio_ms(), 4000);
+        assert!(!r(0.0, 0).has_audio());
     }
 
     #[test]
