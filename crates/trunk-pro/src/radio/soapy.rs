@@ -677,18 +677,27 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
 /// the first read of a network buffer split over several (the rest of it
 /// comes back with no time), so those samples count too, or the next
 /// buffer's time looks ahead by them (#209). And timestamps that don't keep
-/// to the sample count — SoapyRTLSDR before 0.3.4 counts bytes, so its run at
-/// twice real time — are noticed over the first reads, said once, and
+/// to the sample count are noticed over the first second, said once, and
 /// ignored: samples lost are then counted by overflows, as with none.
+///
+/// That's judged over windows of samples, not step by step: SoapyRTLSDR
+/// before 0.3.4 counts its buffers' times in bytes but the reads within one
+/// in samples, so over SoapyRemote's small reads most steps keep to the
+/// count and each buffer's first jumps by a buffer (#209: ~2.4 M "lost" a
+/// second). Over a window its times run at twice real time. The median
+/// window is taken, so a loss (the stream's first buffer, say) doesn't
+/// decide it.
 struct Stamps {
     rate: f64,
     /// Where the next sample's time should be, ns.
     next_ns: Option<f64>,
-    /// The last time given, and the samples since it (timed or not).
-    last: Option<(f64, u64)>,
+    /// Whether any read was stamped.
+    stamped: bool,
     trust: Trust,
-    /// While learning: each step's time against its samples', and the
-    /// samples the steps say were lost (counted once they're trusted).
+    /// While learning: the window's first time and its samples since, each
+    /// window's time against its samples', and the samples the times say
+    /// were lost (counted once they're trusted).
+    window: Option<(f64, u64)>,
     ratios: Vec<f64>,
     held: u64,
 }
@@ -702,16 +711,17 @@ enum Trust {
 }
 
 impl Stamps {
-    /// Steps between timed reads looked at before deciding.
-    const LEARN: usize = 64;
+    /// A window's samples, s, and the windows looked at before deciding.
+    const WINDOW_S: f64 = 0.1;
+    const WINDOWS: usize = 9;
 
     fn new(rate: f64) -> Stamps {
-        Stamps { rate, next_ns: None, last: None, trust: Trust::Learning, ratios: Vec::new(), held: 0 }
+        Stamps { rate, next_ns: None, stamped: false, trust: Trust::Learning, window: None, ratios: Vec::new(), held: 0 }
     }
 
     /// Whether lost samples are going by the timestamps.
     fn timed(&self) -> bool {
-        self.last.is_some() && !matches!(self.trust, Trust::No(_))
+        self.stamped && !matches!(self.trust, Trust::No(_))
     }
 
     /// `n` samples read, stamped `time_ns` (none: continuing the read
@@ -720,7 +730,7 @@ impl Stamps {
         let rate = self.rate;
         let ns = |k: u64| k as f64 * 1e9 / rate;
         let Some(t) = time_ns.map(|t| t as f64) else {
-            if let Some((_, k)) = self.last.as_mut() {
+            if let Some((_, k)) = self.window.as_mut() {
                 *k += n as u64;
             }
             self.next_ns = self.next_ns.map(|x| x + ns(n as u64));
@@ -728,15 +738,23 @@ impl Stamps {
         };
         let gap = self.next_ns.map_or(0, |want| ((t - want) * rate / 1e9).round().max(0.0) as u64);
         if self.trust == Trust::Learning {
-            if let Some((t0, k)) = self.last.filter(|(_, k)| *k > 0) {
-                self.ratios.push((t - t0) / ns(k));
+            match self.window {
+                Some((t0, k)) if k as f64 >= rate * Self::WINDOW_S => {
+                    self.ratios.push((t - t0) / ns(k));
+                    self.window = Some((t, 0));
+                }
+                None => self.window = Some((t, 0)),
+                Some(_) => {}
+            }
+            if let Some((_, k)) = self.window.as_mut() {
+                *k += n as u64;
             }
             self.held += gap;
-            if self.ratios.len() >= Self::LEARN {
+            if self.ratios.len() >= Self::WINDOWS {
                 self.decide();
             }
         }
-        self.last = Some((t, n as u64));
+        self.stamped = true;
         self.next_ns = Some(t + ns(n as u64));
         match self.trust {
             Trust::Yes => gap + std::mem::take(&mut self.held),
@@ -744,17 +762,16 @@ impl Stamps {
         }
     }
 
-    /// Steps that keep to the samples (most, when they're right: a loss is
-    /// rare) or, when few do, a steady rate other than real time.
+    /// Times that keep to the samples over the median window, or a rate other than real time.
     fn decide(&mut self) {
         let mut r = std::mem::take(&mut self.ratios);
-        let kept = r.iter().filter(|x| (*x - 1.0).abs() < 0.01).count();
+        self.window = None;
         r.sort_by(f64::total_cmp);
         let median = r[r.len() / 2];
-        self.trust = if kept * 2 >= r.len() || (median - 1.0).abs() < 0.05 { Trust::Yes } else { Trust::No(median) };
+        self.trust = if (median - 1.0).abs() < 0.05 { Trust::Yes } else { Trust::No(median) };
         if let Trust::No(k) = self.trust {
             self.held = 0;
-            let hint = if (k - 2.0).abs() < 0.05 { " (SoapyRTLSDR before 0.3.4 does: it counts bytes, not samples; update it)" } else { "" };
+            let hint = if (k - 2.0).abs() < 0.1 { " (SoapyRTLSDR before 0.3.4 does: it counts bytes, not samples; update it)" } else { "" };
             log::warn!("SoapySDR: this driver's timestamps run at {k:.2}× real time{hint}; going by the sample count instead");
         }
     }
@@ -815,6 +832,62 @@ mod tests {
         assert_eq!(remote(&mut s, 5000, 16384, 16384, 2.0, &[]), 0);
         assert!(matches!(s.trust, Trust::No(k) if (k - 2.0).abs() < 0.01), "{:?}", s.trust);
         assert!(!s.timed(), "overflows count instead");
+    }
+
+    /// #209: SoapyRTLSDR 0.3.3 behind SoapyRemote. Its buffers' times count
+    /// bytes (each starts two buffers' worth of time after the last) while
+    /// the reads within one count samples, and the remote splits them into
+    /// network buffers of 2012, each stamped at its first sample: most steps
+    /// keep to the count, but over time the times run at twice real time.
+    #[test]
+    fn an_old_rtlsdr_behind_soapyremote_is_noticed() {
+        const DRIVER: usize = 16_384;
+        const NET: usize = 2012;
+        let mut s = Stamps::new(RATE);
+        let (mut lost, mut sample) = (0u64, 0usize);
+        // The network buffers, as (time, samples): within a driver buffer, never across one.
+        let net = (0..2_000).flat_map(|b| {
+            let base = b * 2 * DRIVER;
+            (0..DRIVER).step_by(NET).map(move |o| (((base + o) as f64 * 1e9 / RATE) as i64, NET.min(DRIVER - o)))
+        });
+        // Read 10 ms at a time, as the source does: a network buffer's rest comes unstamped.
+        let ask = (RATE / 100.0) as usize;
+        let mut left = 0usize;
+        let mut pending = net.peekable();
+        while sample < 2_000 * DRIVER - ask {
+            let mut got = 0;
+            while got < ask {
+                let time = if left == 0 {
+                    let (t, n) = pending.next().unwrap();
+                    left = n;
+                    Some(t)
+                } else {
+                    None
+                };
+                let n = (ask - got).min(left);
+                left -= n;
+                got += n;
+                lost += s.read(n, time);
+            }
+            sample += got;
+        }
+        assert!(matches!(s.trust, Trust::No(k) if (k - 2.0).abs() < 0.1), "{:?}", s.trust);
+        assert_eq!(lost, 0, "nothing counted lost: the times aren't believed");
+    }
+
+    /// SoapyRemote's first buffer comes late (#209: 54.6 ms): one window off,
+    /// the median keeps to the count, and the times are trusted.
+    #[test]
+    fn a_late_first_buffer_doesnt_decide_it() {
+        let late = (0.0546 * RATE) as usize;
+        let mut s = Stamps::new(RATE);
+        let (mut total, mut t) = (s.read(2012, Some(0)), 2012 + late);
+        for _ in 0..3000 {
+            total += s.read(2012, Some((t as f64 * 1e9 / RATE) as i64));
+            t += 2012;
+        }
+        assert_eq!(s.trust, Trust::Yes);
+        assert_eq!(total, late as u64, "the late start, once");
     }
 
     /// No timestamps at all: nothing from them.

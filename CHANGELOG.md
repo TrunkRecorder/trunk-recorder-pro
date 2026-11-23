@@ -25,9 +25,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   network buffer that's split over several reads; the rest of it was left out of the count, so the next buffer looked
   late by that much. That was about 4.5% of an RTL-SDR's samples "dropped" (filled with silence), and the clock was
   re-anchored every few seconds, which made DMR control channels flap. The unstamped reads now continue the one before.
-  Timestamps that run at a steady multiple of real time are noticed over the first reads, logged once (with a hint for
+  Timestamps that run at a steady multiple of real time are noticed over the first second, logged once (with a hint for
   SoapyRTLSDR before 0.3.4, which counts bytes, so its run at twice real time), and ignored, as with a driver that has
-  none.
+  none. That's judged over windows of samples, not read by read: behind SoapyRemote, most of an old SoapyRTLSDR's reads
+  keep to the count and only each of its buffers jumps ahead.
 - **Airspy R2 / Mini in Docker.** The Docker image now has the Airspy's driver (libairspy, about 230 kB), so Airspy
   sources work in it as RTL-SDRs and HackRFs do (#207).
 
