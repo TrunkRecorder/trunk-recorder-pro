@@ -1525,6 +1525,8 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 /* Setup's radios and data (Setup.tsx, DataTools.tsx, Rolloff.tsx): figures beside their controls. */
 .driver-missing { flex-direction: column; align-items: flex-start; gap: 8px; }
 .driver-missing .figs code { font-weight: 500; }
+/* Its reason and steps are sentences, some long (a Windows driver's DLLs): they wrap. */
+.driver-missing > span, .driver-missing .fig { white-space: normal; overflow-wrap: anywhere; }
 .autotune-figs { gap: 10px 20px; align-items: flex-end; }
 .rolloff-figs { gap: 6px 12px; align-items: flex-end; }
 .index-switch { gap: 4px; }

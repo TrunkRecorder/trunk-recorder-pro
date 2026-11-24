@@ -577,30 +577,33 @@ function RateInput(props: { hz: number; options: number[]; onChange: (hz: number
   );
 }
 
-/** Why an optional driver can't be used, and how to install it. */
-function DriverMissing(props: { kind: Source["type"]; detail: string }) {
+/**
+ * Why an optional driver can't be used, and how to install it: the recorder's own reason in full
+ * (not found, or there but refused and why: #219), and the steps for the computer it runs on (all
+ * three when that's unknown).
+ */
+function DriverMissing(props: { kind: Source["type"]; detail: string; platform: string }) {
   const k = SOURCE_KINDS[props.kind];
   const d = k.driver;
   if (!d) return null;
+  const on = (os: string) => !(props.platform in OS_LABEL) || props.platform === os;
   return (
     <div className="banner bad small wide driver-missing">
       <span>
-        <b>{d.name}</b> not installed
-        <Info>
-          {k.label} needs it: {props.detail}
-        </Info>
+        <b>{k.label}</b> needs {props.detail || d.name}
       </span>
       <Figs
         items={[
-          { k: "macOS", v: <code>{d.macos}</code> },
-          { k: "Debian / Ubuntu", v: <code>{d.linux}</code> },
-          { k: "Windows", v: d.windows },
+          on("macos") && { k: OS_LABEL.macos, v: <code>{d.macos}</code> },
+          on("linux") && { k: OS_LABEL.linux, v: <code>{d.linux}</code> },
+          on("windows") && { k: OS_LABEL.windows, v: d.windows },
           { k: "Then", v: d.then ? `${d.then}, restart` : "Restart the app" },
         ]}
       />
     </div>
   );
 }
+const OS_LABEL: Record<string, string> = { macos: "macOS", linux: "Debian / Ubuntu", windows: "Windows" };
 
 /** A radio picked by serial from those its driver found (Airspy, HydraSDR, bladeRF, HackRF). */
 function SerialPicker(props: { kind: SerialKind; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
@@ -1106,7 +1109,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             </select>
           </Field>
         )}
-        {missing && <DriverMissing kind={src.type} detail={driverState.detail} />}
+        {missing && <DriverMissing kind={src.type} detail={driverState.detail} platform={s.platform} />}
         {src.type === "usrp" && !missing && (
             <Field
               label="USRP"
