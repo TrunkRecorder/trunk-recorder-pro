@@ -586,6 +586,11 @@ impl Reporter {
             None if now.time - now.since > MAX_WINDOW_S => (history.at_or_after(oldest), true),
             None => (None, false),
         };
+        // No time in it: started (a plugin restarted, say) with recording long under way, and
+        // these totals the only ones. The next give it a window; it's still due.
+        if base.is_some_and(|b| b.time >= now.time) {
+            return None;
+        }
         let mut r = report(base, now, &self.select, node, recorder, self.seq)?;
         r.window.gap = gap;
         self.built = Some((now.time, now.since));
@@ -751,6 +756,22 @@ mod tests {
         assert_eq!(r.sites[0].cc.good, 300);
     }
 
+    /// Started (a plugin restarted) with recording long under way: its only totals give no
+    /// window, so there's no report until the next totals; that one has a gap before it.
+    #[test]
+    fn a_reporter_started_late_waits_for_a_window() {
+        let late = 1000.0 + MAX_WINDOW_S + 500.0;
+        let mut n = Reporter::seeded(Select::system("dcfd"), 3);
+        let mut hist = History::default();
+        hist.push(totals(late, 5000, 900, 70));
+        assert!(n.due(hist.latest().unwrap()), "its first slot is long past");
+        assert!(n.report(&hist, Value::Null, Recorder::default()).is_none());
+        hist.push(totals(late + 10.0, 5010, 905, 70));
+        assert!(n.due(hist.latest().unwrap()), "still due");
+        let r = n.report(&hist, Value::Null, Recorder::default()).unwrap();
+        assert_eq!((r.window.start, r.window.end, r.window.seq, r.window.gap), (late, late + 10.0, 0, true));
+    }
+
     #[test]
     fn nodes_report_at_their_own_random_point_in_each_interval() {
         let mut starts = Vec::new();
@@ -863,6 +884,7 @@ mod tests {
         let h = totals(2000.0, 0, 0, 0);
         n.due(&h);
         let mut hist = History::default();
+        hist.push(totals(1990.0, 0, 0, 0));
         hist.push(h);
         let r = n.report(&hist, Value::Null, Recorder::default()).unwrap();
         n.delivered(&r, Some(1200.0));

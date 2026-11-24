@@ -1576,6 +1576,8 @@ export interface PluginRuntime {
   held?: number;
   /** Results per minute, the last hour: [minute start (Unix s), [ok, skipped, failed]]. */
   minutes?: [number, [number, number, number]][];
+  /** What it says stays true until it says otherwise (settings to fix), beside `message`; `state` is the worst of these and its status. */
+  notices?: { state: "ok" | "warning" | "error"; message: string }[];
 }
 
 export type PluginValues = Record<string, unknown>;
@@ -1612,6 +1614,20 @@ export function copyPerSite(v: PluginValues | undefined): Record<string, PluginV
 export function copyOverride(v: PluginValues | undefined): PluginValues {
   const o = v?.[OVERRIDE];
   return o && typeof o === "object" && !Array.isArray(o) ? (o as PluginValues) : {};
+}
+
+/** A setting with nothing in it. */
+export const blankValue = (x: unknown) => x === undefined || x === null || x === "" || (Array.isArray(x) && x.length === 0);
+
+/** Settings with nothing in them: nothing to keep. */
+export function blank(v: PluginValues | undefined): boolean {
+  return !v || Object.values(v).every(blankValue);
+}
+
+/** A copy from its parts, each left out when there's nothing in it: its own settings, what it overrides, its sites' own. */
+export function copyOf(own: PluginValues, over: PluginValues, perSite: Record<string, PluginValues>): PluginValues {
+  const sites = Object.fromEntries(Object.entries(perSite).filter(([, v]) => !blank(v)));
+  return { ...own, ...(blank(over) ? {} : { [OVERRIDE]: over }), ...(Object.keys(sites).length ? { [PER_SITE]: sites } : {}) };
 }
 
 /** An installed plugin (or one the config names), and what it is. Whether it's on, and its settings, are in the config. */

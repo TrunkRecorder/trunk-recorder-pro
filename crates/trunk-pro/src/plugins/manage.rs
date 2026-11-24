@@ -63,6 +63,9 @@ pub struct Runtime {
     pub held: usize,
     /// Results per minute, the last hour: (minute start, Unix s; [ok, skipped, failed]).
     pub minutes: VecDeque<(i64, [u32; 3])>,
+    /// What it says stays true until it says otherwise (settings to fix), beside `message`:
+    /// `state` is the worst of its status and these.
+    pub notices: Vec<RuntimeNotice>,
     /// With copies of it running (a system with several): each copy's state
     /// and message, and figures, by copy (0: the first). `state`, `message`
     /// and `metrics` are what they come to.
@@ -70,6 +73,25 @@ pub struct Runtime {
     copies: BTreeMap<usize, (&'static str, String)>,
     #[serde(skip)]
     copy_metrics: BTreeMap<usize, Metrics>,
+    /// Each copy's notices, by key.
+    #[serde(skip)]
+    copy_notices: BTreeMap<(usize, String), (&'static str, String)>,
+}
+
+/// A plugin's [`State`] as the interface names it.
+fn state_name(s: State) -> &'static str {
+    match s {
+        State::Ok => "ok",
+        State::Warning => "warning",
+        State::Error => "error",
+    }
+}
+
+/// One of a plugin's notices: "warning" or "error" (or "ok"), and what it says.
+#[derive(Clone, Debug, Serialize)]
+pub struct RuntimeNotice {
+    pub state: &'static str,
+    pub message: String,
 }
 
 impl Default for Runtime {
@@ -91,8 +113,10 @@ impl Default for Runtime {
             uptime_s: None,
             held: 0,
             minutes: VecDeque::new(),
+            notices: Vec::new(),
             copies: BTreeMap::new(),
             copy_metrics: BTreeMap::new(),
+            copy_notices: BTreeMap::new(),
         }
     }
 }
@@ -122,14 +146,39 @@ impl Runtime {
         }
     }
 
-    /// Copy `copy`'s state: the plugin's is the worst of its copies'.
+    /// Copy `copy`'s state: the plugin's is the worst of its copies' and their notices.
     fn set_state(&mut self, copy: usize, state: &'static str, message: &str) {
         self.copies.insert(copy, (state, message.to_string()));
+        self.fold();
+    }
+
+    /// Copy `copy`'s notice `key` (None: its notices, all of them), or with no `state`, none.
+    fn set_notice(&mut self, copy: usize, key: Option<&str>, state: Option<&'static str>, message: &str) {
+        match (key, state) {
+            (Some(k), Some(st)) => {
+                self.copy_notices.insert((copy, k.to_string()), (st, message.to_string()));
+            }
+            (Some(k), None) => {
+                self.copy_notices.remove(&(copy, k.to_string()));
+            }
+            (None, _) => self.copy_notices.retain(|(c, _), _| *c != copy),
+        }
+        self.fold();
+    }
+
+    /// `state` and `message`: the worst of the copies' states and notices (of equals, a state
+    /// before a notice, and the first copy's).
+    fn fold(&mut self) {
         let rank = |s: &str| ["off", "starting", "ok", "warning", "error"].iter().position(|x| *x == s).unwrap_or(0);
-        // The worst; of equals, the first copy.
-        let (c, (st, msg)) = self.copies.iter().rev().max_by_key(|(_, (s, _))| rank(s)).unwrap();
-        self.state = st;
-        self.message = if *c == 0 { msg.clone() } else { format!("copy {}: {msg}", c + 1) };
+        let said = |c: usize, m: &str| if c == 0 { m.to_string() } else { format!("copy {}: {m}", c + 1) };
+        let states = self.copies.iter().map(|(c, (s, m))| (*c, *s, m));
+        let notices = self.copy_notices.iter().map(|((c, _), (s, m))| (*c, *s, m));
+        let all: Vec<_> = states.chain(notices).collect();
+        if let Some((c, st, msg)) = all.into_iter().rev().max_by_key(|(_, s, _)| rank(s)) {
+            self.state = st;
+            self.message = said(c, msg);
+        }
+        self.notices = self.copy_notices.iter().map(|((c, _), (s, m))| RuntimeNotice { state: s, message: said(*c, m) }).collect();
     }
 
     /// Copy `copy`'s figures: the plugin's are its copies' together.
@@ -408,6 +457,8 @@ impl Plugins {
                 r.message.clear();
                 r.copies.clear();
                 r.copy_metrics.clear();
+                r.copy_notices.clear();
+                r.notices.clear();
             }
         }
         self.publish_all_runtime();
@@ -501,12 +552,23 @@ impl Plugins {
                 archive.result(path, plugin, *outcome, *took_ms);
             }
             let label = match &n {
-                Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } => plugin.clone(),
+                Note::Log { plugin, .. } | Note::State { plugin, .. } | Note::Notice { plugin, .. } | Note::Result { plugin, .. } | Note::Metrics { plugin, .. } => {
+                    plugin.clone()
+                }
             };
             // A copy's notes are its plugin's, said to be the copy's.
             let (id, copy) = super::parse_label(&label);
             let id = id.to_string();
             let tell = |text: &str| if copy == 0 { text.to_string() } else { format!("copy {}: {text}", copy + 1) };
+            // A change of health is an event (not every "ok" of a starting plugin).
+            let health_event = |was: &'static str, r: &Runtime| {
+                if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
+                    let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: r.message.clone() };
+                    if let Some(v) = monitor.emit(crate::clock::unix_s(), e) {
+                        publish(&hub, ToClient::MonitorEvent(body(v)));
+                    }
+                }
+            };
             if !id.is_empty() {
                 let mut rt = runtime.lock().unwrap();
                 let r = rt.entry(id.clone()).or_default();
@@ -527,20 +589,13 @@ impl Plugins {
                     }
                     Note::State { state, message, .. } => {
                         let was = r.state;
-                        let state = match state {
-                            State::Ok => "ok",
-                            State::Warning => "warning",
-                            State::Error => "error",
-                        };
-                        r.set_state(copy, state, message);
-                        let message = &r.message;
-                        // A change of health is an event (not every "ok" of a starting plugin).
-                        if was != r.state && !(was == "starting" || was == "off") || r.state == "error" && was != "error" {
-                            let e = trunk_app::stats::MonitorEvent::PluginHealth { plugin: id.clone(), state: r.state.to_string(), message: message.clone() };
-                            if let Some(v) = monitor.emit(crate::clock::unix_s(), e) {
-                                publish(&hub, ToClient::MonitorEvent(body(v)));
-                            }
-                        }
+                        r.set_state(copy, state_name(*state), message);
+                        health_event(was, r);
+                    }
+                    Note::Notice { key, state, message, .. } => {
+                        let was = r.state;
+                        r.set_notice(copy, key.as_deref(), state.map(state_name), message);
+                        health_event(was, r);
                     }
                     Note::Result { outcome, message, path, .. } => {
                         r.count(*outcome);
@@ -686,4 +741,31 @@ pub(crate) fn store_message(cat: &store::Catalog) -> ToClient {
         })
         .collect();
     ToClient::Store { kind: StoreKind::Plugin, list: body(json!({ "source": cat.source, "fetched": cat.fetched, "problem": cat.problem, "target": store::target(), "listings": plugins })) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A notice stays beside the status: a later "ok" doesn't hide it, its health is the worst of
+    /// the two, and it goes when taken away or when its copy stops.
+    #[test]
+    fn a_notice_outlasts_the_status() {
+        let mut r = Runtime::default();
+        r.set_state(0, "ok", "running");
+        r.set_notice(0, Some("sites"), Some("warning"), "system 77 is uploading 2 sites");
+        assert_eq!((r.state, r.message.as_str()), ("warning", "system 77 is uploading 2 sites"));
+        r.set_state(0, "ok", "retries cleared");
+        assert_eq!(r.state, "warning", "an ok status doesn't hide it");
+        r.set_state(0, "error", "refused");
+        assert_eq!((r.state, r.message.as_str()), ("error", "refused"));
+        assert_eq!(r.notices.len(), 1, "still shown beside it");
+        r.set_state(0, "ok", "running");
+        r.set_notice(1, Some("sites"), Some("warning"), "the other");
+        assert_eq!(r.notices.iter().map(|n| n.message.as_str()).collect::<Vec<_>>(), ["system 77 is uploading 2 sites", "copy 2: the other"]);
+        r.set_notice(0, Some("sites"), None, "");
+        assert_eq!((r.state, r.message.as_str()), ("warning", "copy 2: the other"));
+        r.set_notice(1, None, None, "");
+        assert_eq!((r.state, r.message.as_str(), r.notices.len()), ("ok", "running", 0));
+    }
 }

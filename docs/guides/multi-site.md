@@ -60,7 +60,10 @@ or put it in place of one of a system's sites.
 **Make them one system.** When two systems set up apart announce the same system on the air (P25:
 the same WACN and System ID; SmartNet: System ID; NXDN Type-C: system code), each card says so,
 with **Make them one system**. The other system's sites move to this one, which keeps its own
-talkgroup file and settings; the other's recordings stay on disk.
+talkgroup file and settings; the other's recordings stay on disk. Plugin settings a site can have of
+its own (an uploader's system ID, say) go with the sites that move, and a plugin that was off for
+the other system stays off for them. Before it goes ahead it names whatever else of the other's is
+dropped.
 
 ## Site lock
 

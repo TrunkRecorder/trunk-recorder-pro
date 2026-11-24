@@ -261,6 +261,18 @@ impl Host {
         self.send(&PluginMessage::Status { state, message: message.into() });
     }
 
+    /// A notice (`key`: which), shown beside the status until it's cleared or replaced: a later
+    /// `status` doesn't hide it. For what stays true while the plugin runs (settings to fix);
+    /// the plugin's health is the worst of its status and its notices.
+    pub fn notice(&self, key: impl Into<String>, state: State, message: impl Into<String>) {
+        self.send(&PluginMessage::Notice { key: key.into(), state: Some(state), message: message.into() });
+    }
+
+    /// Takes the notice `key` away.
+    pub fn clear_notice(&self, key: impl Into<String>) {
+        self.send(&PluginMessage::Notice { key: key.into(), state: None, message: String::new() });
+    }
+
     /// How the plugin's work is going (see [`Metrics`]): queue, timing,
     /// the services it talks to. At most every few seconds.
     pub fn metrics(&self, m: &Metrics) {

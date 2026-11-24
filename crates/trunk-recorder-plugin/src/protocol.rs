@@ -1487,6 +1487,18 @@ pub enum PluginMessage {
         #[serde(default)]
         message: String,
     },
+    /// Something that stays true until the plugin says otherwise (a setting to fix, say), shown
+    /// beside its status: a later `status` doesn't replace it. One per `key`: a notice with the
+    /// same key replaces it, and one with no `state` takes it away. The plugin's health is the
+    /// worst of its status and its notices. They go when the plugin stops or restarts.
+    #[serde(rename = "notice")]
+    Notice {
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<State>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        message: String,
+    },
     /// What became of a concluded call (`path`: [`ConcludedCall::path`]).
     #[serde(rename = "call.result")]
     CallResult {
