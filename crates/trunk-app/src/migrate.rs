@@ -117,14 +117,14 @@ pub fn talkgroups_of(v: &serde_json::Value) -> std::collections::BTreeMap<String
 /// older config holds written beside it — its talkgroup files
 /// ([`crate::config::talkgroups_path`]) and unit names ([`unit_names_path`]),
 /// those not there already. Reading the config then leaves them out of it.
-pub fn move_files_out(path: &Path) -> std::io::Result<()> {
+pub fn move_files_out(path: &Path) -> Result<(), crate::files::Problem> {
     let Ok(text) = std::fs::read_to_string(path) else { return Ok(()) };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return Ok(()) };
     let dir = path.parent().unwrap_or(Path::new("."));
     let files = talkgroups_of(&v).into_iter().map(|(s, csv)| (crate::config::talkgroups_path(dir, &s), csv)).chain(unit_names_of(&v).into_iter().map(|(s, csv)| (unit_names_path(dir, &s), csv)));
     for (to, csv) in files {
         if !to.exists() {
-            crate::config::write_atomic(&to, csv)?;
+            crate::files::write_atomic(&to, csv)?;
         }
     }
     Ok(())
@@ -178,7 +178,7 @@ pub fn files_into_store<R: trunk_core::trunk::NameRow>(path: &Path, cfg: &Config
     for name in names {
         let file = (files.path)(dir, name);
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
-        let set_aside = |to: &str| std::fs::rename(&file, file.with_extension(format!("csv.{to}")));
+        let set_aside = |to: &str| crate::files::rename(&file, &file.with_extension(format!("csv.{to}")));
         if stored(name) {
             let _ = set_aside("unused");
             notes.push(format!("{}: {name} already has {what} in the store; the file is kept as {}.unused", file.display(), file.display()));
@@ -407,10 +407,10 @@ fn sites(v: &mut serde_json::Value) -> Vec<String> {
 /// After [`config`] changed a config: the one read kept beside it
 /// (`config.json.before-sites`, once), and the upgraded one saved over it.
 /// Returns where the old one is.
-pub fn save(cfg: &Config, path: &Path) -> std::io::Result<PathBuf> {
+pub fn save(cfg: &Config, path: &Path) -> Result<PathBuf, crate::files::Problem> {
     let old = path.with_extension("json.before-sites");
     if !old.exists() {
-        std::fs::copy(path, &old)?;
+        crate::files::copy(path, &old)?;
     }
     cfg.save(path)?;
     Ok(old)

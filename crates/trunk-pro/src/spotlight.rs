@@ -38,8 +38,8 @@ fn state(dir: &Path) -> (&'static str, String) {
     // Nothing found (an empty folder, or one excluded): a file of our own.
     let name = format!("trunk-pro-spotlight-check-{}.txt", std::process::id());
     let probe = dir.join(&name);
-    if std::fs::write(&probe, "Trunk Recorder checks whether Spotlight indexes this folder. Safe to delete.\n").is_err() {
-        return ("unknown", "couldn't write to it".into());
+    if let Err(p) = trunk_app::files::write(&probe, "Trunk Recorder checks whether Spotlight indexes this folder. Safe to delete.\n") {
+        return ("unknown", format!("couldn't write to it. {p}"));
     }
     let query = format!("kMDItemFSName == \"{name}\"");
     let mut found = false;
@@ -50,7 +50,7 @@ fn state(dir: &Path) -> (&'static str, String) {
             break;
         }
     }
-    let _ = std::fs::remove_file(&probe);
+    let _ = trunk_app::files::remove_file(&probe);
     if found {
         ("indexed", "Spotlight indexed a file written to it".into())
     } else {

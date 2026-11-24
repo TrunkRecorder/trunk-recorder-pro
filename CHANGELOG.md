@@ -5,10 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **A plugin or interface that can't be installed for want of permission says where and what to do.** It said only
-  the OS error (*Permission denied*, *Access is denied*). It now names the folder, says it's beside the config file
-  and why the user Trunk Recorder Pro runs as must be able to write there, and how to fix it (`chown` on Linux and
-  macOS; on Windows, keep the config out of Program Files). See
+- **A file that can't be written says where, why and what to do, wherever it is** (#236, thanks @blantonl). A plugin
+  or interface install refused for want of permission said only the OS error (*Permission denied*, *Access is
+  denied*). It now names the folder, says it's beside the config file and why the user Trunk Recorder Pro runs as
+  must be able to write there, and how to fix it. The same words now come from everything that writes, as they did
+  only for the recordings folder: saving the config, the call store, the log file, sign-in, held calls, a plugin's
+  data folder, IQ captures and the RAM spool. Permission denied says whose folder it is, who Trunk Recorder Pro runs
+  as and the `chmod` or `chown` to run; macOS privacy, a read-only or full disk and a folder that's gone are told
+  apart; on Windows, a folder under Program Files says to keep the config elsewhere. The log file and a plugin's
+  data folder failing were silent: now they're said. See
   [Where plugins live](docs/plugins/README.md#where-plugins-live).
 
 - **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call

@@ -53,7 +53,7 @@ impl Encoder {
             }
             Encoder::Afconvert(p) => {
                 let file = out.with_extension("wav.part");
-                std::fs::write(&file, wav).map_err(|e| format!("{}: {e}", self.name()))?;
+                trunk_app::files::write(&file, wav).map_err(|p| format!("{}: {p}", self.name()))?;
                 c = Command::new(p);
                 c.args(["-f", "m4af", "-d", "aac@16000", "-c", "1", "-b", &(kbps * 1000).to_string()]).arg(&file).arg(&tmp);
                 let r = run(c, None, Duration::from_secs(60));
@@ -70,7 +70,7 @@ impl Encoder {
     }
 
     fn done(&self, r: Result<(), String>, tmp: &Path, out: &Path) -> Result<(), String> {
-        let r = r.and_then(|_| std::fs::rename(tmp, out).map_err(|e| e.to_string()));
+        let r = r.and_then(|_| trunk_app::files::rename(tmp, out).map_err(String::from));
         if r.is_err() {
             let _ = std::fs::remove_file(tmp);
         }

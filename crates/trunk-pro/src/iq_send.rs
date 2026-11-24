@@ -72,7 +72,7 @@ fn read_state(dir: &Path) -> Option<SendState> {
 }
 
 fn write_state(dir: &Path, s: &SendState) -> Result<(), String> {
-    fs::write(dir.join(STATE), serde_json::to_string(s).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", dir.display()))
+    Ok(trunk_app::files::write(&dir.join(STATE), serde_json::to_string(s).map_err(|e| e.to_string())?)?)
 }
 
 /// How the sending of the capture in `dir` stands, for the list.
@@ -101,7 +101,7 @@ fn token() -> Result<String, String> {
     }
     let v = answer(agent().post(format!("{}/installs", api())).send_empty())?;
     let t = v["token"].as_str().ok_or("The corpus service gave no token.")?.to_string();
-    fs::write(&path, json!({ "token": t }).to_string()).map_err(|e| format!("{}: {e}", path.display()))?;
+    trunk_app::files::write(&path, json!({ "token": t }).to_string())?;
     Ok(t)
 }
 
@@ -243,7 +243,7 @@ pub fn withdraw(dir: &Path) -> Result<(), String> {
     if !s.id.is_empty() {
         answer(agent().delete(format!("{}/submissions/{}", api(), s.id)).header("X-Receipt", &s.receipt).call())?;
     }
-    fs::remove_file(dir.join(STATE)).map_err(|e| format!("{}: {e}", dir.display()))
+    Ok(trunk_app::files::remove_file(&dir.join(STATE))?)
 }
 
 /// Sends a restart interrupted, going on.
