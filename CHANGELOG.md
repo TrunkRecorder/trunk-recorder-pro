@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Tones: a tone's edges no longer throw the whole tone away.** A tone is looked at in 40 ms
+  windows every 20 ms, so the windows at its start and end are partly on the tone before it or
+  the noise or voice after, and read a little off its frequency. Those counted in the steadiness
+  test, and one of them 0.6 % off threw out the whole tone: a page's B tone, now and then
+  depending on where the windows fell (Ulster County's 399.8 → 712.5 Hz page lost its 3 s B and
+  was told as a long tone; DC 911's 950 → 643 Hz, 1 time in 4). Up to two windows at each end
+  are left out of the test now (they still count in the tone's length).
+
 - **Multi-site: copies on the air together are one transmission.** An EDACS network can grant a
   talkgroup on a second site seconds after the first, and each site names the talker its own way
   (TG 799's link: 3817 on two sites, 6292 on a third), so neither the talker nor the grant time

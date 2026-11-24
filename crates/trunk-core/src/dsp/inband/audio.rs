@@ -155,12 +155,18 @@ impl AudioTones {
         match first {
             Heard::Key(kind) if run.len() >= MIN_KEY_BLOCKS => out.push(ToneSeg { kind, start, len, level: None, origin: Origin::Audio }),
             Heard::Tone { .. } if run.len() >= MIN_TONE_BLOCKS => {
-                let (mut hz, mut db): (Vec<f32>, Vec<f32>) = run.iter().filter_map(|r| if let Heard::Tone { hz, db } = r.1 { Some((hz, db)) } else { None }).unzip();
-                hz.sort_by(f32::total_cmp);
-                let f = hz[hz.len() / 2];
-                let inner = if db.len() > 2 { &mut db[1..run.len() - 1] } else { &mut db[..] };
-                let (lo, hi) = inner.iter().fold((f32::MAX, f32::MIN), |(l, h), &d| (l.min(d), h.max(d)));
-                let steady = hz.iter().all(|&x| (x - f).abs() <= STEADY_HZ * f) && hi - lo <= STEADY_DB;
+                let (hz, db): (Vec<f32>, Vec<f32>) = run.iter().filter_map(|r| if let Heard::Tone { hz, db } = r.1 { Some((hz, db)) } else { None }).unzip();
+                // A 40 ms window every 20 ms: up to two blocks at each end are partly on what's
+                // either side (the tone before, the noise or voice after), and read a little off
+                // its frequency. They count in its length, but it's judged steady by the rest.
+                let edge = if run.len() >= 7 { 2 } else if run.len() > 2 { 1 } else { 0 };
+                let inner = |v: &[f32]| v[edge..v.len() - edge].to_vec();
+                let mut mid = inner(&hz);
+                mid.sort_by(f32::total_cmp);
+                let f = mid[mid.len() / 2];
+                let off = |x: f32| (x - f).abs() > STEADY_HZ * f;
+                let (lo, hi) = inner(&db).iter().fold((f32::MAX, f32::MIN), |(l, h), &d| (l.min(d), h.max(d)));
+                let steady = mid.iter().all(|&x| !off(x)) && hi - lo <= STEADY_DB;
                 if steady {
                     out.push(ToneSeg { kind: ToneKind::Single(f), start, len, level: None, origin: Origin::Audio });
                 }
@@ -263,6 +269,33 @@ mod tests {
         let f = |s: &ToneSeg| if let ToneKind::Single(f) = s.kind { f } else { 0.0 };
         assert!((f(&segs[0]) - 467.2).abs() < 1.0 && (f(&segs[1]) - 1032.3).abs() < 1.0, "{segs:?}");
         assert!((segs[0].len as f32 / SR - 1.0).abs() < 0.06 && (segs[1].len as f32 / SR - 3.0).abs() < 0.06, "{segs:?}");
+    }
+
+    #[test]
+    fn a_tone_ending_into_noise_is_kept() {
+        // Ulster County's page (VHF, 2026-11-23 22:29): 399.8 Hz 2 s, 712.5 Hz 3 s, then the
+        // channel's noise. B's last block, half on the noise, read 716.8 Hz: 0.6 % off, and the
+        // whole 3 s tone was thrown away for it.
+        let mut a = Vec::new();
+        quiet(&mut a, 0.3);
+        tone(&mut a, &[399.8], &[0.25], 2.0);
+        tone(&mut a, &[712.5], &[0.25], 3.0);
+        let mut seed = 7u32;
+        for _ in 0..(0.5 * SR) as usize {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            a.push(((seed >> 16) as f32 / 32768.0 - 1.0) * 0.006);
+        }
+        let mut found = 0;
+        // Every way the 20 ms blocks can fall against the tone's end.
+        for shift in (0..160).step_by(8) {
+            let mut b = vec![0.0; shift];
+            b.extend(&a);
+            let segs = run(&b, 160);
+            let f = |s: &ToneSeg| if let ToneKind::Single(f) = s.kind { f } else { 0.0 };
+            assert!(segs.iter().any(|s| (f(s) - 712.5).abs() < 2.0 && (s.len as f32 / SR - 3.0).abs() < 0.08), "shift {shift}: {segs:?}");
+            found += 1;
+        }
+        assert_eq!(found, 20);
     }
 
     #[test]
