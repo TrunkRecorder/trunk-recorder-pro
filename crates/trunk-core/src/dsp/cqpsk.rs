@@ -102,7 +102,7 @@ pub struct Cqpsk {
     /// [`Cqpsk::q4`]'s weights summed alike: |q4| over this is how steady
     /// the 4th-power angle is, 1 for a clean signal, near 0 for noise.
     q4_weight: f32,
-    /// Phase 1: the 4th-power angle at the last symbol, and the quarter turns
+    /// The 4th-power angle at the last symbol, and the quarter turns
     /// a symbol the residual turn stands beyond what that angle alone gives
     /// ([`Cqpsk::residual_turn`]).
     q4_arg: f32,
@@ -351,20 +351,21 @@ impl Cqpsk {
         });
         self.sr = ((self.sr << 2) | dib as u64) & 0xFFFF_FFFF_FFFF;
         // Frame sync: Phase 1's 48 bits, or Phase 2's 40-bit S-ISCH.
-        let (fs, inv, mask, len) = if self.opt.baud > 5000.0 {
-            (0x57_5D57_F7FFu64, 0xAA_AAAA_AAAAu64, 0xFF_FFFF_FFFFu64, 20)
+        let (fs, inv, mask, len, turned) = if self.opt.baud > 5000.0 {
+            (P2_SYNC, 0xAA_AAAA_AAAAu64, 0xFF_FFFF_FFFFu64, 20, &P2_TURNED)
         } else {
-            (P1_SYNC, 0xAAAA_AAAA_AAAA, 0xFFFF_FFFF_FFFF, 24)
+            (P1_SYNC, 0xAAAA_AAAA_AAAA, 0xFFFF_FFFF_FFFF, 24, &P1_TURNED)
         };
         let sr = self.sr & mask;
         if self.symbols - self.last_sync >= len && ((sr ^ fs).count_ones() <= 4 || (sr ^ fs ^ inv).count_ones() <= 4) {
             self.syncs += 1;
             self.last_sync = self.symbols;
-        } else if self.turns() && self.symbols - self.last_sync >= len {
+        } else if !self.opt.coherent && self.symbols - self.last_sync >= len {
             // The sync word with every step a quarter, a half or three quarters
-            // of a turn on: the carrier estimate stands that far off (1200 Hz a
-            // quarter). Two bits of 48, so noise does not pass for it.
-            if let Some(j) = P1_TURNED.iter().position(|&t| (sr ^ t).count_ones() <= 2) {
+            // of a turn on: the carrier estimate stands that far off (baud / 4
+            // a quarter: 1200 Hz, Phase 2 1500). Two bits of 48 or 40, so noise
+            // does not pass for it.
+            if let Some(j) = turned.iter().position(|&t| (sr ^ t).count_ones() <= 2) {
                 self.quarter = (self.quarter + j as i32 + 2).rem_euclid(4) - 1;
                 self.syncs += 1;
                 self.last_sync = self.symbols;
@@ -372,13 +373,8 @@ impl Cqpsk {
         }
     }
 
-    /// Phase 1, differential detection: the receiver the quarter turns are kept for.
-    fn turns(&self) -> bool {
-        self.opt.baud < 5000.0 && !self.opt.coherent
-    }
-
     /// The residual turn a symbol detection takes out. The 4th power gives it
-    /// to within a quarter turn only (±π/4, 600 Hz at 4800 baud), and the
+    /// to within a quarter turn only (±π/4: 600 Hz at 4800 baud, 750 at 6000), and the
     /// front end's carrier estimate, a mean of the phase steps between
     /// samples, reads hundreds of Hz high or low on a linear signal whose
     /// 135° steps go round the long way (simulcast overlap): past 600 Hz
@@ -394,7 +390,7 @@ impl Cqpsk {
     /// the angle about.
     fn residual_turn(&mut self) -> f32 {
         let a = (-self.q4.im).atan2(-self.q4.re);
-        if self.turns() {
+        if !self.opt.coherent {
             let synced = self.syncs > 0 && self.symbols - self.last_sync <= 1728;
             let steady = self.q4.norm() > 0.3 * self.q4_weight;
             if !synced {
@@ -410,9 +406,12 @@ impl Cqpsk {
     }
 }
 
-/// Phase 1's frame sync, and as [`turned`] one, two and three quarters.
-const P1_SYNC: u64 = 0x5575_F5FF_77FF;
+/// Phase 1's frame sync and Phase 2's S-ISCH, and each as [`turned`] one,
+/// two and three quarters.
+const P1_SYNC: u64 = crate::p25::frame::SYNC;
 const P1_TURNED: [u64; 3] = [turned(P1_SYNC, 24, 1), turned(P1_SYNC, 24, 2), turned(P1_SYNC, 24, 3)];
+const P2_SYNC: u64 = crate::p25::phase2::SYNC;
+const P2_TURNED: [u64; 3] = [turned(P2_SYNC, 20, 1), turned(P2_SYNC, 20, 2), turned(P2_SYNC, 20, 3)];
 
 /// A sync word of `len` dibits with every phase step `j` quarter turns on:
 /// what a receiver whose carrier estimate is `j` × baud / 4 off makes of it.
@@ -630,14 +629,18 @@ mod tests {
 
     /// Phase 1 on the carrier, but with `long(frame)` of its −135° steps turning
     /// the long way, +225° (#228: simulcast LSM seen through a discriminator).
-    /// Constant envelope, the phase moving evenly through each symbol: the
+    /// Constant envelope, the phase still for each symbol's outer thirds: the
     /// symbol points are π/4-DQPSK, the path between them is not.
     fn long_way(long: impl Fn(usize) -> f64) -> (Vec<usize>, Vec<Complex32>) {
-        let (sps, frames) = (10, 24);
+        long_way_with(10, P1_SYNC, 24, 864, 24, long)
+    }
+
+    /// [`long_way`]'s signal, framed as [`signal_with`]'s.
+    fn long_way_with(sps: usize, sync: u64, sync_len: usize, frame: usize, frames: usize, long: impl Fn(usize) -> f64) -> (Vec<usize>, Vec<Complex32>) {
         let (mut dibits, mut lfsr) = (Vec::new(), 0xACE1u16);
         for _ in 0..frames {
-            dibits.extend((0..24).rev().map(|i| ((0x5575_F5FF_77FFu64 >> (2 * i)) & 3) as usize));
-            for _ in 24..864 {
+            dibits.extend((0..sync_len).rev().map(|i| ((sync >> (2 * i)) & 3) as usize));
+            for _ in sync_len..frame {
                 for _ in 0..2 {
                     lfsr = (lfsr >> 1) ^ (-((lfsr & 1) as i16) as u16 & 0xB400);
                 }
@@ -649,7 +652,7 @@ mod tests {
         for (n, &d) in dibits.iter().enumerate() {
             let mut s = step[d];
             if d == 3 {
-                acc += long(n / 864);
+                acc += long(n / frame);
                 if acc >= 1.0 {
                     acc -= 1.0;
                     s += 2.0 * PI;
@@ -700,6 +703,23 @@ mod tests {
         assert!(rx.syncs >= 23, "syncs {}", rx.syncs);
         let got = rx.offset_hz().expect("an offset once synced");
         assert!(got.abs() < 100.0, "offset {got}");
+    }
+
+    /// Phase 2 the same (6000 baud, the 4th power's ±750 Hz, its S-ISCH
+    /// found turned): +1100 Hz read, steady, then drifting out past the edge.
+    #[test]
+    fn phase_2_syncs_with_the_carrier_estimate_a_quarter_turn_out() {
+        for (long, at_least) in [(&(|_| 0.75) as &dyn Fn(usize) -> f64, 40), (&|f| 0.45 + 0.35 * f as f64 / 63.0, 60)] {
+            let (_, iq) = long_way_with(8, P2_SYNC, 20, 360, 64, long);
+            let mut rx = Cqpsk::new(48_000.0, Options { baud: crate::p25::phase2::SYMBOL_RATE, df_beta: 0.5, ..Default::default() });
+            let mut out = Vec::new();
+            for c in iq.chunks(4800) {
+                rx.push(c, &mut out);
+            }
+            assert!(rx.syncs >= at_least, "syncs {} of 64", rx.syncs);
+            let got = rx.offset_hz().expect("an offset once synced");
+            assert!(got.abs() < 100.0, "offset {got}");
+        }
     }
 
     /// The phase error follows the noise: a few degrees on a strong signal,
