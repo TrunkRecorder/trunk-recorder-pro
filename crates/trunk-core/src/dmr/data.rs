@@ -86,20 +86,11 @@ impl Assembler {
     }
 }
 
-/// DMR packet CRC32: adjacent octets exchanged, MSB-first polynomial,
-/// initial remainder zero, no final complement. Wire check is little endian.
+/// A DMR packet's CRC (TS 102 361-1 B.3.9): [`crate::bits::crc32`] of its octets a pair at a
+/// time, the second of each first. The air has it little endian.
 fn crc32(bytes: &[u8]) -> u32 {
     debug_assert_eq!(bytes.len() % 2, 0);
-    let mut crc = 0u32;
-    for pair in bytes.chunks_exact(2) {
-        for b in [pair[1], pair[0]] {
-            crc ^= (b as u32) << 24;
-            for _ in 0..8 {
-                crc = (crc << 1) ^ if crc & 0x8000_0000 != 0 { 0x04c1_1db7 } else { 0 };
-            }
-        }
-    }
-    crc
+    crate::bits::crc32(bytes.chunks_exact(2).flat_map(|p| [p[1], p[0]]))
 }
 
 #[cfg(test)]

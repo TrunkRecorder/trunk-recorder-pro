@@ -1604,11 +1604,9 @@ impl Trunk {
                 // hold the grants — a call still going is granted again.
                 continue;
             }
+            // A location report the control channel carried (DMR data: a radio between calls).
             for p in st.msgs.iter().filter_map(|m| m.position) {
-                events.push(Event::UnitPosition { system: self.system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: 0 });
-                for c in &mut self.calls.calls {
-                    if CallManager::note_position(c, &p) { call_events.push(CallEvent::Update(c.clone())); }
-                }
+                events.extend(CallManager::position(self.system, &mut self.calls.calls, &p, call_events));
             }
             // What the voice channels need from it (Phase 2's scrambler key), to every source's copy as it changes.
             let was = self.voice_params;
@@ -2340,14 +2338,7 @@ impl Core {
                 TrackerOut::Subaudible(_) => {}
                 // (Handled above.)
                 TrackerOut::Talkgroup(_) => {}
-                TrackerOut::Position(p) => {
-                    if let Some(c) = call {
-                        if CallManager::note_position(c, &p) {
-                            self.events.push(Event::UnitPosition { system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: c.talkgroup });
-                            self.call_events.push(CallEvent::Update(c.clone()));
-                        }
-                    }
-                }
+                TrackerOut::Position(p) => self.events.extend(CallManager::position(system, call, &p, &mut self.call_events)),
                 TrackerOut::Alias(a) => {
                     let tg = call.map(|c| c.talkgroup);
                     self.learn_alias(system, Some(site), a, tg);
