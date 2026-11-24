@@ -515,7 +515,7 @@ impl Channel {
             out.push((slot, e));
             if let Some(p) = packet { out.push((slot, SlotEvent::Packet(p))); }
         }
-        if out[start..].iter().any(|(_, e)| super::xpt::control(e).is_some()) {
+        if out[start..].iter().any(|(_, e)| super::xpt::control_on(self.variant, e).is_some()) {
             self.variant = Some(super::trunking::Variant::Xpt);
         }
         if self.variant == Some(super::trunking::Variant::Xpt) {

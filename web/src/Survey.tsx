@@ -13,7 +13,7 @@
 // The recorder does the work (crates/trunk-core/src/survey.rs); this shows it.
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { adjacentIdentity, deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, desktopOnly, siteNameOf, SOURCE_KINDS, sourceKey, sourceTitle, roaming, siteAddress, systemWithChannel } from "./config.ts";
+import { adjacentIdentity, siteNumber, deviceId, fccKey, fccPrimary, formatGain, formatMhz, hasBiasT, desktopOnly, siteNameOf, SOURCE_KINDS, sourceKey, sourceTitle, roaming, siteAddress, systemWithChannel } from "./config.ts";
 import {
   can,
   addDmrSite,
@@ -316,7 +316,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
     stopSurvey();
     const bits = [`control channel${sug.controlChannels.length === 1 ? "" : "s"} ${mhzList(sug.controlChannels)} MHz`];
     if (sug.type === "smartnet" && sug.bandplan) bits.unshift(`SmartNet, band plan ${sug.bandplan.bandplan}`);
-    if (sug.identity.site != null) bits.push(`site lock ${sug.identity.rfss ?? "?"}-${sug.identity.site}`);
+    if (sug.identity.site != null) bits.push(`site lock ${siteNumber(sug.identity)}`);
     if (src && src.type !== "file") {
       if (sug.ppmApply !== null) bits.push(`correction ${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply} ppm`);
       if (rtl && sug.gainDb !== null) bits.push(`gain ${formatGain(sug.gainDb)} dB`);
@@ -503,7 +503,7 @@ function MonitorView(props: { m: SurveyMonitor; sug: SurveySuggestion | null; c:
             <Figs
               items={[
                 { k: sug.controlChannels.length === 1 ? "Control channel" : "Control channels", v: mhzList(sug.controlChannels), u: "MHz" },
-                sug.identity.site != null && { k: "Site lock", v: `${sug.identity.rfss ?? "?"}-${sug.identity.site}` },
+                sug.identity.site != null && { k: "Site lock", v: siteNumber(sug.identity) },
                 !!src && src.type !== "file" && sug.ppmApply !== null && { k: `Source ${props.source + 1} correction`, v: `${sug.ppmApply > 0 ? "+" : ""}${sug.ppmApply}`, u: "ppm" },
                 !!src && src.type !== "file" && rtl && sug.gainDb !== null && { k: "Gain", v: formatGain(sug.gainDb), u: "dB" },
                 !!src && src.type !== "file" && { k: "Center", v: formatMhz(sug.centerHz, 4), u: "MHz" },

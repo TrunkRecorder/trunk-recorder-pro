@@ -5,22 +5,39 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Hytera data-channel signalling diagnostics**: identifies the observed
-  beacon, setup, short-status and end profiles; extracts verified radio/slot
-  fields and an experimental busy hint. Raw fields remain available, and
-  these messages do not create voice grants or frequency mappings.
+- **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call
+  JSON (`lat`, `lon` in `srcList`) and reported as a position event, as P25's are:
+  - the GPS a DMR or Hytera radio sends while it talks (embedded in its voice), XPT included;
+  - Hytera location reports sent as data (a radio's position between calls, talkgroup 0), as text or, experimentally,
+    compressed (only the north/west form seen so far is read);
+  - Hytera radio registration and offline messages, as registrations.
+  Reports sent as data are put together from CRC-checked rate-1/2 short data on each slot. See
+  [DMR GPS](docs/developer/protocols/dmr-gps.md).
 
-- **Hytera packet GPS and radio registration**: reassembles CRC-checked
-  unconfirmed rate-1/2 short data on each slot. The experimental compressed
-  north/west GPS profile emits standalone unit positions; RRS requests and
-  answers report radio IPs and renewal intervals. Undocumented vendor control
-  words remain visible as raw status without creating voice grants. See
-  [DMR GPS](docs/developer/protocols/dmr-gps.md) for limits, sources, and capture validation.
+- **Trunked DMR fixes** (#220, thanks @taclane):
+  - **Fewer empty recordings on Tier III.** A Tier III site repeats a call's grant (Late Entry) every few seconds,
+    through its hang time, which can be longer than the call timeout. Each repeat started a new call with no voice
+    (22–25% of recordings on one site). A site's calls are now held as long as it's heard repeating, and empty
+    recordings on that site went to 5%.
+  - **A Tier III site with Hytera radios stays Tier III.** It was switched to XPT, which cut its radio IDs to 16 bits.
+  - **Radios placed over the voice channels.** A DMR or NXDN site's channel table, and a new **Voice channels** field
+    in Setup, now count when Auto places the radios, and the source advice judges an Auto source where Start would put
+    it. DMR's watched list is now labelled **Watched frequencies**.
+  - **Site labels.** A DMR site read `site ?-4`; a Tier III network's now reads `net 12 · site 4`.
 
-- **DMR and Hytera embedded GPS positions**, including XPT, are kept on the
-  talking radio in the call JSON (`lat`, `lon` in `srcList`) and emitted as
-  position events, as P25 positions are. See [DMR GPS](docs/developer/protocols/dmr-gps.md)
-  for scope and protocol sources.
+- **A shorter message for what's left out** (#216, thanks @jschmall). With several systems set to receive on a source
+  that isn't one, the message names each with the label it gives, and lists the sources there are once instead of for
+  each. And when that leaves nothing to record, it says only that, not "Add a system with a control channel".
+
+- **"Gain may be low" is a suggestion, not a warning** (#222). A source whose samples stay tiny keeps its green light;
+  its card suggests *Gain may be low · peaks … dBFS* with the way out (Tune gain, or raise it in Setup), and the event
+  feed says it as info. And a source that carried a call in the last day isn't called quiet at all: a source on a few
+  rarely used voice channels hears nothing for hours, and its samples stay small at a working gain. Gain too high
+  (clipping) still warns, since clipped samples lose calls.
+
+- **DMR, NXDN and EDACS control channels have a history like P25's and SmartNet's** (#218, thanks @taclane). Their
+  sites now record the control channel's offset, eye opening, signal, noise and SNR, so the Decode page's charts show
+  them.
 
 ## [0.5.0] — 2026-11-23
 

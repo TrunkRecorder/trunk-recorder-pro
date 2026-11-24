@@ -34,8 +34,13 @@ In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunke
 
 - **Site frequencies, MHz** (`controlChannelsHz`): for Capacity Plus, **every repeater** of the
   site. For the others, the control channel(s).
-- **Voice frequencies, MHz** (`dmrChannelsHz`): for Tier III, Capacity Max and Connect Plus, the
-  site's voice frequencies. This is Trunk Recorder's `channels`.
+- **Watched frequencies, MHz** (`dmrChannelsHz`): for Tier III, Capacity Max and Connect Plus,
+  voice frequencies listened to all the time, as the site frequencies are. A call on one is found
+  by its own link control, and a grant naming a channel the table doesn't have is learned from it.
+  This is Trunk Recorder's `channels`. Each must be inside a source.
+- **Voice channels, MHz** (`voiceChannelsHz`): optional. The radios are placed over these, and
+  over the channel table's frequencies, but nothing listens to one until a grant names it. Use it
+  to place a radio for a site's voice channels without watching them.
 - **Colour code** (`colorCode`): leave empty ("auto") to take the control channel's.
 - **Channel table** (`lcnTableHz`): channel numbers you already know, as
   `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Leave it empty to learn them.

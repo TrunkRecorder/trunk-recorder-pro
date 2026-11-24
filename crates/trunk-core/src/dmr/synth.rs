@@ -561,6 +561,22 @@ mod tests {
         }
         let ppm = e.status().sources[0].error_ppm.expect("the control carrier measured");
         assert!((ppm - 600.0 / 460.05).abs() < 0.2, "{ppm:.3} ppm");
+        // … and its history: the offset, eye opening and SNR a hunted channel's gives.
+        #[derive(Default)]
+        struct Collect(Vec<(String, f64)>);
+        impl crate::metrics::Sink for Collect {
+            fn counter(&mut self, _: &str, _: u64) {}
+            fn gauge(&mut self, name: &str, value: f64) {
+                self.0.push((name.to_string(), value));
+            }
+        }
+        let mut c = Collect::default();
+        e.report(&["src".to_string()], &mut c);
+        let cc = |n: &str| c.0.iter().find(|(k, _)| k.ends_with(&format!("/cc/{n}"))).map(|(_, v)| *v);
+        let off = cc("offset").expect("the offset reported");
+        assert!((off - 600.0).abs() < 100.0, "{off:.0} Hz");
+        // (A narrow source's noise slices are no wider than the carrier: only that there's an SNR.)
+        assert!(cc("sep").is_some() && cc("snr").is_some(), "{:?}", c.0);
     }
 
     #[test]

@@ -1398,15 +1398,21 @@ impl Trunk {
         !matches!(self.listening, Listening::Off)
     }
 
-    /// Hunting: the control channel open, its source and frequency.
     /// The source its control channel is received on (none: searching).
     fn control_source(&self) -> Option<usize> {
+        self.carrier().map(|(src, _)| src)
+    }
+
+    /// Where its control channel is now, hunted or watched: its source and frequency (none: searching).
+    fn carrier(&self) -> Option<(usize, f64)> {
         match &self.listening {
-            Listening::Watching(carriers) => carriers.iter().find(|c| Some(c.hz.round() as u64) == self.cc_hz).map(|c| c.source),
-            _ => self.hunted().map(|(src, _)| src),
+            // Watching (DMR, NXDN, EDACS): the carrier it's on.
+            Listening::Watching(carriers) => carriers.iter().find(|c| Some(c.hz.round() as u64) == self.cc_hz).map(|c| (c.source, c.hz)),
+            _ => self.hunted(),
         }
     }
 
+    /// Hunting: the control channel open, its source and frequency.
     fn hunted(&self) -> Option<(usize, f64)> {
         match (&self.listening, self.cc_hz) {
             (Listening::Hunting(h), Some(hz)) => Some((h.source, hz as f64)),
@@ -1830,11 +1836,11 @@ impl Core {
                 lc_protected_tgs: BTreeSet::new(),
                 cfg: sc.clone(),
             };
-            let (hold_s, id_fields, reopens) = {
+            let (hold_s, repeats, id_fields, reopens) = {
                 let c = t.cc();
-                (c.patch_hold_s(), c.identity_fields(), c.reopens())
+                (c.patch_hold_s(), c.repeats_grants(), c.identity_fields(), c.reopens())
             };
-            (t.calls.patches.hold_s, t.id_fields, t.reopens) = (hold_s, id_fields, reopens);
+            (t.calls.patches.hold_s, t.calls.hold_repeats, t.id_fields, t.reopens) = (hold_s, repeats, id_fields, reopens);
             t.start(&mut radio, sys, &mut events)?;
             trunks.push(t);
         }
@@ -2019,7 +2025,8 @@ impl Core {
             cc.gauge("locked", (t.now_s - t.last_good_s < LOCKED_S && t.mismatch.is_none()) as u8 as f64);
             // What its protocol measures (framing, eye opening, deviation…).
             t.cc().report(&mut cc);
-            if let Some((src, hz)) = t.hunted() {
+            // Its level, on the carrier it's on (hunted or watched).
+            if let Some((src, hz)) = t.carrier() {
                 levels.push(Leveled { key: format!("{key}/cc"), src, hz, open: None });
             }
         }

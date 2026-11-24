@@ -55,7 +55,7 @@ export function takeAdvice(a: Advice, i?: number): void {
       x.rateHz = s.rateHz;
       const onAuto = i === undefined ? s.released : s.auto;
       if (onAuto) x.centerHz = 0;
-      else if (x.centerHz && s.centerHz !== null) x.centerHz = s.centerHz;
+      else if (s.centerHz !== null) x.centerHz = s.centerHz;
     });
     // (All of it: every source on auto in the advice is, so auto places them as it says.)
     if (i === undefined) a.sources.forEach((s, k) => s.released && (c.sources[k].centerHz = 0));
@@ -76,7 +76,8 @@ export function SourceSuggestion(props: { c: Config; i: number; advice: Advice |
     );
   }
   if (!s.changed) return null;
-  const moves = src.centerHz ? s.centerHz !== null && Math.abs(s.centerHz - src.centerHz) >= 1000 : false;
+  // (One on auto moves when auto wouldn't put it there: it's given the centre.)
+  const moves = s.centerHz !== null && (src.centerHz ? Math.abs(s.centerHz - src.centerHz) >= 1000 : !s.auto);
   const rateMoves = Math.abs(s.rateHz - src.rateHz) >= 1;
   if (!moves && !rateMoves) return null;
   const others = props.advice.sources.filter((x) => x.changed).length > 1;

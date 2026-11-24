@@ -374,7 +374,7 @@ pub struct Session {
     /// Log records not yet handed out.
     records: Vec<Record>,
     /// What the config set to receive on a source that isn't one, left out of this run, and why ([`Session::left_out`]).
-    left_out: Vec<String>,
+    left_out: crate::config::Unreceivable,
     local_offset: LocalOffset,
     busy_ms: f64,
     start_ms: Option<f64>,
@@ -466,7 +466,7 @@ impl Session {
             busy: (0..n).map(|_| Default::default()).collect(),
             log: Vec::new(),
             records: Vec::new(),
-            left_out: Vec::new(),
+            left_out: Default::default(),
             local_offset,
             busy_ms: 0.0,
             start_ms: None,
@@ -495,7 +495,7 @@ impl Session {
             watch: None,
         };
         session.share = crate::share::Ledger::new(session.cfg.systems.iter());
-        for why in &aside {
+        if let Some(why) = Some(&aside).filter(|a| !a.is_empty()) {
             session.records.push(Record::text(Level::Error, None, format!("Not started: {why}")));
         }
         session.left_out = aside;
@@ -518,7 +518,7 @@ impl Session {
     /// What was left out of this run (set to receive on a source that isn't one), as said while it
     /// records: "Not started: …"; none when nothing was.
     pub fn left_out(&self) -> Option<String> {
-        (!self.left_out.is_empty()).then(|| format!("Not started: {}", self.left_out.join(" ")))
+        (!self.left_out.is_empty()).then(|| format!("Not started: {}", self.left_out))
     }
 
     /// The registry and monitor this session feeds.

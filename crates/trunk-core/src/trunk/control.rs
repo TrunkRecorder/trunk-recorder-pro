@@ -171,6 +171,12 @@ pub trait ControlChannel: Send {
     fn patch_hold_s(&self) -> f64 {
         patches::P25_HOLD_S
     }
+    /// It sends a call's grant again every few seconds while the call goes on, its hang time
+    /// too, maybe less often than the call timeout (DMR's Late Entry): calls are held as long as
+    /// it's heard repeating ([`super::calls::CallManager::hold_repeats`]).
+    fn repeats_grants(&self) -> bool {
+        false
+    }
     /// How its analog calls are demodulated.
     fn analog(&self) -> AnalogTuning {
         AnalogTuning::default()
@@ -184,8 +190,17 @@ pub trait ControlChannel: Send {
     /// What the dashboard shows of it beyond what every system shows.
     fn status(&self) -> ProtocolStatus;
     /// Its receivers' measurements for the dashboard's history (framing,
-    /// eye opening, deviation…; see [`crate::metrics`]). Default: none.
-    fn report(&self, _sink: &mut dyn Sink) {}
+    /// eye opening, deviation…; see [`crate::metrics`]). Default: what every
+    /// control channel knows of its carrier, its offset and eye opening (a
+    /// protocol with more says those too).
+    fn report(&self, sink: &mut dyn Sink) {
+        if let Some(off) = self.offset_hz() {
+            sink.gauge("offset", off as f64);
+        }
+        if let Some(sep) = self.quality().sep {
+            sink.gauge("sep", sep as f64);
+        }
+    }
     /// How well its receiver hears the control channel (the dashboard's).
     fn quality(&self) -> super::voice::ChannelQuality;
 }
@@ -517,6 +532,9 @@ trait WatchedSite: Send {
     fn patch_hold_s(&self) -> f64 {
         patches::P25_HOLD_S
     }
+    fn repeats_grants(&self) -> bool {
+        false
+    }
     fn analog(&self) -> AnalogTuning {
         AnalogTuning::default()
     }
@@ -572,6 +590,9 @@ impl<S: WatchedSite> ControlChannel for Watched<S> {
     }
     fn patch_hold_s(&self) -> f64 {
         self.site.patch_hold_s()
+    }
+    fn repeats_grants(&self) -> bool {
+        self.site.repeats_grants()
     }
     fn analog(&self) -> AnalogTuning {
         self.site.analog()
@@ -723,6 +744,11 @@ impl WatchedSite for dmr::Site {
     }
     fn voice_params(&self) -> VoiceParams {
         VoiceParams { dmr: self.variant, ..Default::default() }
+    }
+    /// A Tier III site repeats a kept channel's grant, Late Entry set, at intervals the network
+    /// chooses (5.3 s measured on one, against the 3 s call timeout).
+    fn repeats_grants(&self) -> bool {
+        true
     }
 }
 

@@ -66,6 +66,13 @@ impl Variant {
             Variant::Xpt => "Hytera XPT",
         }
     }
+
+    /// Standard trunking's (Tier III, Capacity Max, Connect Plus): heard
+    /// once, a site is it. Hytera radios on it send Hytera's own blocks too,
+    /// which aren't XPT signalling there.
+    pub fn grants(self) -> bool {
+        matches!(self, Variant::TierIII | Variant::CapacityMax | Variant::ConnectPlus)
+    }
 }
 
 /// A Tier III / Capacity Max site's System Identity Code (C_ALOHA's and C_BCAST's 16 bits,
@@ -389,7 +396,7 @@ impl Site {
                 self.notes.push(format!("Colour code {c}"));
             }
         }
-        let xpt = super::xpt::control(&e);
+        let xpt = super::xpt::control_on(self.variant, &e);
         let is_xpt = xpt.is_some() || self.variant == Some(Variant::Xpt);
         // Another system's carrier (a neighbour on a listed frequency, or a stray): not followed.
         // XPT repeaters may each have their own colour code: every listed one is the site's
@@ -698,8 +705,14 @@ impl Site {
                 let ch = k.bits(16, 28);
                 let abs = cont.and_then(|c| (ch == 0xfff).then(|| absolute_downlink(c)).flatten());
                 let group = op != 0x30;
-                let what = ["Private voice grant", "Talkgroup voice grant", "Broadcast talkgroup voice grant"][(op - 0x30) as usize];
-                self.grant(idx, slot, ch, k.bits(28, 29) as u8, k.bits(32, 56), Some(k.bits(56, 80)), group, false, k.bits(30, 31) != 0, abs, what, t, out);
+                // Late Entry: the grant again while the call goes on (its set-up's say 0), an update.
+                let late = k.bits(29, 30) != 0;
+                let what = if late {
+                    ["Private voice grant (late entry)", "Talkgroup voice grant (late entry)", "Broadcast talkgroup voice grant (late entry)"]
+                } else {
+                    ["Private voice grant", "Talkgroup voice grant", "Broadcast talkgroup voice grant"]
+                }[(op - 0x30) as usize];
+                self.grant(idx, slot, ch, k.bits(28, 29) as u8, k.bits(32, 56), Some(k.bits(56, 80)), group, late, k.bits(30, 31) != 0, abs, what, t, out);
             }
             (FID_STANDARD, 0x28) => {
                 self.set_variant(Variant::TierIII);
@@ -829,6 +842,26 @@ mod tests {
         assert_eq!(s.variant, Some(Variant::TierIII));
     }
 
+    /// A Tier III site whose Hytera radios send Hytera's own blocks (one that
+    /// is an XPT site status's shape) stays Tier III: its voice LC keeps
+    /// 24-bit IDs, and it isn't told it's XPT.
+    #[test]
+    fn hytera_blocks_on_a_tier3_site_are_not_xpt() {
+        let mut s = Site::new(&[451_012_500.0], 24_000.0, DmrConfig::default());
+        let mut out = Vec::new();
+        s.csbk(0, 0, &csbk([0x99, 0x00, 0x00, 0x00, 0x00, 0xb0, 0x13, 0x00, 0x00, 0x00]), None, 1.0, &mut out);
+        assert_eq!(s.variant, Some(Variant::TierIII));
+        s.carriers[0].chan.slots[0].color_code = Some(1);
+        s.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0x0a, 0x68, 0x28, 0, 25, 0, 0, 0, 0, 0]), mbc: false }, 2.0, &mut out);
+        assert_eq!((s.variant, s.carriers[0].chan.variant), (Some(Variant::TierIII), Some(Variant::TierIII)));
+        assert!(!s.notes.iter().any(|n| n.contains("XPT")), "{:?}", s.notes);
+        // Before anything standard is heard, the same block is XPT's (an XPT site's).
+        let mut x = Site::new(&[451_012_500.0], 24_000.0, DmrConfig::default());
+        x.carriers[0].chan.slots[0].color_code = Some(1);
+        x.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0x0a, 0x68, 0x28, 0, 25, 0, 0, 0, 0, 0]), mbc: false }, 2.0, &mut out);
+        assert_eq!(x.variant, Some(Variant::Xpt));
+    }
+
     /// C_ALOHA and C_BCAST both carry it, read from a control channel only.
     #[test]
     fn aloha_and_bcast_give_the_sys_code() {
@@ -942,6 +975,13 @@ mod tests {
         s.csbk(0, 0, &tier3_grant(0x31, 7, 0, 3001, 12), None, 1.0, &mut out);
         assert_eq!((out[0].kind, out[0].freq_hz, out[0].voice.slot().unwrap_or(9), out[0].talkgroup, out[0].source), (MessageType::Grant, 451_012_500, 0, 3001, 12));
         assert_eq!(s.variant, Some(Variant::TierIII));
+        // The same grant again while the call goes on (Late Entry set): an update.
+        out.clear();
+        let mut late = tier3_grant(0x31, 7, 0, 3001, 12);
+        put(&mut late.0, 29, 30, 1);
+        s.csbk(0, 0, &late, None, 1.5, &mut out);
+        assert_eq!((out[0].kind, out[0].freq_hz), (MessageType::Update, 451_012_500));
+        assert!(out[0].meta.starts_with("Talkgroup voice grant (late entry): TG 3001"), "{}", out[0].meta);
         // A private call with absolute parameters (channel 0xFFF, MBC).
         out.clear();
         s.csbk(0, 0, &tier3_grant(0x30, 0xfff, 1, 777, 12), Some(&absolute(9, 451_587_500)), 2.0, &mut out);
