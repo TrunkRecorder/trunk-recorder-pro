@@ -47,7 +47,7 @@ impl Plugin for Hello {
         Ok(Hello { host })
     }
     fn call_concluded(&mut self, call: ConcludedCall) {
-        self.host.info(format!("TG {} for {} s", call.call.talkgroup, call.call.call_length));
+        self.host.info(format!("TG {} for {} ms", call.call.talkgroup, call.call.audio_ms()));
     }
 }
 
@@ -60,9 +60,15 @@ fn main() {
 
 Start from the [plugin template](https://github.com/TrunkRecorder/trunk-plugin-template).
 It's a working plugin with tests, CI and a release workflow that builds for
-every platform the recorder runs on, and its `docs/` folder is the guide to
-writing plugins: the events, the settings form, uploading, testing and
-releasing.
+every platform the recorder runs on.
+
+The guide is [Writing plugins](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/plugins/writing-plugins.md):
+the template, how a plugin runs, the settings form, testing, releasing and the
+registry. The reference pages beside it list
+[every event](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/developer/plugins/events.md)
+and [every protocol message](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/developer/plugins/protocol.md),
+and [Writing an uploader](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/developer/plugins/uploading.md)
+covers `CallQueue`, `Attempt` and node health reports.
 
 Complete plugins to learn from:
 [OpenMHz](https://github.com/TrunkRecorder/trunk-plugin-openmhz),
