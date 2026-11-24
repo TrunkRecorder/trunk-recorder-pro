@@ -99,6 +99,14 @@ pub struct Cqpsk {
     // detection
     dprev: Complex32,
     q4: Complex32,
+    /// Phase 1: the 4th-power angle at the last symbol, and the quarter turns
+    /// a symbol the residual turn stands beyond what that angle alone gives
+    /// ([`Cqpsk::residual_turn`]).
+    q4_arg: f32,
+    quarter: i32,
+    /// Whether a sync word has been found turned this transmission: only
+    /// then is the angle followed past the quarter's edge.
+    turned: bool,
     /// Mean square of each decided step's distance from its ideal phase, rad².
     perr: f32,
     cth: f32,
@@ -158,6 +166,9 @@ impl Cqpsk {
             pos_n: 0,
             dprev: Complex32::default(),
             q4: Complex32::default(),
+            q4_arg: 0.0,
+            quarter: 0,
+            turned: false,
             perr: 0.0,
             cth: 0.0,
             cfr: 0.0,
@@ -312,7 +323,7 @@ impl Cqpsk {
             let u2 = u * u;
             self.q4 = self.q4 * 0.995 + u2 * u2 * m;
         }
-        let theta = if self.opt.coherent { 0.0 } else { (-self.q4.im).atan2(-self.q4.re) / 4.0 };
+        let theta = if self.opt.coherent { 0.0 } else { self.residual_turn() };
         let r = d * Complex32::from_polar(1.0, -theta);
         // +45° = 00, +135° = 01, −45° = 10, −135° = 11 (P25's +1 +3 −1 −3).
         let dib = if r.im >= 0.0 { if r.re > 0.0 { 0b00 } else { 0b01 } } else if r.re > 0.0 { 0b10 } else { 0b11 };
@@ -342,14 +353,78 @@ impl Cqpsk {
         let (fs, inv, mask, len) = if self.opt.baud > 5000.0 {
             (0x57_5D57_F7FFu64, 0xAA_AAAA_AAAAu64, 0xFF_FFFF_FFFFu64, 20)
         } else {
-            (0x5575_F5FF_77FF, 0xAAAA_AAAA_AAAA, 0xFFFF_FFFF_FFFF, 24)
+            (P1_SYNC, 0xAAAA_AAAA_AAAA, 0xFFFF_FFFF_FFFF, 24)
         };
         let sr = self.sr & mask;
         if self.symbols - self.last_sync >= len && ((sr ^ fs).count_ones() <= 4 || (sr ^ fs ^ inv).count_ones() <= 4) {
             self.syncs += 1;
             self.last_sync = self.symbols;
+        } else if self.turns() && self.symbols - self.last_sync >= len {
+            // The sync word with every step a quarter, a half or three quarters
+            // of a turn on: the carrier estimate stands that far off (1200 Hz a
+            // quarter). Two bits of 48, so noise does not pass for it.
+            if let Some(j) = P1_TURNED.iter().position(|&t| (sr ^ t).count_ones() <= 2) {
+                self.quarter = (self.quarter + j as i32 + 2).rem_euclid(4) - 1;
+                self.turned = true;
+                self.syncs += 1;
+                self.last_sync = self.symbols;
+            }
         }
     }
+
+    /// Phase 1, differential detection: the receiver the quarter turns are kept for.
+    fn turns(&self) -> bool {
+        self.opt.baud < 5000.0 && !self.opt.coherent
+    }
+
+    /// The residual turn a symbol detection takes out. The 4th power gives it
+    /// to within a quarter turn only (±π/4, 600 Hz at 4800 baud), and the
+    /// front end's carrier estimate, a mean of the phase steps between
+    /// samples, reads hundreds of Hz high or low on a linear signal whose
+    /// 135° steps go round the long way (simulcast overlap): past 600 Hz
+    /// every dibit comes out turned and no frame syncs. So while frames sync
+    /// a sync word found turned ([`turned`]) sets the quarter, and from then
+    /// the angle is followed across the quarter's edge. Not before: a signal
+    /// whose angle sits on the edge (C4FM through this receiver) would settle
+    /// on one side of it, and its offset read a quarter out. Only a small
+    /// step across ±π is the angle going round; a weak 4th power jumps by π
+    /// or so either way. Two voice frames (1728 symbols) without a sync, the
+    /// transmission is over: the plain estimate again, before noise walks the
+    /// angle about.
+    fn residual_turn(&mut self) -> f32 {
+        let a = (-self.q4.im).atan2(-self.q4.re);
+        if self.turns() {
+            let synced = self.syncs > 0 && self.symbols - self.last_sync <= 1728;
+            if !synced {
+                (self.quarter, self.turned) = (0, false);
+            } else if self.turned && a - self.q4_arg > 1.5 * PI32 {
+                self.quarter = self.quarter.rem_euclid(4) - 1;
+            } else if self.turned && a - self.q4_arg < -1.5 * PI32 {
+                self.quarter = (self.quarter + 2).rem_euclid(4) - 1;
+            }
+            self.q4_arg = a;
+        }
+        a / 4.0 + self.quarter as f32 * (PI32 / 2.0)
+    }
+}
+
+/// Phase 1's frame sync, and as [`turned`] one, two and three quarters.
+const P1_SYNC: u64 = 0x5575_F5FF_77FF;
+const P1_TURNED: [u64; 3] = [turned(P1_SYNC, 24, 1), turned(P1_SYNC, 24, 2), turned(P1_SYNC, 24, 3)];
+
+/// A sync word of `len` dibits with every phase step `j` quarter turns on:
+/// what a receiver whose carrier estimate is `j` × baud / 4 off makes of it.
+const fn turned(fs: u64, len: u64, j: u64) -> u64 {
+    // Steps in quarter turns from +45°: 00, 01, 11, 10.
+    const STEP: [u64; 4] = [0, 1, 3, 2];
+    const DIBIT: [u64; 4] = [0b00, 0b01, 0b11, 0b10];
+    let (mut out, mut k) = (0u64, 0u64);
+    while k < len {
+        let d = (fs >> (2 * (len - 1 - k))) & 3;
+        out = (out << 2) | DIBIT[((STEP[d as usize] + j) % 4) as usize];
+        k += 1;
+    }
+    out
 }
 
 impl Cqpsk {
@@ -449,7 +524,7 @@ impl Receiver for Cqpsk {
             return None;
         }
         let w = self.acc_i.atan2(self.acc_r) * self.sps;
-        let theta = if self.opt.coherent { self.cfr } else { (-self.q4.im).atan2(-self.q4.re) / 4.0 };
+        let theta = if self.opt.coherent { self.cfr } else { (-self.q4.im).atan2(-self.q4.re) / 4.0 + self.quarter as f32 * (PI32 / 2.0) };
         Some(((w + theta as f64) / (2.0 * PI) * self.opt.baud) as f32)
     }
 }
@@ -549,6 +624,80 @@ mod tests {
         assert!(rx.syncs > 2, "syncs {}", rx.syncs);
         let got = rx.offset_hz().expect("an offset once synced");
         assert!((got - off as f32).abs() < 30.0, "offset {got}");
+    }
+
+    /// Phase 1 on the carrier, but with `long(frame)` of its −135° steps turning
+    /// the long way, +225° (#228: simulcast LSM seen through a discriminator).
+    /// Constant envelope, the phase moving evenly through each symbol: the
+    /// symbol points are π/4-DQPSK, the path between them is not.
+    fn long_way(long: impl Fn(usize) -> f64) -> (Vec<usize>, Vec<Complex32>) {
+        let (sps, frames) = (10, 24);
+        let (mut dibits, mut lfsr) = (Vec::new(), 0xACE1u16);
+        for _ in 0..frames {
+            dibits.extend((0..24).rev().map(|i| ((0x5575_F5FF_77FFu64 >> (2 * i)) & 3) as usize));
+            for _ in 24..864 {
+                for _ in 0..2 {
+                    lfsr = (lfsr >> 1) ^ (-((lfsr & 1) as i16) as u16 & 0xB400);
+                }
+                dibits.push((lfsr & 3) as usize);
+            }
+        }
+        let step = [PI / 4.0, 3.0 * PI / 4.0, -PI / 4.0, -3.0 * PI / 4.0];
+        let (mut iq, mut ph, mut acc) = (Vec::new(), 0.0f64, 0.0f64);
+        for (n, &d) in dibits.iter().enumerate() {
+            let mut s = step[d];
+            if d == 3 {
+                acc += long(n / 864);
+                if acc >= 1.0 {
+                    acc -= 1.0;
+                    s += 2.0 * PI;
+                }
+            }
+            for k in 0..sps {
+                // Still for the symbol's outer thirds, turning in its middle one.
+                let f = ((k as f64 + 0.5) / sps as f64 * 3.0 - 1.0).clamp(0.0, 1.0);
+                iq.push(Complex32::from_polar(1.0, (ph + s * (1.0 - (PI * f).cos()) / 2.0) as f32));
+            }
+            ph += s;
+        }
+        (dibits, iq)
+    }
+
+    /// The front end's carrier estimate reads the long way round as an
+    /// offset (+900 Hz when 3/4 of the −135° steps take it), past the 4th
+    /// power's ±600 Hz: frames still sync once the sync word is found turned,
+    /// and the offset reads true.
+    #[test]
+    fn syncs_with_the_carrier_estimate_a_quarter_turn_out() {
+        let (dibits, iq) = long_way(|_| 0.75);
+        let mut rx = Cqpsk::new(48_000.0, Options::default());
+        let mut out = Vec::new();
+        for c in iq.chunks(4800) {
+            rx.push(c, &mut out);
+        }
+        assert!(rx.syncs > 15, "syncs {}", rx.syncs);
+        let got = rx.offset_hz().expect("an offset once synced");
+        assert!(got.abs() < 100.0, "offset {got}");
+        // The last frames' dibits, wherever the receiver's stream lines up.
+        let tail: Vec<u8> = out[out.len() - 2000..out.len() - 100].iter().map(|s| s.dibit).collect();
+        let sent: Vec<u8> = dibits.iter().map(|&d| d as u8).collect();
+        assert!(sent.windows(tail.len()).any(|w| w == tail.as_slice()), "the dibits come out turned");
+    }
+
+    /// The carrier estimate drifting out past the quarter's edge mid-call
+    /// (+480 Hz to +960 Hz, as #228's second transmission did): a frame or
+    /// so lost where it crosses, then the sync word found turned again.
+    #[test]
+    fn follows_the_carrier_estimate_across_the_quarter_edge() {
+        let (_, iq) = long_way(|f| 0.45 + 0.35 * f as f64 / 23.0);
+        let mut rx = Cqpsk::new(48_000.0, Options::default());
+        let mut out = Vec::new();
+        for c in iq.chunks(4800) {
+            rx.push(c, &mut out);
+        }
+        assert!(rx.syncs >= 21, "syncs {}", rx.syncs);
+        let got = rx.offset_hz().expect("an offset once synced");
+        assert!(got.abs() < 100.0, "offset {got}");
     }
 
     /// The phase error follows the noise: a few degrees on a strong signal,
