@@ -8,13 +8,33 @@ tokens, 401s) is in the [API docs](../api/README.md#signing-in).
 ## Reaching it from another computer
 
 By default the interface only answers on this computer (`127.0.0.1`). To reach it from another
-machine on your network, choose **Other computers too** under **Reachable from** in Setup →
-**Access** and restart the app. Or start with `--bind 0.0.0.0`, or set `server.bind` in the config
-(see [Server](../configuration/server-and-log.md#server)); a `--bind` overrides the setting:
+machine on your network, choose **Other devices too** under **Direct connections** in Setup →
+**Access** and restart the app (it saves `server.bind` as `0.0.0.0`: every address). Or start with
+`--bind 0.0.0.0`, or set `server.bind` in the config (see
+[Server](../configuration/server-and-log.md#server)); a `--bind` overrides the setting, and
+Setup says so:
 
 ```bash
 trunk-pro serve --bind 0.0.0.0 --no-open
 ```
+
+**Reachable at**, below it, lists every way to the recorder it found this run, each a link:
+
+| Row | Who | Found from |
+|---|---|---|
+| **This computer** | A browser on the recorder's computer | Always, unless it listens on one other address |
+| **Network** | Devices on that network (its interface, `en0`, `eth0`) | The computer's addresses, while it listens on every address |
+| **Tailnet** | Devices on your tailnet, by the computer's MagicDNS name (else its `100.x` address) | Its Tailscale address, while it listens on every address; the name from `tailscale status` |
+| **Tailscale Serve** / **Tailscale Funnel** | Your tailnet, over HTTPS / anyone on the internet (**Internet**) | `tailscale serve status`: a handler that proxies to this port |
+| **Cloudflare Tunnel** | Anyone on the internet who gets past Cloudflare (**Internet**; **Access** when [Cloudflare Access](#cloudflare-tunnel-and-access) is set up here) | cloudflared's metrics server (`localhost:20241`–`20245`): an ingress rule whose service is this port |
+| **Host name** | However `server.hostname` is reached | `server.hostname`, when nothing above is it |
+
+Tailscale Serve, Funnel and Cloudflare Tunnel reach the recorder on localhost, so they work with
+**This computer only** too; only the **Network** and **Tailnet** rows need **Other devices too**.
+Tailscale and cloudflared are asked once a minute; a cloudflared started with `--metrics`
+elsewhere isn't found. In Docker the container's own addresses aren't listed: other devices
+use the Docker host's address, at the port it publishes, and the recorder must listen on every
+address inside the container for that to reach it.
 
 Then browse to `http://<that machine's address>:8080`. The other interfaces are reachable the
 same way, each at its own port (`:8081`, …), which the firewall must let through too. For a

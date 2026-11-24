@@ -13,6 +13,7 @@ import { addInterface, installFromStore, removeInterface, setInterface, updateCo
 import { Info } from "./charts.tsx";
 import { Switch } from "./SetupLayout.tsx";
 import { Author, InstallStage, newer, Screenshots, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
+import { useReach } from "./Reach.tsx";
 import type { ApiAccess, Config, InstallProgress, InterfaceInfo, InterfaceListing } from "./protocol.ts";
 
 /** Where interface `port` is, from this browser. */
@@ -274,13 +275,24 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
         {c.server.tls && <HstsRow c={c} />}
         <HostnameRow c={c} />
       </div>
-      <p className="muted small">
-        Listening on <code>{c.server.bind}</code>
-        <Info>
-          Other computers reach them only when the recorder listens on every address (Setup → Access → <strong>Reachable from</strong>: Other computers too, <code>server.bind</code> <code>0.0.0.0</code>), and their ports are open in the firewall.
-        </Info>
-      </p>
+      <ListeningOn />
     </section>
+  );
+}
+
+/** The address every port listens on this run, and who that lets connect directly. */
+function ListeningOn() {
+  const reach = useReach();
+  if (!reach) return null;
+  const who = reach.now.listen === "thisComputer" ? "this computer only" : reach.now.listen === "every" ? "every address" : "this address only";
+  return (
+    <p className="muted small">
+      Listening on <code>{reach.now.address}</code>, {who}
+      <Info>
+        Other devices connect directly only when the recorder listens on every address (Setup → Access → <strong>Direct connections</strong>: Other devices too), and the ports are open in the firewall. A tunnel or proxy on
+        this computer reaches them either way.
+      </Info>
+    </p>
   );
 }
 

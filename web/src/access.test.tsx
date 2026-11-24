@@ -15,7 +15,7 @@ import { mayEdit, passkeyName, passkeysHere, type OwnPasskey, setSetupTab, setVi
 import { IgnoreToggle, NameButton } from "./dash/Radio.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { UserPasskeys } from "./Passkeys.tsx";
-import type { ApiAccess, Config, EngineStatus, FromRecorder, Phase, TgRow, ToRecorder } from "./protocol.ts";
+import type { ApiAccess, Config, EngineStatus, FromRecorder, Phase, PlatformInfo, Reach, TgRow, ToRecorder } from "./protocol.ts";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 const nav = (html: string) => text(/<nav class="rail-nav"[\s\S]*?<\/nav>/.exec(html)?.[0] ?? "");
@@ -393,18 +393,56 @@ test("Interfaces: HTTPS's certificate and key, and the host name, beside the por
   assert.match(renderToString(<InterfacesPage />), /aria-label="Host name" [^>]*value="radiobox.tail1234.ts.net"/);
 });
 
-test("Access: Reachable from is this computer, or other computers too (server.bind), with a warning while sign-in is off (forum: can you access from other devices?)", () => {
+/** The recorder's `host` message, with where it can be reached (and, `container`, inside one). */
+function hosted(reach: Reach, container: string | null = null): void {
+  transport.onMessage({ type: "host", t: 1, values: {}, platform: { container, reach } as unknown as PlatformInfo });
+}
+
+test("Access: Direct connections, this computer only or other devices too (server.bind), and every way it can be reached (forum: can you access from other devices?)", () => {
   const off = full();
   off.server.auth!.enabled = false;
-  const local = renderToString(<AccessSection c={off} />).replace(/<!-- -->/g, "");
-  assert.match(local, /aria-label="Reachable from"><button role="radio" aria-checked="true" class="on">This computer only<\/button><button role="radio" aria-checked="false" class="">Other computers too/);
-  assert.match(text(local), /Only a browser on this computer can open it/);
-  const lan = { ...off, server: { ...off.server, bind: "0.0.0.0", port: 8090 } };
+  hello(off, "control");
+  const local: Reach = { now: { address: "127.0.0.1", listen: "thisComputer" }, saved: { address: "127.0.0.1", listen: "thisComputer" }, flag: false, routes: [{ via: "local", url: "http://localhost:8080", public: false, direct: false }] };
+  hosted(local);
+  const html = renderToString(<AccessSection c={off} />).replace(/<!-- -->/g, "");
+  assert.match(html, /aria-label="Direct connections"><button role="radio" aria-checked="true" class="on">This computer only<\/button><button role="radio" aria-checked="false" class="">Other devices too/);
+  assert.match(text(html), /Only programs on this computer: a browser here, or a tunnel or proxy here \(Tailscale Serve, Cloudflare Tunnel\)/);
+  assert.doesNotMatch(text(html), /Sign-in is off|Restart to apply/, "this computer alone: nothing to warn of");
+
+  // Saved as every address, still listening on localhost: from the next start. Its tunnels reach it already.
+  const lan = { ...off, server: { ...off.server, bind: "0.0.0.0" } };
+  hosted({ ...local, saved: { address: "0.0.0.0", listen: "every" }, routes: [...local.routes, { via: "funnel", url: "https://radio.tail1234.ts.net", public: true, direct: false }] });
+  const pending = text(renderToString(<AccessSection c={lan} />));
+  assert.match(pending, /Restart to apply/);
+  assert.match(pending, /Any device that reaches one of this computer's addresses, if its firewall lets port 8080 through/);
+  assert.match(pending, /Tailscale Funnel .*Internet .*https:\/\/radio\.tail1234\.ts\.net/);
+  assert.match(pending, /Sign-in is off: anyone on the internet can change settings/);
+
+  // Listening on every address: each network's and the tailnet's.
+  const every: Reach = {
+    now: { address: "0.0.0.0", listen: "every" },
+    saved: { address: "0.0.0.0", listen: "every" },
+    flag: false,
+    routes: [...local.routes, { via: "network", url: "http://192.168.1.100:8080", iface: "en0", public: false, direct: true }, { via: "tailnet", url: "http://radio.tail1234.ts.net:8080", iface: "utun4", public: false, direct: true }],
+  };
+  hosted(every);
   const open = text(renderToString(<AccessSection c={lan} />));
-  assert.match(open, /browse to http:\/\/&lt;this computer's address&gt;:8090 /);
-  assert.match(open, /Sign-in is off: anyone on your network can change settings/);
+  assert.match(open, /Network en0 .*http:\/\/192\.168\.1\.100:8080 .*Tailnet utun4 .*http:\/\/radio\.tail1234\.ts\.net:8080/);
+  assert.match(open, /Sign-in is off: anyone who can open these can change settings/);
+  assert.doesNotMatch(open, /Restart to apply/);
   const on = { ...lan, server: { ...lan.server, auth: full().server.auth } };
   assert.doesNotMatch(text(renderToString(<AccessSection c={on} />)), /Sign-in is off/, "not with sign-in on");
-  const other = text(renderToString(<AccessSection c={{ ...off, server: { ...off.server, bind: "192.168.1.20" } }} />));
-  assert.match(other, /Listening on 192\.168\.1\.20 , as the config says/);
+
+  // Started with --bind: the setting is the next start's without it. In Docker, the host's address.
+  hosted({ ...every, flag: true, saved: local.saved }, "docker");
+  const flagged = text(renderToString(<AccessSection c={off} />));
+  assert.match(flagged, /--bind 0\.0\.0\.0/);
+  assert.doesNotMatch(flagged, /Restart to apply/, "--bind, not the setting, says what's listened on");
+  assert.match(flagged, /Only programs in this container: the port Docker publishes doesn't reach it/);
+  assert.match(flagged, /Docker host Its address, at the port it publishes/);
+
+  hosted({ ...local, saved: { address: "192.168.1.20", listen: "one" } });
+  assert.match(text(renderToString(<AccessSection c={{ ...off, server: { ...off.server, bind: "192.168.1.20" } }} />)), /Devices that reach 192\.168\.1\.20, as the config says/);
+  hosted(every);
+  assert.match(text(renderToString(<InterfacesPage />)), /Listening on 0\.0\.0\.0 , every address/);
 });

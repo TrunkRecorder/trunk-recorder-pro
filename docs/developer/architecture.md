@@ -70,7 +70,7 @@ runs in a desktop process and in a Web Worker and gives bit-identical calls on t
 | `finish-N` | 1–3 | The finish pool: writes every file of a call's plan (.json, .wav, .m4a, frames), sends `concluded`, hands calls to the plugin host and the Archive. |
 | `plugin-<id>` + writer + stderr reader | per plugin process | Supervises one plugin child process, feeds its stdin, reads its stdout/stderr. `plugin-hold` keeps what plugin delays hold back. |
 | tokio runtime | pool | The axum web server; one task per WebSocket client, one listener per interface. |
-| `monitor`, `net-probe`, `spotlight` | one each | Samples the computer and plugins every 2 s; TCP connectivity checks every 15 s; the Spotlight check of the recordings folder. |
+| `monitor`, `net-probe`, `spotlight`, `reach` | one each | Samples the computer and plugins every 2 s; TCP connectivity checks every 15 s; the Spotlight check of the recordings folder; once a minute, Tailscale and cloudflared asked what leads to the built-in interface ([`reach`](../../crates/trunk-pro/src/reach.rs)). |
 | `stats-load`, `stats-store` | one each | Load/append stats rollups. |
 | `db-writer`, `db-backfill` | one each | The store's one writer; bringing the store up to date with the capture folder. |
 | `recent` | at start | With the store off: fill the live call list from the newest calls on disk. |

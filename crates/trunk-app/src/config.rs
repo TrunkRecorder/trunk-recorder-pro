@@ -2211,6 +2211,17 @@ impl Server {
         self.hostname_parts().1
     }
 
+    /// Where the dashboard is reached by `hostname`, if set: `https://<hostname>`, at the port
+    /// written in it, else `port` when the recorder serves HTTPS itself (`tls`), else 443 (a
+    /// proxy or tunnel in front serves the HTTPS); no port written when it's 443.
+    pub fn hostname_url(&self, port: u16, tls: bool) -> Option<String> {
+        let name = self.host()?;
+        Some(match self.host_port().unwrap_or(if tls { port } else { 443 }) {
+            443 => format!("https://{name}"),
+            p => format!("https://{name}:{p}"),
+        })
+    }
+
     fn hostname_parts(&self) -> (&str, Option<u16>) {
         let h = self.hostname.trim();
         match h.rsplit_once(':') {
