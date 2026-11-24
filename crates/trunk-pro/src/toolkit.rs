@@ -58,10 +58,7 @@ impl Capture {
     }
 }
 
-/// Bytes as lowercase hex.
-pub fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
+pub use trunk_core::bits::hex;
 
 /// Hex (either case) as bytes; None if it isn't.
 pub fn unhex(s: &str) -> Option<Vec<u8>> {

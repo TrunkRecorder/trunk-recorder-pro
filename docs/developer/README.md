@@ -9,6 +9,7 @@ How to build Trunk Recorder Pro from source, make a release, and find your way a
 | [Developer tools](tools.md) | The `trunk-pro tool …` commands for measuring and testing the decoders |
 | [Performance](performance.md) | CPU use measured against Trunk Recorder, and earlier verification |
 | [Interface style](ui-style.md) | How the interface looks and is organized |
+| [DMR GPS and data](protocols/dmr-gps.md) | GPS and Hytera packet/signalling formats, sources and validation |
 | [Hytera XPT](protocols/xpt.md) | Protocol notes and evidence for the XPT decoder |
 
 For the interface API see [api/README.md](../api/README.md); for plugins,

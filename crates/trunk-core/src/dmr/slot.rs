@@ -54,6 +54,11 @@ pub struct Lc(pub [u8; 9]);
 /// Motorola restricted access (RAS) sets this FLCO bit in a voice call's
 /// embedded LC (group 0x20, private 0x23); the LC is otherwise the usual one.
 const FLCO_RAS: u8 = 0x20;
+/// Hytera's call setup LC: 16-bit IDs (target in octets 4–5, source 7–8), and its third octet
+/// isn't service options.
+const FLCO_HYTERA_SETUP: u8 = 9;
+/// Hytera's own terminator LC: the transmission is over, as a voice terminator says.
+const FLCO_HYTERA_END: u8 = 0x30;
 
 impl Lc {
     /// The opcode, without Motorola's restricted-access bit.
@@ -74,15 +79,20 @@ impl Lc {
             _ => None,
         }
     }
+    /// A terminator's LC that ends the transmission: a voice user LC, or Hytera's own.
+    pub fn ends_voice(&self) -> bool {
+        self.voice_user().is_some() || (self.fid(), self.flco()) == (FID_HYTERA, FLCO_HYTERA_END)
+    }
+    /// The service options (none in Hytera's call setup).
     pub fn service_options(&self) -> u8 {
-        self.0[2]
+        if (self.fid(), self.flco()) == (FID_HYTERA, FLCO_HYTERA_SETUP) { 0 } else { self.0[2] }
     }
     pub fn emergency(&self) -> bool {
-        self.0[2] & 0x80 != 0
+        self.service_options() & 0x80 != 0
     }
     /// The privacy (encryption) service option.
     pub fn encrypted(&self) -> bool {
-        self.0[2] & 0x40 != 0
+        self.service_options() & 0x40 != 0
     }
     /// The talkgroup (or radio) called. Capacity Plus wide-area (linked)
     /// groups are 8 bits.
@@ -90,6 +100,7 @@ impl Lc {
         let b = &self.0;
         match (self.fid(), self.flco()) {
             (FID_MOTOROLA, 4) => b[5] as u32,
+            (FID_HYTERA, FLCO_HYTERA_SETUP) => u32::from_be_bytes([0, 0, b[4], b[5]]),
             _ => u32::from_be_bytes([0, b[3], b[4], b[5]]),
         }
     }
@@ -97,7 +108,7 @@ impl Lc {
     pub fn source(&self) -> u32 {
         let b = &self.0;
         match (self.fid(), self.flco()) {
-            (FID_MOTOROLA, 4) => u32::from_be_bytes([0, 0, b[7], b[8]]),
+            (FID_MOTOROLA, 4) | (FID_HYTERA, FLCO_HYTERA_SETUP) => u32::from_be_bytes([0, 0, b[7], b[8]]),
             _ => u32::from_be_bytes([0, b[6], b[7], b[8]]),
         }
     }
@@ -147,6 +158,10 @@ pub enum SlotEvent {
     Slco([u8; 5]),
     /// Privacy indicator header: encrypted, with this algorithm and key.
     Privacy { alg: u8, key: u8 },
+    /// A checked data header or BPTC-decoded rate-1/2 block.
+    Block { data_type: u8, bytes: [u8; 12] },
+    /// A complete short-data packet, header and packet CRC checked.
+    Packet(super::data::Packet),
     /// A data burst of another type (idle, data blocks, a bad CRC …).
     Data { data_type: u8, ok: bool },
 }
@@ -303,6 +318,7 @@ impl SlotDecoder {
                 let ok = rs129_decode(&mut cw).is_some();
                 (Some(ok), Lc(cw[..9].try_into().unwrap()))
             }
+            DT_DATA_HEADER => (Some(fec::crc16_ok(&blk.bits, fec::MASK_DATA_HEADER)), Lc([0; 9])),
             DT_CSBK => (Some(fec::crc16_ok(&blk.bits, fec::MASK_CSBK)), Lc([0; 9])),
             DT_MBC_HEADER => (Some(fec::crc16_ok(&blk.bits, fec::MASK_MBC_HEADER)), Lc([0; 9])),
             DT_PI_HEADER => (Some(fec::crc16_ok(&blk.bits, fec::MASK_PI)), Lc([0; 9])),
@@ -327,7 +343,7 @@ impl SlotDecoder {
         }
         let soft = b.info196_soft();
         let (blk, mut checked, mut lc) = Self::check(dt, &soft);
-        if let Some(c) = checked {
+        if let Some(c) = checked.filter(|_| dt != DT_DATA_HEADER) {
             if c {
                 self.keyed_votes = if self.keyed { self.keyed_votes - 1 } else { 0 };
                 if self.keyed_votes <= -UNKEYED_AFTER {
@@ -370,6 +386,8 @@ impl SlotDecoder {
                 }
             }
         }
+        // Packet headers never use the keyed-CRC exception.
+        if dt == DT_DATA_HEADER { ok = checked == Some(true); }
         let bytes: [u8; 12] = pack(&blk.bits).try_into().unwrap();
         if ok && checked == Some(false) && matches!(dt, DT_VOICE_LC_HEADER | DT_TERMINATOR_LC) {
             // Keyed: the RS check bytes are no use; take the LC as it came.
@@ -390,6 +408,7 @@ impl SlotDecoder {
                 }
                 DT_CSBK | DT_MBC_HEADER => out.push(SlotEvent::Csbk { csbk: Csbk(bytes[..10].try_into().unwrap()), mbc: dt == DT_MBC_HEADER }),
                 DT_MBC_CONTINUATION => out.push(SlotEvent::MbcContinuation(bytes)),
+                DT_DATA_HEADER | 7 => out.push(SlotEvent::Block { data_type: dt, bytes }),
                 DT_PI_HEADER => out.push(SlotEvent::Privacy { alg: bytes[0] & 7, key: bytes[2] }),
                 _ => {}
             }
@@ -402,7 +421,7 @@ impl SlotDecoder {
         } else {
             self.bad_blocks += 1;
         }
-        if !matches!(dt, DT_VOICE_LC_HEADER | DT_TERMINATOR_LC | DT_CSBK | DT_MBC_HEADER | DT_MBC_CONTINUATION | DT_PI_HEADER) || !ok {
+        if !matches!(dt, DT_VOICE_LC_HEADER | DT_TERMINATOR_LC | DT_CSBK | DT_MBC_HEADER | DT_MBC_CONTINUATION | DT_PI_HEADER | DT_DATA_HEADER | 7) || !ok {
             out.push(SlotEvent::Data { data_type: dt, ok });
         }
     }
@@ -418,6 +437,7 @@ pub struct Channel {
     /// control reaches the decoders with its 16-bit IDs ([`super::xpt::voice_lc`]).
     pub variant: Option<super::trunking::Variant>,
     short_lc: super::short_lc::Assembler,
+    data: [super::data::Assembler; 2],
     last_slot: u8,
     /// Bursts whose CACH didn't decode (the slot was inferred).
     pub tact_errors: u64,
@@ -464,7 +484,14 @@ impl Channel {
         slot
     }
 
+    /// Decode a continuous burst grid using its nominal 30 ms clock.
+    /// IQ consumers should use `burst_at` so packet expiry spans lost sync.
     pub fn burst(&mut self, b: &Burst, out: &mut Vec<(u8, SlotEvent)>) {
+        self.burst_at(b, self.n as f64 * 0.03, out);
+    }
+
+    /// Decode a burst at its actual air time in seconds, including gaps.
+    pub fn burst_at(&mut self, b: &Burst, t: f64, out: &mut Vec<(u8, SlotEvent)>) {
         let slot = self.slot_of(b);
         self.n += 1;
         if b.rel.iter().all(|&r| r == 0.0) {
@@ -493,7 +520,11 @@ impl Channel {
         if k[slot as usize].keyed != k[1 - slot as usize].keyed && k[slot as usize].keyed {
             k[1 - slot as usize].keyed = true;
         }
-        out.extend(self.ev.drain(..).map(|e| (slot, e)));
+        for e in self.ev.drain(..) {
+            let packet = self.data[slot as usize].push(&e, t);
+            out.push((slot, e));
+            if let Some(p) = packet { out.push((slot, SlotEvent::Packet(p))); }
+        }
         if out[start..].iter().any(|(_, e)| super::xpt::control_on(self.variant, e).is_some()) {
             self.variant = Some(super::trunking::Variant::Xpt);
         }
@@ -504,5 +535,21 @@ impl Channel {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod setup_tests {
+    use super::*;
+
+    #[test]
+    fn hytera_setup_keeps_16_bit_ids_without_voice_flags() {
+        let setup = Lc([0xc9, FID_HYTERA, 0xc7, 0x30, 0, 25, 0xaa, 0x12, 0x34]);
+        assert_eq!((setup.target(), setup.source()), (25, 0x1234));
+        assert!(!setup.encrypted() && !setup.emergency());
+        assert!(setup.voice_user().is_none());
+        let voice = Lc([0, FID_HYTERA, 0xc0, 0x30, 0, 25, 0xaa, 0x12, 0x34]);
+        assert_eq!((voice.target(), voice.source()), (0x300019, 0xaa1234));
+        assert!(voice.encrypted() && voice.emergency());
     }
 }

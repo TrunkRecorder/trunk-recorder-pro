@@ -1376,7 +1376,7 @@ impl Session {
             Event::UnitPosition { system, unit, lat, lon, talkgroup } => {
                 // (Each transmission may move it: a trace line, as control messages are.)
                 let name = self.system_name(system).to_string();
-                let text = format!("Unit {unit} at {lat:.5}, {lon:.5} (TG {talkgroup})");
+                let text = if talkgroup == 0 { format!("Unit {unit} at {lat:.5}, {lon:.5}") } else { format!("Unit {unit} at {lat:.5}, {lon:.5} (TG {talkgroup})") };
                 self.records.push(Record::text(Level::Trace, Some(&name), text.clone()));
                 if self.logging() {
                     self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "position", "text": text, "system": name }));

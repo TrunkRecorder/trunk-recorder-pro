@@ -40,9 +40,13 @@ trunk-pro tool dmr site.cu8 --center 451000000 --rate 2400000 --freq 451012500 -
 
 It emits JSON lines for raw CSBK, full LC and short LC (with their hex), plus
 decoded `xpt` fields. After detection, voice LC is shown as the decoders get
-it: 16-bit IDs, the bytes above them cleared. Hytera CSBK `0x0D`, full LC
-`0x0D`, short LC `0x0C` and data terminator LC `0x30` are in the raw lines; their
-field meanings are unverified and the recorder ignores them. `alias` records
+it: 16-bit IDs, the bytes above them cleared. Observed Hytera data-channel
+profiles also produce `hyteraData` records: beacon CSBK `0x0D`, setup LC `0x0D`,
+short status LC `0x0C`, and end LC `0x30`. The records expose verified radio/slot
+fields, the raw activity word and an experimental `busyHint`, while preserving
+the full raw bytes. They do not create voice grants or channel mappings. See
+[DMR data signalling](dmr-gps.md#data-channel-signalling-follow-up).
+`alias` records
 show the over-the-air radio name as it comes together, whole or partial; see
 [DMR radio-name decoding](../../guides/dmr.md#over-the-air-radio-names). The tool's voice,
 its muting of encrypted frames and its aliases come from the recorder's own DMR
