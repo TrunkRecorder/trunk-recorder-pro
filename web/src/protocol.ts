@@ -1880,6 +1880,33 @@ export interface FolderRow {
   lost?: number;
 }
 
+/** Which computers an address listened on lets connect directly (crates/trunk-pro/src/reach.rs). */
+export type Listen = "thisComputer" | "every" | "one";
+export interface Bind {
+  address: string;
+  listen: Listen;
+}
+/** One way to the built-in interface: this computer, a network's address of it (`iface`), its tailnet's, Tailscale Serve or Funnel, a Cloudflare Tunnel, or `server.hostname`. */
+export interface Route {
+  via: "local" | "network" | "tailnet" | "tailscaleServe" | "funnel" | "cloudflare" | "hostname";
+  url: string;
+  iface?: string;
+  /** From anywhere on the internet. */
+  public: boolean;
+  /** Gone when the recorder listens on this computer only. */
+  direct: boolean;
+}
+/** Where the built-in interface can be reached this run. */
+export interface Reach {
+  /** Listened on this run. */
+  now: Bind;
+  /** `server.bind` as saved: the next start's, unless `--bind` is given then. */
+  saved: Bind;
+  /** This run's address is `--bind`'s, on the command line. */
+  flag: boolean;
+  routes: Route[];
+}
+
 /** The computer, as last sampled (desktop app). Missing values are listed in `unavailable`. */
 export interface PlatformInfo {
   os: string;
@@ -1904,6 +1931,8 @@ export interface PlatformInfo {
   perCore: number[] | null;
   interfaces: { name: string; rx: number; tx: number; state: string }[] | null;
   unavailable: { field: string; why: string }[];
+  /** Where the built-in interface can be reached (desktop app). */
+  reach?: Reach;
   /** The store (desktop app): each table's and index's size, measured every 15 minutes; absent until measured, or with the store off. */
   store?: {
     backend: "sqlite" | "postgres";

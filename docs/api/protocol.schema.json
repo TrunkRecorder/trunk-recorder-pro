@@ -191,6 +191,22 @@
       "additionalProperties": false,
       "description": "Someone (or a program) who may sign in: what they may do, and what they sign in with (neither: nothing yet)."
     },
+    "Bind": {
+      "type": "object",
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "listen": {
+          "$ref": "#/definitions/Listen"
+        }
+      },
+      "required": [
+        "address",
+        "listen"
+      ],
+      "additionalProperties": false
+    },
     "CallEntry": {
       "type": "object",
       "properties": {
@@ -5400,6 +5416,15 @@
       "additionalProperties": false,
       "description": "The licenses found on one frequency looked up; `historical`: none active on it, so these have lapsed."
     },
+    "Listen": {
+      "type": "string",
+      "enum": [
+        "thisComputer",
+        "every",
+        "one"
+      ],
+      "description": "Which computers an address listened on lets connect directly (crates/trunk-pro/src/reach.rs)."
+    },
     "LockableKeys": {
       "type": "object",
       "properties": {
@@ -6145,6 +6170,10 @@
             ],
             "additionalProperties": false
           }
+        },
+        "reach": {
+          "$ref": "#/definitions/Reach",
+          "description": "Where the built-in interface can be reached (desktop app)."
         },
         "store": {
           "type": "object",
@@ -7200,6 +7229,37 @@
       ],
       "additionalProperties": false
     },
+    "Reach": {
+      "type": "object",
+      "properties": {
+        "now": {
+          "$ref": "#/definitions/Bind",
+          "description": "Listened on this run."
+        },
+        "saved": {
+          "$ref": "#/definitions/Bind",
+          "description": "`server.bind` as saved: the next start's, unless `--bind` is given then."
+        },
+        "flag": {
+          "type": "boolean",
+          "description": "This run's address is `--bind`'s, on the command line."
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Route"
+          }
+        }
+      },
+      "required": [
+        "now",
+        "saved",
+        "flag",
+        "routes"
+      ],
+      "additionalProperties": false,
+      "description": "Where the built-in interface can be reached this run."
+    },
     "Recording": {
       "type": "object",
       "properties": {
@@ -7429,6 +7489,45 @@
         }
       },
       "additionalProperties": false
+    },
+    "Route": {
+      "type": "object",
+      "properties": {
+        "via": {
+          "type": "string",
+          "enum": [
+            "local",
+            "network",
+            "tailnet",
+            "tailscaleServe",
+            "funnel",
+            "cloudflare",
+            "hostname"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "iface": {
+          "type": "string"
+        },
+        "public": {
+          "type": "boolean",
+          "description": "From anywhere on the internet."
+        },
+        "direct": {
+          "type": "boolean",
+          "description": "Gone when the recorder listens on this computer only."
+        }
+      },
+      "required": [
+        "via",
+        "url",
+        "public",
+        "direct"
+      ],
+      "additionalProperties": false,
+      "description": "One way to the built-in interface: this computer, a network's address of it (`iface`), its tailnet's, Tailscale Serve or Funnel, a Cloudflare Tunnel, or `server.hostname`."
     },
     "SampleFormat": {
       "type": "string",

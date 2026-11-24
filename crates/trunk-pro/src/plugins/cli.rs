@@ -216,7 +216,7 @@ fn uninstall(a: &Args) {
         die(&format!("{id} isn't installed"));
     }
     if !custom && dir.is_dir() {
-        std::fs::remove_dir_all(&dir).unwrap_or_else(|e| die(&format!("Couldn't delete {}: {e}", dir.display())));
+        trunk_app::files::remove_dir_all(&dir).unwrap_or_else(|p| die(&format!("Couldn't delete {}. {p}", dir.display())));
     }
     super::forget(&mut cfg, id);
     cfg.save(&path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));

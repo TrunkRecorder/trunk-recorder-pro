@@ -10,6 +10,28 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   *(same serial as another)*, and the list says how to give it one (`rtl_eeprom -d 0 -s 00000002`, with only that
   dongle plugged in). The list also marks a dongle another source has as *(in use)* again.
 
+- **Setup: Direct connections and Reachable at** (#237, thanks @blantonl). Setup → **Access** switches
+  `server.bind` between **This computer only** (`127.0.0.1`) and **Other devices too** (`0.0.0.0`), from the
+  next start; it was `--bind` or the config file only. **Reachable at** lists every way to the recorder it finds
+  this run, as links: this computer, each network's address, the tailnet's (by its MagicDNS name), Tailscale
+  Serve and Funnel, Cloudflare Tunnel hostnames (from cloudflared's metrics server) and `server.hostname`; those
+  open to the internet are marked. It says when a `--bind` overrides the setting, when a change waits for a
+  restart, and, while sign-in is off, that anyone who can open them can change settings. From a browser that
+  came in directly, it asks before choosing **This computer only**. The Interfaces page's **Listening on** is
+  the address listened on this run, not the config's. See
+  [Remote access](docs/guides/remote-access.md#reaching-it-from-another-computer).
+
+- **A file that can't be written says where, why and what to do, wherever it is** (#236, thanks @blantonl). A plugin
+  or interface install refused for want of permission said only the OS error (*Permission denied*, *Access is
+  denied*). It now names the folder, says it's beside the config file and why the user Trunk Recorder Pro runs as
+  must be able to write there, and how to fix it. The same words now come from everything that writes, as they did
+  only for the recordings folder: saving the config, the call store, the log file, sign-in, held calls, a plugin's
+  data folder, IQ captures and the RAM spool. Permission denied says whose folder it is, who Trunk Recorder Pro runs
+  as and the `chmod` or `chown` to run; macOS privacy, a read-only or full disk and a folder that's gone are told
+  apart; on Windows, a folder under Program Files says to keep the config elsewhere. The log file and a plugin's
+  data folder failing were silent: now they're said. See
+  [Where plugins live](docs/plugins/README.md#where-plugins-live).
+
 - **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call
   JSON (`lat`, `lon` in `srcList`) and reported as a position event, as P25's are:
   - the GPS a DMR or Hytera radio sends while it talks (embedded in its voice), XPT included;

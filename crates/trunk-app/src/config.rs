@@ -2211,6 +2211,17 @@ impl Server {
         self.hostname_parts().1
     }
 
+    /// Where the dashboard is reached by `hostname`, if set: `https://<hostname>`, at the port
+    /// written in it, else `port` when the recorder serves HTTPS itself (`tls`), else 443 (a
+    /// proxy or tunnel in front serves the HTTPS); no port written when it's 443.
+    pub fn hostname_url(&self, port: u16, tls: bool) -> Option<String> {
+        let name = self.host()?;
+        Some(match self.host_port().unwrap_or(if tls { port } else { 443 }) {
+            443 => format!("https://{name}"),
+            p => format!("https://{name}:{p}"),
+        })
+    }
+
     fn hostname_parts(&self) -> (&str, Option<u16>) {
         let h = self.hostname.trim();
         match h.rsplit_once(':') {
@@ -2636,26 +2647,6 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
-/// Write `data` to `path` so that a crash or power cut leaves the old file
-/// or the new one, never part of either: into a temporary file beside it,
-/// flushed to disk, then renamed over it.
-pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
-    use std::io::Write;
-    let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
-    let tmp = path.with_file_name(format!(".{name}.tmp"));
-    let written = std::fs::File::create(&tmp).and_then(|mut f| {
-        f.write_all(data.as_ref())?;
-        f.sync_all()
-    });
-    match written.and_then(|_| std::fs::rename(&tmp, path)) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
-    }
-}
-
 pub fn default_capture_dir() -> PathBuf {
     // (The browser build has no home folder, and writes no folder: the default stays as said.)
     if cfg!(target_arch = "wasm32") {
@@ -2839,10 +2830,8 @@ impl Config {
         self.systems.iter().map(|s| (s.id, s.short_name.as_str())).chain(self.conventional.iter().map(|c| (c.id, c.short_name.as_str())))
     }
 
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(d) = path.parent() {
-            std::fs::create_dir_all(d)?;
-        }
+    pub fn save(&self, path: &Path) -> Result<(), crate::files::Problem> {
+        crate::files::make_parent(path)?;
         let mut c = self.clone();
         for v in &mut c.conventional {
             v.channel_file_status.clear();
@@ -2851,7 +2840,7 @@ impl Config {
                 v.channels.clear();
             }
         }
-        write_atomic(path, serde_json::to_string_pretty(&c).unwrap_or_default())
+        crate::files::write_atomic(path, serde_json::to_string_pretty(&c).unwrap_or_default())
     }
 
     /// Conventional system `k`'s linked channel file's location (relative
@@ -2969,7 +2958,7 @@ impl Config {
             return Ok(());
         };
         if !p.exists() {
-            let made = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, crate::channels::write(&self.conventional[k].channels)));
+            let made = crate::files::make_parent(&p).and_then(|_| crate::files::write(&p, crate::channels::write(&self.conventional[k].channels)));
             if let Err(e) = made {
                 self.conventional[k].channel_file = old;
                 return Err(format!("Couldn't create {}: {e}", p.display()));

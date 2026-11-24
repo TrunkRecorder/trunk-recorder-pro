@@ -13,7 +13,7 @@
 //! writer that falls behind ends the capture, it never holds up decoding.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::fs::{self, File};
+use std::fs;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -25,6 +25,7 @@ use num_complex::Complex32;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha512};
 use trunk_app::config::{Config, NameLists, SampleFormat, SourceKind, SystemNames};
+use trunk_app::files::{self, Doing, Problem};
 use trunk_app::protocol::{CaptureWhat, IqCapture, IqCaptureActive, IqCaptureWaiting, IqWaterfall, ToClient};
 use trunk_core::trunk::tape::{ControlTape, VoiceTape};
 use trunk_core::trunk::{IdField, Status};
@@ -574,13 +575,14 @@ fn begin(ctx: &Arc<Ctx>, cfg: &Config, taps: Vec<Arc<Tap>>, name: &str, req: &Re
     let seconds = req.after_s + req.before_s;
     // (Where captures go can change while recording: it's not one of the run's settings.)
     let root = root(&ctx.config.lock().unwrap());
-    fs::create_dir_all(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+    files::make_dir(&root)?;
     let need = estimate(cfg, seconds);
     if let Some((_, free)) = crate::spool::statvfs(&root).filter(|d| d.1 < need + DISK_MARGIN) {
         return Err(format!("This capture takes about {} MB and leaves 1 GB free, but only {} MB is free on that disk.", need / 1_000_000, free / 1_000_000));
     }
     let dir = root.join(name);
-    fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // (Its own folder, new: not one there already.)
+    fs::create_dir(&dir).map_err(|e| Problem::of(Doing::Make, &dir, &e))?;
     let before = live_now(ctx).ok_or("The recording isn't answering, so nothing was captured.")?;
     let centers = cfg.resolved_centers();
     let failed = Arc::new(Mutex::new(None));
@@ -648,8 +650,8 @@ impl Written {
 }
 
 fn write_samples(rx: mpsc::Receiver<Chunk>, path: &Path, activity: &Activity) -> Result<Written, String> {
-    let fail = |e: std::io::Error| format!("{}: {e}", path.display());
-    let mut file = BufWriter::with_capacity(1 << 20, File::create(path).map_err(fail)?);
+    let fail = |e: std::io::Error| Problem::of(Doing::Write, path, &e).to_string();
+    let mut file = BufWriter::with_capacity(1 << 20, files::create(path)?);
     let mut hash = Sha512::new();
     let mut w = Written::default();
     let mut out = Vec::new();
@@ -908,17 +910,17 @@ fn save(ctx: &Ctx, cfg: &Config, dir: &Path, req: &Request, before: &(Live, f64)
         let text = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
         let name = format!("source-{i}");
         let path = dir.join(format!("{name}.sigmf-meta"));
-        fs::write(&path, &text).map_err(|e| format!("{}: {e}", path.display()))?;
+        files::write(&path, &text)?;
         streams.push(json!({ "name": name, "hash": crate::toolkit::hex(&Sha512::digest(text.as_bytes())) }));
     }
     let collection = json!({ "collection": { "core:version": "1.2.0", "core:streams": streams } });
     let text = serde_json::to_string_pretty(&collection).map_err(|e| e.to_string())?;
     let path = dir.join(COLLECTION);
-    fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+    files::write(&path, text)?;
     let mut diagnostics = crate::diagnostics::build(cfg, &names, &after, &ctx.shared.recent_events());
     diagnostics["capture"] = watched.clone();
     let path = dir.join(DIAGNOSTICS);
-    fs::write(&path, serde_json::to_string_pretty(&diagnostics).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", path.display()))
+    Ok(files::write(&path, serde_json::to_string_pretty(&diagnostics).map_err(|e| e.to_string())?)?)
 }
 
 fn recording_meta(w: &Written, center_hz: f64, rate_hz: f64, source: Value, note: &str, context: &Value) -> Value {
@@ -1060,7 +1062,7 @@ fn add_diagnostics(ctx: &Ctx, dir: &Path, live: &Live) -> Result<(), String> {
     let names = ctx.names.lock().unwrap().clone();
     let d = crate::diagnostics::build(&run, &names, live, &ctx.shared.recent_events());
     let path = dir.join(DIAGNOSTICS);
-    fs::write(&path, serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?).map_err(|e| format!("{}: {e}", path.display()))
+    Ok(files::write(&path, serde_json::to_string_pretty(&d).map_err(|e| e.to_string())?)?)
 }
 
 /// What a rule's capture says of why it was made.
@@ -1108,7 +1110,7 @@ pub fn delete(ctx: &Ctx, name: &str) -> Result<(), String> {
     if !dir.join(COLLECTION).is_file() {
         return Err("No such capture.".into());
     }
-    fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))
+    Ok(files::remove_dir_all(&dir)?)
 }
 
 /// One radio's file of a capture being replayed.

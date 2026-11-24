@@ -3529,6 +3529,7 @@ dependencies = [
  "cbc",
  "flate2",
  "hmac",
+ "libc",
  "pbkdf2",
  "roxmltree",
  "sdr-core",

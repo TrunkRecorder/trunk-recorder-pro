@@ -25,6 +25,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::config::RamSpool;
+use trunk_app::files::{self, Problem};
 use crate::folder::Folder;
 
 /// Files here this long belong to calls nothing settled (a plugin's retries
@@ -57,7 +58,7 @@ impl Spool {
         let cap = u64::from(cfg.size_mb.clamp(16, 65536)) << 20;
         let (dir, kind) = if !cfg.dir.is_empty() {
             let dir = PathBuf::from(&cfg.dir);
-            fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            files::make_dir(&dir)?;
             (dir, "folder")
         } else {
             sys::open(data, cap)?
@@ -87,7 +88,7 @@ impl Spool {
         }
         *lost = Some(Instant::now());
         let made = if self.kind == "folder" {
-            fs::create_dir_all(&self.dir).map_err(|e| e.to_string())
+            files::make_dir(&self.dir).map_err(String::from)
         } else {
             sys::open(&self.data, self.cap).map(|_| ())
         };
@@ -181,20 +182,18 @@ fn sweep(dir: &Path, to: &Folder, age: Duration) -> usize {
 }
 
 /// Move a file, to another disk too (copied, then removed), keeping its time.
-pub fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    if let Some(d) = to.parent() {
-        fs::create_dir_all(d)?;
-    }
+pub fn move_file(from: &Path, to: &Path) -> Result<(), Problem> {
+    files::make_parent(to)?;
     if fs::rename(from, to).is_ok() {
         return Ok(());
     }
     let tmp = PathBuf::from(format!("{}.part", to.display()));
-    fs::copy(from, &tmp)?;
+    files::copy(from, &tmp)?;
     if let Ok(t) = fs::metadata(from).and_then(|m| m.modified()) {
         let _ = fs::File::options().write(true).open(&tmp).and_then(|f| f.set_modified(t));
     }
-    fs::rename(&tmp, to)?;
-    fs::remove_file(from)
+    files::rename(&tmp, to)?;
+    files::remove_file(from)
 }
 
 /// Bytes in the files under `dir`.
@@ -320,7 +319,7 @@ mod sys {
             }
             remove(&dir)?;
         }
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        trunk_app::files::make_dir(&dir)?;
         let out = run("/usr/bin/hdiutil", &["attach", "-nomount", &format!("ram://{}", cap / 512)])?;
         let dev = out.split_whitespace().next().filter(|d| d.starts_with("/dev/disk")).ok_or_else(|| format!("hdiutil attach said {out:?}"))?.to_string();
         let made = run("/sbin/newfs_hfs", &["-v", "Trunk Recorder spool", &dev])
@@ -382,7 +381,7 @@ mod sys {
     }
 
     pub fn remove(dir: &Path) -> Result<(), String> {
-        std::fs::remove_dir_all(dir).map_err(|e| e.to_string())
+        trunk_app::files::remove_dir_all(dir).map_err(String::from)
     }
 
     pub fn open(data: &Path, _cap: u64) -> Result<(PathBuf, &'static str), String> {
@@ -390,7 +389,7 @@ mod sys {
         if kind == KIND && !is_tmpfs(Path::new(SHM)) {
             return Err(format!("{SHM} isn't a RAM filesystem here: set ramSpool.dir to one (a tmpfs mount)"));
         }
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        trunk_app::files::make_dir(&dir)?;
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
         Ok((dir, kind))

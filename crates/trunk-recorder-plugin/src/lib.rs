@@ -21,7 +21,7 @@
 //!         Ok(Hello { host })
 //!     }
 //!     fn call_concluded(&mut self, call: ConcludedCall) {
-//!         self.host.info(format!("TG {} for {} s", call.call.talkgroup, call.call.call_length));
+//!         self.host.info(format!("TG {} for {} ms", call.call.talkgroup, call.call.audio_ms()));
 //!     }
 //! }
 //!

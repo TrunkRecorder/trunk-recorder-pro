@@ -357,8 +357,8 @@ impl Sessions {
             }
         }
         let s = Sessions::fresh();
-        if let Err(e) = keep_private(&path, &hex(&s.key)) {
-            log::warn!("Couldn't keep the session key in {} ({e}): browsers that sign in are signed out when the recorder stops", path.display());
+        if let Err(p) = trunk_app::files::write_private(&path, hex(&s.key)) {
+            log::warn!("Couldn't keep the session key: browsers that sign in are signed out when the recorder stops. {p}");
         }
         s
     }
@@ -464,23 +464,6 @@ impl Sessions {
     pub fn clear_cookie(&self) -> String {
         format!("{}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax", self.cookie)
     }
-}
-
-/// Write `text` to `path`, readable by its owner alone (on unix).
-pub(crate) fn keep_private(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut o = std::fs::OpenOptions::new();
-    o.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        o.mode(0o600);
-        // (A file there already keeps its mode: made private too.)
-        if path.exists() {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        }
-    }
-    o.open(path)?.write_all(text.as_bytes())
 }
 
 /// Make user `name` (trimmed) with `access` in `auth`, and an access token

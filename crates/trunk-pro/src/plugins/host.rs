@@ -329,7 +329,9 @@ impl PluginHost {
             topics.voice |= m.subscribes(topic::VOICE);
             live |= topic::ALL.iter().any(|&t| topic::is_live(t) && m.subscribes(t));
             let data_dir = s.data_dir.clone().unwrap_or_else(|| super::data_dir(&s.id));
-            let _ = std::fs::create_dir_all(&data_dir);
+            if let Err(p) = trunk_app::files::make_dir(&data_dir) {
+                log::warn!("Plugin {}: its data folder can't be made, so it may not keep its state. {p}", s.id);
+            }
             let mut formats = vec!["wav".to_string()];
             if encoder.is_some() && m.wants_format(format::M4A) {
                 formats.push(format::M4A.into());

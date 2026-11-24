@@ -70,7 +70,7 @@ runs in a desktop process and in a Web Worker and gives bit-identical calls on t
 | `finish-N` | 1–3 | The finish pool: writes every file of a call's plan (.json, .wav, .m4a, frames), sends `concluded`, hands calls to the plugin host and the Archive. |
 | `plugin-<id>` + writer + stderr reader | per plugin process | Supervises one plugin child process, feeds its stdin, reads its stdout/stderr. `plugin-hold` keeps what plugin delays hold back. |
 | tokio runtime | pool | The axum web server; one task per WebSocket client, one listener per interface. |
-| `monitor`, `net-probe`, `spotlight` | one each | Samples the computer and plugins every 2 s; TCP connectivity checks every 15 s; the Spotlight check of the recordings folder. |
+| `monitor`, `net-probe`, `spotlight`, `reach` | one each | Samples the computer and plugins every 2 s; TCP connectivity checks every 15 s; the Spotlight check of the recordings folder; once a minute, Tailscale and cloudflared asked what leads to the built-in interface ([`reach`](../../crates/trunk-pro/src/reach.rs)). |
 | `stats-load`, `stats-store` | one each | Load/append stats rollups. |
 | `db-writer`, `db-backfill` | one each | The store's one writer; bringing the store up to date with the capture folder. |
 | `recent` | at start | With the store off: fill the live call list from the newest calls on disk. |
@@ -1071,14 +1071,24 @@ its files are written. The WAV goes to the encoder on stdin (afconvert gets a te
 it's written only when it's kept, a plugin takes WAV, or encoding failed; `call.concluded`'s `wav`
 path may not exist for a plugin that asked for M4A.
 
+**Writing files** (`trunk_app::files`). Every file the app writes, and every folder it makes,
+moves or deletes, goes through `files`: `make_dir`, `write`, `write_atomic`, `write_private`
+(0600: the session key, sign-in state), `create`, `append`, `rename`, `copy`, `remove_file`,
+`remove_dir_all`. A failure is a `files::Problem` (`why`, `detail`, `fix`), the io::Error in words:
+permission denied with who owns the nearest folder and who the app runs as and the `chmod` or
+`chown` to fix it, macOS privacy, read-only, full, not a folder, gone, and on Windows a folder
+under Program Files. The config, call store, logs, sign-in files, plugin and interface installs,
+held calls, IQ captures and the spool all say it that way; a caller adds only what's its own
+(an install: that plugins go beside the config file). Left out on purpose: the cleanup of
+temporary files (best effort) and the developer tools' own output paths.
+
 **Folders** (`folder.rs`). Every file of a call goes into the recordings folder (or the spool)
 through its `Folder`: `write`, `prepare` (an encoder's output) and `move_in` (out of the spool).
 Each is also checked with a file of its own (`probe`: written, synced, deleted) at startup and when
 its path changes (`apply_config`, on a thread of its own, since a network share can hang); after
 that the calls' own writes are the check, and the first one that works says it's back. Checks and
-writes report to the same state, so the first failure is logged once with why (an io::Error turned
-into permission and who owns the folder, macOS privacy, read-only, full, not a folder, a drive not
-mounted) and becomes a `folderUnwritable` event; the files not written are counted (logged at most
+writes report to the same state, so the first failure is logged once with why (a `files::Problem`,
+or a drive not mounted) and becomes a `folderUnwritable` event; the files not written are counted (logged at most
 once a minute); and `folderWritable` is sent when it takes files again. The folder is made only
 when it's never been there at that path: a drive that goes isn't replaced by a folder on the disk
 beneath. A call the spool can't take goes to the recordings folder. `host.platform.folders`
@@ -1354,7 +1364,7 @@ The fields are `CallRecord`'s, in its order: the finisher writes `<rel>.json` fr
 
 `HostMessage` (host → plugin) and `PluginMessage` (plugin → host), both tagged by `type`, and the
 `Manifest` a plugin prints for `--describe`; `API_VERSION` = 1, `EXIT_CONFIG` = 78. Every message
-and field is in [Writing plugins](../plugins/writing-plugins.md#how-a-plugin-runs) and on
+and field is in [Plugin protocol](plugins/protocol.md) and [Plugin events](plugins/events.md), and on
 [docs.rs](https://docs.rs/trunk-recorder-plugin).
 
 ---
@@ -1377,7 +1387,7 @@ it learns. The command-line flags that override it for one run are in
   also tells every browser `config { config, version }`). `setConfig { config, version }` always
   sends the whole config with the version it was edited from; one edited from an older version
   is refused (`configSaved` with an `error`), so another browser's change is never saved over.
-  Saved through `write_atomic` (temporary file, `sync_all`, rename).
+  Saved through `files::write_atomic` (temporary file, `sync_all`, rename).
 - A system's talkgroups (trunked or conventional) are not in it: they are rows in the store
   (`NameLists`, by `SystemId`), replaced by `setTalkgroups` and taken by a recording at once
   (`EngineCmd::Talkgroups`). A `<shortName>.talkgroups.csv` beside it is only imported once
@@ -1552,7 +1562,7 @@ frequency, out of band too). Setup's Radios tab and the RF page show it (`web/sr
 - The files that are kept, installed plugins and plugin data all live beside the config file
   (`paths::data_dir()`), so recorders with their own `--config` don't share them; the list is in
   [Files kept beside the config](../configuration/README.md#files-kept-beside-the-config). Every
-  one of them is written atomically (`config::write_atomic`: a temporary file, then a rename), so
+  one of them is written atomically (`files::write_atomic`: a temporary file, then a rename), so
   a crash never leaves half a file.
 
 The session's side of this is its persistence hooks: `due(now_ms, all)` returns what is due to

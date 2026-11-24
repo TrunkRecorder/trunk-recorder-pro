@@ -11,6 +11,7 @@ pub mod config;
 pub mod ekc;
 pub mod facts;
 pub mod filename;
+pub mod files;
 pub mod gain;
 pub mod heard;
 pub mod keys;
