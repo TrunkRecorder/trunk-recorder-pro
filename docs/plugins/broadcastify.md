@@ -155,3 +155,12 @@ lists: `broadcastifyAllow` / `broadcastifyDeny`, or the older `broadcastifyWhite
 you paste them into `config.json`: `broadcastifyCallsServer`, `broadcastifyOTA` and
 `broadcastifySslVerifyDisable` in its settings, and `broadcastifyApiKey` and
 `broadcastifySystemId` in a system's.
+
+## Getting help
+
+For anything about your Broadcastify Calls node (its system IDs and API key, its status on
+Broadcastify's Manage page, calls Broadcastify rejects or doesn't show), email Broadcastify at
+[support@broadcastify.com](mailto:support@broadcastify.com). Say which node it is (its system ID)
+and what the plugin's log says, with the last error if there is one. Don't send your API key.
+
+For the recorder itself (radios, decoding, Setup), see [Troubleshooting](../troubleshooting.md).
