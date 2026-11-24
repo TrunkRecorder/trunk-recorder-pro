@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A plugin or interface that can't be installed for want of permission says where and what to do.** It said only
+  the OS error (*Permission denied*, *Access is denied*). It now names the folder, says it's beside the config file
+  and why the user Trunk Recorder Pro runs as must be able to write there, and how to fix it (`chown` on Linux and
+  macOS; on Windows, keep the config out of Program Files). See
+  [Where plugins live](docs/plugins/README.md#where-plugins-live).
+
 - **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call
   JSON (`lat`, `lon` in `srcList`) and reported as a position event, as P25's are:
   - the GPS a DMR or Hytera radio sends while it talks (embedded in its voice), XPT included;

@@ -414,14 +414,35 @@ fn parse_sums(text: &str) -> BTreeMap<String, String> {
 /// loose): returns the staging folder (removed when dropped) and that folder.
 pub fn stage(dest: &Path, data: &[u8], zip: bool) -> Result<(Staging, PathBuf), String> {
     let dir = dest.parent().ok_or("nowhere to install")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::create_dir_all(dir).map_err(|e| cant_write(dir, &dir.display(), &e))?;
     let name = dest.file_name().unwrap_or_default().to_string_lossy();
     let staging = Staging(dir.join(format!(".installing-{name}-{}", unique())));
     let _ = std::fs::remove_dir_all(&staging.0);
-    std::fs::create_dir_all(&staging.0).map_err(|e| format!("{}: {e}", staging.0.display()))?;
+    std::fs::create_dir_all(&staging.0).map_err(|e| cant_write(dir, &staging.0.display(), &e))?;
     unpack(data, zip, &staging.0)?;
     let root = only_folder(&staging.0).unwrap_or_else(|| staging.0.clone());
     Ok((staging, root))
+}
+
+/// `what` (in `dir`, where installs go) couldn't be made. Without permission, the
+/// bare OS error ("Permission denied") doesn't say which folder or why it matters,
+/// so say both, and what to do.
+fn cant_write(dir: &Path, what: &dyn std::fmt::Display, e: &std::io::Error) -> String {
+    use std::io::ErrorKind::{PermissionDenied, ReadOnlyFilesystem};
+    if !matches!(e.kind(), PermissionDenied | ReadOnlyFilesystem) {
+        return format!("{what}: {e}");
+    }
+    let beside = dir.parent().unwrap_or(dir);
+    let fix = if cfg!(windows) {
+        "A config under Program Files can't be written without administrator rights: keep it in a folder of your own instead, and start Trunk Recorder Pro with --config there.".to_string()
+    } else {
+        format!("For example, as an administrator: sudo chown -R <that user> {}", beside.display())
+    };
+    format!(
+        "Can't install into {}: {e}. Trunk Recorder Pro installs plugins and interfaces beside its config file, in {}, so the user it runs as has to be able to write there. Run it as the user who owns that folder, or give that user write access to it. {fix}",
+        dir.display(),
+        beside.display()
+    )
 }
 
 /// Removed when dropped: what's left of a failed (or finished) install.
@@ -640,6 +661,27 @@ pub(crate) mod tests {
         assert!(root.ends_with("wall-1.0.0") && root.join("index.html").is_file());
         drop(staging);
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0, "the staging folder is gone");
+    }
+
+    /// A folder the user can't write to (on the forum: "not authorized to write to the folder").
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_folder_is_named_with_what_to_do() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = temp("unwritable");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let e = stage(&d.join("plugins/pager"), &zip_of(&[("pager-1.0.0/pager", b"bin")]), true).err();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let Some(e) = e else { return }; // root writes anywhere
+        assert!(e.starts_with(&format!("Can't install into {}", d.join("plugins").display())), "{e}");
+        assert!(e.contains(&format!("beside its config file, in {},", d.display())) && e.contains("write access") && e.contains("chown"), "{e}");
+        // A folder that's there but can't be written: the staging folder fails, and the folder is named the same.
+        std::fs::create_dir_all(d.join("plugins")).unwrap();
+        std::fs::set_permissions(d.join("plugins"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let e = stage(&d.join("plugins/pager"), &zip_of(&[("pager-1.0.0/pager", b"bin")]), true).err().unwrap();
+        std::fs::set_permissions(d.join("plugins"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(e.starts_with(&format!("Can't install into {}: ", d.join("plugins").display())), "{e}");
+        assert!(e.ends_with(&format!("sudo chown -R <that user> {}", d.display())), "{e}");
     }
 
     #[test]
