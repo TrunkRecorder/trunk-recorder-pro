@@ -99,14 +99,14 @@ pub struct Cqpsk {
     // detection
     dprev: Complex32,
     q4: Complex32,
+    /// [`Cqpsk::q4`]'s weights summed alike: |q4| over this is how steady
+    /// the 4th-power angle is, 1 for a clean signal, near 0 for noise.
+    q4_weight: f32,
     /// Phase 1: the 4th-power angle at the last symbol, and the quarter turns
     /// a symbol the residual turn stands beyond what that angle alone gives
     /// ([`Cqpsk::residual_turn`]).
     q4_arg: f32,
     quarter: i32,
-    /// Whether a sync word has been found turned this transmission: only
-    /// then is the angle followed past the quarter's edge.
-    turned: bool,
     /// Mean square of each decided step's distance from its ideal phase, rad².
     perr: f32,
     cth: f32,
@@ -166,9 +166,9 @@ impl Cqpsk {
             pos_n: 0,
             dprev: Complex32::default(),
             q4: Complex32::default(),
+            q4_weight: 0.0,
             q4_arg: 0.0,
             quarter: 0,
-            turned: false,
             perr: 0.0,
             cth: 0.0,
             cfr: 0.0,
@@ -322,6 +322,7 @@ impl Cqpsk {
             let u = d / m;
             let u2 = u * u;
             self.q4 = self.q4 * 0.995 + u2 * u2 * m;
+            self.q4_weight = self.q4_weight * 0.995 + m;
         }
         let theta = if self.opt.coherent { 0.0 } else { self.residual_turn() };
         let r = d * Complex32::from_polar(1.0, -theta);
@@ -365,7 +366,6 @@ impl Cqpsk {
             // quarter). Two bits of 48, so noise does not pass for it.
             if let Some(j) = P1_TURNED.iter().position(|&t| (sr ^ t).count_ones() <= 2) {
                 self.quarter = (self.quarter + j as i32 + 2).rem_euclid(4) - 1;
-                self.turned = true;
                 self.syncs += 1;
                 self.last_sync = self.symbols;
             }
@@ -383,23 +383,25 @@ impl Cqpsk {
     /// samples, reads hundreds of Hz high or low on a linear signal whose
     /// 135° steps go round the long way (simulcast overlap): past 600 Hz
     /// every dibit comes out turned and no frame syncs. So while frames sync
-    /// a sync word found turned ([`turned`]) sets the quarter, and from then
-    /// the angle is followed across the quarter's edge. Not before: a signal
-    /// whose angle sits on the edge (C4FM through this receiver) would settle
-    /// on one side of it, and its offset read a quarter out. Only a small
-    /// step across ±π is the angle going round; a weak 4th power jumps by π
-    /// or so either way. Two voice frames (1728 symbols) without a sync, the
-    /// transmission is over: the plain estimate again, before noise walks the
-    /// angle about.
+    /// a sync word found turned ([`turned`]) sets the quarter, and a steady
+    /// angle is followed across the quarter's edge: one sitting on it (#228's
+    /// tape B, coherence ~0.7) would otherwise flip a quarter at each crossing.
+    /// Not an unsteady one: C4FM through this receiver sits on the edge too,
+    /// at coherence ≤ 0.05, and following it settled on one side and read its
+    /// offset a quarter out. Only a small step across ±π is the angle going
+    /// round. Two voice frames (1728 symbols) without a sync, the
+    /// transmission is over: the plain estimate again, before noise walks
+    /// the angle about.
     fn residual_turn(&mut self) -> f32 {
         let a = (-self.q4.im).atan2(-self.q4.re);
         if self.turns() {
             let synced = self.syncs > 0 && self.symbols - self.last_sync <= 1728;
+            let steady = self.q4.norm() > 0.3 * self.q4_weight;
             if !synced {
-                (self.quarter, self.turned) = (0, false);
-            } else if self.turned && a - self.q4_arg > 1.5 * PI32 {
+                self.quarter = 0;
+            } else if steady && a - self.q4_arg > 1.5 * PI32 {
                 self.quarter = self.quarter.rem_euclid(4) - 1;
-            } else if self.turned && a - self.q4_arg < -1.5 * PI32 {
+            } else if steady && a - self.q4_arg < -1.5 * PI32 {
                 self.quarter = (self.quarter + 2).rem_euclid(4) - 1;
             }
             self.q4_arg = a;
@@ -685,8 +687,8 @@ mod tests {
     }
 
     /// The carrier estimate drifting out past the quarter's edge mid-call
-    /// (+480 Hz to +960 Hz, as #228's second transmission did): a frame or
-    /// so lost where it crosses, then the sync word found turned again.
+    /// (+480 Hz to +960 Hz, as #228's tape B did): the steady angle is
+    /// followed across it, and no frame is lost. (Not followed, 16 of 24.)
     #[test]
     fn follows_the_carrier_estimate_across_the_quarter_edge() {
         let (_, iq) = long_way(|f| 0.45 + 0.35 * f as f64 / 23.0);
@@ -695,7 +697,7 @@ mod tests {
         for c in iq.chunks(4800) {
             rx.push(c, &mut out);
         }
-        assert!(rx.syncs >= 21, "syncs {}", rx.syncs);
+        assert!(rx.syncs >= 23, "syncs {}", rx.syncs);
         let got = rx.offset_hz().expect("an offset once synced");
         assert!(got.abs() < 100.0, "offset {got}");
     }
