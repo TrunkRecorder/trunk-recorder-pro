@@ -206,7 +206,7 @@ mod tests {
     use super::*;
     use crate::dmr::{Channel, Framer, SlotEvent};
     use crate::dsp::c4fm::C4fm;
-    use crate::dsp::Receiver;
+    use crate::dsp::{Receiver, Symbol};
     use crate::trunk::conventional::{ConvChannel, ConvMode};
     use crate::trunk::{Engine, EngineConfig, Event, SourceConfig, SiteConfig, SystemConfig};
 
@@ -247,6 +247,27 @@ mod tests {
         assert_eq!(ch.slots[1].color_code, Some(5));
     }
 
+
+    /// Every dibit sign-flipped, as spectrally inverted IQ gives them: the
+    /// framer locks on the syncs (each voice sync flipped is a data sync),
+    /// finds the bursts' codes read clean only flipped, and turns them back.
+    #[test]
+    fn an_inverted_transmission_decodes() {
+        let (mut f, mut ch) = (Framer::new(), Channel::default());
+        let mut bursts = Vec::new();
+        for (i, &d) in dibits(&tx()).iter().enumerate() {
+            f.push(&Symbol { dibit: d ^ 2, sample: i as f64, rel_hi: 1.0, rel_lo: 1.0 }, &mut bursts);
+        }
+        assert!(f.inverted);
+        let mut ev = Vec::new();
+        for b in &bursts {
+            ch.burst(b, &mut ev);
+        }
+        // All but the superframe the framer spent finding out.
+        let voice = ev.iter().filter(|(s, e)| *s == 1 && matches!(e, SlotEvent::Voice { frame, .. } if frame.errs == 0)).count();
+        assert!(voice >= 5 * 6 * 3, "{voice} voice frames");
+        assert_eq!(ch.slots[1].color_code, Some(5));
+    }
 
     /// Standard voice headers, GPS interleaved with ordinary embedded voice LC.
     fn gps_dibits(t: &Tx, fid: u8) -> Vec<u8> {
@@ -524,6 +545,28 @@ mod tests {
         assert_eq!(c.sources.iter().map(|s| s.src).collect::<Vec<_>>(), [98765]);
         let secs = done[0].audio.len() as f64 / 8000.0;
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
+    }
+
+    /// Spectrally inverted IQ (I and Q swapped somewhere upstream): a
+    /// repeater's call and a mobile's in simplex are recorded all the same.
+    #[test]
+    fn calls_on_inverted_iq_are_recorded() {
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
+        for mobile in [false, true] {
+            let t = Tx { mobile, slot: if mobile { 0 } else { 1 }, ..tx() };
+            let iq: Vec<Complex32> = wideband_of(&t, fs, center - freq).iter().map(|v| v.conj()).collect();
+            let cfg = EngineConfig {
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
+                ..Default::default()
+            };
+            let done = run(cfg, &iq);
+            assert_eq!(done.len(), 1, "mobile {mobile}: {:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
+            let c = &done[0].call;
+            assert_eq!((c.talkgroup, c.voice.color_code()), (4321, Some(5)), "mobile {mobile}");
+            let secs = done[0].audio.len() as f64 / 8000.0;
+            assert!(secs > 5.0 * 0.36 - 0.2, "mobile {mobile}: {secs:.2} s of audio");
+        }
     }
 
     #[test]
