@@ -89,6 +89,12 @@ and has a system of its own there; one only sites without a system of their own 
 system's. A site turned off for the plugin (**Sites** chips) is left out. See
 [Settings for each site](../configuration/plugins.md#settings-for-each-site).
 
+Each site needs its own Broadcastify system ID. If one system ID covers several sites, the plugin
+warns you (plugin 0.2.1 and later), in its status and its log: Broadcastify Calls records each call
+as coming from the site the system ID is registered to, so the other sites' calls would be labeled
+as the wrong site. More system IDs can be applied for at
+[broadcastify.com/apply/calls](https://www.broadcastify.com/apply/calls), with your existing API key.
+
 A system can also set **Upload server**, **Send talker aliases** and **Skip certificate checks**
 again, in **Broadcastify Calls shared settings** on its card (`override` in its
 `plugins.broadcastify` entry). Each server has its own queue and Health status.
