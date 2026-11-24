@@ -372,7 +372,7 @@ impl Site {
                 }
             }
             c.ev.clear();
-            c.chan.burst(b, &mut c.ev);
+            c.chan.burst_at(b, t, &mut c.ev);
             self.keyed |= c.chan.slots.iter().any(|s| s.keyed);
             for (slot, e) in std::mem::take(&mut self.carriers[idx].ev) {
                 self.event(idx, slot, e, t, out);
@@ -413,6 +413,13 @@ impl Site {
             return;
         }
         match e {
+            SlotEvent::Packet(p) => {
+                let mut m = super::hytera::packet(&p);
+                m.time_s = t;
+                m.freq_hz = self.carriers[idx].hz;
+                m.voice = self.base(idx, slot, m.kind, t).voice;
+                out.push(m);
+            }
             SlotEvent::Lc { lc, from } => {
                 if is_xpt && lc.target() == 0 {
                     return;

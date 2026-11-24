@@ -603,7 +603,7 @@ struct Heard {
     cipher: Option<CipherId>,
     /// The tracker decrypted voice.
     decrypted: bool,
-    /// Talkers' GPS positions.
+    /// Radios' GPS positions (sent with their voice, or as data).
     positions: Vec<Position>,
     /// Air time of the first voice frame, and the end of the last (digital).
     air: Option<(f64, f64)>,
@@ -619,8 +619,13 @@ struct Heard {
 }
 
 impl Heard {
-    /// Nothing to tell a call: no voice, no link control.
+    /// Nothing heard: no voice, no link control, no position.
     fn is_empty(&self) -> bool {
+        self.voiceless() && self.positions.is_empty()
+    }
+
+    /// No voice and no link control: no call of its own (a location report sent as data).
+    fn voiceless(&self) -> bool {
         self.audio.is_empty() && self.infos.is_empty()
     }
 
@@ -1209,7 +1214,7 @@ impl Conventional {
             // A run with nothing but the cipher is dropped (no voice, no
             // link control): keep the cipher for the voice after it.
             let ahead = &mut o.cipher_ahead[slot];
-            if h.is_empty() {
+            if h.voiceless() {
                 *ahead = h.cipher.or(*ahead);
             } else {
                 h.cipher = h.cipher.or(ahead.take());
@@ -1340,6 +1345,16 @@ impl Conventional {
         if h.is_empty() {
             return;
         }
+        if h.voiceless() {
+            // Only where radios are (a location report sent as data): no call of its own.
+            let mut updated = Vec::new();
+            let mut call = ch.open.as_mut().and_then(|o| o.live[slot].as_mut()).map(|l| &mut l.call);
+            for p in &h.positions {
+                out.extend(CallManager::position(ch.system as u16, call.as_deref_mut(), p, &mut updated).map(ConvOut::Event));
+            }
+            out.extend(updated.into_iter().map(ConvOut::Call));
+            return;
+        }
         let (on, tune) = (ch.on(num as usize), ch.tune_ref);
         // FM: who is talking by its unit IDs, and its CTCSS tone or DCS code.
         let mode = ch.mode();
@@ -1444,12 +1459,11 @@ impl Conventional {
         if h.decrypted {
             changed |= CallManager::note_decrypted(&mut l.call, Some(&mut l.rec.tx), now_s);
         }
-        for p in h.positions {
-            if CallManager::note_position(&mut l.call, &p) {
-                out.push(ConvOut::Event(Event::UnitPosition { system: l.call.system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: l.call.talkgroup }));
-                changed = true;
-            }
+        let mut updated = Vec::new();
+        for p in &h.positions {
+            out.extend(CallManager::position(l.call.system, Some(&mut l.call), p, &mut updated).map(ConvOut::Event));
         }
+        changed |= !updated.is_empty();
         // Its voice, and what that carried besides speech: who is talking, its tone or code, tone patterns
         // (none taken in for a call not recorded).
         let mut patterns = Vec::new();

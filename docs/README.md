@@ -95,4 +95,4 @@ message, and the developer pages cover the internals. Other pages link to them.
 - [Developer tools](developer/tools.md): the `tool` subcommands for measuring and synthesizing
 - [Performance](developer/performance.md): CPU use measured against Trunk Recorder
 - [Interface style](developer/ui-style.md)
-- Protocol notes: [Hytera XPT](developer/protocols/xpt.md)
+- Protocol notes: [Hytera XPT](developer/protocols/xpt.md), [DMR GPS and data](developer/protocols/dmr-gps.md)

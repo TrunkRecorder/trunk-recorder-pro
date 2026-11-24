@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call
+  JSON (`lat`, `lon` in `srcList`) and reported as a position event, as P25's are:
+  - the GPS a DMR or Hytera radio sends while it talks (embedded in its voice), XPT included;
+  - Hytera location reports sent as data (a radio's position between calls, talkgroup 0), as text or, experimentally,
+    compressed (only the north/west form seen so far is read);
+  - Hytera radio registration and offline messages, as registrations.
+  Reports sent as data are put together from CRC-checked rate-1/2 short data on each slot. See
+  [DMR GPS](docs/developer/protocols/dmr-gps.md).
+
 - **Trunked DMR fixes** (#220, thanks @taclane):
   - **Fewer empty recordings on Tier III.** A Tier III site repeats a call's grant (Late Entry) every few seconds,
     through its hang time, which can be longer than the call timeout. Each repeat started a new call with no voice
@@ -189,6 +198,7 @@ Recording first. The default, and the Docker image's, are already full paths.
   longer read: give those sites their accounts in their rows on the system's card.
 - **Held plugin items** (delayed calls) from before this release are dropped, and a multi-site call's copies share one
   `call_num`.
+
 
 ## [0.3.9] — 2026-11-20
 

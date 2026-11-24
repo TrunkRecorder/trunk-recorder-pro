@@ -20,6 +20,25 @@ pub fn crc(bits: &[u8], width: u32, poly: u32, preset: u32) -> u32 {
     r
 }
 
+/// CRC-32 (x³²+x²⁶+x²³+x²²+x¹⁶+x¹²+x¹¹+x¹⁰+x⁸+x⁷+x⁵+x⁴+x²+x+1, init 0, not inverted) of
+/// `data`, MSB first. A P25 packet's CRC is it inverted ([`crate::p25::mbt::crc32`]); a DMR
+/// packet's takes each pair of octets low one first ([`crate::dmr::data`]).
+pub fn crc32(data: impl IntoIterator<Item = u8>) -> u32 {
+    let mut crc = 0u32;
+    for b in data {
+        crc ^= (b as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 { crc << 1 ^ 0x04c1_1db7 } else { crc << 1 };
+        }
+    }
+    crc
+}
+
+/// Bytes as lowercase hex.
+pub fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 /// CRC-CCITT (x¹⁶+x¹²+x⁵+1, init 0, inverted: CRC-16/GSM) of `bits`, one bit per byte.
 pub fn crc_ccitt(bits: &[u8]) -> u16 {
     let mut crc = 0u16;

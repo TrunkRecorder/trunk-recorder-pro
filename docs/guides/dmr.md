@@ -278,3 +278,16 @@ that the other frequencies have been added.
 
 **Calls from another system.** Set **Colour code** to the site's, so a neighbour on a shared
 frequency is ignored.
+
+
+## GPS positions
+
+- **GPS sent with voice** (standard DMR and Hytera, XPT included): the radio's position is kept on its entry in the
+  call JSON (`srcList[].lat`, `lon`), as a P25 radio's is. There's nothing to set.
+- **Hytera location reports sent as data** (as text, or compressed): add the data carrier to the site's **Watched
+  frequencies** (or as a conventional DMR channel). A report is a position event. It's kept on a call the radio is
+  on, else reported with talkgroup 0, and makes no recording of its own.
+- **Compressed reports** are experimental: only the north/west form seen so far is read. Others are kept raw.
+- **Hytera registration and offline messages** show as registrations in the log.
+
+See [DMR GPS and data](../developer/protocols/dmr-gps.md) for the formats and their sources.

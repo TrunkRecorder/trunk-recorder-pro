@@ -793,8 +793,24 @@ impl CallManager {
         !std::mem::replace(&mut c.decrypted, true)
     }
 
-    /// A voice channel gave a radio's position: kept on its latest entry
-    /// (returns true if it moved).
+    /// Radio `p.unit` was at `p`, whatever carried it (GPS sent with its voice, a location report
+    /// sent as data): kept on each of `calls` it's on ([`Self::note_position`]), each one that
+    /// changed pushed to `updated`. The event saying so, with the talkgroup of the call it's on (0
+    /// on none); none when every call it's on had it already.
+    pub fn position<'a>(system: u16, calls: impl IntoIterator<Item = &'a mut Call>, p: &Position, updated: &mut Vec<CallEvent>) -> Option<super::Event> {
+        let mut on = None;
+        let mut new = false;
+        for c in calls.into_iter().filter(|c| c.sources.iter().any(|s| s.src == p.unit)) {
+            on = Some(c.talkgroup);
+            if Self::note_position(c, p) {
+                new = true;
+                updated.push(CallEvent::Update(c.clone()));
+            }
+        }
+        (new || on.is_none()).then(|| super::Event::UnitPosition { system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: on.unwrap_or(0) })
+    }
+
+    /// A call's radio was at `p`: kept on its latest entry (returns true if it moved).
     pub fn note_position(c: &mut Call, p: &Position) -> bool {
         let Some(s) = c.sources.iter_mut().rev().find(|s| s.src == p.unit) else { return false };
         let at = Some((p.lat, p.lon));
