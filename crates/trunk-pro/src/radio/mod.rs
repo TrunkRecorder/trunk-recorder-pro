@@ -1,5 +1,5 @@
-//! Radios whose drivers are vendor C libraries — USRP (UHD), Airspy
-//! (libairspy), HydraSDR (libhydrasdr), bladeRF (libbladeRF) and anything with a SoapySDR module.
+//! Radios whose drivers are vendor C libraries — USRP (UHD), Airspy (libairspy: behind the
+//! driver built in, [`airspy`]), HydraSDR (libhydrasdr), bladeRF (libbladeRF) and anything with a SoapySDR module.
 //! Nothing links against them: each library is looked for at run time, so the same binary records
 //! from RTL-SDRs out of the box and from these once their driver is
 //! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_HYDRASDR` / `TRUNK_PRO_BLADERF` /

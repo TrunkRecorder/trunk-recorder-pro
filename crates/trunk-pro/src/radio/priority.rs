@@ -23,9 +23,10 @@
 pub struct Before(#[allow(dead_code)] Vec<u64>);
 
 /// Driver threads with names of their own: libusb's on macOS (UHD, libairspy,
-/// most SoapySDR modules) and nusb's (RTL-SDR, HackRF).
+/// most SoapySDR modules), nusb's (RTL-SDR, HackRF, Airspy) and the built-in
+/// Airspy driver's, which keeps its USB transfers going.
 #[allow(dead_code)]
-const NAMED: &[&str] = &["org.libusb.device-hotplug", "nusb-events"];
+const NAMED: &[&str] = &["org.libusb.device-hotplug", "nusb-events", "airspy-reader"];
 
 #[cfg(target_os = "macos")]
 // libc's Mach bindings point at the mach2 crate; these few are enough.

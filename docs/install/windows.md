@@ -85,7 +85,7 @@ only and plugins are told so.
 
 ## Other radios
 
-USRPs (with Ettus's UHD installer), Airspys (`airspy.dll`, `libusb-1.0.dll` and `pthreadVC2.dll` from airspy_host_tools' `x64` folder next to `trunk-pro.exe`, and the Visual C++ 2010 runtime: [Other radios](other-radios.md)) and SoapySDR
+Airspy R2 / Minis work with nothing else installed (an Airspy installs its own WinUSB driver: no Zadig, no DLLs). USRPs (with Ettus's UHD installer) and SoapySDR
 devices (PothosSDR) work too. See [Other radios](other-radios.md).
 
 ## Uninstalling

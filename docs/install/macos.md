@@ -83,8 +83,8 @@ install. If `ffmpeg` is installed (for example with `brew install ffmpeg`), it i
 
 ## Other radios
 
-USRPs, Airspys and SoapySDR devices work once their drivers are installed with Homebrew
-(`brew install uhd`, `brew install airspy`, `brew install soapysdr`). See
+HackRF Ones and Airspy R2 / Minis work with nothing else installed. USRPs and SoapySDR devices work once their drivers are installed with Homebrew
+(`brew install uhd`, `brew install soapysdr`). See
 [Other radios](other-radios.md).
 
 ## Uninstalling

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { gainLine } from "./dash/Rf.tsx";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, SOURCE_KINDS } from "./config.ts";
+import { defaultConfig, kindNeedsDriver, SOURCE_KINDS } from "./config.ts";
 import { transport } from "./controller.ts";
 import type { Config, EngineStatus, FromRecorder, NetworkRadio, Radios } from "./protocol.ts";
 import { SourceCard } from "./Setup.tsx";
@@ -43,20 +43,32 @@ test("Setup: a HackRF's editor has its stages and bias-T, and needs no driver", 
 
 test("Setup: a driver that won't load says why in full, with the steps for the computer it runs on (#219)", () => {
   const c = defaultConfig();
-  c.sources = [SOURCE_KINDS.airspy.fresh()];
+  c.sources = [SOURCE_KINDS.hydrasdr.fresh()];
   setup(c);
-  const why = "libairspy found but couldn't be loaded: LoadLibraryExW failed (os error 126) — a DLL it needs is missing: airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it";
+  const why = "libhydrasdr found but couldn't be loaded: LoadLibraryExW failed (os error 126) — a DLL it needs is missing: hydrasdr.dll needs libusb-1.0.dll beside it";
   const radios = (platform: string) => {
     transport.onMessage({ type: "hello", version: "test", platform, api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers"] });
-    transport.onMessage({ type: "radios", radios: { airspy: { available: false, detail: why, devices: null } } as unknown as Radios });
+    transport.onMessage({ type: "radios", radios: { hydrasdr: { available: false, detail: why, devices: null } } as unknown as Radios });
     return text(renderToString(<SourceCard c={c} i={0} />));
   };
   const win = radios("windows");
-  assert.ok(win.includes(`Airspy needs ${why}`), "the recorder's reason, shown outright");
-  assert.match(win, /Windows put airspy\.dll, libusb-1\.0\.dll and pthreadVC2\.dll .* Visual C\+\+ 2010 runtime \(x64\) Then Restart the app/);
-  assert.doesNotMatch(win, /brew install|apt install/, "not another computer's steps");
+  assert.ok(win.includes(`HydraSDR needs ${why}`), "the recorder's reason, shown outright");
+  assert.match(win, /Windows put hydrasdr\.dll and libusb-1\.0\.dll .* next to trunk-pro\.exe Then Restart the app/);
+  assert.doesNotMatch(win, /dylib|host-tools/, "not another computer's steps");
   // A computer it can't place: every way to install it.
-  assert.match(radios("test"), /brew install airspy .* sudo apt install libairspy0 .* put airspy\.dll/);
+  assert.match(radios("test"), /libhydrasdr\.1\.dylib .* hydrasdr-host-tools .* put hydrasdr\.dll/);
+});
+
+test("Setup: an Airspy's driver is built in — nothing to install, its radios listed (#225)", () => {
+  const c = defaultConfig();
+  c.sources = [SOURCE_KINDS.airspy.fresh()];
+  setup(c);
+  transport.onMessage({ type: "radios", radios: { airspy: { available: true, detail: "built in", devices: [{ serial: "735863DC2F650AE3", label: "Airspy R2 735863DC2F650AE3" }] } } as unknown as Radios });
+  const page = text(renderToString(<SourceCard c={c} i={0} />));
+  assert.equal(SOURCE_KINDS.airspy.driver, undefined, "nothing to install");
+  assert.ok(kindNeedsDriver("airspy"), "the desktop app's all the same");
+  assert.match(page, /Airspy R2 735863DC2F650AE3/, "the radio its driver found");
+  assert.doesNotMatch(page, /needs|brew install|apt install|airspy\.dll/, "nothing to install");
 });
 
 test("Setup: the browser build offers only the radios it opens (no driver, no HackRF)", () => {

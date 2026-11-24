@@ -78,7 +78,7 @@ export type Os = "windows" | "macos" | "linux";
 
 /** A driver library a kind of radio needs (desktop app), and how to install it. */
 export interface Driver {
-  /** "libairspy", "UHD". */
+  /** "libhydrasdr", "UHD". */
   name: string;
   /** Install commands, and what to do on Windows. */
   macos: string;
@@ -145,7 +145,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     get rates() { return sourceRates("airspy"); },
     rateHint: "R2: 10 or 2.5; Mini: 6 or 3",
     device: "serial",
-    driver: { name: "libairspy", macos: "brew install airspy", linux: "sudo apt install libairspy0", windows: "put airspy.dll, libusb-1.0.dll and pthreadVC2.dll (the x64 folder of airspy_host_tools) next to trunk-pro.exe, and install the Visual C++ 2010 runtime (x64)" },
+    native: true,
     soapyDriver: "airspy",
     biasT: "Powers an LNA on the antenna cable",
     liveAgc: true,
@@ -1158,7 +1158,7 @@ export function importTrunkRecorderConfig(
       } as const;
       imported.push(hydra ? { type: "hydrasdr", ...gains, rfPort: 0 } : { type: "airspy", ...gains });
       notes.push(
-        `${hydra ? "HydraSDR" : "Airspy"} source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): it needs ${hydra ? "libhydrasdr" : "libairspy"} installed on this computer.`,
+        `${hydra ? "HydraSDR" : "Airspy"} source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): ${hydra ? "it needs libhydrasdr installed on this computer" : "its driver is built in"}.`,
       );
       continue;
     }

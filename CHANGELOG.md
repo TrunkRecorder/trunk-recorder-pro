@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Airspy R2 / Mini: a driver built in** (#225). An Airspy now works with nothing installed, like an RTL-SDR or
+  a HackRF: no `brew install airspy` or `libairspy0`, and on Windows no `airspy.dll`, `libusb-1.0.dll`,
+  `pthreadVC2.dll` or Visual C++ 2010 runtime (#219). The driver is libairspy ported to Rust
+  (`crates/libairspy-rs`, our fork of [libairspy-rs](https://github.com/jasonherald/libairspy-rs)).
+  - Airspys are listed without being opened, so one that's recording stays in Setup's list.
+  - libairspy, when it's installed, is still used for an Airspy the built-in driver can't open (on Windows, one
+    given a libusbK or libusb-win32 driver with Zadig); the log says so. `trunk-pro devices` shows
+    `Airspy: built in, and libairspy 1.0.10`.
+  - `TRUNK_PRO_AIRSPY_NATIVE=0` goes back to libairspy alone. Please report anything that needs it.
+  - HydraSDR RFOnes are unchanged (libhydrasdr).
+
 - **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call
   JSON (`lat`, `lon` in `srcList`) and reported as a position event, as P25's are:
   - the GPS a DMR or Hytera radio sends while it talks (embedded in its voice), XPT included;

@@ -239,7 +239,7 @@ usage:
   trunk-pro devices [--usrp]
       List RTL-SDRs, HackRFs, Airspys, HydraSDRs, bladeRFs and SoapySDR
       devices (and USRPs with --usrp); shows whether the optional USRP (UHD),
-      Airspy (libairspy), HydraSDR (libhydrasdr), bladeRF (libbladeRF) and
+      HydraSDR (libhydrasdr), bladeRF (libbladeRF) and
       SoapySDR drivers are installed, and which SoapySDR modules.
   trunk-pro capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
       Record raw IQ, like rtl_sdr.
