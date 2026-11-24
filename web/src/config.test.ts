@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, desktopOnly, desktopOnlyWhy, hasBiasT, highestRate, kindDesktopOnly, kindNeedsDriver, networkAddress, networkRadio, onNetwork, detectRadios, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, desktopOnly, desktopOnlyWhy, hasBiasT, highestRate, kindDesktopOnly, kindNeedsDriver, networkAddress, networkRadio, onNetwork, detectRadios, freeSerial, unpickableDongles, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -260,4 +260,14 @@ test("importing a Trunk Recorder source on rtl_tcp: an RTL-SDR with its server's
   assert.ok(net.type === "rtlsdr" && usb.type === "rtlsdr");
   assert.deepEqual([net.address, net.serial, net.biasTee, onNetwork(net)], ["pi.local:1234", "", true, true]);
   assert.deepEqual([usb.address, usb.serial, usb.biasTee, onNetwork(usb)], [undefined, "00000002", false, false]);
+});
+
+test("dongles with no serial, or a serial another has, can't be picked; a serial to give them", () => {
+  const d = (index: number, serial: string) => ({ index, serial, product: "RTL2838UHIDIR" });
+  assert.deepEqual([...unpickableDongles([d(0, "")])], [], "one dongle is the first available, serial or not");
+  assert.deepEqual([...unpickableDongles([d(0, "00000001"), d(1, "")])], [[1, "no serial"]]);
+  assert.deepEqual([...unpickableDongles([d(0, "00000001"), d(1, "00000001"), d(2, "00000003")])], [[0, "same serial as another"], [1, "same serial as another"]]);
+  assert.deepEqual([...unpickableDongles([d(0, "00000001"), d(1, "00000002")])], []);
+  assert.equal(freeSerial([d(0, "00000001"), d(1, "")]), "00000002");
+  assert.equal(freeSerial([d(0, "00000002"), d(1, "00000003")]), "00000004");
 });

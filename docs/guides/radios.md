@@ -299,7 +299,9 @@ dongle is "first" can change from one start to the next.
 Many dongles leave the factory with the same serial (often `00000001`), or none. Trunk Recorder
 Pro can't tell those apart, and it has no way to change a dongle's serial. Use librtlsdr's
 `rtl_eeprom` tool to give each one its own serial (for example `rtl_eeprom -d 0 -s 00000200` for
-the first dongle), unplug and replug it, then pick it in Setup.
+the first dongle), unplug and replug it, then pick it in Setup. With more than one dongle plugged in,
+Setup's **Dongle** list greys out each one it can't tell apart, *(no serial)* or *(same serial as
+another)*, and says what to run.
 
 Airspys, HydraSDRs and bladeRFs are picked by serial the same way. USRPs and SoapySDR devices are picked by their device
 arguments (`serial=...`, `addr=192.168.10.2`, `driver=sdrplay,serial=...`); **Find** lists what's

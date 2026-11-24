@@ -330,6 +330,29 @@ export function detectRadios(devices: Device[], r: Radios | null): Detected[] {
   return out.filter((d, i) => out.findIndex((o) => o.key === d.key) === i);
 }
 
+/**
+ * Why each of these dongles (by `index`) can't be picked, when there's more than one: a source
+ * opens a dongle by its serial, or with none the first on the USB bus, so a dongle with no serial,
+ * or the same one as another, can't be told apart from the rest.
+ */
+export function unpickableDongles(devices: Device[]): Map<number, string> {
+  const why = new Map<number, string>();
+  if (devices.length < 2) return why;
+  for (const d of devices) {
+    if (!d.serial) why.set(d.index, "no serial");
+    else if (devices.some((o) => o.index !== d.index && o.serial === d.serial)) why.set(d.index, "same serial as another");
+  }
+  return why;
+}
+
+/** A serial none of these dongles has, to give one with rtl_eeprom: 00000002, 00000003, … */
+export function freeSerial(devices: Device[]): string {
+  for (let n = 2; ; n++) {
+    const s = String(n).padStart(8, "0");
+    if (!devices.some((d) => d.serial === s)) return s;
+  }
+}
+
 /** A capture's sample format from its name (as the recorder guesses it). */
 export function formatFromPath(path: string): "cu8" | "cs16" | "cf32" {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";

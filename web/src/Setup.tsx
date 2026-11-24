@@ -38,6 +38,8 @@ import {
   siteText,
   systemType,
   deviceKey,
+  freeSerial,
+  unpickableDongles,
   needsDriver,
   kindDesktopOnly,
   hasBiasT,
@@ -986,6 +988,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
   const fileRef = useRef<HTMLInputElement>(null);
   const others = c.sources.filter((_, k) => k !== i);
   const used = new Set(others.map(sourceKey));
+  const unpickable = unpickableDongles(s.devices);
   const radios = s.radios;
   // Its driver isn't installed (desktop app).
   const driverState = needsDriver(src) ? radios?.[src.type] : undefined;
@@ -1060,17 +1063,34 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           </Field>
         )}
         {src.type === "rtlsdr" && !viaNetwork && (
-          <Field label="Dongle" hint={s.devices.length ? undefined : <span className="warn-text">{web ? "None connected" : "None found"}</span>}>
+          <Field
+            label="Dongle"
+            hint={
+              !s.devices.length ? (
+                <span className="warn-text">{web ? "None connected" : "None found"}</span>
+              ) : unpickable.size ? (
+                <span className="warn-text">
+                  {unpickable.size === 1 ? "A dongle" : `${unpickable.size} dongles`} can't be picked: a dongle with no serial, or the same serial as another, can't be told apart. Give
+                  each its own: with only that dongle plugged in, run <code>rtl_eeprom -d 0 -s {freeSerial(s.devices)}</code> on this computer, unplug it and plug it back in, then{" "}
+                  {web ? "Connect… it again" : "Refresh"}.
+                </span>
+              ) : undefined
+            }
+          >
             <div className="row">
               <select value={src.serial} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.serial = e.target.value))}>
                 <option value="">First available</option>
-                {s.devices.map((d) => (
-                  <option key={d.serial || d.index} value={d.serial} disabled={used.has(`r:${d.serial}`)}>
-                    {d.product}
-                    {d.serial ? ` · SN ${d.serial}` : ""}
-                    {used.has(`r:${d.serial}`) ? " (in use)" : ""}
-                  </option>
-                ))}
+                {s.devices.map((d) => {
+                  const why = unpickable.get(d.index);
+                  const inUse = used.has(deviceKey("rtlsdr", d.serial));
+                  return (
+                    <option key={d.index} value={d.serial} disabled={inUse || !!why}>
+                      {d.product}
+                      {d.serial ? ` · SN ${d.serial}` : ""}
+                      {why ? ` (${why})` : inUse ? " (in use)" : ""}
+                    </option>
+                  );
+                })}
               </select>
               {web ? (
                 <button className="btn ghost small" onClick={() => void connectDongle()}>

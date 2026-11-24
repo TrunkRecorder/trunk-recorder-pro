@@ -157,3 +157,22 @@ test("Setup: an RTL-SDR on USB or through rtl_tcp: the dongle list for one, the 
   assert.match(net, /value="pi.local"/);
   assert.match(text(net), /Bias-T/, "its bias-T, as on USB");
 });
+
+test("Setup: a dongle with no serial, or another's serial, can't be picked; the list says why and what to run (forum: second dongle snaps back to First available)", () => {
+  const c = defaultConfig();
+  c.sources = [{ ...SOURCE_KINDS.rtlsdr.fresh(), serial: "00000001" } as Config["sources"][number], SOURCE_KINDS.rtlsdr.fresh()];
+  setup(c);
+  const dongle = (index: number, serial: string) => ({ index, serial, product: "RTL2838UHIDIR" });
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "")] });
+  const html = renderToString(<SourceCard c={c} i={1} />).replace(/<!-- -->/g, "");
+  assert.match(html, /<option value="" disabled="" selected="">RTL2838UHIDIR \(no serial\)<\/option>/);
+  assert.match(text(html), /A dongle can't be picked: .* rtl_eeprom -d 0 -s 00000002 /);
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "00000001")] });
+  const same = renderToString(<SourceCard c={c} i={1} />).replace(/<!-- -->/g, "");
+  assert.equal(same.match(/SN 00000001 \(same serial as another\)/g)?.length, 2, "both, each its own option");
+  assert.match(text(same), /2 dongles can't be picked/);
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "00000002")] });
+  const fine = text(renderToString(<SourceCard c={c} i={1} />));
+  assert.doesNotMatch(fine, /can't be picked|rtl_eeprom/);
+  assert.match(fine, /SN 00000001 \(in use\)/, "the first source's (keyed as config.ts keys sources, not r:…)");
+});

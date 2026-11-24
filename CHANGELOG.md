@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Setup: a second RTL-SDR with no serial, or a serial another has, says why it can't be picked.** It was offered
+  in the **Dongle** list but snapped back to *First available* when chosen. It's now greyed out, *(no serial)* or
+  *(same serial as another)*, and the list says how to give it one (`rtl_eeprom -d 0 -s 00000002`, with only that
+  dongle plugged in). The list also marks a dongle another source has as *(in use)* again.
+
 - **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call
   JSON (`lat`, `lon` in `srcList`) and reported as a position event, as P25's are:
   - the GPS a DMR or Hytera radio sends while it talks (embedded in its voice), XPT included;
