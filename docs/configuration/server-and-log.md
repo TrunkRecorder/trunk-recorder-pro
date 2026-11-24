@@ -15,12 +15,14 @@ for one run, see [command-line.md](../command-line.md).
 ## Server
 
 The built-in interface's address and port, and the other interfaces, each on a port of its own. In
-the app: **Record when the app starts** on Setup's **Recording** tab; the rest (HTTPS's files
-too) on the **Interfaces** page.
+the app: **Record when the app starts** on Setup's **Recording** tab; who can connect directly
+(`bind`) under **Direct connections** on its **Access** tab, with every way to it found listed
+below; the rest (HTTPS's files too) on the
+**Interfaces** page.
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `bind` | | `"127.0.0.1"` | string | The address every interface listens on. `"127.0.0.1"`: this computer only. `"0.0.0.0"`: reachable from other machines. With [signing in](#signing-in) off (the default), anyone who can reach the built-in interface's port can change settings and run plugins. `--bind` overrides it for one run. Config only |
+| `bind` | | `"127.0.0.1"` | string | The address every interface listens on. `"127.0.0.1"`: this computer only. `"0.0.0.0"`: every address, reachable from other devices. A tunnel or proxy on this computer (Tailscale Serve, Cloudflare Tunnel) reaches it either way. With [signing in](#signing-in) off (the default), anyone who can reach the built-in interface's port can change settings and run plugins. `--bind` overrides it for one run. In Setup: **Direct connections** on the **Access** tab (from the next start) |
 | `port` | | `8080` | integer | The built-in interface's port. `--port` overrides it for one run |
 | `autoStart` | | `false` | bool | Start recording when the app starts, as `--start` does. For headless machines and after a reboot |
 | `allowedOrigins` | | `[]` | array of strings | Web pages on other origins allowed to use the built-in interface's API, with control (a page served by something else, such as a dev server): `"http://host:port"` as the browser sends it, `"null"` for a page opened from a file, or `"*"` for any. Each interface's own pages, and programs that aren't browsers, always may. With [signing in](#signing-in) on, such a page must also send an access token |

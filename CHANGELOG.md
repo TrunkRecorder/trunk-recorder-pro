@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Setup: Direct connections and Reachable at** (#237, thanks @blantonl). Setup → **Access** switches
+  `server.bind` between **This computer only** (`127.0.0.1`) and **Other devices too** (`0.0.0.0`), from the
+  next start; it was `--bind` or the config file only. **Reachable at** lists every way to the recorder it finds
+  this run, as links: this computer, each network's address, the tailnet's (by its MagicDNS name), Tailscale
+  Serve and Funnel, Cloudflare Tunnel hostnames (from cloudflared's metrics server) and `server.hostname`; those
+  open to the internet are marked. It says when a `--bind` overrides the setting, when a change waits for a
+  restart, and, while sign-in is off, that anyone who can open them can change settings. From a browser that
+  came in directly, it asks before choosing **This computer only**. The Interfaces page's **Listening on** is
+  the address listened on this run, not the config's. See
+  [Remote access](docs/guides/remote-access.md#reaching-it-from-another-computer).
+
 - **A file that can't be written says where, why and what to do, wherever it is** (#236, thanks @blantonl). A plugin
   or interface install refused for want of permission said only the OS error (*Permission denied*, *Access is
   denied*). It now names the folder, says it's beside the config file and why the user Trunk Recorder Pro runs as

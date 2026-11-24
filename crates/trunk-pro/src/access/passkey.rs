@@ -80,7 +80,7 @@ impl Rp {
         } else if name == "localhost" {
             format!("{}://localhost:{port}", if tls { "https" } else { "http" })
         } else if server.host().as_deref() == Some(name.as_str()) {
-            format!("https://{name}:{}", server.host_port().unwrap_or(if tls { port } else { 443 }))
+            server.hostname_url(port, tls)?
         } else {
             return None;
         };

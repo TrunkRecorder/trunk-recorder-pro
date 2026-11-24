@@ -76,6 +76,10 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
     // (PostgreSQL's server's write-ahead log, read with the sizes.)
     let server_wal: Arc<Mutex<Option<i64>>> = Default::default();
     let mut sized: Option<Instant> = None;
+    // What Tailscale and cloudflared said leads here, asked on a thread of its own.
+    let found: Arc<Mutex<crate::reach::Found>> = Default::default();
+    let looking = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut looked: Option<Instant> = None;
     loop {
         let t = crate::clock::unix_s();
         // The clock judged once a tick: the dashboard, the events and the calls go by it.
@@ -120,6 +124,20 @@ fn run_with(ctx: Arc<Ctx>, mut platform: Platform) {
         }
         p["update"] = update.lock().unwrap().clone().unwrap_or(Value::Null);
         p["spotlight"] = spotlight.lock().unwrap().clone().unwrap_or(Value::Null);
+        // Where the built-in interface can be reached (Setup → Access).
+        let addrs = platform.addresses();
+        let port = ctx.interfaces.builtin_port();
+        if looked.is_none_or(|at| at.elapsed() >= crate::reach::LOOK_EVERY) && !looking.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            looked = Some(Instant::now());
+            let on_tailnet = addrs.iter().any(|(_, ip)| crate::reach::tailnet(*ip));
+            let (out, busy) = (found.clone(), looking.clone());
+            let _ = std::thread::Builder::new().name("reach".into()).spawn(move || {
+                *out.lock().unwrap() = crate::reach::look(port, on_tailnet);
+                busy.store(false, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
+        let reach = crate::reach::reach(&ctx.config.lock().unwrap().server, ctx.bind, port, ctx.bind_flag, &addrs, &found.lock().unwrap(), p["container"].is_string());
+        p["reach"] = serde_json::to_value(reach).unwrap_or(Value::Null);
         // The store's tables and indexes, measured on a thread of their own:
         // in the platform message (Platform → Storage) and its history (`store/<name>`).
         if !ctx.db.is_disabled() && sized.is_none_or(|at| at.elapsed() >= SIZES_EVERY) {

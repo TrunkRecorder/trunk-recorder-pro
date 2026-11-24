@@ -125,6 +125,8 @@ pub struct Ctx {
     pub plugins: plugins::manage::Plugins,
     /// The address every interface listens on (`--bind`, else `server.bind`).
     pub bind: std::net::IpAddr,
+    /// `bind` came from `--bind` on the command line: `server.bind` isn't used while it's given.
+    pub bind_flag: bool,
     /// The interfaces besides the built-in one, and their listeners.
     pub interfaces: crate::interfaces::Interfaces,
     /// The radio registry and the event monitor: outlive recordings.

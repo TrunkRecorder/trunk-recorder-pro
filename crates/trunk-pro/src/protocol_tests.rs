@@ -450,6 +450,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         tune: Default::default(),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
+        bind_flag: false,
         interfaces: crate::interfaces::Interfaces::new(None, 8080),
         shared,
         series: series.clone(),
