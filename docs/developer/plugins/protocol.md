@@ -201,6 +201,17 @@ interface and to the recorder's log; `debug` is dropped.
 
 `state` is `ok`, `warning` or `error`. It's shown on the plugin's card until the next status.
 
+### `notice`
+
+```json
+{ "type": "notice", "key": "token", "state": "warning", "message": "The API key was refused: check it in its settings" }
+```
+
+Something that stays true until the plugin says otherwise (a setting to fix), shown on its card
+under the status. A later `status` doesn't hide it, and the plugin's health is the worst of its
+status and its notices. A notice with the same `key` replaces it; one with no `state` takes it
+away; all go when the plugin stops or restarts. (Since SDK 0.16.0.)
+
 ### `call.result`
 
 ```json

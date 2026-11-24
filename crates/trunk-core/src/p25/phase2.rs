@@ -31,7 +31,7 @@ pub const VCW_AT_2V: [usize; 2] = [11, 48];
 /// An AMBE codeword's dibits.
 pub const VCW_DIBITS: usize = 36;
 /// 40-bit S-ISCH / frame sync (op25 P25P2_FRAME_SYNC_MAGIC).
-const SYNC: u64 = 0x57_5D57_F7FF;
+pub(crate) const SYNC: u64 = 0x57_5D57_F7FF;
 const SYNC_INV: u64 = SYNC ^ 0xAA_AAAA_AAAA;
 
 /// Burst types (op25 duid_lookup values).

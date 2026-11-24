@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "../../docs/api/client.js";
-import { copyOverride, copyOwn, copyPerSite, OVERRIDE, PER_SITE, pluginCopies } from "./protocol.ts";
+import { blank, copyOf, copyOverride, copyOwn, copyPerSite, pluginCopies } from "./protocol.ts";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
@@ -1370,17 +1370,6 @@ addEventListener("popstate", () => set(routeFromHash()));
 /** Whether plugin `id` is on (in the config). */
 export function pluginOn(c: Config | null, id: string): boolean {
   return !!c?.plugins?.[id]?.enabled;
-}
-
-/** Settings with nothing in them: nothing to keep. */
-function blank(v: PluginValues | undefined): boolean {
-  return !v || Object.values(v).every((x) => x === undefined || x === null || x === "" || (Array.isArray(x) && x.length === 0));
-}
-
-/** A copy from its parts, each left out when there's nothing in it: its own settings, what it overrides, its sites' own. */
-function copyOf(own: PluginValues, over: PluginValues, perSite: Record<string, PluginValues>): PluginValues {
-  const sites = Object.fromEntries(Object.entries(perSite).filter(([, v]) => !blank(v)));
-  return { ...own, ...(blank(over) ? {} : { [OVERRIDE]: over }), ...(Object.keys(sites).length ? { [PER_SITE]: sites } : {}) };
 }
 
 export function setPluginEnabled(id: string, enabled: boolean): void {

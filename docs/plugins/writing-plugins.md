@@ -249,6 +249,7 @@ works from any thread.
 |---|---|---|
 | `host.info(…)`, `warn`, `error`, `debug` | `log` | In the plugin's log in the interface and in the recorder's log, prefixed with its id. `debug` lines are dropped |
 | `host.status(State::Warning, "OpenMHz is down; 12 calls queued")` | `status` | On its card, until the next status: `Ok`, `Warning` or `Error` |
+| `host.notice("token", State::Warning, "The API key was refused")`, `host.clear_notice("token")` | `notice` | What stays true while it runs (a setting to fix), under the status: a later `status` doesn't hide it. One per key (since SDK 0.16.0) |
 | `host.call_result(path, Outcome::Ok, "", url)` | `call.result` | What became of a recorded call: `Ok`, `Skipped` (deliberately not handled) or `Failed`, a message and optionally a URL. `call_result_took` also says how long your work on it took ([below](#what-becomes-of-a-call)) |
 | `host.metrics(&Metrics { … })` | `metrics` | On the Health tab: queue depth, retries, in flight, bytes sent, latency, the services it talks to (up, degraded, down), and any figures of its own. `CallQueue` sends these for you |
 | `host.calls(CallsQuery { … })` | `calls.query` | Recorded calls, asked of the recorder ([below](#recorded-calls)) |
@@ -764,7 +765,7 @@ mod tests {
 | `testing::run::<P>(messages)` | Runs the plugin on the messages, then ends its input, so `shutdown` runs, and returns an `Output` |
 | `out.ready()` | It started: its settings were good |
 | `out.exit_code` | `EXIT_CONFIG` (78) if `start` refused the settings |
-| `out.results()`, `out.logs()`, `out.status()`, `out.metrics()` | What it reported. `out.messages` has every message it sent |
+| `out.results()`, `out.logs()`, `out.status()`, `out.metrics()`, `out.notices()` | What it reported (`notices()`: those still standing, by key). `out.messages` has every message it sent |
 | `testing::capture()` | A `Host` that keeps what it's sent, for testing a part of your plugin (like a `CallQueue`) on its own. `captured.output()` reads it back |
 | `testing::MockServer` | A web server on 127.0.0.1 ([below](#testing-against-a-server)) |
 
