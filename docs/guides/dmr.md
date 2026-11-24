@@ -280,23 +280,14 @@ that the other frequencies have been added.
 frequency is ignored.
 
 
-## GPS positions and data services
+## GPS positions
 
-Standard DMR and Hytera GPS Info embedded in voice calls are decoded for the
-radio named by the current slot's voice link control. Positions use the existing
-call JSON fields `srcList[].lat` and `srcList[].lon`, as P25 positions do; no
-extra setting is required. This adds DMR decoding to the existing position
-recording path rather than introducing another JSON format.
+- **GPS sent with voice** (standard DMR and Hytera, XPT included): the radio's position is kept on its entry in the
+  call JSON (`srcList[].lat`, `lon`), as a P25 radio's is. There's nothing to set.
+- **Hytera location reports sent as data** (as text, or compressed): add the data carrier to the site's **Watched
+  frequencies** (or as a conventional DMR channel). A report is a position event. It's kept on a call the radio is
+  on, else reported with talkgroup 0, and makes no recording of its own.
+- **Compressed reports** are experimental: only the north/west form seen so far is read. Others are kept raw.
+- **Hytera registration and offline messages** show as registrations in the log.
 
-On Hytera systems with a dedicated data carrier, add that frequency to the
-site's monitored frequencies (or a conventional DMR channel). CRC-checked
-compressed GPS reports can then emit positions without a voice call. Matching
-active calls retain the position on the radio's source entry. A standalone
-report produces a position event/log entry and does not create a call JSON or
-audio recording by itself. RRS registration and the observed data-channel
-setup/end/status profiles are also exposed in diagnostic logs.
-
-Compressed GPS and busy indications remain experimental for the observed
-profiles. Other hemisphere/fix flags, motion units and unidentified control
-fields stay raw. See [DMR GPS and data protocol notes](../developer/protocols/dmr-gps.md)
-for supported formats, limitations and validation evidence.
+See [DMR GPS and data](../developer/protocols/dmr-gps.md) for the formats and their sources.

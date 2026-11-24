@@ -118,7 +118,7 @@ impl DmrVoice {
                         push(TrackerOut::Alias(a));
                     }
                 }
-                if from == LcFrom::Terminator && (lc.voice_user().is_some() || (lc.fid() == super::slot::FID_HYTERA && lc.flco() == 0x30)) {
+                if from == LcFrom::Terminator && lc.ends_voice() {
                     // End of the transmission (repeated through the hang time): not a call of its own.
                     s.alias.reset();
                     s.source = None;

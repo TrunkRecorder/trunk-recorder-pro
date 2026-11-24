@@ -15,9 +15,10 @@ are ignored. A fix on only the equator or prime meridian is accepted. Accuracy
 Positions are read even when the call's audio is encrypted.
 
 The recorder also assembles unconfirmed defined short-data packets (SAP 10,
-DPF 13) carried in rate-1/2 blocks. Supported Hytera applications are compressed
-LP GPS reports and RRS registration/offline/status messages. Other packet
-applications stay visible as raw data. Motorola LRRP, UDT/NMEA, confirmed data,
+DPF 13) carried in rate-1/2 blocks. Supported Hytera applications are location
+(LP) reports, as text and (experimentally) compressed, and RRS
+registration/offline/status messages. Other packet applications stay visible as
+raw data. Motorola LRRP, UDT/NMEA, confirmed data,
 fragmented messages, and rate-3/4 or rate-1 data are not implemented here.
 
 ## Wire format and sources
@@ -33,6 +34,13 @@ use two's complement, not sign/magnitude; north/east are positive.
 | 20..23 | Position error / accuracy |
 | 23..48 | Signed longitude × 360 / 2²⁵ degrees |
 | 48..72 | Signed latitude × 180 / 2²⁴ degrees |
+
+The layout and constants agree in ETSI, SDRTrunk (`GPSInformation.java`),
+ok-dmrlib (`full_link_control.py`), dmr-kaitai (`full_link_control.ksy`) and
+dsd-fme (`dsd_gps.c`). dsd-fme takes a negative value's magnitude as
+`0x800001 - v` / `0x1000001 - v`, one step (about 1 m) too far; two's complement
+here is the spec's. FLCO 8 is GPS only for FID `0x00` and `0x68`: Tait (`0x58`)
+uses it for its talker alias, and Motorola (`0x10`) for something else.
 
 Sources researched for the original implementation:
 
@@ -69,11 +77,64 @@ IDs without truncating coordinate bits. Release-specific tests interleave GPS
 and alias blocks to verify both outputs survive.
 
 
+## Where a position goes
+
+Every position, embedded or sent as data, goes through `CallManager::position`:
+it's kept on each call its radio is on (`srcList[].lat`/`lon`), and an
+`Event::UnitPosition` reports it with that call's talkgroup, or `0` when the
+radio is on no call (a report between calls). A slot that carries only a
+position starts no call; on a conventional frequency with codes, the rows'
+codes admit it as they do voice.
+
+## Hytera application messages (HDAP)
+
+Hytera radios put their applications in short data as an HDAP message after
+two octets of their own (`01 00`, `02 00`; dmrshark calls them pre-padding,
+and what they say isn't known):
+
+| Octets | Meaning |
+| --- | --- |
+| 0 | Header: top bit asks for an acknowledgement; low 7 bits the protocol (`0x08` LP, `0x11` RRS; `0x01` the compressed reports below) |
+| 1..3 | Opcode, big endian |
+| 3..5 | Body length, big endian |
+| 5..5+n | Body |
+| 5+n | Checksum: octets 1..5+n summed, complemented, plus `0x33` |
+| 6+n | `03` |
+
+`dmr::hytera::hdap` checks the length, checksum and end before anything is
+read (dmr-kaitai `hytera_dmr_application_protocol.ksy`; ok-dmrlib `hdap.py`).
+
+### Location reports as text (LP, protocol `0x08`)
+
+An answer to a location request (`A002`), and emergency (`B003`), triggered
+(`C003`) and condition (`D003`) reports end with the GPS data, 40 ASCII octets
+(dmr-kaitai `location_protocol.ksy` and `gpsdata.ksy`; dmrshark `dmr-data.c`
+reads the same fields at fixed offsets, and dsd-fme's `dmr_locn` by scanning
+for the letters):
+
+| Octets | Field |
+| --- | --- |
+| 0 | `A` a fix, `V` none (no position) |
+| 1..7 | Time, HHMMSS UTC |
+| 7..13 | Date, DDMMYY |
+| 13 | `N` or `S` |
+| 14..23 | Latitude, DDMM.MMMM |
+| 23 | `E` or `W` |
+| 24..34 | Longitude, DDDMM.MMMM |
+| 34..37 | Speed, knots |
+| 37..40 | Heading, degrees from north |
+
+The position is the packet header's source radio's, any hemisphere. The
+decoder name is `HyteraDMR_LP`. Only generated vectors test it so far: a capture
+of a radio with GPS compression off would confirm it on the air.
+
 ## Experimental compressed Hytera GPS and packet services
 
-This is a capture-derived extension, not a published Hytera specification.
-The compressed LP service marker is `01 D0 03 00`, following the two-byte
-short-data prefix `01 00`. The observed application payload is 27 bytes:
+This is a capture-derived extension, not a published Hytera specification
+(dmrshark recognises the same marker and doesn't decode it). Its first three
+octets read as an HDAP header, protocol `0x01` with LP's condition-report
+opcode `D003`; no length or checksum has been found after them. The marker
+is `01 D0 03 00`, following the two-byte short-data prefix `01 00`. The observed application payload is 27 bytes:
 
 | Payload bytes (end excluded) | Interpretation |
 | --- | --- |
@@ -105,14 +166,13 @@ uses polynomial `0x04C11DB7`, initial zero and no final complement, with a
 little-endian check on the air. Header-declared octet-aligned bit padding and
 the CRC are then removed.
 
-Standalone packet positions emit the existing `Event::UnitPosition` with
-talkgroup `0`; they do not create or prolong a voice call. Matching active
-calls can also retain the position on their source entry. Configure the data
-frequency as a monitored DMR control carrier (or a conventional DMR channel);
+Packet positions go where every position does ([above](#where-a-position-goes)):
+they do not create or prolong a voice call. Configure the data frequency as a
+site's watched frequency (or a conventional DMR channel);
 the decoder cannot discover an unconfigured dedicated data frequency from
 these vendor words.
 
-RRS packets use prefix `02 00`, then HDAP service `11 00`. Their opcode,
+RRS packets are HDAP protocol `0x11` (after `02 00`). Their opcode,
 length, HDAP checksum and ending `03` are checked in addition to the air CRCs.
 Registration request `0003`, answer `0080`, offline `0001`, status check `0002`
 and status answer `0082` are recognized. Messages retain both the over-the-air
@@ -121,10 +181,10 @@ attributed to the radio it answers. Result and status codes remain numeric;
 registration replies include the renewal interval in seconds.
 
 The additional observed Hytera CSBK opcodes `08`/`0D`, full LC `0D`/`30`, and
-short LC `0C` are reported with raw bytes and flags. Their undocumented fields
-are not used to infer voice grants, repeater mappings, radio IDs, or GPS.
-Repeated identical status messages are suppressed for ten seconds. Short LC
-has no manufacturer identifier, so opcode `0C` alone is not evidence of XPT.
+short LC `0C` are not reported by the recorder (their fields aren't
+documented); `trunk-pro tool dmr` prints the profiles below. They are not used
+to infer voice grants, repeater mappings, radio IDs, or GPS. Short LC has no
+manufacturer identifier, so opcode `0C` alone is not evidence of XPT.
 
 `trunk-pro tool dmr` prints checked packet headers/payloads, application
 summaries, and positions as JSON lines. User IQ captures and exact locations
@@ -196,7 +256,7 @@ coordinates, radio-location descriptions or private IQ files are included.
 | `a7a6bb2cf35d069a` | XPT voice/signalling regression: decoded voice frame hashes match upstream |
 | `b69007e66f75c602` | XPT voice/signalling regression: decoded voice frame hashes match upstream |
 | `4aa34b203c13d715` | Compressed GPS, RRS requests/replies and data-control diagnostics decoded; original calls preserved |
-| `45c4719b910f2af8` | Repeated compressed GPS and data-control diagnostics decoded; original calls preserved |
+| `45c4719b910f2af8` | Repeated compressed GPS and data-control diagnostics decoded; original calls preserved (not yet a regression test, so no expected output here) |
 
 The following voice captures have been uploaded to the corpus and are
 awaiting publication/public sample IDs:

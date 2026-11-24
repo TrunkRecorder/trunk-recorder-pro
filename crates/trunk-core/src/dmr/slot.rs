@@ -54,6 +54,11 @@ pub struct Lc(pub [u8; 9]);
 /// Motorola restricted access (RAS) sets this FLCO bit in a voice call's
 /// embedded LC (group 0x20, private 0x23); the LC is otherwise the usual one.
 const FLCO_RAS: u8 = 0x20;
+/// Hytera's call setup LC: 16-bit IDs (target in octets 4–5, source 7–8), and its third octet
+/// isn't service options.
+const FLCO_HYTERA_SETUP: u8 = 9;
+/// Hytera's own terminator LC: the transmission is over, as a voice terminator says.
+const FLCO_HYTERA_END: u8 = 0x30;
 
 impl Lc {
     /// The opcode, without Motorola's restricted-access bit.
@@ -74,15 +79,20 @@ impl Lc {
             _ => None,
         }
     }
+    /// A terminator's LC that ends the transmission: a voice user LC, or Hytera's own.
+    pub fn ends_voice(&self) -> bool {
+        self.voice_user().is_some() || (self.fid(), self.flco()) == (FID_HYTERA, FLCO_HYTERA_END)
+    }
+    /// The service options (none in Hytera's call setup).
     pub fn service_options(&self) -> u8 {
-        self.0[2]
+        if (self.fid(), self.flco()) == (FID_HYTERA, FLCO_HYTERA_SETUP) { 0 } else { self.0[2] }
     }
     pub fn emergency(&self) -> bool {
-        !(self.fid() == FID_HYTERA && self.flco() == 9) && self.0[2] & 0x80 != 0
+        self.service_options() & 0x80 != 0
     }
     /// The privacy (encryption) service option.
     pub fn encrypted(&self) -> bool {
-        !(self.fid() == FID_HYTERA && self.flco() == 9) && self.0[2] & 0x40 != 0
+        self.service_options() & 0x40 != 0
     }
     /// The talkgroup (or radio) called. Capacity Plus wide-area (linked)
     /// groups are 8 bits.
@@ -90,7 +100,7 @@ impl Lc {
         let b = &self.0;
         match (self.fid(), self.flco()) {
             (FID_MOTOROLA, 4) => b[5] as u32,
-            (FID_HYTERA, 9) => u32::from_be_bytes([0, 0, b[4], b[5]]),
+            (FID_HYTERA, FLCO_HYTERA_SETUP) => u32::from_be_bytes([0, 0, b[4], b[5]]),
             _ => u32::from_be_bytes([0, b[3], b[4], b[5]]),
         }
     }
@@ -98,7 +108,7 @@ impl Lc {
     pub fn source(&self) -> u32 {
         let b = &self.0;
         match (self.fid(), self.flco()) {
-            (FID_MOTOROLA, 4) | (FID_HYTERA, 9) => u32::from_be_bytes([0, 0, b[7], b[8]]),
+            (FID_MOTOROLA, 4) | (FID_HYTERA, FLCO_HYTERA_SETUP) => u32::from_be_bytes([0, 0, b[7], b[8]]),
             _ => u32::from_be_bytes([0, b[6], b[7], b[8]]),
         }
     }

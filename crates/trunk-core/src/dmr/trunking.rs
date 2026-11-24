@@ -412,10 +412,6 @@ impl Site {
             self.xpt(idx, slot, c, t, out);
             return;
         }
-        if let Some(meta) = super::hytera::control(&e) {
-            self.status_once(idx, slot, meta, t, out);
-            return;
-        }
         match e {
             SlotEvent::Packet(p) => {
                 let mut m = super::hytera::packet(&p);
@@ -1109,7 +1105,7 @@ mod tests {
         let mut s = Site::new(&[453_637_500.0], 24_000.0, DmrConfig::default());
         s.carriers[0].chan.slots[0].color_code = Some(13);
         let mut out = Vec::new();
-        // Proprietary blocks stay visible as raw status; they do not establish XPT.
+        // Hytera proprietary blocks as heard on the data carrier: not XPT, not reported.
         let observed = [
             SlotEvent::Csbk { csbk: Csbk([0x8d, 0x68, 0x7f, 0xff, 0, 0, 0, 0, 0, 0]), mbc: false },
             SlotEvent::Slco([0xc6, 0x87, 0xff, 0xfe, 0xe0]),
@@ -1117,9 +1113,7 @@ mod tests {
             SlotEvent::Lc { lc: Lc([0x30, 0x68, 0xf0, 0x7f, 0xff, 0, 0, 0x10, 0x60]), from: LcFrom::Terminator },
         ];
         for e in observed { s.event(0, 0, e, 0.0, &mut out); }
-        assert_eq!(out.len(), 4);
-        assert!(out.iter().all(|m| m.kind == MessageType::Status && m.meta.contains("raw")));
-        out.clear();
+        assert!(out.is_empty());
         assert_eq!(s.variant, None, "proprietary payloads do not establish XPT");
         s.event(0, 0, SlotEvent::Csbk { csbk: Csbk([0xbd, 0x68, 0x80, 0x12, 0xf0, 2, 8, 0, 0, 16]), mbc: false }, 0.1, &mut out);
         assert_eq!(s.variant, Some(Variant::Xpt));
