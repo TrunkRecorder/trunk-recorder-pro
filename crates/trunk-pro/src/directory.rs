@@ -30,8 +30,8 @@ pub fn recorder_id() -> String {
         return String::new();
     }
     let id = trunk_app::share::recorder_id(&b);
-    if let Err(e) = std::fs::write(&path, &id) {
-        log::warn!("Couldn't keep the directory recorder ID in {}: {e}", path.display());
+    if let Err(p) = trunk_app::files::write(&path, &id) {
+        log::warn!("Couldn't keep the directory recorder ID. {p}");
     }
     id
 }
