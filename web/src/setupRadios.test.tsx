@@ -41,6 +41,24 @@ test("Setup: a HackRF's editor has its stages and bias-T, and needs no driver", 
   assert.equal([...vga.matchAll(/value="(\d+)"/g)].length, 32);
 });
 
+test("Setup: a driver that won't load says why in full, with the steps for the computer it runs on (#219)", () => {
+  const c = defaultConfig();
+  c.sources = [SOURCE_KINDS.airspy.fresh()];
+  setup(c);
+  const why = "libairspy found but couldn't be loaded: LoadLibraryExW failed (os error 126) — a DLL it needs is missing: airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it";
+  const radios = (platform: string) => {
+    transport.onMessage({ type: "hello", version: "test", platform, api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers"] });
+    transport.onMessage({ type: "radios", radios: { airspy: { available: false, detail: why, devices: null } } as unknown as Radios });
+    return text(renderToString(<SourceCard c={c} i={0} />));
+  };
+  const win = radios("windows");
+  assert.ok(win.includes(`Airspy needs ${why}`), "the recorder's reason, shown outright");
+  assert.match(win, /Windows put airspy\.dll, libusb-1\.0\.dll and pthreadVC2\.dll .* Visual C\+\+ 2010 runtime \(x64\) Then Restart the app/);
+  assert.doesNotMatch(win, /brew install|apt install/, "not another computer's steps");
+  // A computer it can't place: every way to install it.
+  assert.match(radios("test"), /brew install airspy .* sudo apt install libairspy0 .* put airspy\.dll/);
+});
+
 test("Setup: the browser build offers only the radios it opens (no driver, no HackRF)", () => {
   const c = defaultConfig();
   setup(c);
