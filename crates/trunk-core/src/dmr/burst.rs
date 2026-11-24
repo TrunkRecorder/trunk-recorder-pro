@@ -109,6 +109,13 @@ const GRID_ERRS_BS: u32 = 11;
 /// Bursts with no sync before the framer lets go of the grid (a slot's voice
 /// superframe has one per 12 bursts).
 const UNLOCK_BURSTS: u32 = 24;
+/// Bursts in a row whose code reads clean only sign-flipped before the
+/// framer takes the signal as spectrally inverted ([`Framer::inverted`]).
+const FLIP_BURSTS: u32 = 3;
+/// Bursts held after locking until one's code says the polarity: an
+/// inverted repeater's idle data bursts would pass for voice and start a
+/// call. Past this many, they go as framed.
+const HOLD_BURSTS: usize = 6;
 
 #[derive(Clone, Debug)]
 pub struct Burst {
@@ -225,6 +232,15 @@ pub struct Framer {
     /// Family of the sync that set the grid.
     family: u8,
     since_sync: u32,
+    /// Symbols arrive sign-flipped (spectrally inverted IQ), so are flipped
+    /// back. The syncs can't say: each voice sync inverted is its family's
+    /// data sync. The bursts' codes can ([`polarity`]).
+    pub inverted: bool,
+    /// Bursts in a row read clean only flipped.
+    flipped: u32,
+    /// Since locking, the polarity is known, or the bursts held till it is.
+    settled: bool,
+    held: Vec<Burst>,
     pub bursts: u64,
     pub syncs: u64,
 }
@@ -237,7 +253,7 @@ impl Default for Framer {
 
 impl Framer {
     pub fn new() -> Self {
-        Framer { grid_errs: GRID_ERRS_BS, buf: VecDeque::new(), win: 0, n: 0, next_end: None, pending: None, family: 0, since_sync: 0, bursts: 0, syncs: 0 }
+        Framer { grid_errs: GRID_ERRS_BS, buf: VecDeque::new(), win: 0, n: 0, next_end: None, pending: None, family: 0, since_sync: 0, inverted: false, flipped: 0, settled: false, held: Vec::new(), bursts: 0, syncs: 0 }
     }
 
     pub fn locked(&self) -> bool {
@@ -245,6 +261,8 @@ impl Framer {
     }
 
     pub fn push(&mut self, s: &Symbol, out: &mut Vec<Burst>) {
+        // A dibit's high bit is its sign (+1 00, +3 01, −1 10, −3 11).
+        let s = &Symbol { dibit: s.dibit ^ if self.inverted { 2 } else { 0 }, ..*s };
         self.buf.push_back(*s);
         if self.buf.len() > SLOT_DIBITS {
             self.buf.pop_front();
@@ -264,6 +282,9 @@ impl Framer {
                 let (kind, errs) = match_sync(self.win, None);
                 if errs <= LOCK_ERRS && i >= 77 {
                     // A clean sync off the grid (or with no grid): the grid is here.
+                    if self.next_end.is_none() {
+                        self.settled = false;
+                    }
                     self.next_end = Some(i + 54);
                     self.pending = Some((kind, errs));
                     self.family = kind.family();
@@ -279,6 +300,7 @@ impl Framer {
             }
             if self.since_sync > UNLOCK_BURSTS {
                 self.next_end = None;
+                out.append(&mut self.held);
                 return;
             }
             if self.buf.len() < SLOT_DIBITS {
@@ -303,8 +325,64 @@ impl Framer {
                     b.rel[2 * k + 1] = s.rel_lo;
                 }
             }
+            let (clean, flipped_clean) = polarity(&b);
+            if !self.settled {
+                self.held.push(b);
+                if clean || flipped_clean || self.held.len() >= HOLD_BURSTS {
+                    if !clean && flipped_clean {
+                        self.held.iter_mut().for_each(|b| *b = flipped(b));
+                        self.flip();
+                    }
+                    self.settled = true;
+                    out.append(&mut self.held);
+                }
+                return;
+            }
+            match (clean, flipped_clean) {
+                (true, _) => self.flipped = 0,
+                (false, true) => self.flipped += 1,
+                _ => {}
+            }
             out.push(b);
+            if self.flipped >= FLIP_BURSTS {
+                self.flip();
+            }
         }
+    }
+
+    /// Take the signal's polarity the other way: what's buffered too, and
+    /// the grid stays.
+    fn flip(&mut self) {
+        (self.inverted, self.flipped) = (!self.inverted, 0);
+        self.buf.iter_mut().for_each(|s| s.dibit ^= 2);
+        self.win ^= 0xaaaa_aaaa_aaaa;
+    }
+}
+
+/// `b` with every dibit sign-flipped, its sync read again.
+fn flipped(b: &Burst) -> Burst {
+    let mut f = b.clone();
+    f.cach.iter_mut().chain(f.dibits.iter_mut()).for_each(|d| *d ^= 2);
+    let win = f.dibits[54..78].iter().fold(0u64, |w, &d| w << 2 | d as u64);
+    let (k, e) = match_sync(win, None);
+    (f.sync, f.sync_errs) = if b.sync.is_some() && e <= GRID_ERRS { (Some(k), e) } else { (None, 0) };
+    f
+}
+
+/// Whether `b`'s code reads clean as framed, and sign-flipped: a data
+/// burst's slot type (Golay, ≤ 1 bit), a voice burst B–F's EMB (QR, exact).
+/// Flipped, a voice sync is its family's data sync, and the code's bits
+/// alternate flipped (each dibit's high bit). A codeword flipped is 4 bits
+/// from any (both codes), past what either corrects; random bits pass
+/// 0.5 % / 0.2 % of the time.
+fn polarity(b: &Burst) -> (bool, bool) {
+    let slot_type = |flip: u32| golay20_decode(b.bits_word(&[(98, 108), (156, 166)]).0 ^ flip, None).1 <= 1;
+    let emb = |flip: u32| qr16_decode(b.bits_word(&[(108, 116), (148, 156)]).0 ^ flip, None).1 == 0;
+    match b.sync {
+        Some(k) if k.is_data() => (slot_type(0), false),
+        Some(k) if k.is_voice() => (false, slot_type(0xA_AAAA)),
+        None => (emb(0), emb(0xAAAA)),
+        Some(_) => (false, false),
     }
 }
 

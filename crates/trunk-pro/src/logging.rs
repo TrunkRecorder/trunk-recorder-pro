@@ -9,7 +9,7 @@
 //! day and at 100 MB; with `syslogFriendly`, one `<dir>/trunk-pro.log`
 //! appended to, for logrotate (SIGHUP reopens it).
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, RwLock};
@@ -38,6 +38,8 @@ struct FileSink {
     written: u64,
     /// The day the file was opened (yyyymmdd).
     day: u32,
+    /// Its not opening has been said (on stderr: the log can't say it).
+    said: bool,
 }
 
 pub struct Logger {
@@ -142,7 +144,7 @@ pub fn configure(s: &LogSettings, config_dir: &Path) {
         if !s.file {
             *f = None;
         } else if !keep {
-            *f = Some(FileSink { dir, single: s.syslog_friendly, file: None, written: 0, day: 0 });
+            *f = Some(FileSink { dir, single: s.syslog_friendly, file: None, written: 0, day: 0, said: false });
         }
     }
     {
@@ -300,6 +302,13 @@ fn level_of(l: log::Level) -> Level {
 }
 
 impl FileSink {
+    /// The log file can't be written: said once until it can.
+    fn not_opened(&mut self, p: trunk_app::files::Problem) {
+        if !std::mem::replace(&mut self.said, true) {
+            eprintln!("The log file can't be written, so the log goes to the console only. {p}");
+        }
+    }
+
     fn write(&mut self, line: &str) {
         let now = Local::now();
         let day = now.year() as u32 * 10000 + now.month() * 100 + now.day();
@@ -316,8 +325,8 @@ impl FileSink {
 
     fn open(&mut self, now: &chrono::DateTime<Local>, day: u32) {
         self.file = None;
-        if std::fs::create_dir_all(&self.dir).is_err() {
-            return;
+        if let Err(p) = trunk_app::files::make_dir(&self.dir) {
+            return self.not_opened(p);
         }
         let path = if self.single {
             self.dir.join("trunk-pro.log")
@@ -326,7 +335,10 @@ impl FileSink {
             let stem = now.format("%m-%d-%Y_%H%M").to_string();
             (0..100).map(|n| self.dir.join(format!("{stem}_{n:02}.log"))).find(|p| !p.exists()).unwrap_or_else(|| self.dir.join(format!("{stem}_99.log")))
         };
-        self.file = OpenOptions::new().create(true).append(true).open(&path).ok();
+        match trunk_app::files::append(&path) {
+            Ok(f) => (self.file, self.said) = (Some(f), false),
+            Err(p) => return self.not_opened(p),
+        }
         self.written = self.file.as_ref().and_then(|f| f.metadata().ok()).map_or(0, |m| m.len());
         self.day = day;
     }

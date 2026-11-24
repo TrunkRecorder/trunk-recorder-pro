@@ -97,12 +97,13 @@ pub struct Setup<C, S> {
 
 impl<C, S> Setup<C, S> {
     /// The system an event's `system` names. (Its number is for this run
-    /// only; keep anything you store by [`System::short_name`].)
+    /// only; keep anything you store by [`System::id`].)
     pub fn system(&self, index: u16) -> Option<&System<C, S>> {
         self.systems.iter().find(|s| s.index == index)
     }
-    /// The system with this short name — its identity: every event carries
-    /// it (`short_name`, or a concluded call's `call.short_name`).
+    /// The system with this short name: what users know it by, so what a
+    /// setting they type names it by. (It changes when the system is renamed;
+    /// store by [`System::id`].)
     pub fn system_named(&self, short_name: &str) -> Option<&System<C, S>> {
         self.systems.iter().find(|s| s.short_name == short_name)
     }

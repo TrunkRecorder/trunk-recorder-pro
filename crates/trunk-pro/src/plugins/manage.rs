@@ -650,7 +650,7 @@ impl Plugins {
         if cfg.plugins.get(&id).is_none_or(|p| p.path.is_empty()) {
             let dir = plugins_dir().join(&id);
             if dir.is_dir() {
-                std::fs::remove_dir_all(&dir).map_err(|err| format!("Couldn't delete {}: {err}", dir.display()))?;
+                trunk_app::files::remove_dir_all(&dir).map_err(|p| format!("Couldn't delete {}. {p}", dir.display()))?;
             }
         }
         self.runtime.lock().unwrap().remove(&id);

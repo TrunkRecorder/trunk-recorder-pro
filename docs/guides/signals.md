@@ -86,7 +86,7 @@ Digits and Morse text match exactly.
 - **Plugins** subscribed to `tone_pattern` hear every pattern as soon as it's over, with the
   signals it is (if any). A plugin's [delays](../configuration/plugins.md#delays) hold it, as they
   do its calls; one heard in voice decrypted with your keys goes only to plugins allowed decrypted
-  calls. See [Writing plugins](../plugins/writing-plugins.md#topics).
+  calls. See [Plugin events](../developer/plugins/events.md#tone_pattern).
 
 The signal settings are in the [systems reference](../configuration/systems.md#signals).
 

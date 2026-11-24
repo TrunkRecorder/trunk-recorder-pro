@@ -463,7 +463,7 @@ pub struct ConcludedCall {
     /// The call's key: its files' path relative to the capture folder, without
     /// an extension (`<shortName>/<Y>/<M>/<D>/<tg>-<start>_<freq>`).
     pub path: String,
-    /// [`SystemInfo::index`]: for this run only; the system's identity is `call.short_name`.
+    /// [`SystemInfo::index`]: for this run only; the system's identity is `call.system_id`.
     pub system: u16,
     /// Its call JSON, in Trunk Recorder's format (the `.json` file's contents).
     pub call: CallRecord,
@@ -1270,7 +1270,7 @@ pub struct SiteScope {
 /// Every series the recorder measures, as running totals since recording started
 /// ([`topic::TOTALS`]), and what their keys are of. A plugin takes the difference between two to
 /// have a window of its own choosing ([`Totals::since`]); [`crate::health`] makes node health
-/// reports of them. The series are the dashboard's (`docs/plugins/writing-plugins.md#series`).
+/// reports of them. The series are the dashboard's (`docs/developer/plugins/events.md#series`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Totals {

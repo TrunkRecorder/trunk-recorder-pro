@@ -94,7 +94,7 @@ impl State {
             next.signed_out.retain(|user, _| auth.users.contains_key(user));
             next.passkeys.retain(|id, _| auth.users.values().any(|u| u.passkeys.iter().any(|p| &p.id == id)));
             if let Some(path) = &self.path {
-                write(path, &next).map_err(|e| format!("{}: {e}", path.display()))?;
+                write(path, &next)?;
             }
         }
         if *kept != next {
@@ -115,14 +115,10 @@ fn read(path: &Path) -> Result<Option<Kept>, String> {
 }
 
 /// Written whole or not at all: beside it, then moved over it.
-fn write(path: &Path, kept: &Kept) -> std::io::Result<()> {
-    let text = serde_json::to_string_pretty(kept).map_err(std::io::Error::other)?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    super::keep_private(&tmp, &text)?;
-    std::fs::rename(&tmp, path)
+fn write(path: &Path, kept: &Kept) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(kept).map_err(|e| e.to_string())?;
+    trunk_app::files::make_parent(path)?;
+    Ok(trunk_app::files::write_private(path, text)?)
 }
 
 #[cfg(test)]
