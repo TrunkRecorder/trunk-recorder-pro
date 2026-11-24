@@ -158,6 +158,31 @@ export const sourceLabels = (c: Config): string[] => sourceNames(c).map((x) => x
 /** Each source's label (as sourceLabels) and title ("Source 2 (Whip)", Source::title: what every message and page calls it). */
 export const sourceNames = perConfig((j) => JSON.parse(rules().configSources(j)) as { label: string; title: string }[]);
 
+/** A source, by its place in the config and its title ("Source 2 (Whip)"). */
+export interface SourceRef {
+  index: number;
+  title: string;
+}
+/** Why a found radio can't be a source's own: no serial or another's (with more than one of its family plugged in), or another source names it. */
+export type Unpickable =
+  /** `twin`: the first found before it that it can't be told from (none: it is the first). */
+  | { why: "noSerial" | "sameSerial"; twin?: number | null }
+  | ({ why: "source" } & SourceRef);
+/** A found radio, to one source: why it can't be its own, and another source on "the first found" that may take it. */
+export interface RadioPick {
+  unpickable?: Unpickable;
+  first?: SourceRef;
+}
+
+/**
+ * The radios found (`{ kind, id }`, `id` the serial or device arguments a source names it by), as
+ * source `i` (null: a new one, or one to scan with) may be set to them (Config::radio_picks); with,
+ * when an RTL-SDR can't be told apart, a serial none has (`freeSerial`), for rtl_eeprom.
+ */
+export function radioPicks(c: Config, i: number | null, found: { kind: string; id: string }[]): { radios: RadioPick[]; freeSerial?: string } {
+  return JSON.parse(rules().configRadioPicks(JSON.stringify(c), i ?? -1, JSON.stringify(found)));
+}
+
 /** The source each frequency the config lists is received on, as Start will choose it, pins and all (Config::receivers); source null: none it may be received on reaches it. */
 export const receivers = perConfig((j) => JSON.parse(rules().configReceivers(j)) as { system: string; hz: number; source: number | null }[]);
 

@@ -16,11 +16,11 @@ void sameKinds;
 export const kindLabel = (type: System["type"] | undefined) => SYSTEM_KINDS[type ?? "p25"].label;
 import { readUnitNamesFile } from "./units.ts";
 import { fromNow } from "./origins.ts";
-import { defaultConfig, folderProblem, parseChannelCsv, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth, hzOf } from "./rules.ts";
+import { defaultConfig, folderProblem, parseChannelCsv, radioPicks, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth, hzOf, type RadioPick } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
 export { receivers, sourceInputs, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceAdvice, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
-export type { Advice, AdviceScore, Heard } from "./rules.ts";
+export type { Advice, AdviceScore, Heard, RadioPick, Unpickable } from "./rules.ts";
 
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
 export const RTL_DEFAULT_GAIN_DB = 25.4;
@@ -296,61 +296,49 @@ export interface Detected {
   source: Source;
   /** Why it can't be used now (another program has it), or null. */
   busy: string | null;
+  /** Its place among foundRadios' (its pick's, in pickable). */
+  at: number;
+}
+
+/** A radio the recorder can see, as a source names it (`id`: its serial or device arguments), with its driver's entry for it. */
+export type Found = { kind: "rtlsdr"; id: string; device: Device } | { kind: Exclude<Source["type"], "rtlsdr">; id: string; device: FoundRadio & { driver?: string } };
+
+/** Every radio the recorder can see: its RTL-SDRs, then what each driver found, SoapySDR's among them (all: some are another driver's too). */
+export function foundRadios(devices: Device[], r: Radios | null): Found[] {
+  const out: Found[] = devices.map((d) => ({ kind: "rtlsdr", id: d.serial, device: d }));
+  for (const kind of DRIVER_KINDS) {
+    const k = SOURCE_KINDS[kind];
+    // (A recorder that predates a kind doesn't report it.)
+    for (const d of (r?.[kind]?.devices ?? []) as FoundRadio[]) out.push({ kind, id: (k.device === "serial" ? d.serial : d.args) ?? "", device: d });
+  }
+  return out;
+}
+
+/**
+ * The radios found, as source `i` (null: a new one, or one to scan with) may be set to them
+ * (Config::radio_picks, through radioPicks): `of(kind)` a kind's, in its driver's order; `at(n)`
+ * foundRadios' `n`th.
+ */
+export function pickable(c: Config, i: number | null, devices: Device[], r: Radios | null): { of: (kind: Source["type"]) => RadioPick[]; at: (n: number) => RadioPick; freeSerial?: string } {
+  const found = foundRadios(devices, r);
+  const picks = radioPicks(c, i, found.map((f) => ({ kind: f.kind, id: f.id })));
+  return { of: (kind) => picks.radios.filter((_, n) => found[n].kind === kind), at: (n) => picks.radios[n] ?? {}, freeSerial: picks.freeSerial };
 }
 
 /** Every radio the recorder can see (its RTL-SDRs, what the drivers found), as a source each. */
 export function detectRadios(devices: Device[], r: Radios | null): Detected[] {
-  const out: Detected[] = devices.map((d) => ({
-    key: deviceKey("rtlsdr", d.serial),
-    kind: "rtlsdr",
-    name: d.product || "RTL-SDR",
-    detail: d.serial ? `Serial ${d.serial}` : "RTL-SDR",
-    source: { ...newDongle(), serial: d.serial },
-    busy: d.busy ?? null,
-  }));
-  // Each radio with a driver of its own, as its driver found them.
-  const native = new Set(devices.length ? ["rtlsdr"] : []);
-  for (const kind of DRIVER_KINDS) {
-    const k = SOURCE_KINDS[kind];
-    if (kind === "soapy") continue;
-    // (A recorder that predates a kind doesn't report it.)
-    const found = r?.[kind]?.devices ?? [];
-    if (found.length && k.soapyDriver) native.add(k.soapyDriver);
-    for (const d of found) {
-      const id = (k.device === "serial" ? d.serial : d.args) ?? "";
-      out.push({ key: deviceKey(kind, id), kind, name: k.label, detail: d.label, source: sourceFor(kind, id, d), busy: null });
-    }
-  }
+  const found = foundRadios(devices, r);
   // SoapySDR also lists radios with a driver of their own here; those are shown once, natively.
-  for (const d of r?.soapy?.devices ?? []) {
-    if (native.has(d.driver)) continue;
-    out.push({ key: deviceKey("soapy", d.args), kind: "soapy", name: d.label || d.driver, detail: `SoapySDR · ${d.driver}`, source: sourceFor("soapy", d.args), busy: null });
-  }
-  // Two dongles with no serial can't be told apart; keep one.
-  return out.filter((d, i) => out.findIndex((o) => o.key === d.key) === i);
-}
-
-/**
- * Why each of these dongles (by `index`) can't be picked, when there's more than one: a source
- * opens a dongle by its serial, or with none the first on the USB bus, so a dongle with no serial,
- * or the same one as another, can't be told apart from the rest.
- */
-export function unpickableDongles(devices: Device[]): Map<number, string> {
-  const why = new Map<number, string>();
-  if (devices.length < 2) return why;
-  for (const d of devices) {
-    if (!d.serial) why.set(d.index, "no serial");
-    else if (devices.some((o) => o.index !== d.index && o.serial === d.serial)) why.set(d.index, "same serial as another");
-  }
-  return why;
-}
-
-/** A serial none of these dongles has, to give one with rtl_eeprom: 00000002, 00000003, … */
-export function freeSerial(devices: Device[]): string {
-  for (let n = 2; ; n++) {
-    const s = String(n).padStart(8, "0");
-    if (!devices.some((d) => d.serial === s)) return s;
-  }
+  const native = new Set(found.map((f) => (f.kind === "rtlsdr" ? "rtlsdr" : f.kind === "soapy" ? undefined : SOURCE_KINDS[f.kind].soapyDriver)));
+  return found.flatMap((f, at): Detected[] => {
+    if (f.kind === "rtlsdr") {
+      const d = f.device;
+      return [{ key: deviceKey("rtlsdr", d.serial), kind: "rtlsdr", name: d.product || "RTL-SDR", detail: d.serial ? `Serial ${d.serial}` : "RTL-SDR", source: { ...newDongle(), serial: d.serial } as Source, busy: d.busy ?? null, at }];
+    }
+    const d = f.device;
+    if (f.kind === "soapy") return native.has(d.driver) ? [] : [{ key: deviceKey("soapy", f.id), kind: "soapy", name: d.label || d.driver || "SoapySDR", detail: `SoapySDR · ${d.driver}`, source: sourceFor("soapy", f.id), busy: null, at }];
+    return [{ key: deviceKey(f.kind, f.id), kind: f.kind, name: SOURCE_KINDS[f.kind].label, detail: d.label, source: sourceFor(f.kind, f.id, d), busy: null, at }];
+  });
 }
 
 /** A capture's sample format from its name (as the recorder guesses it). */

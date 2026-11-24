@@ -5,10 +5,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Setup: a second RTL-SDR with no serial, or a serial another has, says why it can't be picked.** It was offered
-  in the **Dongle** list but snapped back to *First available* when chosen. It's now greyed out, *(no serial)* or
-  *(same serial as another)*, and the list says how to give it one (`rtl_eeprom -d 0 -s 00000002`, with only that
-  dongle plugged in). The list also marks a dongle another source has as *(in use)* again.
+- **Setup: radios that can't be told apart, or another source's, say so, every kind alike** (#235, thanks
+  @blantonl). A second RTL-SDR with no serial, or a serial another has, was offered in the **Dongle** list but
+  snapped back to *First available* when chosen. Now any radio found (RTL-SDR, Airspy, HydraSDR, HackRF, bladeRF,
+  USRP, SoapySDR) that can't be told apart from another of its kind is greyed out, *(no serial)* or *(same serial
+  as another)*. For a dongle the list gives the `rtl_eeprom -d 0 -s 00000002` to run (a serial none has, with only
+  that dongle plugged in); for the others (clones) it says **First available** uses one. A radio another source
+  names says whose (*(Source 1's)*), and while another source is on **First available** the list says it may take
+  any of them. The setup guide's radio cards no longer drop a dongle it can't tell apart without a word, and the
+  scanner's spare radios, the import's dongle swap and every picker go by the recorder's one rule for which
+  radio a source names.
 
 - **Setup: Direct connections and Reachable at** (#237, thanks @blantonl). Setup → **Access** switches
   `server.bind` between **This computer only** (`127.0.0.1`) and **Other devices too** (`0.0.0.0`), from the

@@ -2,7 +2,7 @@
 // systems set up apart that are one on the air. `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, desktopOnly, desktopOnlyWhy, hasBiasT, highestRate, kindDesktopOnly, kindNeedsDriver, networkAddress, networkRadio, onNetwork, detectRadios, freeSerial, unpickableDongles, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
+import { kindLabel, siteLockFields, systemType, activeSites, adjacentIdentity, airspyGains, defaultConfig, desktopOnly, desktopOnlyWhy, hasBiasT, highestRate, kindDesktopOnly, kindNeedsDriver, networkAddress, networkRadio, onNetwork, detectRadios, pickable, foundRadio, deviceId, DRIVER_KINDS, importTrunkRecorderConfig, nameProblem, newHydrasdr, newSiteName, newSystem, normalizeSystem, placeSources, radioName, rateFor, rateOk, ratesText, resolvedCenters, roaming, usableHalfWidth, sameOnTheAir, sameSite, siteAddress, siteNameOf, sourceAdvice, SOURCE_KINDS, sourceFor, sourceKey, startProblem } from "./config.ts";
 import type { Config, FoundRadio, Radios, SiteIdentity, SiteStatus, Source, SystemStatus } from "./protocol.ts";
 
 test("normalizeSystem: an older config's system gets its site; a system with sites keeps them", () => {
@@ -262,12 +262,18 @@ test("importing a Trunk Recorder source on rtl_tcp: an RTL-SDR with its server's
   assert.deepEqual([usb.address, usb.serial, usb.biasTee, onNetwork(usb)], [undefined, "00000002", false, false]);
 });
 
-test("dongles with no serial, or a serial another has, can't be picked; a serial to give them", () => {
+test("found radios as a source picks them, every kind alike (Config::radio_picks): by its driver's list, twins kept and marked, not dropped", () => {
   const d = (index: number, serial: string) => ({ index, serial, product: "RTL2838UHIDIR" });
-  assert.deepEqual([...unpickableDongles([d(0, "")])], [], "one dongle is the first available, serial or not");
-  assert.deepEqual([...unpickableDongles([d(0, "00000001"), d(1, "")])], [[1, "no serial"]]);
-  assert.deepEqual([...unpickableDongles([d(0, "00000001"), d(1, "00000001"), d(2, "00000003")])], [[0, "same serial as another"], [1, "same serial as another"]]);
-  assert.deepEqual([...unpickableDongles([d(0, "00000001"), d(1, "00000002")])], []);
-  assert.equal(freeSerial([d(0, "00000001"), d(1, "")]), "00000002");
-  assert.equal(freeSerial([d(0, "00000002"), d(1, "00000003")]), "00000004");
+  const radios = { usrp: { available: false, detail: "" }, hackrf: { available: true, detail: "built in", devices: [{ serial: "0000a1", label: "HackRF One" }, { serial: "0000A1", label: "HackRF One" }] }, airspy: { available: false, detail: "" }, hydrasdr: { available: false, detail: "" }, bladerf: { available: false, detail: "" } } as unknown as Radios;
+  const c = defaultConfig();
+  c.sources = [{ ...SOURCE_KINDS.rtlsdr.fresh(), serial: "00000001" } as Config["sources"][number], SOURCE_KINDS.rtlsdr.fresh()];
+  const devices = [d(0, "00000001"), d(1, ""), d(2, "")];
+  assert.equal(detectRadios(devices, radios).length, 5, "two dongles with no serial: both listed");
+  const p = pickable(c, 1, devices, radios);
+  assert.deepEqual(p.of("rtlsdr").map((x) => x.unpickable), [{ why: "source", index: 0, title: "Source 1" }, { why: "noSerial", twin: null }, { why: "noSerial", twin: 1 }]);
+  assert.deepEqual(p.of("hackrf").map((x) => x.unpickable?.why), ["sameSerial", "sameSerial"], "a hex serial in any case is one serial");
+  assert.equal(p.freeSerial, "00000002");
+  // Source 1's picks: Source 2 opens the first RTL-SDR found, so it may take any.
+  assert.equal(pickable(c, 0, devices, radios).of("rtlsdr")[0].first?.title, "Source 2");
+  assert.deepEqual(pickable(c, 0, [d(0, "")], null).of("rtlsdr"), [{ first: { index: 1, title: "Source 2" } }], "a lone dongle with no serial is the first found, and fine");
 });

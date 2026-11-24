@@ -289,8 +289,8 @@ falls inside a source's bandwidth — move the center frequency*.
 ### Telling dongles apart
 
 RTL-SDR dongles are told apart by their USB serial number. The **Dongle** list on a source card
-shows each connected dongle as its product name and serial (`· SN 200`); one already used by
-another source is marked *(in use)*. **First available** (an empty serial) opens the first
+shows each connected dongle as its product name and serial (`· SN 200`); one another source
+names is greyed out, marked with that source (*(Source 1's)*). **First available** (an empty serial) opens the first
 RTL-SDR found. **Refresh** looks again after you plug one in.
 
 With more than one dongle, give each source a specific dongle, not **First available**: which
@@ -301,7 +301,15 @@ Pro can't tell those apart, and it has no way to change a dongle's serial. Use l
 `rtl_eeprom` tool to give each one its own serial (for example `rtl_eeprom -d 0 -s 00000200` for
 the first dongle), unplug and replug it, then pick it in Setup. With more than one dongle plugged in,
 Setup's **Dongle** list greys out each one it can't tell apart, *(no serial)* or *(same serial as
-another)*, and says what to run.
+another)*, and says what to run, with a serial none of them has. The first steps of the setup
+guide list every radio found; one that can't be told apart from one before it is shown but can't
+be picked. While another source is on **First available**, the list says it may take any of
+them: give it its own too.
+
+Every kind is checked the same way: an Airspy, HydraSDR, HackRF or bladeRF reporting the serial
+of another (clones can) is greyed out as *(same serial as another)*. Their serials are set by
+their makers, so **First available** is the way to use one of them. A HydraSDR RFOne counts with
+the Airspys: libairspy may open one as "the first".
 
 Airspys, HydraSDRs and bladeRFs are picked by serial the same way. USRPs and SoapySDR devices are picked by their device
 arguments (`serial=...`, `addr=192.168.10.2`, `driver=sdrplay,serial=...`); **Find** lists what's

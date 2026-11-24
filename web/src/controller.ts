@@ -66,7 +66,7 @@ import {
   type ImportTodo,
   activeSites,
   detectRadios,
-  deviceId,
+  pickable,
   fccKey,
   fccPrimary,
   newConventional,
@@ -80,7 +80,6 @@ import {
   shortNameFor,
   siteNameOf,
   receiverOf,
-  sourceKey,
   trpBase,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
@@ -1642,9 +1641,10 @@ export function startSurvey(radio: number | Source, bands: string[], findGain: b
  */
 export function spareRadios(s: Pick<AppState, "devices" | "radios" | "config">): Source[] {
   if (!can("drivers")) return [];
-  const used = new Set((s.config?.sources ?? []).map(sourceKey));
+  // (None a source names or may open as "the first found", and none that can't be told apart: Config::radio_picks.)
+  const picks = s.config ? pickable(s.config, null, s.devices, s.radios) : null;
   return detectRadios(s.devices, s.radios)
-    .filter((d) => !d.busy && !used.has(d.key) && !(s.config?.sources ?? []).some((x) => x.type === d.kind && deviceId(x).trim() === ""))
+    .filter((d) => !d.busy && !picks?.at(d.at).unpickable && !picks?.at(d.at).first)
     .map((d) => d.source);
 }
 /** The survey's bands that hold any of these frequencies (none: the usual ones). */

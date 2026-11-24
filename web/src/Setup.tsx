@@ -37,18 +37,16 @@ import {
   siteLockFields,
   siteText,
   systemType,
-  deviceKey,
-  freeSerial,
-  unpickableDongles,
+  pickable,
   needsDriver,
   kindDesktopOnly,
   hasBiasT,
   airspyGains,
   networkRadio,
   pickedBySerial,
+  type RadioPick,
   type SerialKind,
   sourceInputs,
-  sourceKey,
   foundRadio,
   highestRate,
   radioName,
@@ -607,28 +605,70 @@ function DriverMissing(props: { kind: Source["type"]; detail: string; platform: 
 }
 const OS_LABEL: Record<string, string> = { macos: "macOS", linux: "Debian / Ubuntu", windows: "Windows" };
 
-/** A radio picked by serial from those its driver found (Airspy, HydraSDR, bladeRF, HackRF). */
-function SerialPicker(props: { kind: SerialKind; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+/** A found radio's note in a picker's list: why it can't be picked ("", it can). */
+const pickNote = (p: RadioPick | undefined) => {
+  const u = p?.unpickable;
+  return !u ? "" : u.why === "source" ? ` (${u.title}'s)` : u.why === "noSerial" ? " (no serial)" : " (same serial as another)";
+};
+
+/** A found radio that can't be told apart from another of its family. */
+const twin = (p: RadioPick) => p.unpickable?.why === "noSerial" || p.unpickable?.why === "sameSerial";
+/** Whether a kind's found radios have anything to say about picking one (PickHint). */
+const pickSays = (picks: RadioPick[]) => picks.some((p) => twin(p) || p.first);
+
+/**
+ * What a kind's found radios say about picking one (Config::radio_picks): those that can't be
+ * told apart, and how to fix it (an RTL-SDR's serial is set with rtl_eeprom; another kind's is
+ * its maker's, the same on clones); another source on "the first found", which may take any.
+ */
+function PickHint(props: { kind: Source["type"]; picks: RadioPick[]; freeSerial?: string }) {
+  const web = !can("drivers");
+  const label = SOURCE_KINDS[props.kind].label;
+  if (!pickSays(props.picks)) return null;
+  const twins = props.picks.filter(twin).length;
+  const first = props.picks.find((p) => p.first)?.first;
+  const them = twins === 1 ? `A ${props.kind === "rtlsdr" ? "dongle" : label}` : `${twins} ${props.kind === "rtlsdr" ? "dongles" : `${label}s`}`;
+  return (
+    <span className="warn-text">
+      {twins > 0 &&
+        (props.kind === "rtlsdr" ? (
+          <>
+            {them} can&apos;t be picked: a dongle with no serial, or the same serial as another, can&apos;t be told apart. Give each its own: with only that dongle plugged in, run{" "}
+            <code>rtl_eeprom -d 0 -s {props.freeSerial}</code> on this computer, unplug it and plug it back in, then {web ? "Connect… it again" : "Refresh"}.
+          </>
+        ) : (
+          <>{them} can&apos;t be picked: they report the same serial (clones can), so a source naming it opens whichever is found first. First available uses one of them.</>
+        ))}
+      {twins > 0 && first && " "}
+      {first && (
+        <>
+          {first.title} opens the first {label} found, which may be any of these: give it its own too.
+        </>
+      )}
+    </span>
+  );
+}
+
+/** A radio picked by serial from those its driver found (Airspy, HydraSDR, bladeRF, HackRF), as this source may pick them (`picks`, in its driver's order). */
+function SerialPicker(props: { kind: SerialKind; serial: string; picks: RadioPick[]; freeSerial?: string; onChange: (serial: string) => void }) {
   const s = useApp();
-  const { kind, serial, used } = props;
+  const { kind, serial } = props;
   const k = SOURCE_KINDS[kind];
   const state = s.radios?.[kind];
   const devices = state?.devices ?? [];
+  const hint = !devices.length ? <span className="warn-text">None found</span> : pickSays(props.picks) ? <PickHint kind={kind} picks={props.picks} freeSerial={props.freeSerial} /> : state?.detail;
   return (
-    <Field label={k.label} hint={devices.length ? state?.detail : <span className="warn-text">None found</span>} info={devices.length ? undefined : `${state?.detail ?? k.driver?.name}. Plug one in, then Refresh.`}>
+    <Field label={k.label} hint={hint} info={devices.length ? undefined : `${state?.detail ?? k.driver?.name}. Plug one in, then Refresh.`}>
       <div className="row">
         <select value={serial} onChange={(e) => props.onChange(e.target.value)}>
           <option value="">First available</option>
           {serial && !devices.some((d) => d.serial === serial) && <option value={serial}>SN {serial} (not connected)</option>}
-          {devices.map((d) => {
-            const inUse = used.has(deviceKey(kind, d.serial ?? ""));
-            return (
-              <option key={d.serial} value={d.serial} disabled={inUse}>
-                {d.label}
-                {inUse ? " (in use)" : ""}
-              </option>
-            );
-          })}
+          {devices.map((d, n) => (
+            <option key={n} value={d.serial} disabled={!!props.picks[n]?.unpickable}>
+              {d.label}
+              {pickNote(props.picks[n])}
+            </option>
+          ))}
         </select>
         <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
           Refresh
@@ -986,9 +1026,8 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
       x.sources[i] = { ...SOURCE_KINDS[kind].fresh(), centerHz: old.centerHz } as Source;
     });
   const fileRef = useRef<HTMLInputElement>(null);
-  const others = c.sources.filter((_, k) => k !== i);
-  const used = new Set(others.map(sourceKey));
-  const unpickable = unpickableDongles(s.devices);
+  // The radios found, as this source may pick them: none another source names, none that can't be told apart.
+  const picks = pickable(c, i, s.devices, s.radios);
   const radios = s.radios;
   // Its driver isn't installed (desktop app).
   const driverState = needsDriver(src) ? radios?.[src.type] : undefined;
@@ -1068,26 +1107,21 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             hint={
               !s.devices.length ? (
                 <span className="warn-text">{web ? "None connected" : "None found"}</span>
-              ) : unpickable.size ? (
-                <span className="warn-text">
-                  {unpickable.size === 1 ? "A dongle" : `${unpickable.size} dongles`} can't be picked: a dongle with no serial, or the same serial as another, can't be told apart. Give
-                  each its own: with only that dongle plugged in, run <code>rtl_eeprom -d 0 -s {freeSerial(s.devices)}</code> on this computer, unplug it and plug it back in, then{" "}
-                  {web ? "Connect… it again" : "Refresh"}.
-                </span>
-              ) : undefined
+              ) : (
+                <PickHint kind="rtlsdr" picks={picks.of("rtlsdr")} freeSerial={picks.freeSerial} />
+              )
             }
           >
             <div className="row">
               <select value={src.serial} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.serial = e.target.value))}>
                 <option value="">First available</option>
-                {s.devices.map((d) => {
-                  const why = unpickable.get(d.index);
-                  const inUse = used.has(deviceKey("rtlsdr", d.serial));
+                {s.devices.map((d, n) => {
+                  const p = picks.of("rtlsdr")[n];
                   return (
-                    <option key={d.index} value={d.serial} disabled={inUse || !!why}>
+                    <option key={d.index} value={d.serial} disabled={!!p?.unpickable}>
                       {d.product}
                       {d.serial ? ` · SN ${d.serial}` : ""}
-                      {why ? ` (${why})` : inUse ? " (in use)" : ""}
+                      {pickNote(p)}
                     </option>
                   );
                 })}
@@ -1150,9 +1184,10 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
                   onChange={(v) => edit((x) => x.type === "usrp" && void (x.args = v))}
                 />
                 <datalist id={`usrp-${i}`}>
-                  {(radios?.usrp.devices ?? []).map((d) => (
-                    <option key={d.args} value={d.args}>
+                  {(radios?.usrp.devices ?? []).map((d, n) => (
+                    <option key={n} value={d.args} disabled={!!picks.of("usrp")[n]?.unpickable}>
                       {d.label}
+                      {pickNote(picks.of("usrp")[n])}
                     </option>
                   ))}
                 </datalist>
@@ -1181,7 +1216,8 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           <SerialPicker
             kind={src.type}
             serial={src.serial}
-            used={used}
+            picks={picks.of(src.type)}
+            freeSerial={picks.freeSerial}
             onChange={(v) =>
               edit((x) => {
                 if (!pickedBySerial(x)) return;
@@ -1235,10 +1271,10 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
                     onChange={(v) => edit((x) => x.type === "soapy" && void (x.args = v))}
                   />
                   <datalist id={`soapy-${i}`}>
-                    {(radios?.soapy?.devices ?? []).map((d) => (
-                      <option key={d.args} value={d.args} disabled={used.has(deviceKey("soapy", d.args))}>
+                    {(radios?.soapy?.devices ?? []).map((d, n) => (
+                      <option key={n} value={d.args} disabled={!!picks.of("soapy")[n]?.unpickable}>
                         {d.label}
-                        {used.has(deviceKey("soapy", d.args)) ? " (in use)" : ""}
+                        {pickNote(picks.of("soapy")[n])}
                       </option>
                     ))}
                   </datalist>
