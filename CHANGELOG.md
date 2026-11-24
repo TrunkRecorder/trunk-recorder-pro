@@ -39,6 +39,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   sites now record the control channel's offset, eye opening, signal, noise and SNR, so the Decode page's charts show
   them.
 
+- **Making two systems one keeps their uploads apart** (with broadcastify 0.2.1, TrunkRecorder/trunk-plugin-broadcastify#16).
+  **Make them one system** dropped the merged system's plugin settings, so its Broadcastify system ID was lost and
+  its sites uploaded under the other system's ID, labeled as the wrong site. Plugin settings a site can have of its
+  own (`site_overrides`: Broadcastify's API key and system ID) now go to each site that moves, and a plugin off for
+  the merged system stays off for its sites. The confirm names the plugins whose other settings are dropped.
+
+- **Plugin notices** (SDK 0.16.0, additive). A plugin can say something that stays true while it runs (a setting
+  to fix) with `Host::notice(key, state, message)`, shown on its card under its status: a later `status` (the
+  recorder's "running", an upload queue's "ok" once retries clear) no longer replaces it, and the plugin's health
+  is the worst of the two, so a recovering queue doesn't add a health event each time. `clear_notice(key)` takes
+  one away; they go when the plugin stops or restarts.
+
+- **Node health reports never have an empty window** (SDK 0.16.0). A plugin started while recording had long been
+  under way had one totals to go on, and its first report's window ended where it began (Broadcastify answers
+  `400 window.end must be after window.start`). `Reporter::report` now waits for the next totals.
+
 - **Plugins are told the names of a call's patched talkgroups** (SDK 0.15.1, additive). `CallInfo.patched` lists the
   talkgroups patched with the call's own, each with its alpha tag (`TalkgroupName { talkgroup, alpha_tag }`), as the
   dashboard's calls list them.

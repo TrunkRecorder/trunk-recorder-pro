@@ -6793,6 +6793,31 @@
             "maxItems": 2
           },
           "description": "Results per minute, the last hour: [minute start (Unix s), [ok, skipped, failed]]."
+        },
+        "notices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "ok",
+                  "warning",
+                  "error"
+                ]
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "message"
+            ],
+            "additionalProperties": false
+          },
+          "description": "What it says stays true until it says otherwise (settings to fix), beside `message`; `state` is the worst of these and its status."
         }
       },
       "required": [

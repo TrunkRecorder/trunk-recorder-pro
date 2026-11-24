@@ -324,6 +324,16 @@ fn print_note(n: Note) {
             };
             eprintln!("[{plugin}] status {s}: {message}");
         }
+        Note::Notice { plugin, key: Some(key), state, message } => {
+            let s = match state {
+                Some(State::Ok) => "ok",
+                Some(State::Warning) => "warning",
+                Some(State::Error) => "error",
+                None => "cleared",
+            };
+            eprintln!("[{plugin}] notice {key} {s}: {message}");
+        }
+        Note::Notice { .. } => {}
         Note::Result { plugin, path, outcome, message, url, .. } => {
             let mark = match outcome {
                 Outcome::Ok => "✓",

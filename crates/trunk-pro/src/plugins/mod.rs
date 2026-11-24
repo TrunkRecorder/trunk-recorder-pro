@@ -408,11 +408,12 @@ pub fn notes_to_log() -> host::Notes {
                 log(&plugin, level <= Level::Warn, &text);
             }
         }
-        Note::State { plugin, state, message } => {
+        Note::State { plugin, state, message } | Note::Notice { plugin, state: Some(state), message, .. } => {
             if state == State::Error {
                 log(&plugin, true, &message);
             }
         }
+        Note::Notice { .. } => {}
         Note::Result { plugin, path, outcome, message, .. } => {
             if outcome == Outcome::Failed {
                 log(&plugin, true, &format!("{path}: {message}"));

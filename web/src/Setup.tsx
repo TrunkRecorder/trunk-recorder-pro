@@ -83,7 +83,7 @@ import {
   type SetupTab,
 } from "./controller.ts";
 import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
-import { renameSystemRefs } from "./pluginSettings.ts";
+import { joinPluginSettings, renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconLock, IconPuzzle, IconTower } from "./Onboarding.tsx";
@@ -2397,11 +2397,11 @@ function SmartnetFields(props: { site: Site; edit: (fn: (x: Site) => void) => vo
 
 const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)", edacs: "EDACS (analog / ProVoice)" };
 
-/** A system's own settings, as a confirm names them: making two systems one keeps the first's. */
+/** A system's own settings, as a confirm names them: making two systems one keeps the first's (plugin settings: see
+ * [`joinPluginSettings`]). */
 const SYSTEM_OWN: [keyof System, string][] = [
   ["unitNames", "unit names"],
   ["recording", "recording rules"],
-  ["plugins", "plugin settings"],
   ["pluginDelays", "plugin delays"],
   ["signals", "signals"],
   ["keys", "keys"],
@@ -2672,10 +2672,13 @@ export function SystemCard(props: { c: Config; i: number }) {
       setCardOpen(siteKey(x, n), true);
     });
   };
-  // The other system's sites move here (each named as its system was, unless it has a name); this one's settings stay.
+  // The other system's sites move here (each named as its system was, unless it has a name); this one's settings stay,
+  // but for plugin settings a site can have of its own (an uploader's system ID): those go to the sites that move.
   const join = (other: System) => {
     const j = c.systems.indexOf(other);
     const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
+    const trial = structuredClone(c);
+    if (j >= 0) dropped.push(...joinPluginSettings(trial, trial.systems[j], trial.systems[i], plugins).map((name) => `${name} settings`));
     // Its talkgroups come along if this one has none.
     const [theirs, mine] = [app.talkgroups[other.shortName], app.talkgroups[sys.shortName]];
     if (theirs && mine && JSON.stringify(theirs) !== JSON.stringify(mine)) dropped.push("talkgroups");
@@ -2694,6 +2697,7 @@ export function SystemCard(props: { c: Config; i: number }) {
         to.sites.push({ ...s, name: taken.has(want) ? newSiteName(to) : want, enabled: s.enabled && from.enabled });
       }
       if (from.enabled) to.enabled = true;
+      joinPluginSettings(x, from, to, plugins);
       // Plugin settings that named it name this one.
       renameSystemRefs(x, from.shortName, to.shortName, plugins);
       if (!mine) moveNames(from.shortName, to.shortName);

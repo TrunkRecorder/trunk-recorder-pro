@@ -76,6 +76,19 @@ impl Output {
             _ => None,
         })
     }
+    /// Its notices still standing at the end, by key.
+    pub fn notices(&self) -> std::collections::BTreeMap<String, (State, String)> {
+        let mut out = std::collections::BTreeMap::new();
+        for m in &self.messages {
+            if let PluginMessage::Notice { key, state, message } = m {
+                match state {
+                    Some(s) => out.insert(key.clone(), (*s, message.clone())),
+                    None => out.remove(key),
+                };
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone, Default)]
