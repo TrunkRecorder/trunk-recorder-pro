@@ -19,7 +19,7 @@ use crate::stats::{NameBook, Rollup, SampleMeter, Shared, Stats, Topics};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, UnitEvent};
+use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, TalkgroupName, UnitEvent};
 
 use crate::protocol::ToClient;
 
@@ -1013,9 +1013,10 @@ impl Session {
         trunk_core::trunk::SiteKey { system: self.system_name(system), site: &self.site_name(site) }.to_string()
     }
 
-    /// Talkgroups as the interface shows them: number and alpha tag ([`NameBook::tg`]; "": none).
-    fn tg_names(&self, system: u16, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-        tg_names(&self.meas.shared().names.lock().unwrap(), self.system_id(system), tgs)
+    /// The talkgroups patched with call `c`'s, named (its own aside: the call names that one),
+    /// as the interface's calls and plugins' events both list them.
+    fn patched(&self, c: &Call) -> Vec<TalkgroupName> {
+        named(&self.meas.shared().names.lock().unwrap(), self.system_id(c.system), c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup))
     }
 
     /// Talkgroup `tg`'s name in system `system` ([`NameBook::tg`]; "": none), as plugins' events give it (`alpha_tag`).
@@ -1171,6 +1172,7 @@ impl Session {
                 })
                 .collect(),
             patched_talkgroups: c.patched_talkgroups.clone(),
+            patched: self.patched(c),
         }
     }
 
@@ -1548,7 +1550,7 @@ impl Session {
             .active_calls()
             .iter()
             .map(|c| {
-                let mut v = call_view(c, self.system_name(c.system), self.tg_names(c.system, c.patched_talkgroups.iter().copied().filter(|&t| t != c.talkgroup)));
+                let mut v = call_view(c, self.system_name(c.system), self.patched(c).iter().map(tg_view).collect());
                 let site = self.site_name(c.site);
                 if !site.is_empty() {
                     v["site"] = json!(site);
@@ -1637,8 +1639,18 @@ fn call_view(c: &Call, system_name: &str, patched: Vec<Value>) -> Value {
 
 
 /// Talkgroups of system `system` with their names ([`NameBook::tg`]).
+fn named(names: &NameBook, system: SystemId, tgs: impl IntoIterator<Item = u32>) -> Vec<TalkgroupName> {
+    tgs.into_iter().map(|talkgroup| TalkgroupName { talkgroup, alpha_tag: names.alpha_tag(system, talkgroup) }).collect()
+}
+
+/// A named talkgroup as the interface shows it (its `TalkgroupName`).
+fn tg_view(t: &TalkgroupName) -> Value {
+    json!({ "talkgroup": t.talkgroup, "alphaTag": t.alpha_tag })
+}
+
+/// [`named`], as the interface shows them: number and alpha tag ("": none).
 fn tg_names(names: &NameBook, system: SystemId, tgs: impl IntoIterator<Item = u32>) -> Vec<Value> {
-    tgs.into_iter().map(|tg| json!({ "talkgroup": tg, "alphaTag": names.alpha_tag(system, tg) })).collect()
+    named(names, system, tgs).iter().map(tg_view).collect()
 }
 
 /// A system's `decodeDetail` beyond its channels: each running site's
@@ -1831,6 +1843,39 @@ mod wall_tests {
         assert_eq!(s.wall(0.5), 1_750_000_000.5);
     }
 }
+
+#[cfg(test)]
+mod patch_tests {
+    use super::*;
+
+    /// A patched call names the talkgroups patched with its own (its own aside, which the call
+    /// names), to plugins and to the interface alike: one list, by the system's talkgroups ("": none).
+    #[test]
+    fn a_calls_patched_talkgroups_are_named() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let named = |number: u32, tag: &str| trunk_core::trunk::Talkgroup { number, alpha_tag: tag.into(), ..Default::default() };
+        let system = s.system_id(0);
+        s.set_talkgroup(system, 202, Some(named(202, "EMS")));
+        let patched = Call { talkgroup: 101, talkgroup_info: Some(named(101, "Fire Dispatch")), patched_talkgroups: vec![101, 202, 303], ..Default::default() };
+        let info = s.call_info(&patched);
+        assert_eq!(info.patched_talkgroups, [101, 202, 303]);
+        assert_eq!(info.talkgroup_tag, "Fire Dispatch");
+        assert_eq!(info.patched, [TalkgroupName { talkgroup: 202, alpha_tag: "EMS".into() }, TalkgroupName { talkgroup: 303, alpha_tag: String::new() }]);
+        // The interface's call lists the same ones.
+        let view = call_view(&patched, "conv", s.patched(&patched).iter().map(tg_view).collect());
+        assert_eq!(view["patched"], json!([{ "talkgroup": 202, "alphaTag": "EMS" }, { "talkgroup": 303, "alphaTag": "" }]));
+        // On the wire a talkgroup with no name has no `alpha_tag`.
+        assert_eq!(serde_json::to_value(&info).unwrap()["patched"], json!([{ "talkgroup": 202, "alpha_tag": "EMS" }, { "talkgroup": 303 }]));
+        let alone = Call { talkgroup: 101, talkgroup_info: Some(named(101, "Fire Dispatch")), ..Default::default() };
+        assert!(s.call_info(&alone).patched.is_empty(), "not patched: none");
+    }
+}
+
 #[cfg(test)]
 mod tone_tests {
     use super::*;
@@ -1963,7 +2008,7 @@ mod name_tests {
         .unwrap();
         let s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
         assert_eq!(s.alpha_tag(0, 155_200), "Fire Dispatch");
-        assert_eq!(s.tg_names(0, [155_200, 7]), [json!({ "talkgroup": 155_200, "alphaTag": "Fire Dispatch" }), json!({ "talkgroup": 7, "alphaTag": "" })]);
+        assert_eq!(tg_names(&s.meas.shared().names.lock().unwrap(), s.system_id(0), [155_200, 7]), [json!({ "talkgroup": 155_200, "alphaTag": "Fire Dispatch" }), json!({ "talkgroup": 7, "alphaTag": "" })]);
     }
 }
 

@@ -39,6 +39,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   sites now record the control channel's offset, eye opening, signal, noise and SNR, so the Decode page's charts show
   them.
 
+- **Plugins are told the names of a call's patched talkgroups** (SDK 0.15.1, additive). `CallInfo.patched` lists the
+  talkgroups patched with the call's own, each with its alpha tag (`TalkgroupName { talkgroup, alpha_tag }`), as the
+  dashboard's calls list them.
+
 ## [0.5.0] — 2026-11-23
 
 **Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or
