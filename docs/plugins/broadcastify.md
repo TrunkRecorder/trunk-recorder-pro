@@ -94,6 +94,8 @@ warns you (plugin 0.2.1 and later), in its status and its log: Broadcastify Call
 as coming from the site the system ID is registered to, so the other sites' calls would be labeled
 as the wrong site. More system IDs can be applied for at
 [broadcastify.com/apply/calls](https://www.broadcastify.com/apply/calls), with your existing API key.
+Merging two systems in Setup (**Make them one system**) keeps this: the merged system's API key
+and system ID go to the sites that move, so each keeps uploading as its own ID.
 
 A system can also set **Upload server**, **Send talker aliases** and **Skip certificate checks**
 again, in **Broadcastify Calls shared settings** on its card (`override` in its
