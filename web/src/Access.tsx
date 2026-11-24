@@ -240,6 +240,59 @@ function ProxyGroup(props: { proxy?: AuthProxy }) {
 }
 
 /** `made`: a user just made (tests). */
+/** Addresses only this computer reaches (`server.bind`), and those every computer on the network does. */
+const THIS_COMPUTER = ["127.0.0.1", "localhost", "::1"];
+const EVERY_ADDRESS = ["0.0.0.0", "::"];
+
+/**
+ * Which computers can open the interfaces: `server.bind`, from the next restart (a `--bind` on the
+ * command line overrides it). Another address the config names is shown as it is.
+ */
+function ReachableFrom(props: { c: Config; signIn: boolean }) {
+  const { bind, port } = props.c.server;
+  const local = THIS_COMPUTER.includes(bind);
+  const every = EVERY_ADDRESS.includes(bind);
+  const set = (to: string) => {
+    if (to === bind) return;
+    // A browser on another computer is about to lose its way in.
+    const elsewhere = !THIS_COMPUTER.includes(location.hostname);
+    if (THIS_COMPUTER.includes(to) && elsewhere && !confirm("From the next restart, only a browser on the recorder's own computer can open it: not this one. Go on?")) return;
+    updateConfig((x) => void (x.server.bind = to));
+  };
+  return (
+    <Group title="Reachable from" hint="From next restart" cols={1}>
+      <div className="field wide">
+        <div className="seg small" role="radiogroup" aria-label="Reachable from">
+          <button role="radio" aria-checked={local} className={local ? "on" : ""} onClick={() => set("127.0.0.1")}>
+            This computer only
+          </button>
+          <button role="radio" aria-checked={every} className={every ? "on" : ""} onClick={() => set("0.0.0.0")}>
+            Other computers too
+          </button>
+        </div>
+        <span className="field-hint">
+          {local ? (
+            "Only a browser on this computer can open it"
+          ) : every ? (
+            <>
+              From another computer, browse to <code>http://&lt;this computer&apos;s address&gt;:{port}</code>; its firewall must let the port through.
+              {!props.signIn && <span className="warn-text"> Sign-in is off: anyone on your network can change settings, stop recording and download recordings. Turn on Sign-in above.</span>}
+            </>
+          ) : (
+            <>
+              Listening on <code>{bind}</code>, as the config says
+            </>
+          )}
+          <Info>
+            Saved as <code>server.bind</code> (<code>127.0.0.1</code> or <code>0.0.0.0</code>), and used from the next restart. A <code>--bind</code> on the command line overrides it. Never open the port to the
+            internet: from outside, use a VPN or an SSH tunnel, with sign-in on.
+          </Info>
+        </span>
+      </div>
+    </Group>
+  );
+}
+
 export function AccessSection(props: { c: Config; made?: Made }) {
   const saved = useSelect((x) => ({ status: x.saveStatus, error: x.saveError }));
   // Who this browser is signed in as, and whether passkeys work where it is.
@@ -338,6 +391,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
       actions={<Switch label="Sign-in" checked={on} disabled={busy} onChange={turn} />}
     >
       <section className="set-card">
+        <ReachableFrom c={props.c} signIn={on} />
         {step === "paste" && (
           <Group title="Sign in first" hint="An Admin token's secret" cols={1}>
             <form

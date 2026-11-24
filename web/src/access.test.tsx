@@ -392,3 +392,19 @@ test("Interfaces: HTTPS's certificate and key, and the host name, beside the por
   hello(c, "control", "luke");
   assert.match(renderToString(<InterfacesPage />), /aria-label="Host name" [^>]*value="radiobox.tail1234.ts.net"/);
 });
+
+test("Access: Reachable from is this computer, or other computers too (server.bind), with a warning while sign-in is off (forum: can you access from other devices?)", () => {
+  const off = full();
+  off.server.auth!.enabled = false;
+  const local = renderToString(<AccessSection c={off} />).replace(/<!-- -->/g, "");
+  assert.match(local, /aria-label="Reachable from"><button role="radio" aria-checked="true" class="on">This computer only<\/button><button role="radio" aria-checked="false" class="">Other computers too/);
+  assert.match(text(local), /Only a browser on this computer can open it/);
+  const lan = { ...off, server: { ...off.server, bind: "0.0.0.0", port: 8090 } };
+  const open = text(renderToString(<AccessSection c={lan} />));
+  assert.match(open, /browse to http:\/\/&lt;this computer's address&gt;:8090 /);
+  assert.match(open, /Sign-in is off: anyone on your network can change settings/);
+  const on = { ...lan, server: { ...lan.server, auth: full().server.auth } };
+  assert.doesNotMatch(text(renderToString(<AccessSection c={on} />)), /Sign-in is off/, "not with sign-in on");
+  const other = text(renderToString(<AccessSection c={{ ...off, server: { ...off.server, bind: "192.168.1.20" } }} />));
+  assert.match(other, /Listening on 192\.168\.1\.20 , as the config says/);
+});

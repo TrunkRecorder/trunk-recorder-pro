@@ -8,8 +8,9 @@ tokens, 401s) is in the [API docs](../api/README.md#signing-in).
 ## Reaching it from another computer
 
 By default the interface only answers on this computer (`127.0.0.1`). To reach it from another
-machine on your network, start with `--bind 0.0.0.0`, or set `server.bind` in the config (see
-[Server](../configuration/server-and-log.md#server)):
+machine on your network, choose **Other computers too** under **Reachable from** in Setup →
+**Access** and restart the app. Or start with `--bind 0.0.0.0`, or set `server.bind` in the config
+(see [Server](../configuration/server-and-log.md#server)); a `--bind` overrides the setting:
 
 ```bash
 trunk-pro serve --bind 0.0.0.0 --no-open

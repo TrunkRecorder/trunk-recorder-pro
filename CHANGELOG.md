@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Setup: Reachable from.** Setup → **Access** chooses whether other computers on the network can open the
+  recorder (`server.bind` `0.0.0.0`) or only this one (`127.0.0.1`), from the next restart. It was `--bind` or
+  the config file only. While sign-in is off it says that anyone on the network can change settings, and from
+  another computer it asks before choosing **This computer only**. See
+  [Remote access](docs/guides/remote-access.md#reaching-it-from-another-computer).
+
 - **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call
   JSON (`lat`, `lon` in `srcList`) and reported as a position event, as P25's are:
   - the GPS a DMR or Hytera radio sends while it talks (embedded in its voice), XPT included;

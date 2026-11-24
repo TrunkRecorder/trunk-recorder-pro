@@ -277,7 +277,7 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
       <p className="muted small">
         Listening on <code>{c.server.bind}</code>
         <Info>
-          Other computers reach them only when the recorder listens on every address (<code>server.bind</code> <code>0.0.0.0</code>), and their ports are open in the firewall.
+          Other computers reach them only when the recorder listens on every address (Setup → Access → <strong>Reachable from</strong>: Other computers too, <code>server.bind</code> <code>0.0.0.0</code>), and their ports are open in the firewall.
         </Info>
       </p>
     </section>
