@@ -94,13 +94,9 @@ Each packet is one slice of a call's audio, with, depending on the stream's sett
   then the audio:
 
   ```json
-  {"audio_sample_rate":8000,"event":"audio","freq":857587500,"patched_talkgroup_tags":["Fire Dispatch"],
-   "patched_talkgroups":[1039],"short_name":"dcfd","src":1234,"src_tag":"","talkgroup":1039}
+  {"audio_sample_rate":8000,"event":"audio","freq":857587500,"patched_talkgroups":[1039],
+   "short_name":"dcfd","src":1234,"src_tag":"","talkgroup":1039}
   ```
-
-  `patched_talkgroup_tags` is the tag of the call's talkgroup, then of each one patched with it (one
-  with no tag is left out). It's missing when none has a tag, and a receiver can fall back to the
-  numbers.
 
 With **Packets when calls start**, a call start is a JSON packet with no audio:
 `"event":"call_start"`, with `src`, `src_tag`, `talkgroup`, `talkgroup_tag`,

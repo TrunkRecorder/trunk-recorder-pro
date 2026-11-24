@@ -418,9 +418,19 @@ pub struct CallInfo {
     /// Talkgroups patched with this one so far, its own included, ascending;
     /// empty when it isn't patched.
     pub patched_talkgroups: Vec<u32>,
-    /// The alpha tag of each of `patched_talkgroups`, in the same order (empty
-    /// for one with no tag); empty when `patched_talkgroups` is. (Since SDK 0.15.1.)
-    pub patched_talkgroup_tags: Vec<String>,
+    /// The talkgroups patched with this one (`patched_talkgroups` without its
+    /// own, which `talkgroup_tag` names), each with its name. (Since SDK 0.15.1.)
+    pub patched: Vec<TalkgroupName>,
+}
+
+/// A talkgroup and its name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TalkgroupName {
+    pub talkgroup: u32,
+    /// Its alpha tag, from the system's talkgroups. Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub alpha_tag: String,
 }
 
 /// A radio heard on a call, and what its transmission said of itself: P25's
