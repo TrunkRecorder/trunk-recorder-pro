@@ -1354,7 +1354,7 @@ The fields are `CallRecord`'s, in its order: the finisher writes `<rel>.json` fr
 
 `HostMessage` (host → plugin) and `PluginMessage` (plugin → host), both tagged by `type`, and the
 `Manifest` a plugin prints for `--describe`; `API_VERSION` = 1, `EXIT_CONFIG` = 78. Every message
-and field is in [Writing plugins](../plugins/writing-plugins.md#how-a-plugin-runs) and on
+and field is in [Plugin protocol](plugins/protocol.md) and [Plugin events](plugins/events.md), and on
 [docs.rs](https://docs.rs/trunk-recorder-plugin).
 
 ---
