@@ -52,3 +52,46 @@ test("plugin form: a secret is dots wherever it's shown, as an item's summary to
   assert.equal(line, `North · ${SECRET_SHOWN}`);
   assert.doesNotMatch(line, /KEY-NORTH/);
 });
+
+// A list a plugin fills in from a service (here, channels it looked up), saved as read-only settings.
+const channels = (readOnly: boolean): PluginSchema => ({
+  type: "object",
+  properties: {
+    channels: {
+      type: "array",
+      title: "Channels",
+      readOnly: readOnly || undefined,
+      items: {
+        type: "object",
+        title: "Channel",
+        "x-title": "name",
+        "x-summary": ["{kind}", "{detail}", "{notes}"],
+        properties: { name: { type: "string" }, kind: { type: "string" }, detail: { type: "string" }, notes: { type: "string" } },
+      },
+    },
+  },
+});
+
+test("plugin form: a read-only list is rows to read, with nothing to add, edit or remove", () => {
+  const values = {
+    channels: [
+      { name: "Alpha", kind: "Voice", detail: "851.0125 MHz" },
+      { name: "Bravo", kind: "Data", detail: "852.5 MHz", notes: "Encrypted: can be listed, not decoded." },
+      { name: "", kind: "Voice" },
+    ],
+  };
+  const html = renderToString(<SchemaFields schema={channels(true)} values={values} onChange={() => {}} id="p" />);
+  const page = text(html);
+  assert.match(page, /Alpha Voice · 851\.0125 MHz/);
+  assert.match(page, /Bravo Data · 852\.5 MHz · Encrypted: can be listed, not decoded\./, "its whole line, notes too");
+  assert.match(page, /Channel 3 Voice/, "an untitled item is numbered");
+  assert.match(page, /3 channels/, "counted");
+  assert.doesNotMatch(html, /<button/, "no Add, Edit or Remove");
+  assert.match(text(renderToString(<SchemaFields schema={channels(true)} values={{}} onChange={() => {}} id="p" />)), /None yet\./);
+});
+
+test("plugin form: a list that isn't read-only still has its buttons", () => {
+  const html = renderToString(<SchemaFields schema={channels(false)} values={{ channels: [{ name: "Alpha" }] }} onChange={() => {}} id="p" />);
+  assert.match(text(html), /Alpha Edit/, "an item to open and edit");
+  assert.match(text(html), /Add channel/);
+});

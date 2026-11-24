@@ -1452,6 +1452,11 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .plugin-item-name { font-weight: 600; }
 .plugin-item-line { font-size: 12.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .plugin-item-body { padding: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 12px; }
+/* A list the plugin fills in itself (`readOnly`): rows to read, not edit (Plugins.tsx ReadOnlyList). */
+.plugin-roster { list-style: none; margin: 0; padding: 0; max-height: 22rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+.plugin-roster-row { display: flex; flex-direction: column; gap: 2px; padding: 7px 12px; }
+.plugin-roster-row + .plugin-roster-row { border-top: 1px solid var(--line); }
+.plugin-roster-line { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
 .plugin-buttons { flex-wrap: wrap; }
 .plugin-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px 20px; align-items: start; }
 .plugin-grid > .wide { grid-column: 1 / -1; }

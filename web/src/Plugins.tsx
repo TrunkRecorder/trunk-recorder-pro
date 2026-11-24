@@ -325,6 +325,49 @@ function ObjectList(props: { f: PluginSchema; label: string; hint?: string; valu
   );
 }
 
+/**
+ * A list the plugin fills in itself (`readOnly`), such as channels or destinations it looked up from a service: shown,
+ * not edited. One row each, its title (`x-title`) over its line (`x-summary`, wrapped so it reads whole), and a count;
+ * no buttons to add, edit or remove one. It scrolls within its own height, so a long list doesn't take over the page.
+ * `panel`: the list is a card of its own (a plugin's page).
+ */
+function ReadOnlyList(props: { f: PluginSchema; label: string; hint?: string; value: unknown; id: string; panel?: boolean }) {
+  const { f, id } = props;
+  const items = (Array.isArray(props.value) ? props.value : []) as PluginValues[];
+  const itemLabel = f.items?.title ?? "Item";
+  const titled = f.items?.["x-title"];
+  const body = (
+    <>
+      {props.hint && <p className={props.panel ? "muted small plugin-panel-hint" : "field-hint"}>{props.hint}</p>}
+      {items.length > 0 ? (
+        <>
+          <span className="muted small">{`${items.length} ${itemLabel.toLowerCase()}${items.length === 1 ? "" : "s"}`}</span>
+          <ul className="plugin-roster" id={id} aria-label={props.label}>
+            {items.map((item, i) => {
+              const title = titled ? item?.[titled] : undefined;
+              const line = summarize(f.items, item ?? {});
+              return (
+                <li className="plugin-roster-row" key={i}>
+                  <span className="plugin-item-name">{typeof title === "string" && title ? title : `${itemLabel} ${i + 1}`}</span>
+                  {line && <span className="plugin-roster-line">{line}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      ) : (
+        <p className="empty">None yet.</p>
+      )}
+    </>
+  );
+  if (props.panel) return <Card title={props.label}>{body}</Card>;
+  return (
+    <fieldset className="plugin-group">
+      <legend>{props.label}</legend>
+      <div className="stack">{body}</div>
+    </fieldset>
+  );
+}
 /** An object in a list (a group of fields each): drawn as [`ObjectList`]. */
 const isList = (f: PluginSchema) => f.type === "array" && f.items?.type === "object";
 
@@ -403,6 +446,7 @@ function SchemaField(props: { name: string; schema: PluginSchema; value: unknown
         <ToneList value={value} onChange={onChange} id={id} />
       </div>
     );
+  if (isList(f) && f.readOnly) return <ReadOnlyList f={f} label={label} hint={hint} value={value} id={id} panel={props.panel} />;
   if (isList(f)) return <ObjectList f={f} label={label} hint={hint} value={value} onChange={onChange} id={id} panel={props.panel} />;
   if (f.type === "boolean") {
     const on = typeof value === "boolean" ? value : fallback === true;
@@ -908,9 +952,13 @@ function PluginSettingsFields(props: { p: PluginInfo; m: PluginManifest; values:
     <FormRoot.Provider value={{ plugin: p.id, values }}>
       {fields
         .filter(([, f]) => isList(f))
-        .map(([k, f]) => (
-          <ObjectList key={k} panel f={f} label={f.title ?? spell(k)} hint={f.description} value={values[k]} onChange={(v) => setField(k, v)} id={`pg-${p.id}-${k}`} />
-        ))}
+        .map(([k, f]) =>
+          f.readOnly ? (
+            <ReadOnlyList key={k} panel f={f} label={f.title ?? spell(k)} hint={f.description} value={values[k]} id={`pg-${p.id}-${k}`} />
+          ) : (
+            <ObjectList key={k} panel f={f} label={f.title ?? spell(k)} hint={f.description} value={values[k]} onChange={(v) => setField(k, v)} id={`pg-${p.id}-${k}`} />
+          ),
+        )}
       {(rest.length > 0 || m.config?.["x-actions"]?.length) && (
         <Card title="Settings">
           <SchemaFields schema={restSchema} values={values} onChange={change} id={`pg-${p.id}`} required={props.needs.filter((k) => rest.some(([r]) => r === k))} grid />

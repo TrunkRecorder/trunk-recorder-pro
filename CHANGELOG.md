@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A plugin can show a list it fills in as rows to read.** A list in a plugin's settings marked `readOnly` (channels
+  or destinations it looked up from a service, say) used to get the same Add, Edit and Remove buttons as a list you type
+  in, though nothing in it could be added or changed. It is now one row each, its title over its line (`x-title`,
+  `x-summary`), with a count, and it scrolls within its own height. A list that isn't `readOnly` is as before.
+
 ## [0.5.0] — 2026-11-23
 
 **Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or
