@@ -34,7 +34,7 @@ export type Source = (
    * `wireFormat`: samples on the wire, "sc16", "sc12" (B2xx), "sc8"; "" or absent = sc16, or sc12 for a B2xx on USB 2.0 above 8 MSPS.
    */
   | { type: "usrp"; args: string; gainDb: number; agc: boolean; antenna: string; wireFormat?: string }
-  /** Airspy R2 / Mini through libairspy (desktop app). */
+  /** Airspy R2 / Mini by the driver built in (desktop app). */
   | ({
       type: "airspy";
       serial: string;

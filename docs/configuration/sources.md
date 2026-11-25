@@ -233,7 +233,7 @@ is the first client's. `ppm` is not used: the receiver's own crystal is the serv
 
 ## `"type": "airspy"`
 
-An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
+An Airspy R2 or Mini, by the driver built in: nothing to install ([Other radios](../install/other-radios.md#airspy)).
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|

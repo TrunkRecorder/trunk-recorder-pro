@@ -92,7 +92,7 @@ pub enum SourceKind {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         wire_format: String,
     },
-    /// An Airspy R2 / Mini through libairspy (installed separately; loaded
+    /// An Airspy R2 / Mini, by the driver built in (libairspy, where installed, is loaded
     /// at run time). `serial` hex, "" = the first.
     #[serde(rename_all = "camelCase")]
     Airspy {

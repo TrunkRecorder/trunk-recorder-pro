@@ -289,11 +289,13 @@ doesn't collect them in time, they're lost. Causes, most likely first:
   have used up Linux's USB memory (16 MB by default). The message gives the command to raise it.
 - **Something else on the computer** hogging it for a moment (a backup, a screen-sharing session).
 
-**Airspys** hand their samples over through libairspy, whose own thread drops a buffer
-(6.5 ms at 10 MS/s) when it runs more than ~50 ms late. The recorder now takes the Airspy's raw
-samples and turns them into IQ on its own decoding thread, so libairspy's thread only copies.
+**Airspys** drop a buffer (6.5 ms at 10 MS/s) when the thread taking them runs more than ~50 ms
+late. The recorder takes the Airspy's raw samples and turns them into IQ on its own decoding
+thread, so the thread reading USB only copies.
 If an Airspy's channels ever look wrong (nothing decodes, or the spectrum looks mirrored), start
-the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have libairspy convert as before, and tell us.
+the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have the driver convert, as libairspy does, and tell us.
+If an Airspy that worked before the built-in driver doesn't now, `TRUNK_PRO_AIRSPY_NATIVE=0` goes
+back to libairspy (which must be installed): tell us about that too.
 
 **USRPs** have a very small buffer by default, so the app asks UHD for a bigger one
 (`num_recv_frames=1024`, about 260 ms at 8 MSPS) unless your device arguments set `num_recv_frames`
