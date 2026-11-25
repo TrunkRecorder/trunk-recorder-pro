@@ -110,6 +110,13 @@ export function applies(schema: PluginSchema | undefined, values: PluginValues, 
 /** A secret's value as it's shown anywhere it isn't typed (`x-secret`): dots, never its text. */
 export const SECRET_SHOWN = "••••••••";
 
+/** `schema` with every field in it read-only, an object's and a list's within too: the fields of an item of a list the plugin fills in, shown as it has them. */
+export function shownOnly(schema: PluginSchema | undefined): PluginSchema | undefined {
+  if (!schema) return schema;
+  const props = schema.properties && Object.fromEntries(Object.entries(schema.properties).map(([k, f]) => [k, { ...shownOnly(f), readOnly: true }]));
+  return { ...schema, ...(props && { properties: props }), ...(schema.items && { items: shownOnly(schema.items) }) };
+}
+
 /** Whether `v` is a value a setting has (not empty). */
 const isSet = (v: unknown) => v !== undefined && v !== null && v !== "";
 
