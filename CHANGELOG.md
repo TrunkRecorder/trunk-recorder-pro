@@ -5,10 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **A plugin can show a list it fills in as rows to read.** A list in a plugin's settings marked `readOnly` (channels
-  or destinations it looked up from a service, say) used to get the same Add, Edit and Remove buttons as a list you type
-  in, though nothing in it could be added or changed. It is now one row each, its title over its line (`x-title`,
-  `x-summary`), with a count, and it scrolls within its own height. A list that isn't `readOnly` is as before.
+- **A plugin's list it fills in itself is shown, not edited** (#242, thanks @aknitt-rsos). A list in a plugin's
+  settings marked `readOnly` (channels or destinations it looked up from a service, say) had the same Add, Edit,
+  Remove and on/off controls as a list you type in, though the plugin rewrote it on its next sync. It's now counted,
+  each item its title over its whole line (`x-title`, `x-summary`), opened with **View** to all its fields as the
+  plugin has them (its buttons still there), and it scrolls within its own height. A list that isn't `readOnly` is as
+  before.
 
 - **Airspy R2 / Mini: a driver built in** (#225). An Airspy now works with nothing installed, like an RTL-SDR or
   a HackRF: no `brew install airspy` or `libairspy0`, and on Windows no `airspy.dll`, `libusb-1.0.dll`,

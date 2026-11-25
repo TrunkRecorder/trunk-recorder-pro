@@ -72,7 +72,7 @@ const channels = (readOnly: boolean): PluginSchema => ({
   },
 });
 
-test("plugin form: a read-only list is rows to read, with nothing to add, edit or remove", () => {
+test("plugin form: a read-only list is its items to view, counted, with nothing to add, switch, edit or remove", () => {
   const values = {
     channels: [
       { name: "Alpha", kind: "Voice", detail: "851.0125 MHz" },
@@ -82,12 +82,29 @@ test("plugin form: a read-only list is rows to read, with nothing to add, edit o
   };
   const html = renderToString(<SchemaFields schema={channels(true)} values={values} onChange={() => {}} id="p" />);
   const page = text(html);
-  assert.match(page, /Alpha Voice · 851\.0125 MHz/);
-  assert.match(page, /Bravo Data · 852\.5 MHz · Encrypted: can be listed, not decoded\./, "its whole line, notes too");
-  assert.match(page, /Channel 3 Voice/, "an untitled item is numbered");
-  assert.match(page, /3 channels/, "counted");
-  assert.doesNotMatch(html, /<button/, "no Add, Edit or Remove");
+  assert.match(page, /Alpha Voice · 851\.0125 MHz View/);
+  assert.match(page, /Bravo Data · 852\.5 MHz · Encrypted: can be listed, not decoded\. View/, "its whole line, notes too");
+  assert.match(page, /Channel 3 Voice View/, "an untitled item is numbered");
+  assert.match(html, /aria-label="3 channels"/, "counted");
+  assert.match(html, /class="stack plugin-list-readonly"/, "scrolls within its own height");
+  assert.doesNotMatch(page, /Add channel|Edit|Remove/, "nothing to add, edit or remove");
   assert.match(text(renderToString(<SchemaFields schema={channels(true)} values={{}} onChange={() => {}} id="p" />)), /None yet\./);
+});
+
+test("plugin form: an item of a read-only list opens to its fields as the plugin has them, not to edit", async () => {
+  const { shownOnly } = await import("./pluginForm.ts");
+  const item: PluginSchema = {
+    type: "object",
+    properties: {
+      name: { type: "string", title: "Name" },
+      rate: { type: "number", title: "Rate" },
+      tags: { type: "array", title: "Tags", items: { type: "string" } },
+      where: { type: "object", title: "Where", properties: { url: { type: "string", title: "Page", format: "uri" } } },
+    },
+  };
+  const html = renderToString(<SchemaFields schema={shownOnly(item)} values={{ name: "Alpha", rate: 12, tags: ["fire", "ems"], where: { url: "https://example.com/a" } }} onChange={() => {}} id="p" />);
+  assert.doesNotMatch(html, /<input|<select|<textarea/, html);
+  assert.match(text(html), /Name Alpha Rate 12 Tags fire, ems Where Page Open ↗ https:\/\/example\.com\/a Copy/);
 });
 
 test("plugin form: a list that isn't read-only still has its buttons", () => {
