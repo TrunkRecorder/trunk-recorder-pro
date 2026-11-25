@@ -96,6 +96,7 @@ It is written on a single line.
 |---|---|
 | `call_num` | The call's number |
 | `transmission_id` | The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>` (the first radio known to talk, `0` for none; the first copy's start). With conversations on, the call's first transmission names it |
+| `end_reason` | Why it ended: `terminator` (its voice channel's, with conversations off: P25, DMR, NXDN), `squelch` (analog, with conversations off: its squelch shut for half a second), `next_transmission` (the next one's audio on its channel), `timeout` (nothing heard of it for the call timeout), `too_long` (it carries on in the next call), `reassigned` (its channel given to another talkgroup, or a conventional channel's to another row), `stopped` (recording stopped). The log's **Concluding Recorded Call** line ends with it too |
 | `freq` | Frequency, Hz |
 | `freq_error` | How far off the channel the voice was, Hz (0 when not measured). Conventional P25, DMR and NXDN calls have it too; conventional analog receivers don't measure one |
 | `signal`, `noise` | The channel's power during the call and the noise floor under it, dBFS, one decimal; `null` if not measured |
@@ -312,8 +313,9 @@ override them under **Recording** in the **Recording** group of its card; each o
 - **Unit-to-unit calls** (`recordUnitToUnit`, on): private calls between two radios.
 - **Call timeout, s** (`callTimeoutS`, 3): a call ends this long after its last grant or audio.
 - **Conversations** (`conversationMode`, on): a call is the talkgroup's whole conversation, until
-  it has been quiet for the call timeout. Off, each transmission is a call of its own. Trunked
-  systems only. Setup suggests Off for a system with several sites; see
+  it has been quiet for the call timeout. Off, each transmission is a call of its own, ended by its
+  voice channel's terminator (P25 Phase 1 and 2, DMR, NXDN; analog: its squelch shut for half a
+  second), or the next transmission's audio on its channel, or the call timeout when neither comes. Trunked systems only. Setup suggests Off for a system with several sites; see
   [Calls heard on several sites](multi-site.md#calls-heard-on-several-sites).
 
 The first two and **Conversations** apply to trunked systems; they have no effect on conventional

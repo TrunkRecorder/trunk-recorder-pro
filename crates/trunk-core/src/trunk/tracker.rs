@@ -199,6 +199,9 @@ impl VoiceTracker {
                 // Voice still waiting for a sync that won't come.
                 self.release_held(out);
                 self.end(out);
+                if self.active {
+                    out.push(TrackerOut::Ended);
+                }
                 self.active = false;
                 self.set_es(None);
                 self.last_ldu = None;

@@ -126,6 +126,7 @@ mod snrtool;
 mod plugins;
 mod profile;
 mod radio;
+mod reach;
 mod runtime;
 mod sdr;
 mod server;
@@ -1116,6 +1117,7 @@ fn serve(a: &Args) {
         tune: Default::default(),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: addr.ip(),
+        bind_flag: a.get("bind").is_some(),
         interfaces: interfaces::Interfaces::new(dev, addr.port()),
         shared,
         series,

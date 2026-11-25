@@ -46,6 +46,10 @@ Installed plugins are in `plugins/<id>/` beside the config file, and each plugin
 saved upload queue, its working folder) in `plugin-data/<id>/`, kept across restarts, updates and
 uninstalls. See [Files kept beside the config](../configuration/README.md#files-kept-beside-the-config).
 
+So the user Trunk Recorder Pro runs as has to be able to write there. If it can't, Install says
+*Can't install into …* and names the folder: run Trunk Recorder Pro as the user who owns it, or give
+that user write access to it. On Windows, keep the config out of Program Files.
+
 ## Installing a plugin
 
 ### From the Plugins page

@@ -463,7 +463,7 @@ pub struct ConcludedCall {
     /// The call's key: its files' path relative to the capture folder, without
     /// an extension (`<shortName>/<Y>/<M>/<D>/<tg>-<start>_<freq>`).
     pub path: String,
-    /// [`SystemInfo::index`]: for this run only; the system's identity is `call.short_name`.
+    /// [`SystemInfo::index`]: for this run only; the system's identity is `call.system_id`.
     pub system: u16,
     /// Its call JSON, in Trunk Recorder's format (the `.json` file's contents).
     pub call: CallRecord,
@@ -503,6 +503,15 @@ pub struct CallRecord {
     /// conversation mode on, a call's first transmission names it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub transmission_id: String,
+    /// Why it ended: `terminator` (its voice channel's, conversation mode
+    /// off: P25, DMR, NXDN), `squelch` (analog, conversation mode off: its
+    /// squelch shut for the transmission gap), `next_transmission` (the next
+    /// one's audio on its channel), `timeout` (nothing heard of it for the
+    /// call timeout), `too_long` (it carries on in the next call),
+    /// `reassigned` (its channel given to another talkgroup, or a
+    /// conventional channel's to another row), `stopped`. Empty: not said.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub end_reason: String,
     /// Hz.
     pub freq: u64,
     /// How far off its channel the voice carrier came in, Hz (the mean over the call).
@@ -637,6 +646,7 @@ impl Default for CallRecord {
         CallRecord {
             call_num: 0,
             transmission_id: String::new(),
+            end_reason: String::new(),
             freq: 0,
             freq_error: 0,
             signal: None,
@@ -1270,7 +1280,7 @@ pub struct SiteScope {
 /// Every series the recorder measures, as running totals since recording started
 /// ([`topic::TOTALS`]), and what their keys are of. A plugin takes the difference between two to
 /// have a window of its own choosing ([`Totals::since`]); [`crate::health`] makes node health
-/// reports of them. The series are the dashboard's (`docs/plugins/writing-plugins.md#series`).
+/// reports of them. The series are the dashboard's (`docs/developer/plugins/events.md#series`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Totals {
@@ -1485,6 +1495,18 @@ pub enum PluginMessage {
     Status {
         state: State,
         #[serde(default)]
+        message: String,
+    },
+    /// Something that stays true until the plugin says otherwise (a setting to fix, say), shown
+    /// beside its status: a later `status` doesn't replace it. One per `key`: a notice with the
+    /// same key replaces it, and one with no `state` takes it away. The plugin's health is the
+    /// worst of its status and its notices. They go when the plugin stops or restarts.
+    #[serde(rename = "notice")]
+    Notice {
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<State>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         message: String,
     },
     /// What became of a concluded call (`path`: [`ConcludedCall::path`]).

@@ -97,12 +97,13 @@ pub struct Setup<C, S> {
 
 impl<C, S> Setup<C, S> {
     /// The system an event's `system` names. (Its number is for this run
-    /// only; keep anything you store by [`System::short_name`].)
+    /// only; keep anything you store by [`System::id`].)
     pub fn system(&self, index: u16) -> Option<&System<C, S>> {
         self.systems.iter().find(|s| s.index == index)
     }
-    /// The system with this short name — its identity: every event carries
-    /// it (`short_name`, or a concluded call's `call.short_name`).
+    /// The system with this short name: what users know it by, so what a
+    /// setting they type names it by. (It changes when the system is renamed;
+    /// store by [`System::id`].)
     pub fn system_named(&self, short_name: &str) -> Option<&System<C, S>> {
         self.systems.iter().find(|s| s.short_name == short_name)
     }
@@ -259,6 +260,18 @@ impl Host {
     /// The plugin's health, shown in the interface until the next.
     pub fn status(&self, state: State, message: impl Into<String>) {
         self.send(&PluginMessage::Status { state, message: message.into() });
+    }
+
+    /// A notice (`key`: which), shown beside the status until it's cleared or replaced: a later
+    /// `status` doesn't hide it. For what stays true while the plugin runs (settings to fix);
+    /// the plugin's health is the worst of its status and its notices.
+    pub fn notice(&self, key: impl Into<String>, state: State, message: impl Into<String>) {
+        self.send(&PluginMessage::Notice { key: key.into(), state: Some(state), message: message.into() });
+    }
+
+    /// Takes the notice `key` away.
+    pub fn clear_notice(&self, key: impl Into<String>) {
+        self.send(&PluginMessage::Notice { key: key.into(), state: None, message: String::new() });
     }
 
     /// How the plugin's work is going (see [`Metrics`]): queue, timing,

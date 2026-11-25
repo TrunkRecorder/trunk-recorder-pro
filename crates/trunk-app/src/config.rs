@@ -454,29 +454,28 @@ impl Source {
         (!address.trim().is_empty()).then(|| endpoint(address, port))
     }
 
+    /// The radio it opens, as radios are compared: its family (kinds one driver opens alike
+    /// share one) and what names it there ("" = the first found). None: a capture file.
+    fn radio_id(&self) -> Option<(u8, String)> {
+        // (A radio on the network by its server: one `rtl_tcp` serves one client at a time; a SpyServer's
+        // second client can't move its receiver.)
+        if let Some(server) = self.server() {
+            return Some((if matches!(self.kind, SourceKind::Spyserver { .. }) { 7 } else { 6 }, server.to_lowercase()));
+        }
+        match &self.kind {
+            SourceKind::Rtlsdr { serial: id, .. } | SourceKind::Usrp { args: id, .. } | SourceKind::Airspy { serial: id, .. } | SourceKind::Hydrasdr { serial: id, .. } | SourceKind::Bladerf { serial: id, .. } | SourceKind::Soapy { args: id, .. } | SourceKind::Hackrf { serial: id, .. } => {
+                radio_id(self.kind_name(), id)
+            }
+            SourceKind::Spyserver { .. } | SourceKind::File { .. } => None,
+        }
+    }
+
     /// Whether the two may open the same radio (one program at a time can):
     /// of a kind and naming one device, or either "the first found". (A
     /// bladeRF may be named by the start of its serial.)
     pub fn may_be(&self, other: &Source) -> bool {
-        let id = |s: &Source| -> Option<(u8, String)> {
-            // (A radio on the network by its server: one `rtl_tcp` serves one client at a time; a SpyServer's
-            // second client can't move its receiver.)
-            if let Some(server) = s.server() {
-                return Some((if matches!(s.kind, SourceKind::Spyserver { .. }) { 7 } else { 6 }, server.to_lowercase()));
-            }
-            match &s.kind {
-                SourceKind::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
-                SourceKind::Usrp { args, .. } => Some((1, args.trim().to_string())),
-                // (libairspy opens an RFOne as "the first" when it comes first.)
-                SourceKind::Airspy { serial, .. } | SourceKind::Hydrasdr { serial, .. } => Some((2, serial.trim().to_lowercase())),
-                SourceKind::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
-                SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
-                SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
-                SourceKind::Spyserver { .. } | SourceKind::File { .. } => None,
-            }
-        };
-        match (id(self), id(other)) {
-            (Some((k, a)), Some((j, b))) if k == j => a.is_empty() || b.is_empty() || a == b || (k == 3 && (a.starts_with(&b) || b.starts_with(&a))),
+        match (self.radio_id(), other.radio_id()) {
+            (Some((k, a)), Some((j, b))) if k == j => a.is_empty() || b.is_empty() || names_one(k, &a, &b),
             _ => false,
         }
     }
@@ -728,6 +727,81 @@ impl SignalDef {
 /// A system's signals for the engine.
 fn engine_signals(defs: &[SignalDef]) -> Vec<trunk_core::dsp::inband::signal::Signal> {
     defs.iter().filter_map(SignalDef::engine).collect()
+}
+
+/// A radio of kind `kind` named `id` (a serial, or device arguments; "" = the first found), as
+/// radios are compared: its family (libairspy opens an RFOne as "the first" when it comes first,
+/// so an Airspy's and a HydraSDR's are one) and the id as its driver matches it (hex serials in
+/// any case). None: not a radio a driver finds.
+fn radio_id(kind: &str, id: &str) -> Option<(u8, String)> {
+    let id = id.trim();
+    Some(match kind {
+        "rtlsdr" => (0, id.to_string()),
+        "usrp" => (1, id.to_string()),
+        "airspy" | "hydrasdr" => (2, id.to_lowercase()),
+        "bladerf" => (3, id.to_lowercase()),
+        "soapy" => (4, id.to_string()),
+        "hackrf" => (5, id.to_lowercase()),
+        _ => return None,
+    })
+}
+
+/// Whether two ids of family `k` name one radio: the same, or (a bladeRF's) one the start of the other.
+fn names_one(k: u8, a: &str, b: &str) -> bool {
+    a == b || (k == 3 && !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a)))
+}
+
+/// A radio a driver found (an RTL-SDR on USB, an Airspy, a SoapySDR device…): its kind and what
+/// a source names it by (`serial`, or `args`; "" when it has none).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct FoundRadio {
+    pub kind: String,
+    pub id: String,
+}
+
+/// A source, by its place in the config and its title.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SourceRef {
+    pub index: usize,
+    pub title: String,
+}
+
+/// Why a found radio can't be a source's own.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "why", rename_all = "camelCase")]
+pub enum Unpickable {
+    /// It has no serial, and another of its kind is plugged in: a source opens it only as "the
+    /// first found". `twin`: the first found before it with none too (none: it's the first).
+    NoSerial { twin: Option<usize> },
+    /// Another plugged in has its serial: a source naming it opens whichever is found first.
+    /// `twin`: the first found with it (none: it's the first).
+    SameSerial { twin: Option<usize> },
+    /// Another source names it.
+    Source(SourceRef),
+}
+
+/// What each found radio is to one source ([`Config::radio_picks`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadioPick {
+    /// Why it can't be this source's, if it can't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpickable: Option<Unpickable>,
+    /// Another source opens "the first found" of its kind: maybe this one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first: Option<SourceRef>,
+}
+
+/// The found radios as one source may pick them ([`Config::radio_picks`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadioPicks {
+    /// One for each found radio, in its order.
+    pub radios: Vec<RadioPick>,
+    /// When an RTL-SDR can't be told apart: a serial none of them has, to give it with `rtl_eeprom`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub free_serial: Option<String>,
 }
 
 /// What's wrong with a system's signals: one's own problem, or an id used twice.
@@ -2211,6 +2285,17 @@ impl Server {
         self.hostname_parts().1
     }
 
+    /// Where the dashboard is reached by `hostname`, if set: `https://<hostname>`, at the port
+    /// written in it, else `port` when the recorder serves HTTPS itself (`tls`), else 443 (a
+    /// proxy or tunnel in front serves the HTTPS); no port written when it's 443.
+    pub fn hostname_url(&self, port: u16, tls: bool) -> Option<String> {
+        let name = self.host()?;
+        Some(match self.host_port().unwrap_or(if tls { port } else { 443 }) {
+            443 => format!("https://{name}"),
+            p => format!("https://{name}:{p}"),
+        })
+    }
+
     fn hostname_parts(&self) -> (&str, Option<u16>) {
         let h = self.hostname.trim();
         match h.rsplit_once(':') {
@@ -2636,26 +2721,6 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
-/// Write `data` to `path` so that a crash or power cut leaves the old file
-/// or the new one, never part of either: into a temporary file beside it,
-/// flushed to disk, then renamed over it.
-pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
-    use std::io::Write;
-    let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
-    let tmp = path.with_file_name(format!(".{name}.tmp"));
-    let written = std::fs::File::create(&tmp).and_then(|mut f| {
-        f.write_all(data.as_ref())?;
-        f.sync_all()
-    });
-    match written.and_then(|_| std::fs::rename(&tmp, path)) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
-    }
-}
-
 pub fn default_capture_dir() -> PathBuf {
     // (The browser build has no home folder, and writes no folder: the default stays as said.)
     if cfg!(target_arch = "wasm32") {
@@ -2839,10 +2904,8 @@ impl Config {
         self.systems.iter().map(|s| (s.id, s.short_name.as_str())).chain(self.conventional.iter().map(|c| (c.id, c.short_name.as_str())))
     }
 
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(d) = path.parent() {
-            std::fs::create_dir_all(d)?;
-        }
+    pub fn save(&self, path: &Path) -> Result<(), crate::files::Problem> {
+        crate::files::make_parent(path)?;
         let mut c = self.clone();
         for v in &mut c.conventional {
             v.channel_file_status.clear();
@@ -2851,7 +2914,7 @@ impl Config {
                 v.channels.clear();
             }
         }
-        write_atomic(path, serde_json::to_string_pretty(&c).unwrap_or_default())
+        crate::files::write_atomic(path, serde_json::to_string_pretty(&c).unwrap_or_default())
     }
 
     /// Conventional system `k`'s linked channel file's location (relative
@@ -2969,7 +3032,7 @@ impl Config {
             return Ok(());
         };
         if !p.exists() {
-            let made = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, crate::channels::write(&self.conventional[k].channels)));
+            let made = crate::files::make_parent(&p).and_then(|_| crate::files::write(&p, crate::channels::write(&self.conventional[k].channels)));
             if let Err(e) = made {
                 self.conventional[k].channel_file = old;
                 return Err(format!("Couldn't create {}: {e}", p.display()));
@@ -3209,6 +3272,38 @@ impl Config {
     /// build's worker both say so ([`crate::protocol::ToClient::State`]).
     pub fn needs_restart(&self, run: &Config) -> bool {
         self.at_start() != run.at_start()
+    }
+
+    /// The radios found (`found`), as source `i` (None: a new one, or a radio to scan with) may be
+    /// set to them: one that can't be told apart from another of its family (no serial, or the
+    /// same serial, with more than one plugged in), or that another source names, can't; and
+    /// another source opening "the first found" of its family may take any of them.
+    pub fn radio_picks(&self, i: Option<usize>, found: &[FoundRadio]) -> RadioPicks {
+        let ids: Vec<Option<(u8, String)>> = found.iter().map(|f| radio_id(&f.kind, &f.id)).collect();
+        let others: Vec<(usize, (u8, String))> = self.sources.iter().enumerate().filter(|(j, _)| Some(*j) != i).filter_map(|(j, s)| Some((j, s.radio_id()?))).collect();
+        let source = |j: usize| SourceRef { index: j, title: self.sources[j].title(j) };
+        let radios: Vec<RadioPick> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| {
+                let Some((k, a)) = id else { return RadioPick { unpickable: None, first: None } };
+                // The others of its family, and the first before it that can't be told from it.
+                let kin: Vec<(usize, &String)> = ids.iter().enumerate().filter(|(m, _)| *m != n).filter_map(|(m, o)| o.as_ref().filter(|(j, _)| j == k).map(|(_, b)| (m, b))).collect();
+                let twin = |same: &dyn Fn(&str) -> bool| kin.iter().find(|(m, b)| *m < n && same(b)).map(|(m, _)| *m);
+                let unpickable = match kin.first() {
+                    Some(_) if a.is_empty() => Some(Unpickable::NoSerial { twin: twin(&|b| b.is_empty()) }),
+                    Some(_) if kin.iter().any(|(_, b)| names_one(*k, a, b)) => Some(Unpickable::SameSerial { twin: twin(&|b| names_one(*k, a, b)) }),
+                    _ => others.iter().find(|(_, (j, b))| j == k && !a.is_empty() && !b.is_empty() && names_one(*k, a, b)).map(|(j, _)| Unpickable::Source(source(*j))),
+                };
+                let first = others.iter().find(|(_, (j, b))| j == k && b.is_empty()).map(|(j, _)| source(*j));
+                RadioPick { unpickable, first }
+            })
+            .collect();
+        let rtl = |n: usize| found[n].kind == "rtlsdr";
+        let free_serial = radios.iter().enumerate().any(|(n, r)| rtl(n) && matches!(r.unpickable, Some(Unpickable::NoSerial { .. } | Unpickable::SameSerial { .. }))).then(|| {
+            (2..).map(|n| format!("{n:08}")).find(|s| !found.iter().any(|f| f.kind == "rtlsdr" && f.id.trim() == s)).unwrap_or_default()
+        });
+        RadioPicks { radios, free_serial }
     }
 
     /// Where source `i` of this config is among `others`: the same radio, by
@@ -4208,6 +4303,43 @@ mod tests {
         let airspy = |serial: &str| src(serde_json::json!({ "type": "airspy", "serial": serial, "centerHz": 0, "rateHz": 10000000 }));
         assert!(h.may_be(&airspy("")) && h.may_be(&airspy("1a2b3c4d5e6f7081")));
         assert!(!h.may_be(&airspy("735863DC2F650AE3")));
+    }
+
+    /// Found radios as a source picks them, every kind alike: one with no serial, or another's,
+    /// can't be (with more than one of its family plugged in); one another source names can't
+    /// be; one may be the radio of a source on "the first found"; RTL-SDRs get a free serial.
+    #[test]
+    fn radio_picks_say_which_can_be_told_apart() {
+        let f = |kind: &str, id: &str| FoundRadio { kind: kind.into(), id: id.into() };
+        let src = |v: serde_json::Value| -> Source { serde_json::from_value(v).unwrap() };
+        let mut c: Config = serde_json::from_str(r#"{ "sources": [] }"#).unwrap();
+        c.sources.push(src(serde_json::json!({ "type": "rtlsdr", "serial": "00000001", "centerHz": 851e6, "rateHz": 2.4e6 })));
+        c.sources.push(src(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 851e6, "rateHz": 2.4e6 })));
+        c.sources.push(src(serde_json::json!({ "type": "airspy", "serial": "735863DC2F650AE3", "centerHz": 0, "rateHz": 10e6 })));
+        let why = |p: &RadioPicks| p.radios.iter().map(|r| r.unpickable.clone()).collect::<Vec<_>>();
+        let s0 = || Some(Unpickable::Source(SourceRef { index: 0, title: "Source 1".into() }));
+
+        // Source 2 picks: dongle 1 is Source 1's, dongle 2 has no serial; an Airspy Source 3 names in another case is Source 3's.
+        let found = [f("rtlsdr", "00000001"), f("rtlsdr", ""), f("airspy", "735863dc2f650ae3"), f("hackrf", "0000a1")];
+        let p = c.radio_picks(Some(1), &found);
+        assert_eq!(why(&p), [s0(), Some(Unpickable::NoSerial { twin: None }), Some(Unpickable::Source(SourceRef { index: 2, title: "Source 3".into() })), None]);
+        assert_eq!(p.free_serial.as_deref(), Some("00000002"));
+        assert!(p.radios.iter().all(|r| r.first.is_none()), "Source 2 itself is the one on the first found");
+        // Source 1 picks: Source 2 opens the first RTL-SDR found, so either may be its.
+        let p = c.radio_picks(Some(0), &found);
+        assert_eq!(p.radios[0].first, Some(SourceRef { index: 1, title: "Source 2".into() }));
+        assert_eq!((p.radios[0].unpickable.clone(), p.radios[2].first.clone()), (None, None));
+
+        // Two of one serial, any kind (clones): neither; a lone radio with no serial is the first found, and fine.
+        let same = c.radio_picks(None, &[f("rtlsdr", "00000001"), f("rtlsdr", "00000001"), f("hackrf", "0000a1"), f("hackrf", "0000A1"), f("bladerf", "")]);
+        let first = |t: Option<usize>| Some(Unpickable::SameSerial { twin: t });
+        assert_eq!(why(&same), [first(None), first(Some(0)), first(None), first(Some(2)), None], "each with the first of its twins");
+        assert_eq!(same.free_serial.as_deref(), Some("00000002"));
+        // An Airspy and an RFOne are one family: the RFOne with no serial can't be told from the Airspy.
+        assert_eq!(why(&c.radio_picks(None, &[f("airspy", "1a2b"), f("hydrasdr", "")]))[1], Some(Unpickable::NoSerial { twin: None }));
+        assert_eq!(why(&c.radio_picks(None, &[f("rtlsdr", ""), f("rtlsdr", "")])), [Some(Unpickable::NoSerial { twin: None }), Some(Unpickable::NoSerial { twin: Some(0) })]);
+        let fine = c.radio_picks(Some(1), &[f("rtlsdr", "00000002"), f("rtlsdr", "00000003")]);
+        assert_eq!((why(&fine), fine.free_serial), (vec![None, None], None));
     }
 
     /// A radio on the network is named by its address (the port left off is its server's usual one), is

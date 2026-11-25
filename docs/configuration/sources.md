@@ -141,7 +141,7 @@ from -1 to 42 dB, and manual gain is better than AGC, which sits low. It can't t
 1090–1230 MHz. For a dongle with an FC0012, FC0013 or FC2580 tuner, use a `soapy` source with
 `"args": "driver=rtlsdr"`; see [other radios](../install/other-radios.md).
 
-Two dongles with the same serial can't be told apart. Give each its own with `rtl_eeprom -s`.
+Two dongles with the same serial, or with none, can't be told apart: Setup greys them out and says the `rtl_eeprom -s` to run to give each its own.
 
 ## `"type": "usrp"`
 

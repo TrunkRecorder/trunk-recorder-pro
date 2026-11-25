@@ -223,6 +223,9 @@ impl Slot {
     /// waiting for a sync that won't come goes out (or is dropped).
     fn end(&mut self, c: usize, keys: &Option<Arc<Keyring>>, out: &mut Vec<(usize, TrackerOut)>) -> u64 {
         let bad = self.release_held(c, out);
+        if self.active {
+            out.push((c, TrackerOut::Ended));
+        }
         self.active = false;
         self.set_es(None, keys);
         self.last_vb = None;
@@ -757,17 +760,19 @@ mod tests {
     }
 
     /// A co-channel system's MAC_END_PTT (another color code, BBAC §8.4.8)
-    /// ends nothing here.
+    /// ends nothing here; this one's ends the transmission, once.
     #[test]
     fn another_systems_end_ptt_is_ignored() {
         let tx = tx(None, 1);
         let end = |cc: u16| pdu(MAC_END_PTT, 7, &[(cc >> 8) as u8, cc as u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x12, 0x34, 0x56, 0x08, 0x9f]);
+        let ended = |o: &[TrackerOut]| o.iter().filter(|o| matches!(o, TrackerOut::Ended)).count();
         let mut t = tracker();
         outs(&mut t, &tx.packets());
-        outs(&mut t, &[(tx.mac_packet(0, BURST_FACCH_U, &end(0x111), None), 0.4)]);
+        assert_eq!(ended(&outs(&mut t, &[(tx.mac_packet(0, BURST_FACCH_U, &end(0x111), None), 0.4)])), 0);
         assert!(t.slots[0].active, "another system's");
-        outs(&mut t, &[(tx.mac_packet(0, BURST_FACCH_U, &end(SEED.0 as u16), None), 0.4)]);
+        assert_eq!(ended(&outs(&mut t, &[(tx.mac_packet(0, BURST_FACCH_U, &end(SEED.0 as u16), None), 0.4)])), 1);
         assert!(!t.slots[0].active);
+        assert_eq!(ended(&outs(&mut t, &[(tx.mac_packet(0, BURST_FACCH_U, &end(SEED.0 as u16), None), 0.5)])), 0, "repeated: nothing more");
     }
 
     /// The voice channel's own Network Status Broadcast (BBAC Figure 8-47,

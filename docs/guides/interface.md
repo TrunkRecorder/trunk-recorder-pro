@@ -76,7 +76,7 @@ how many of that thing you have:
 | **Conventional** | Conventional systems and their channels | [Conventional](conventional.md) |
 | **Radios** | Your sources (dongles, other radios, capture files), **Add a source**, **Dongle not showing up?** | [Radios](radios.md) |
 | **Recording** | **Recorder** (recordings folder, RAM spool, recorders, pre-roll, voice decoder, **One copy per multi-site call**, start on launch), **Key containers** (when a key file is locked), **Call rules**, **Advanced** (**M4A audio**, **Log**) | [Recordings](recordings.md) |
-| **Access** | Who may reach the recorder: **Sign-in**, users and their roles, passkeys, **Proxy**, HTTPS. Desktop only | [Remote access](remote-access.md) |
+| **Access** | Who may reach the recorder: **Direct connections** (this computer only, or other devices too) and **Reachable at** (every way to it found: network, tailnet, Tailscale Serve or Funnel, Cloudflare Tunnel), **Sign-in**, users and their roles, passkeys, **Proxy**, HTTPS. Desktop only | [Remote access](remote-access.md) |
 | **Data** | Where the recorder keeps what it keeps: **Store** (SQLite or PostgreSQL), **Writing less** (**Normal** or **Low-write**, the call history indexes, **Write every**), **Radio registry** and **How long** (call and dashboard history, in days); then **Export and delete** (a CSV per table, **Delete**, **Compact DB…**). Desktop only | [The store](../configuration/storage.md) |
 | **Plugins** | Each plugin's settings | [Plugins](../plugins/README.md) |
 
@@ -189,7 +189,8 @@ To start recording again after a restart without touching anything, turn on **Re
 ## Remote access
 
 By default the interface only answers on this computer (`127.0.0.1`). To reach it from another
-machine, start with `--bind 0.0.0.0` (or set `server.bind`), or leave it as it is and use an SSH
+machine, choose **Other devices too** under **Direct connections** in Setup → **Access** and restart
+the app (or start with `--bind 0.0.0.0`), or leave it as it is and use an SSH
 tunnel (`ssh -L 8080:localhost:8080 you@recorder.local`). Signing in is off until you turn it on
 in Setup → **Access**. All of this, with HTTPS, passkeys, proxies and Cloudflare
 Tunnel, is in [Remote access and signing in](remote-access.md).

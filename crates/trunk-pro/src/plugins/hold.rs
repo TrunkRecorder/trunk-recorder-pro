@@ -133,7 +133,9 @@ impl Hold {
 
     /// Keep finished calls in `dir`, and take back those kept there by the run before.
     pub fn open(self: &Arc<Self>, dir: &Path) {
-        let _ = std::fs::create_dir_all(dir);
+        if let Err(p) = trunk_app::files::make_dir(dir) {
+            log::warn!("Plugin hold: held calls can't be kept on disk, so they're lost if the recorder restarts. {p}");
+        }
         *self.dir.lock().unwrap() = Some(dir.to_path_buf());
         let mut items = Vec::new();
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -246,7 +248,7 @@ impl Hold {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = dir.join(format!("{}-{n}-{name}.json", item.at_ms));
-        match serde_json::to_vec(item).map_err(|e| e.to_string()).and_then(|b| crate::config::write_atomic(&path, &b).map_err(|e| e.to_string())) {
+        match serde_json::to_vec(item).map_err(|e| e.to_string()).and_then(|b| trunk_app::files::write_atomic(&path, &b).map_err(String::from)) {
             Ok(()) => Some(path),
             Err(e) => {
                 self.note(&item.plugin, Level::Warn, format!("couldn't keep a held call on disk ({e}): it's lost if the recorder restarts first"));

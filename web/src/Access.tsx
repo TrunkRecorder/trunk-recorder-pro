@@ -1,4 +1,5 @@
-// Setup → Access (desktop app): signing in (server.auth). Off,
+// Setup → Access (desktop app): direct connections and where the recorder
+// can be reached (Reach.tsx), and signing in (server.auth). Off,
 // whoever reaches a port gets its access; on, a browser signs in as a user,
 // with their access token's secret or a passkey of theirs, and gets what the
 // user's role allows: View (listen) or Admin (control). Turned on in an order
@@ -18,6 +19,7 @@ import { textList } from "./fieldText.ts";
 import { CopyButton, DraftInput, Field, TextInput } from "./inputs.tsx";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { AddPasskey, day, PasskeyChip } from "./Passkeys.tsx";
+import { Connections, onThisComputer } from "./Reach.tsx";
 import type { ApiAccess, AuthProxy, AuthSetup, AuthUser, Config } from "./protocol.ts";
 
 /** The roles, as the interface calls them. */
@@ -75,10 +77,7 @@ const canSignIn = (u: AuthUser) => !!u.token || !!u.passkeys?.length;
 const admin = (u: AuthUser) => u.access === "control" && canSignIn(u);
 
 /** Whether this page crosses the network unencrypted: plain HTTP, from a host that isn't this computer. */
-export const unencrypted = (loc: Pick<Location, "protocol" | "hostname"> = location) => {
-  const h = (loc.hostname ?? "").toLowerCase().replace(/^\[|\]$/g, "");
-  return loc.protocol === "http:" && !(h === "localhost" || h.endsWith(".localhost") || /^127\./.test(h) || h === "::1");
-};
+export const unencrypted = (loc: Pick<Location, "protocol" | "hostname"> = location) => loc.protocol === "http:" && !onThisComputer(loc.hostname ?? "");
 
 /** Addresses as typed: commas or spaces between. */
 const addresses = textList(/[\s,]+/);
@@ -338,6 +337,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
       actions={<Switch label="Sign-in" checked={on} disabled={busy} onChange={turn} />}
     >
       <section className="set-card">
+        <Connections c={props.c} signIn={on} />
         {step === "paste" && (
           <Group title="Sign in first" hint="An Admin token's secret" cols={1}>
             <form

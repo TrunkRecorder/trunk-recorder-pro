@@ -169,3 +169,32 @@ test("Setup: an RTL-SDR on USB or through rtl_tcp: the dongle list for one, the 
   assert.match(net, /value="pi.local"/);
   assert.match(text(net), /Bias-T/, "its bias-T, as on USB");
 });
+
+test("Setup: a dongle with no serial, or another's serial, can't be picked; the list says why and what to run (forum: second dongle snaps back to First available)", () => {
+  const c = defaultConfig();
+  c.sources = [{ ...SOURCE_KINDS.rtlsdr.fresh(), serial: "00000001" } as Config["sources"][number], SOURCE_KINDS.rtlsdr.fresh()];
+  setup(c);
+  const dongle = (index: number, serial: string) => ({ index, serial, product: "RTL2838UHIDIR" });
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "")] });
+  const html = renderToString(<SourceCard c={c} i={1} />).replace(/<!-- -->/g, "");
+  assert.match(html, /<option value="" disabled="" selected="">RTL2838UHIDIR \(no serial\)<\/option>/);
+  assert.match(text(html), /A dongle can't be picked: .* rtl_eeprom -d 0 -s 00000002 /);
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "00000001")] });
+  const same = renderToString(<SourceCard c={c} i={1} />).replace(/<!-- -->/g, "");
+  assert.equal(same.match(/SN 00000001 \(same serial as another\)/g)?.length, 2, "both, each its own option");
+  assert.match(text(same), /2 dongles can't be picked/);
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "00000002")] });
+  const fine = text(renderToString(<SourceCard c={c} i={1} />));
+  assert.doesNotMatch(fine, /can't be picked|rtl_eeprom/);
+  assert.match(fine, /SN 00000001 \(Source 1's\)/, "the first source's, by its title");
+
+  // Every kind alike: two Airspys with one serial (clones), and Source 1 on the first found.
+  const a = defaultConfig();
+  a.sources = [{ ...SOURCE_KINDS.airspy.fresh(), serial: "" } as Config["sources"][number], { ...SOURCE_KINDS.airspy.fresh(), serial: "" } as Config["sources"][number]];
+  setup(a);
+  const airspy = { serial: "735863dc2f650ae3", label: "Airspy R2 · SN 735863DC2F650AE3" };
+  transport.onMessage({ type: "radios", radios: { usrp: { available: false, detail: "" }, hackrf: { available: true, detail: "built in", devices: [] }, airspy: { available: true, detail: "libairspy", devices: [airspy, airspy] }, hydrasdr: { available: false, detail: "" }, bladerf: { available: false, detail: "" } } as unknown as Radios });
+  const clones = text(renderToString(<SourceCard c={a} i={1} />));
+  assert.equal(clones.match(/\(same serial as another\)/g)?.length, 2);
+  assert.match(clones, /2 Airspys can't be picked: they report the same serial \(clones can\).* Source 1 opens the first Airspy found, which may be any of these: give it its own too/);
+});

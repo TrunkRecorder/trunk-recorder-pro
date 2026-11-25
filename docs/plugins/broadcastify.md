@@ -54,6 +54,8 @@ For the whole recorder (Setup > **Plugins**, or `plugins.broadcastify.settings` 
 | `server` | | `https://api.broadcastify.com/call-upload` | string (URL) | **Upload server.** Leave it as it is, unless Broadcastify tells you to change it. |
 | `talkerAliases` | | `true` | bool | **Send talker aliases.** When the first radio on a call sent its name over the air, send that too. |
 | `skipCertificateCheck` | | `false` | bool | **Skip certificate checks.** Upload even when Broadcastify's certificate has expired. Leave it off unless uploads fail with a certificate error; the log warns while it's on. |
+| `healthReports` | | `true` | bool | **Send health reports.** Every 5 minutes, tell Broadcastify how well this recorder hears each system it uploads ([Health reports](#health-reports)). Leave it on: without them Broadcastify can't compare your node with others, so it may get a lower priority or be left out, and can't tell you about problems with it ([Turning them off](#turning-them-off)). (Plugin 0.2.0 and later.) |
+| `healthServer` | | (beside `server`) | string (URL) | **Health report server.** Leave it empty: reports go to `…/call-health` beside the upload server. |
 
 For each system (the system's card, or its `plugins.broadcastify` in `config.json`):
 
@@ -89,6 +91,14 @@ and has a system of its own there; one only sites without a system of their own 
 system's. A site turned off for the plugin (**Sites** chips) is left out. See
 [Settings for each site](../configuration/plugins.md#settings-for-each-site).
 
+Each site needs its own Broadcastify system ID. If one system ID covers several sites, the plugin
+warns you (plugin 0.2.1 and later), in its status and its log: Broadcastify Calls records each call
+as coming from the site the system ID is registered to, so the other sites' calls would be labeled
+as the wrong site. More system IDs can be applied for at
+[broadcastify.com/apply/calls](https://www.broadcastify.com/apply/calls), with your existing API key.
+Merging two systems in Setup (**Make them one system**) keeps this: the merged system's API key
+and system ID go to the sites that move, so each keeps uploading as its own ID.
+
 A system can also set **Upload server**, **Send talker aliases** and **Skip certificate checks**
 again, in **Broadcastify Calls shared settings** on its card (`override` in its
 `plugins.broadcastify` entry). Each server has its own queue and Health status.
@@ -111,6 +121,59 @@ audio played back to back, ending when the call was saved. The files on disk kee
 
 **Encrypted calls are never sent**, and neither are calls on talkgroups your lists leave out.
 Both are marked skipped.
+
+## Health reports
+
+Every 5 minutes, at a random point of its own, each node (a Broadcastify system ID) sends
+Broadcastify a [node health report](../api/node-health.md): how many seconds the recorder was
+decoding the system's control channel, the control messages it decoded and lost, the calls the
+system announced and why any weren't recorded (no radio covering the frequency, every recorder
+busy), and the voice frames it lost, along with its radios' dropped samples and clipping. When
+several nodes upload one system, Broadcastify can take its calls from the one hearing it best, and
+can tell a node that's up but has no calls from one that's down.
+
+A site with a system ID of its own is reported to that ID alone. Sites left on one system ID are one
+report (Broadcastify takes one report per system ID each interval); two recorder systems on one ID
+are reported for the first. A system or site the plugin is turned off for is neither uploaded nor
+reported, nor is one with no API key and system ID.
+
+Reports go on a thread of their own, so uploads never wait on them. A report that fails is carried
+by the next. When the server doesn't take them (not found, or an answer that isn't a report's), the
+plugin says so once and tries again less and less often, up to once an hour.
+
+### What a report contains
+
+Counts of what the recorder heard, not scores:
+
+- **For each system or site:** the identity its control channel broadcasts (WACN, System ID, RFSS,
+  site, NAC) and the control channel's frequency; the seconds spent decoding it, the messages
+  decoded and lost, its signal-to-noise ratio and phase error; the calls announced, how many were
+  recorded and why any weren't; the voice frames received and lost.
+- **For each conventional channel:** its frequency and the name you gave it, the time it was heard
+  and open, its levels, and its calls.
+- **For each radio (SDR) those use:** the name you gave it, its kind (`airspy`, `hackrf`, ...),
+  seconds of samples dropped, clipping and frequency error.
+- **About the recorder:** its name and version, how long it has been recording, and how far the
+  computer's clock is from the radio system's.
+- **Who sends it:** the node's system ID and API key, as every upload does. Broadcastify doesn't
+  keep the key with the report.
+
+Nothing about people: no talkgroups, radio IDs, talker aliases or audio.
+
+### Turning them off
+
+Untick **Send health reports** (`healthReports: false`). Uploads carry on as before, but
+Broadcastify relies on these reports to look after your node, and without them:
+
+- **Your node can't be compared with others.** When several nodes upload the same system,
+  Broadcastify chooses whose calls to take by how well each one hears it. A node that doesn't
+  report can't be compared, so it may be given a lower priority or left out.
+- **Broadcastify can't tell you about problems.** It can't warn you of an outage, a lost control
+  channel, rising voice loss or other trends on your node, and it can't tell a node that's quiet
+  from one that's down.
+- **Support can't see how your node has been doing** when you ask for help with it.
+
+We recommend leaving them on.
 
 ## When an upload fails
 
@@ -147,3 +210,12 @@ lists: `broadcastifyAllow` / `broadcastifyDeny`, or the older `broadcastifyWhite
 you paste them into `config.json`: `broadcastifyCallsServer`, `broadcastifyOTA` and
 `broadcastifySslVerifyDisable` in its settings, and `broadcastifyApiKey` and
 `broadcastifySystemId` in a system's.
+
+## Getting help
+
+For anything about your Broadcastify Calls node (its system IDs and API key, its status on
+Broadcastify's Manage page, calls Broadcastify rejects or doesn't show), email Broadcastify at
+[support@broadcastify.com](mailto:support@broadcastify.com). Say which node it is (its system ID)
+and what the plugin's log says, with the last error if there is one. Don't send your API key.
+
+For the recorder itself (radios, decoding, Setup), see [Troubleshooting](../troubleshooting.md).

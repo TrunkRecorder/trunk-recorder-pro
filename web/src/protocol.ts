@@ -1124,6 +1124,8 @@ export interface CallRecord {
   call_num: number;
   /** The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>`. */
   transmission_id?: string;
+  /** Why it ended (absent: not said). */
+  end_reason?: "terminator" | "squelch" | "next_transmission" | "timeout" | "too_long" | "reassigned" | "stopped";
   short_name?: string;
   /** The site its copy was kept from (a system of one site: its short name). */
   site?: string;
@@ -1576,6 +1578,8 @@ export interface PluginRuntime {
   held?: number;
   /** Results per minute, the last hour: [minute start (Unix s), [ok, skipped, failed]]. */
   minutes?: [number, [number, number, number]][];
+  /** What it says stays true until it says otherwise (settings to fix), beside `message`; `state` is the worst of these and its status. */
+  notices?: { state: "ok" | "warning" | "error"; message: string }[];
 }
 
 export type PluginValues = Record<string, unknown>;
@@ -1612,6 +1616,20 @@ export function copyPerSite(v: PluginValues | undefined): Record<string, PluginV
 export function copyOverride(v: PluginValues | undefined): PluginValues {
   const o = v?.[OVERRIDE];
   return o && typeof o === "object" && !Array.isArray(o) ? (o as PluginValues) : {};
+}
+
+/** A setting with nothing in it. */
+export const blankValue = (x: unknown) => x === undefined || x === null || x === "" || (Array.isArray(x) && x.length === 0);
+
+/** Settings with nothing in them: nothing to keep. */
+export function blank(v: PluginValues | undefined): boolean {
+  return !v || Object.values(v).every(blankValue);
+}
+
+/** A copy from its parts, each left out when there's nothing in it: its own settings, what it overrides, its sites' own. */
+export function copyOf(own: PluginValues, over: PluginValues, perSite: Record<string, PluginValues>): PluginValues {
+  const sites = Object.fromEntries(Object.entries(perSite).filter(([, v]) => !blank(v)));
+  return { ...own, ...(blank(over) ? {} : { [OVERRIDE]: over }), ...(Object.keys(sites).length ? { [PER_SITE]: sites } : {}) };
 }
 
 /** An installed plugin (or one the config names), and what it is. Whether it's on, and its settings, are in the config. */
@@ -1864,6 +1882,33 @@ export interface FolderRow {
   lost?: number;
 }
 
+/** Which computers an address listened on lets connect directly (crates/trunk-pro/src/reach.rs). */
+export type Listen = "thisComputer" | "every" | "one";
+export interface Bind {
+  address: string;
+  listen: Listen;
+}
+/** One way to the built-in interface: this computer, a network's address of it (`iface`), its tailnet's, Tailscale Serve or Funnel, a Cloudflare Tunnel, or `server.hostname`. */
+export interface Route {
+  via: "local" | "network" | "tailnet" | "tailscaleServe" | "funnel" | "cloudflare" | "hostname";
+  url: string;
+  iface?: string;
+  /** From anywhere on the internet. */
+  public: boolean;
+  /** Gone when the recorder listens on this computer only. */
+  direct: boolean;
+}
+/** Where the built-in interface can be reached this run. */
+export interface Reach {
+  /** Listened on this run. */
+  now: Bind;
+  /** `server.bind` as saved: the next start's, unless `--bind` is given then. */
+  saved: Bind;
+  /** This run's address is `--bind`'s, on the command line. */
+  flag: boolean;
+  routes: Route[];
+}
+
 /** The computer, as last sampled (desktop app). Missing values are listed in `unavailable`. */
 export interface PlatformInfo {
   os: string;
@@ -1888,6 +1933,8 @@ export interface PlatformInfo {
   perCore: number[] | null;
   interfaces: { name: string; rx: number; tx: number; state: string }[] | null;
   unavailable: { field: string; why: string }[];
+  /** Where the built-in interface can be reached (desktop app). */
+  reach?: Reach;
   /** The store (desktop app): each table's and index's size, measured every 15 minutes; absent until measured, or with the store off. */
   store?: {
     backend: "sqlite" | "postgres";
