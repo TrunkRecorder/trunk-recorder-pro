@@ -272,6 +272,8 @@ pub enum CarriesOn {
 pub enum CallEnd {
     /// Its voice channel's terminator (conversation mode off: a call is one transmission).
     Terminator,
+    /// Analog, which has no terminator: its squelch shut for the transmission gap (conversation mode off).
+    Squelch,
     /// The next transmission's audio on its channel (conversation mode off).
     NextTransmission,
     /// Nothing heard of it, on the control channel or its voice, for the call timeout.
@@ -288,6 +290,7 @@ impl CallEnd {
     pub fn as_str(self) -> &'static str {
         match self {
             CallEnd::Terminator => "terminator",
+            CallEnd::Squelch => "squelch",
             CallEnd::NextTransmission => "next_transmission",
             CallEnd::Timeout => "timeout",
             CallEnd::TooLong => "too_long",
@@ -297,13 +300,20 @@ impl CallEnd {
     }
 }
 
-impl From<CarriesOn> for CallEnd {
-    fn from(how: CarriesOn) -> CallEnd {
+impl CallEnd {
+    /// Why a call on `voice` that carries on (`how`) ended.
+    pub fn of(how: CarriesOn, voice: Voice) -> CallEnd {
         match how {
             CarriesOn::TooLong => CallEnd::TooLong,
             CarriesOn::NewTransmission => CallEnd::NextTransmission,
+            CarriesOn::Terminated if voice.analog() => CallEnd::Squelch,
             CarriesOn::Terminated => CallEnd::Terminator,
         }
+    }
+
+    /// Its transmission's end, as [`super::voice::TrackerOut::Ended`] says it for `voice`.
+    pub fn ended(voice: Voice) -> CallEnd {
+        Self::of(CarriesOn::Terminated, voice)
     }
 }
 
@@ -950,7 +960,8 @@ impl CallManager {
             Ok(()) => c.recording = true,
             Err(r) => c.reason = Some(r),
         }
-        Self::close(self.calls.remove(i), how.into(), host, ev);
+        let why = CallEnd::of(how, self.calls[i].voice);
+        Self::close(self.calls.remove(i), why, host, ev);
         // (A channel kept after a terminator is a call once it has audio.)
         c.untold = how == CarriesOn::Terminated;
         if !c.untold {

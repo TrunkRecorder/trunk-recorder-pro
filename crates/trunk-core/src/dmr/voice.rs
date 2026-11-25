@@ -25,11 +25,13 @@ struct Slot {
     /// The talker alias being put together, and when voice LC last named the talker for alias/GPS attribution.
     alias: Assembler,
     lc_s: f64,
+    /// Voice heard since its last terminator.
+    voiced: bool,
 }
 
 impl Slot {
     fn new(seed: u32) -> Self {
-        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false, alias: Assembler::default(), lc_s: f64::NEG_INFINITY }
+        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false, alias: Assembler::default(), lc_s: f64::NEG_INFINITY, voiced: false }
     }
 }
 
@@ -120,6 +122,9 @@ impl DmrVoice {
                 }
                 if from == LcFrom::Terminator && lc.ends_voice() {
                     // End of the transmission (repeated through the hang time): not a call of its own.
+                    if std::mem::take(&mut s.voiced) {
+                        push(TrackerOut::Ended);
+                    }
                     s.alias.reset();
                     s.source = None;
                     s.encrypted = false;
@@ -158,6 +163,7 @@ impl DmrVoice {
             }
             SlotEvent::Voice { frame, pos } => {
                 self.frames += 1;
+                s.voiced = true;
                 if pos == Some(0) && s.source.is_none() {
                     // A new superframe with no LC yet: a fresh transmission's vocoder state.
                     s.dec.reset();
@@ -249,6 +255,25 @@ mod tests {
         v.event(0, SlotEvent::Lc { lc: next, from: LcFrom::Embedded }, 6.1, &mut out);
         v.event(0, report, 6.2, &mut out);
         assert!(matches!(out[0].out, TrackerOut::Position(p) if p.unit == 7), "repeated voice LC refreshes the talker");
+    }
+
+    /// The terminator's link control after voice ends the transmission,
+    /// once: not again as it repeats through the hang time, nor with no voice before it.
+    #[test]
+    fn a_terminator_after_voice_ends_the_transmission_once() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        let ended = |out: &[Out]| out.iter().filter(|o| matches!(o.out, TrackerOut::Ended)).count();
+        let term = SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Terminator };
+        v.event(0, term.clone(), 0.0, &mut out);
+        assert_eq!(ended(&out), 0, "no voice yet");
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Header }, 0.1, &mut out);
+        v.event(0, SlotEvent::Voice { frame: crate::ambe::AmbeFrame { bits: [0; 49], errs: 0 }, pos: Some(0) }, 0.2, &mut out);
+        for t in [0.5, 0.86, 1.22] {
+            v.event(0, term.clone(), t, &mut out);
+        }
+        assert_eq!(ended(&out), 1);
+        assert_eq!(out.iter().filter(|o| matches!(o.out, TrackerOut::Ended)).map(|o| (o.slot, o.t)).collect::<Vec<_>>(), [(0, 0.5)]);
     }
 
     /// Motorola restricted access (RAS): a call's embedded LC sets the FLCO's

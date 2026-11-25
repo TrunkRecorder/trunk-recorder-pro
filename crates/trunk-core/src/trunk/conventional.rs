@@ -54,7 +54,7 @@ use std::sync::Arc;
 
 use num_complex::Complex32;
 
-use super::calls::{Call, CallConfig, CallEvent, CallIds, CallManager, CallSource, CarriesOn, Flags, Policy, Voice};
+use super::calls::{Call, CallConfig, CallEnd, CallEvent, CallIds, CallManager, CallSource, CarriesOn, Flags, Policy, Voice};
 use super::engine::{Event, LiveAudio, Pins, SystemConfig, Tuning};
 use super::inband::InBandSpec;
 use super::record::RecordedOn;
@@ -616,6 +616,8 @@ struct Heard {
     nac: Option<u16>,
     /// The row it is for, on a frequency with codes.
     row: Option<usize>,
+    /// The transmission's terminator came ([`TrackerOut::Ended`]).
+    ended: bool,
 }
 
 impl Heard {
@@ -671,6 +673,10 @@ struct Open {
     last_carrier_s: f64,
     /// The call on each slot (FM and P25: slot 0).
     live: [Option<Live>; 2],
+    /// Kept open until then with no call on it: a transmission ended on its
+    /// terminator, and the channel waits the call timeout for the next, as
+    /// its call would have (a repeater's carrier drops between them).
+    held_until_s: f64,
     tx: Option<Box<Tx>>,
     /// Per slot: a cipher heard ahead of any voice (a P25 HDU in a run of
     /// its own), for the voice that follows it.
@@ -1080,11 +1086,11 @@ impl Conventional {
             let o = ch.open.as_mut().unwrap();
             for live in o.live.iter_mut() {
                 if live.as_ref().is_some_and(|l| rules.calls.quiet(&l.call, now_s)) {
-                    Self::end(live.take().unwrap(), on, tune, out);
+                    Self::end(live.take().unwrap(), CallEnd::Timeout, on, tune, out);
                 }
             }
             let o = ch.open.as_ref().unwrap();
-            if o.live.iter().all(Option::is_none) && now_s - o.last_carrier_s.max(o.opened_s) > CLOSE_HANG_S {
+            if o.live.iter().all(Option::is_none) && now_s - o.last_carrier_s.max(o.opened_s) > CLOSE_HANG_S && now_s >= o.held_until_s {
                 if !o.carrier_seen {
                     // The meter never confirmed it: leakage or a spur. Wait
                     // for the band to rise further (or fall back) first.
@@ -1097,7 +1103,7 @@ impl Conventional {
                     let ended_s = ch.open.as_ref().unwrap().last_carrier_s;
                     Self::flush_open(ch, ended_s, idx as u32, ids, rules, out);
                     for l in ch.open.as_mut().unwrap().live.iter_mut().filter_map(Option::take) {
-                        Self::end(l, on, tune, out);
+                        Self::end(l, CallEnd::Timeout, on, tune, out);
                     }
                 }
                 let mut o = ch.open.take().unwrap();
@@ -1145,7 +1151,7 @@ impl Conventional {
         let voice = voice::build(&spec);
         let tape = tapes.then(|| VoiceTape::new(spec, ch.freq_hz));
         let meter = (!ch.mode().analog()).then(|| ChannelFilter::new(rate));
-        ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], tx: None, cipher_ahead: [None; 2] });
+        ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], held_until_s: 0.0, tx: None, cipher_ahead: [None; 2] });
         Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, out);
     }
 
@@ -1203,9 +1209,9 @@ impl Conventional {
                 TrackerOut::Alias(a) => out.push(ConvOut::Alias(ch.system as u16, a)),
                 TrackerOut::Position(p) => h.positions.push(p),
                 TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.system as u16, c)),
+                TrackerOut::Ended => h.ended = true,
                 // (A conventional channel has no grants: the air's talkgroup is its own.)
-                // (A conventional call ends on its squelch and timeout.)
-                TrackerOut::AliasLc(_) | TrackerOut::Talkgroup(_) | TrackerOut::Ended => {}
+                TrackerOut::AliasLc(_) | TrackerOut::Talkgroup(_) => {}
                 TrackerOut::BaseStationId(call_sign) => out.push(ConvOut::Event(Event::CallSign { system: ch.system as u16, freq_hz: ch.freq_hz.round() as u64, call_sign })),
             }
         }
@@ -1343,6 +1349,22 @@ impl Conventional {
     /// Start, relabel, split or feed the call on one slot with what it heard.
     #[allow(clippy::too_many_arguments)]
     fn slot_call(ch: &mut Chan, slot: usize, h: Heard, now_s: f64, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
+        let ended = h.ended;
+        Self::slot_heard(ch, slot, h, now_s, num, ids, rules, out);
+        // Conversation mode off: the transmission's terminator ends its call
+        // now, not on the call timeout (the next one's audio begins its own).
+        let Some(o) = ch.open.as_mut().filter(|_| ended && !rules.calls.conversation) else { return };
+        if o.live[slot].as_ref().is_some_and(|l| !l.rec.audio.is_empty()) {
+            let l = o.live[slot].take().unwrap();
+            o.held_until_s = now_s + rules.calls.call_timeout_s;
+            let why = CallEnd::ended(l.call.voice);
+            Self::end(l, why, ch.on(num as usize), ch.tune_ref, out);
+        }
+    }
+
+    /// [`Self::slot_call`] but for the terminator.
+    #[allow(clippy::too_many_arguments)]
+    fn slot_heard(ch: &mut Chan, slot: usize, h: Heard, now_s: f64, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
         if h.is_empty() {
             return;
         }
@@ -1391,11 +1413,15 @@ impl Conventional {
             };
             if new_tg || new_row || carry_on.is_some() {
                 let l = o.live[slot].take().unwrap();
+                let why = match &carry_on {
+                    Some((_, how)) if !(new_tg || new_row) => CallEnd::of(*how, l.call.voice),
+                    _ => CallEnd::Reassigned,
+                };
                 let next = carry_on.filter(|_| !(new_tg || new_row)).map(|(talking, how)| {
                     let call = Call { recording: l.call.recording, reason: l.call.reason, ..l.call.continued(ids.next(), from_s, talking, how) };
                     Live { rec: Recorded::new(rules.capture_frames, spec), call, row: l.row }
                 });
-                Self::end(l, on, tune, out);
+                Self::end(l, why, on, tune, out);
                 if let Some(n) = next {
                     out.push(ConvOut::Call(CallEvent::Start(n.call.clone())));
                     o.live[slot] = Some(n);
@@ -1507,7 +1533,9 @@ impl Conventional {
         }
     }
 
-    fn end(mut l: Live, on: RecordedOn, tune_ref: bool, out: &mut Vec<ConvOut>) {
+    /// Call `l` is over (`why`): what it ended on, and the call, for the engine to save.
+    fn end(mut l: Live, why: CallEnd, on: RecordedOn, tune_ref: bool, out: &mut Vec<ConvOut>) {
+        l.call.end = Some(why);
         // What it ended on.
         let patterns = l.rec.finish().patterns;
         let at = l.call.last_audio_s;
@@ -1528,7 +1556,7 @@ impl Conventional {
             let mut o = ch.open.take().unwrap();
             keep_tape(&self.tape_sink, &mut o);
             for l in o.live.into_iter().flatten() {
-                Self::end(l, ch.on(idx), ch.tune_ref, out);
+                Self::end(l, CallEnd::Stopped, ch.on(idx), ch.tune_ref, out);
             }
         }
     }
@@ -1725,6 +1753,16 @@ mod tests {
     }
 
     fn p25_call_on_channel(ch: ConvChannel) -> Vec<Call> {
+        one_p25_transmission(ch, conv_system("conv"))
+    }
+
+    fn one_p25_transmission(ch: ConvChannel, sys: SystemConfig) -> Vec<Call> {
+        p25_transmissions(ch, sys, 1)
+    }
+
+    /// `n` P25 transmissions (each with its TDU) on channel `ch` of system
+    /// `sys`, the carrier gone 1.5 s between them: its calls.
+    fn p25_transmissions(ch: ConvChannel, sys: SystemConfig, n: usize) -> Vec<Call> {
         use crate::p25::synth::{dibits, imbe, modulate, Tx};
         let (fs, center, freq) = (1_200_000.0, 155_000_000.0, 155_100_000.0);
         let tx = Tx { nac: 0x293, talkgroup: 716, source: 42, cipher: None, voice: (0..72).map(imbe).collect() };
@@ -1733,13 +1771,15 @@ mod tests {
         d.extend(vec![0u8; 2400]);
         let mut ph = 0.0;
         let mut iq = vec![Complex32::default(); (fs * 0.5) as usize];
-        iq.extend(modulate(&d, fs, freq - center, 0.3, &mut ph));
-        iq.extend(vec![Complex32::default(); (fs * 3.0) as usize]);
+        for k in 0..n {
+            iq.extend(modulate(&d, fs, freq - center, 0.3, &mut ph));
+            iq.extend(vec![Complex32::default(); (fs * if k + 1 < n { 1.5 } else { 3.0 }) as usize]);
+        }
         crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
         let cfg = EngineConfig {
             sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
             conventional: vec![ch],
-            systems: vec![conv_system("conv")],
+            systems: vec![sys],
             ..Default::default()
         };
         let e = Engine::new(cfg).unwrap();
@@ -1748,6 +1788,26 @@ mod tests {
         }
         e.finish();
         e.drain_events().into_iter().filter_map(|ev| if let Event::Concluded(k) = ev { Some(k.call) } else { None }).collect()
+    }
+
+    /// A conventional P25 call ends on its TDU with conversations off, on the
+    /// call timeout with them on; each says so.
+    #[test]
+    fn a_conventional_transmission_ends_on_its_terminator_with_conversations_off() {
+        let ch = || ConvChannel::new(155_100_000.0, ConvMode::P25);
+        let off = SystemConfig { calls: CallConfig { conversation: false, call_timeout_s: 1.0, ..Default::default() }, ..SystemConfig::conventional("conv") };
+        let [c] = &one_p25_transmission(ch(), off)[..] else { panic!("one call") };
+        assert_eq!((c.end, c.talkgroup), (Some(CallEnd::Terminator), 716));
+        let [c] = &one_p25_transmission(ch(), conv_system("conv"))[..] else { panic!("one call") };
+        assert_eq!(c.end, Some(CallEnd::Timeout));
+        // Two, the carrier gone between them: each a call, whole, ended on its terminator. (A repeater's
+        // carrier dropping in its hang time, as on the conv-dmr capture with --transmissions, is what
+        // Open::held_until_s keeps the channel through: regress.sh's conv-dmr-tx.)
+        let off = SystemConfig { calls: CallConfig { conversation: false, call_timeout_s: 3.0, ..Default::default() }, ..SystemConfig::conventional("conv") };
+        let calls = p25_transmissions(ch(), off, 2);
+        assert_eq!(calls.iter().map(|c| c.end).collect::<Vec<_>>(), [Some(CallEnd::Terminator); 2]);
+        assert_eq!(calls[0].sources.len(), calls[1].sources.len(), "the second as whole as the first");
+        assert!((calls[1].last_audio_s - calls[1].start_s - (calls[0].last_audio_s - calls[0].start_s)).abs() < 0.1);
     }
 
     #[test]
@@ -1879,9 +1939,10 @@ mod tests {
         assert_eq!((calls.len(), starts), (0, 1), "told, not recorded");
         // Two transmissions 0.7 s apart, under the 1 s call timeout.
         let two = || [tx(vec![(0.5, 1.5), (2.2, 3.2)])];
-        assert_eq!(run(fs, 4.5, &mut two(), ch()).0.len(), 1, "a conversation");
+        let ends = |calls: &[(Call, usize, String)]| calls.iter().map(|c| c.0.end).collect::<Vec<_>>();
+        assert_eq!(ends(&run(fs, 4.5, &mut two(), ch()).0), [Some(CallEnd::Timeout)], "a conversation");
         let (calls, _, _) = run_systems(fs, 4.5, &mut two(), ch(), with(&|s| s.calls.conversation = false));
-        assert_eq!(calls.len(), 2, "conversation off: a call each");
+        assert_eq!(ends(&calls), [Some(CallEnd::Squelch); 2], "conversation off: a call each, over once its squelch has been shut the transmission gap");
         let (calls, _, _) = run_systems(fs, 4.5, &mut [tx(vec![(0.5, 3.8)])], ch(), with(&|s| s.calls.max_call_s = 1.5));
         assert!(calls.len() >= 2, "{} call(s): past 1.5 s it carries on in another", calls.len());
     }

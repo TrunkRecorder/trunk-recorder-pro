@@ -174,7 +174,9 @@ pub enum TrackerOut {
     /// ([`reassigned`]).
     Talkgroup(u32),
     /// The transmission's terminator, after its voice (P25 Phase 1 TDU /
-    /// TDULC; Phase 2 MAC_END_PTT, or hangtime or idle in its place): the
+    /// TDULC; Phase 2 MAC_END_PTT, or hangtime or idle in its place; DMR its
+    /// terminator's link control; NXDN TX_REL, DISC or Type-D's "go to
+    /// repeater 31"; analog the squelch shut for the transmission gap): the
     /// transmission is over. With conversation mode off that ends its call
     /// ([`super::calls::CallManager::terminated`]).
     Ended,
@@ -502,9 +504,10 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             squelch: spec.squelch,
             subaudible: spec.subaudible,
             carrier: false,
+            ending: Ending::new(spec.rate),
         }),
         VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder), t0: spec.t0, air: None }),
-        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false }),
+        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false, ending: Ending::new(spec.rate) }),
         VoiceKind::Auto => Auto::new(spec),
     }
 }
@@ -952,6 +955,36 @@ struct Analog {
     squelch: f32,
     subaudible: bool,
     carrier: bool,
+    ending: Ending,
+}
+
+/// Analog voice has no terminator: a transmission is over once the squelch
+/// has been shut for [`super::record::TRANSMISSION_GAP_S`] after its audio,
+/// the gap that tells one transmission from the next ([`TrackerOut::Ended`]).
+struct Ending {
+    /// Samples at the channel's rate since the squelch shut, and the gap's.
+    shut: usize,
+    gap: usize,
+    /// Audio since the last end.
+    voiced: bool,
+}
+
+impl Ending {
+    fn new(rate: f64) -> Ending {
+        Ending { shut: 0, gap: (super::record::TRANSMISSION_GAP_S * rate) as usize, voiced: false }
+    }
+
+    /// `n` samples, with audio out of them or not: whether the transmission just ended.
+    fn after(&mut self, n: usize, audio: bool) -> bool {
+        if audio {
+            (self.shut, self.voiced) = (0, true);
+            return false;
+        }
+        self.shut += n;
+        let ended = self.voiced && self.shut >= self.gap;
+        self.voiced &= !ended;
+        ended
+    }
 }
 
 impl VoiceDecoder for Analog {
@@ -968,11 +1001,15 @@ impl VoiceDecoder for Analog {
             Demod::Fm(fm) => fm.push_low(iq, self.squelch, &mut audio, self.subaudible.then_some(&mut low)),
             Demod::Am(am) => am.push(iq, self.squelch, &mut audio),
         };
+        let ended = self.ending.after(iq.len(), !audio.is_empty());
         if !audio.is_empty() {
             out.push(VoiceOut { slot: 0, out: TrackerOut::AnalogAudio(audio) });
         }
         if !low.is_empty() {
             out.push(VoiceOut { slot: 0, out: TrackerOut::Subaudible(low) });
+        }
+        if ended {
+            out.push(VoiceOut { slot: 0, out: TrackerOut::Ended });
         }
     }
     fn set_squelch(&mut self, open_power: f32) {
@@ -992,6 +1029,25 @@ impl VoiceDecoder for Analog {
     }
     fn quality(&self) -> ChannelQuality {
         ChannelQuality::default()
+    }
+}
+
+#[cfg(test)]
+mod ending_tests {
+    use super::*;
+
+    /// Analog: over once the squelch has been shut for the transmission gap
+    /// after audio, once; a shorter drop (a flutter) isn't an end.
+    #[test]
+    fn analog_ends_when_the_squelch_stays_shut() {
+        let mut e = Ending::new(1000.0);
+        assert!(!e.after(1000, false), "no audio yet");
+        assert!(!e.after(100, true));
+        assert!(!e.after(300, false), "0.3 s: a flutter");
+        assert!(!e.after(100, true), "its audio again");
+        assert!(!e.after(400, false));
+        assert!(e.after(100, false), "0.5 s shut");
+        assert!(!e.after(1000, false), "once");
     }
 }
 

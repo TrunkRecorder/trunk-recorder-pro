@@ -37,6 +37,8 @@ pub struct NxdnVoice {
     emergency: bool,
     /// Full-rate voice (not decoded).
     efr: bool,
+    /// Voice heard since the transmission's last release.
+    voiced: bool,
     ran: Option<u8>,
     /// Kenwood talker alias segments heard in this transmission.
     aliases: Aliases,
@@ -64,6 +66,7 @@ impl NxdnVoice {
             encrypted: false,
             emergency: false,
             efr: false,
+            voiced: false,
             ran: None,
             aliases: Aliases::default(),
             alias: None,
@@ -174,6 +177,9 @@ impl NxdnVoice {
             2 | 4 if !special && s.short_id() != 0 => {
                 if s.repeater() == 31 {
                     // The end of a transmission ("go to repeater" 31).
+                    if std::mem::take(&mut self.voiced) {
+                        out.push(Out { t, out: TrackerOut::Ended });
+                    }
                     self.source = None;
                     self.encrypted = false;
                     return;
@@ -226,6 +232,9 @@ impl NxdnVoice {
             }
             Message::TxRel { .. } | Message::TxRelEx { .. } | Message::Disc { .. } => {
                 // End of the transmission: what it was doesn't carry over to the next.
+                if std::mem::take(&mut self.voiced) {
+                    out.push(Out { t, out: TrackerOut::Ended });
+                }
                 self.source = None;
                 self.encrypted = false;
                 self.emergency = false;
@@ -254,6 +263,7 @@ impl NxdnVoice {
 
     fn voice(&mut self, d: &[u8; 36], r: &[f32; 72], t: f64, out: &mut Vec<Out>) {
         self.vch += 1;
+        self.voiced = true;
         if self.encrypted || self.efr {
             return;
         }
@@ -300,6 +310,18 @@ mod tests {
 
     fn tx(rate: Rate, cipher: u8) -> Tx {
         Tx { cipher, ..Tx::new(rate, 3, CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 501, destination: 3100 }, 2, 4) }
+    }
+
+    /// Its TX_REL ends the transmission, once (the synthetic one sends it after the voice).
+    #[test]
+    fn a_release_after_voice_ends_the_transmission() {
+        for rate in [Rate::N48, Rate::N96] {
+            let (_, out) = run(&tx(rate, 0));
+            let ended: Vec<usize> = out.iter().enumerate().filter(|(_, o)| matches!(o.out, TrackerOut::Ended)).map(|(i, _)| i).collect();
+            let last_audio = out.iter().rposition(|o| matches!(o.out, TrackerOut::Audio(..))).unwrap();
+            assert_eq!(ended.len(), 1, "{rate:?}");
+            assert!(ended[0] > last_audio, "after its voice");
+        }
     }
 
     #[test]

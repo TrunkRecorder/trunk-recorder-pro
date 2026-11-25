@@ -10,7 +10,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - **Ends on its terminator.** With `conversationMode` off a call is one transmission, but it ended only once the
     control channel had stopped mentioning its channel for `callTimeoutS`, unless the next transmission's audio came on
     that channel first. So about half of all calls waited out the timeout, and reached plugins late, on any signal.
-    Now a P25 transmission (Phase 1 TDU, Phase 2 end of PTT) ends on its terminator. Its voice channel is kept, so a
+    Now a transmission ends on its terminator: P25 (Phase 1 TDU, Phase 2 end of PTT), DMR (its terminator's link
+    control) and NXDN (TX_REL, DISC). Analog (SmartNet, EDACS, conventional FM and AM) has none, so it ends once its
+    squelch has been shut for half a second. Trunked and conventional alike. Its voice channel is kept, so a
     transmission right after it on that channel is a call of its own from its first audio, and nothing of it is lost.
     A channel nothing more comes on goes without a word. With conversations on, nothing changes.
   - **Duplicates judged by audio.** A transmission heard on several sites was sometimes saved twice under one
@@ -18,8 +20,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     last control-channel mention. A site whose copy waited out the timeout, or heard the next talker's grant, so
     stretched its copy past the kept one. Copies are now compared by when their audio was heard, and by the talkers in
     it.
-  - **`end_reason`.** Each call's record says why it ended: `terminator`, `next_transmission`, `timeout`, `too_long`,
-    `reassigned` or `stopped`. So does the log's **Concluding Recorded Call** line (`Ended: …`).
+  - **`end_reason`.** Each call's record, trunked or conventional, says why it ended: `terminator`, `squelch`,
+    `next_transmission`, `timeout`, `too_long`, `reassigned` or `stopped`. So does the log's **Concluding Recorded Call** line (`Ended: …`).
 
 - **Setup: radios that can't be told apart, or another source's, say so, every kind alike** (#235, thanks
   @blantonl). A second RTL-SDR with no serial, or a serial another has, was offered in the **Dongle** list but
