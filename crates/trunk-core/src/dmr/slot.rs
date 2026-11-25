@@ -147,8 +147,9 @@ impl Csbk {
 
 #[derive(Clone, Debug)]
 pub enum SlotEvent {
-    /// A voice codeword (AMBE+2) and the burst's place in its superframe (0 = A … 5 = F; None: joined late).
-    Voice { frame: AmbeFrame, pos: Option<u8> },
+    /// A voice codeword (AMBE+2), the burst's place in its superframe (0 = A … 5 = F; None:
+    /// joined late) and which of the burst's three it is.
+    Voice { frame: AmbeFrame, pos: Option<u8>, k: u8 },
     Lc { lc: Lc, from: LcFrom },
     /// A CSBK, or an MBC header's first block (the rest follow as continuations).
     Csbk { csbk: Csbk, mbc: bool },
@@ -156,8 +157,8 @@ pub enum SlotEvent {
     MbcContinuation([u8; 12]),
     /// BPTC- and CRC8-checked carrier-wide short link control (36 packed bits).
     Slco([u8; 5]),
-    /// Privacy indicator header: encrypted, with this algorithm and key.
-    Privacy { alg: u8, key: u8 },
+    /// Privacy indicator header: encrypted, with this algorithm, key and initialization vector.
+    Privacy { alg: u8, key: u8, iv: [u8; 4] },
     /// A checked data header or BPTC-decoded rate-1/2 block.
     Block { data_type: u8, bytes: [u8; 12] },
     /// A complete short-data packet, header and packet CRC checked.
@@ -252,7 +253,7 @@ impl SlotDecoder {
     fn voice(&mut self, b: &Burst, out: &mut Vec<SlotEvent>) {
         for k in 0..3 {
             self.voice_frames += 1;
-            out.push(SlotEvent::Voice { frame: self.frame(b, k), pos: self.pos });
+            out.push(SlotEvent::Voice { frame: self.frame(b, k), pos: self.pos, k: k as u8 });
         }
     }
 
@@ -409,7 +410,7 @@ impl SlotDecoder {
                 DT_CSBK | DT_MBC_HEADER => out.push(SlotEvent::Csbk { csbk: Csbk(bytes[..10].try_into().unwrap()), mbc: dt == DT_MBC_HEADER }),
                 DT_MBC_CONTINUATION => out.push(SlotEvent::MbcContinuation(bytes)),
                 DT_DATA_HEADER | 7 => out.push(SlotEvent::Block { data_type: dt, bytes }),
-                DT_PI_HEADER => out.push(SlotEvent::Privacy { alg: bytes[0] & 7, key: bytes[2] }),
+                DT_PI_HEADER => out.push(SlotEvent::Privacy { alg: bytes[0] & 7, key: bytes[2], iv: bytes[3..7].try_into().unwrap() }),
                 _ => {}
             }
         }

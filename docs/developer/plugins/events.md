@@ -259,7 +259,7 @@ plugin is on for: the user sets nothing up. Since SDK 0.17.0.
 | Topic | From | `data` | Notes | |
 |---|---|---|---|---|
 | `tap.fm.discriminator` | Analog FM channels | `pcm`, 22,050 Hz | None | The FM demodulator's output before de-emphasis, the voice filters and the CTCSS notch, while the squelch is open; ±5 kHz deviation is half of full scale. For data decoders (POCSAG, FLEX, …) |
-| `tap.voice.air` | P25 voice (Phase 1 and 2) | `frames` | `AirFrame`, one a frame | Each voice frame as it came off the air: error-corrected, not decrypted |
+| `tap.voice.air` | Digital voice: P25 (Phase 1 and 2), DMR, NXDN, EDACS ProVoice | `frames` | `AirFrame`, one a frame | Each voice frame as it came off the air: error-corrected, not decrypted |
 | `tap.voice.errors` | Digital voice | `none` | `FrameErrors`, one a frame vocoded | How each frame decoded: no data, only the figures |
 
 The SDK lists them as `TAPS`, and `Tap::VoiceAir.topic()` is the topic to subscribe to. All of them
@@ -272,8 +272,8 @@ call the one method, `tap(chunk)`; `chunk.tap` says which.
   "call_id": 912, "talkgroup": 101, "time": 1795600000.2,
   "data": { "kind": "frames", "codec": "imbe", "frames": ["a3f0…", "7c21…"] },
   "notes": [
-    { "at": 0, "n": 0, "errs": 1, "e0": 0, "encrypted": true, "algid": 132, "keyid": 66, "mi": "0102030405060708a9" },
-    { "at": 1, "n": 1, "errs": 0, "e0": 0, "encrypted": true, "algid": 132, "keyid": 66, "mi": "0102030405060708a9" }
+    { "at": 0, "voice_mode": "p25", "n": 0, "errs": 1, "e0": 0, "encrypted": true, "algid": 132, "keyid": 66, "mi": "0102030405060708a9" },
+    { "at": 1, "voice_mode": "p25", "n": 1, "errs": 0, "e0": 0, "encrypted": true, "algid": 132, "keyid": 66, "mi": "0102030405060708a9" }
   ]
 }
 ```
@@ -305,11 +305,22 @@ place in the stream.
 
 | Field | |
 |---|---|
-| `n` | The frame's place in its superframe, 0–17 (Phase 1: LDU1's nine, then LDU2's; Phase 2: the four 4V bursts' frames, then the 2V's). Left out when a lost burst left it unknown |
+| `voice_mode` | What the frame was sent as, named as a call's `voice_mode`: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`. `n` and the encryption fields are that protocol's (below) |
+| `n` | The frame's place in its superframe. Left out when it isn't known |
 | `errs`, `e0` | As a `voice` frame's |
 | `erased` | Known lost: its bits mean nothing. Left out when false |
-| `encrypted` | Whether the transmission is encrypted, once a header, link control or an encryption sync has said. Left out until then |
-| `algid`, `keyid`, `mi` | The encryption sync the frame is under, once one was heard: the algorithm, the key ID and the message indicator (hex, 9 bytes) |
+| `encrypted` | Whether the transmission is encrypted, once the air has said (a header, link control, an encryption sync, a VCALL). Left out until then |
+| `algid`, `keyid`, `mi` | The encryption the frame is under, once the air has said: the algorithm, the key ID and the message indicator or initialization vector (hex) |
+
+| `voice_mode` | Frame | `n` | `algid`, `keyid`, `mi` |
+|---|---|---|---|
+| `p25` | IMBE, 88 bits | 0–17: LDU1's nine, then LDU2's | The encryption sync's ALGID, KID and MI (9 bytes) |
+| `p25_phase2` | AMBE+2, 49 bits | 0–17: the four 4V bursts' frames, then the 2V's. Unknown after a lost burst | The same |
+| `dmr` | AMBE+2, 49 bits | 0–17: bursts A–F, three each. Unknown for a transmission joined late | The privacy indicator header's algorithm, key ID and IV (4 bytes). Basic privacy sends none: only `encrypted` |
+| `nxdn48`, `nxdn96` | AMBE+2, 49 bits | 0–15: four frames of four (at 9600 baud a FACCH1 takes two at a time). Unknown where the frame's SACCH didn't decode, and on Type-D | The VCALL's cipher type (1 scrambler, 2 DES, 3 AES) and key ID, and the VCALL_IV's IV (8 bytes) |
+| `provoice` | IMBE, 88 bits | 0–3: the frame's four | Never: the air doesn't say |
+
+NXDN full-rate voice (EFR) is another codeword and isn't tapped.
 
 `FrameErrors` (`voice.errors`): `codec`, `errs`, `e0`, `erased` and `kind`, as a `voice` frame's.
 

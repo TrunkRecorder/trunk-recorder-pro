@@ -1,6 +1,6 @@
 //! Signal taps: what a voice channel's receive chain holds part-way through, handed out as it
 //! is made. A tap is a named place in the chain, after the channel's IQ and before the call's
-//! audio: the FM discriminator's output, a P25 frame before decryption, each frame's error
+//! audio: the FM discriminator's output, a voice frame before decryption, each frame's error
 //! count. Every tap gives the same thing, a stream of [`TapChunk`]s: its data (samples,
 //! frames, or none) and the notes about it, one stream for each transmission on a channel.
 //! The recorder saves a stream to files and sends its chunks to the plugins subscribed to the
@@ -24,8 +24,9 @@ pub enum Tap {
     /// decoder (POCSAG, FLEX, a trunking control channel) takes. Notes: none.
     #[serde(rename = "fm.discriminator")]
     FmDiscriminator,
-    /// P25 voice frames as they came off the air: error-corrected, not decrypted, whether the
-    /// recorder can play them or not. Notes: an [`AirFrame`] for each.
+    /// Digital voice frames as they came off the air (P25 Phase 1 and 2, DMR, NXDN, EDACS
+    /// ProVoice): error-corrected, not decrypted, whether the recorder can play them or not.
+    /// Notes: an [`AirFrame`] for each.
     #[serde(rename = "voice.air")]
     VoiceAir,
     /// How well each voice frame decoded: no data, a [`FrameErrors`] note for each frame vocoded.
@@ -72,9 +73,9 @@ pub const TAPS: &[TapInfo] = &[
     TapInfo {
         tap: Tap::VoiceAir,
         id: "voice.air",
-        title: "P25 frames off the air",
-        about: "Each P25 voice frame after error correction and before decryption, with its place in the superframe, its errors and the encryption sync it is under.",
-        from: "P25",
+        title: "Voice frames off the air",
+        about: "Each digital voice frame (P25, DMR, NXDN, ProVoice) after error correction and before decryption, with its place in the superframe, its errors and the encryption it is under.",
+        from: "Digital voice",
         carries: Carries::Frames,
     },
     TapInfo {
@@ -283,12 +284,20 @@ impl TapNote {
     }
 }
 
-/// [`Tap::VoiceAir`]'s note: a P25 voice frame as it was sent.
+/// [`Tap::VoiceAir`]'s note: a digital voice frame as it was sent.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AirFrame {
-    /// Its place in the superframe: Phase 1, 0–17 (LDU1's nine frames, then LDU2's); Phase 2,
-    /// 0–17 (four 4V bursts, then the 2V). None where a lost burst left the count unknown.
+    /// What it was sent as, named as [`crate::CallInfo::voice_mode`] names it: "p25" |
+    /// "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice". `n` and the encryption fields
+    /// are that protocol's.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub voice_mode: String,
+    /// Its place in the superframe. P25 Phase 1: 0–17 (LDU1's nine frames, then LDU2's).
+    /// Phase 2: 0–17 (four 4V bursts, then the 2V). DMR: 0–17 (bursts A–F, three frames
+    /// each). NXDN: 0–15 (four frames of four; a 9600 baud FACCH1 takes two at a time).
+    /// ProVoice: 0–3 (its frame's four). None where the count isn't known: a lost burst, a
+    /// transmission joined late, an NXDN frame whose SACCH didn't decode or (Type-D) has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u8>,
     /// Bit errors the FEC corrected in the frame.
@@ -302,14 +311,24 @@ pub struct AirFrame {
     /// out until a header, link control or an encryption sync has said.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encrypted: Option<bool>,
-    /// The encryption sync the frame is under, once one was heard: the algorithm, the key and
-    /// the message indicator (hex, 9 bytes).
+    /// The encryption the frame is under, once the air has said: the algorithm, the key and
+    /// the message indicator or initialization vector (hex). P25: the encryption sync's ALGID,
+    /// KID and MI (9 bytes). DMR: the privacy indicator header's algorithm, key and IV (4
+    /// bytes); basic privacy sends none. NXDN: the VCALL's cipher type (1 scrambler, 2 DES,
+    /// 3 AES) and key, and the VCALL_IV's IV (8 bytes).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub algid: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub keyid: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mi: Option<String>,
+}
+
+impl AirFrame {
+    /// `bytes` as [`AirFrame::mi`] has them.
+    pub fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
 }
 
 /// [`Tap::VoiceErrors`]'s note: how one voice frame decoded.
@@ -405,7 +424,7 @@ mod tests {
     #[test]
     fn a_chunk_round_trips_with_its_data_and_notes() {
         let frame: Vec<u8> = (0..88).map(|i| (i % 3 == 0) as u8).collect();
-        let air = AirFrame { n: Some(9), errs: 2, encrypted: Some(true), algid: Some(0x84), keyid: Some(1), mi: Some("00".repeat(9)), ..Default::default() };
+        let air = AirFrame { voice_mode: "p25".into(), n: Some(9), errs: 2, encrypted: Some(true), algid: Some(0x84), keyid: Some(1), mi: Some("00".repeat(9)), ..Default::default() };
         let chunk = TapChunk {
             tap: Tap::VoiceAir,
             stream: 7,

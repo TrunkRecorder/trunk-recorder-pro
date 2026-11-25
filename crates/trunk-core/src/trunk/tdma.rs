@@ -8,7 +8,7 @@
 //! the 2V's two).
 
 use super::frames::{Codec, VoiceFrame};
-use super::calls::Flags;
+use super::calls::{Flags, Voice};
 use super::taps::{Tap, TapPiece, TapSet};
 use super::tracker::air_frame;
 use super::voice::{CipherId, Crypt, Encryption, TrackerOut};
@@ -462,7 +462,7 @@ impl TdmaTracker {
                 _ => (0..4).contains(&s.burst_id).then(|| 4 * s.burst_id as usize + j),
             };
             if self.taps.has(Tap::VoiceAir) {
-                let note = air_frame(f, v.errs, 0, false, &s.crypt);
+                let note = air_frame(Voice::P25Tdma { slot: c as u8 & 1 }, f, v.errs, 0, false, &s.crypt);
                 out.push((c, TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Ambe, &v.bits, &note))));
             }
             if s.crypt.voice == Encryption::Unknown || (s.crypt.voice.encrypted() && s.crypt.keystream().is_none() && keys.is_some()) {

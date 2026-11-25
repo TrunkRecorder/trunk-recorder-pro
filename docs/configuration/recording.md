@@ -113,7 +113,7 @@ beside the rows in **Setup → Recording → Advanced → Signal taps**.
 | Tap | From | Files | What it is |
 |---|---|---|---|
 | `fm.discriminator` | Analog FM channels | `.wav` + `.jsonl` | The FM demodulator's output before de-emphasis, the voice filters and the CTCSS notch: 16-bit mono at 22,050 Hz, ±5 kHz deviation as half of full scale, while the squelch is open. What `multimon-ng` and its kind decode POCSAG, FLEX and other data from |
-| `voice.air` | P25 voice channels (Phase 1 and 2) | `.jsonl` | Each voice frame as it came off the air: error-corrected, **not** decrypted (encrypted voice stays encrypted, whether or not the recorder has its key), with its place in the superframe, its bit errors and the encryption sync (`algid`, `keyid`, `mi`) it is under |
+| `voice.air` | Digital voice channels: P25 (Phase 1 and 2), DMR, NXDN, EDACS ProVoice | `.jsonl` | Each voice frame as it came off the air: error-corrected, **not** decrypted (encrypted voice stays encrypted, whether or not the recorder has its key), with what it was sent as (`voice_mode`), its place in the superframe, its bit errors and the encryption (`algid`, `keyid`, `mi`) it is under, as far as the air has said |
 | `voice.errors` | Digital voice channels | `.jsonl` | No data, only figures: for each frame vocoded, the bit errors corrected and what the vocoder made of it (`voice`, `repeat`, `muted`, …) |
 
 Each **transmission** on a channel is a stream with files of its own, since a channel is only
@@ -132,8 +132,8 @@ each line after it is one item of it that something is known about, `at` its pla
 
 ```json
 {"tap":"voice.air","stream":41,"system":0,"system_id":3,"short_name":"dcfd","freq_hz":854612500.0,"slot":0,"call_id":912,"talkgroup":101,"time":1795600000.2,"data":{"kind":"frames","codec":"imbe","frames":[]},"items":36}
-{"at":0,"bits":"a3f0…","n":0,"errs":1,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
-{"at":1,"bits":"7c21…","n":1,"errs":0,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
+{"at":0,"bits":"a3f0…","voice_mode":"p25","n":0,"errs":1,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
+{"at":1,"bits":"7c21…","voice_mode":"p25","n":1,"errs":0,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
 ```
 
 `call_id` and `talkgroup` are the call on the channel when the stream began, left out when there

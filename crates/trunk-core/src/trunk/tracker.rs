@@ -13,7 +13,7 @@ use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
 use crate::p25::gps::LcPositions;
 use crate::p25::lc::{self, Lc, LinkControl};
 use crate::p25::voice::{decode_tdulc, imbe_bits_to_params, imbe_params_to_bits, ldu_codeword_end_bit, EncryptionSync, ALGID_CLEAR};
-use super::calls::Flags;
+use super::calls::{Flags, Voice};
 use super::taps::{AirFrame, Tap, TapPiece, TapSet};
 use super::voice::{Crypt, Encryption, TrackerOut};
 use std::sync::Arc;
@@ -62,11 +62,12 @@ pub struct VoiceTracker {
     pub bad_frames: u64,
 }
 
-/// What [`Tap::VoiceAir`] says of a frame as it was sent: frame `n` of its superframe, under
-/// the encryption `crypt` knows of so far.
-pub(super) fn air_frame(n: Option<usize>, errs: u32, e0: u32, erased: bool, crypt: &Crypt) -> AirFrame {
+/// What [`Tap::VoiceAir`] says of a P25 frame as it was sent (`voice`: which phase's): frame
+/// `n` of its superframe, under the encryption `crypt` knows of so far.
+pub(super) fn air_frame(voice: Voice, n: Option<usize>, errs: u32, e0: u32, erased: bool, crypt: &Crypt) -> AirFrame {
     let es = crypt.es;
     AirFrame {
+        voice_mode: voice.mode_name().into(),
         n: n.map(|n| n as u8),
         errs,
         e0,
@@ -74,7 +75,7 @@ pub(super) fn air_frame(n: Option<usize>, errs: u32, e0: u32, erased: bool, cryp
         encrypted: crypt.voice.known(),
         algid: es.map(|es| es.algid),
         keyid: es.map(|es| es.keyid),
-        mi: es.map(|es| es.mi.iter().map(|b| format!("{b:02x}")).collect()),
+        mi: es.map(|es| AirFrame::hex(&es.mi)),
     }
 }
 
@@ -416,7 +417,7 @@ impl VoiceTracker {
         self.frames += 1;
         self.call_frames += 1;
         if self.taps.has(Tap::VoiceAir) {
-            let note = air_frame(Some(ldu * 9 + k), errs, e0, erased, &self.crypt);
+            let note = air_frame(Voice::P25, Some(ldu * 9 + k), errs, e0, erased, &self.crypt);
             out.push(TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Imbe, &imbe_params_to_bits(&u), &note)));
         }
         let unsure = self.crypt.voice == Encryption::Unknown;

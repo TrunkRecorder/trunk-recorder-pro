@@ -10,8 +10,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   audio, with whatever is known about it beside it:
   - `fm.discriminator`: an analog FM channel's demodulated signal before de-emphasis and the voice filters, 16-bit
     at 22,050 Hz, for `multimon-ng` and other pager and data decoders (POCSAG, FLEX).
-  - `voice.air`: each P25 voice frame (Phase 1 and 2) as it came off the air, error-corrected and not decrypted,
-    with its place in the superframe, its errors and its encryption sync (ALGID, key ID, MI).
+  - `voice.air`: each digital voice frame (P25 Phase 1 and 2, DMR, NXDN, EDACS ProVoice) as it came off the air,
+    error-corrected and not decrypted, with its place in the superframe, its errors and the encryption it is under
+    (P25's ALGID, key ID and MI; DMR's privacy header; NXDN's cipher, key and IV).
   - `voice.errors`: no data, only each voice frame's corrected errors and what the vocoder made of it.
   - **To files**: **Setup → Recording → Advanced → Signal taps** (`recording.taps`), for every system or some.
     Each transmission is a file of its own beside the system's calls: a `.wav` for samples, and a `.jsonl`

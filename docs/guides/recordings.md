@@ -356,5 +356,5 @@ A call that isn't kept logs `Call not saved - no audio, or shorter than the mini
   `<name>.frames.jsonl`. See the [command line](../command-line.md).
 - **Signal taps** (`taps`, none; Setup → Recording → Advanced): data from part-way through a
   channel's receiver, a file for each transmission with a `.jsonl` beside it: the FM discriminator
-  (for pager and data decoders), P25 frames as they came off the air, each frame's errors. See
+  (for pager and data decoders), digital voice frames as they came off the air, each frame's errors. See
   [`taps`](../configuration/recording.md#taps).

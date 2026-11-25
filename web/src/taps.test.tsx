@@ -45,6 +45,6 @@ test("Signal taps: saved rows can be edited; a plugin's are automatic", () => {
   assert.match(page, /\.wav \+ \.jsonl/);
   assert.equal((page.match(/>Remove</g) ?? []).length, 2);
   // The plugin that's on: its tap, with no controls. The one that's off: nothing.
-  assert.match(page, /<tr class="auto"><td>P25 frames off the air.*?>pager<.*?>Automatic</);
+  assert.match(page, /<tr class="auto"><td>Voice frames off the air.*?>pager<.*?>Automatic</);
   assert.equal((page.match(/class="auto"/g) ?? []).length, 1);
 });

@@ -510,8 +510,8 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             tracker.taps = spec.taps;
             Box::new(P25Tdma { bank: Bank::phase2(spec.rate, spec.bank), tracker, groups: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
         }
-        VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
-        VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
+        VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed).tapped(spec.taps)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
+        VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed).tapped(spec.taps, r)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
         VoiceKind::Analog => Box::new(Analog {
             demod: Demod::Fm(Nbfm::with(spec.rate, &spec.analog).tapped(spec.taps.has(Tap::FmDiscriminator).then_some(DISCRIMINATOR_RATE))),
             squelch: spec.squelch,
@@ -519,7 +519,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             carrier: false,
             ending: Ending::new(spec.rate),
         }),
-        VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder), t0: spec.t0, air: None }),
+        VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder).tapped(spec.taps), t0: spec.t0, air: None }),
         VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false, ending: Ending::new(spec.rate) }),
         VoiceKind::Auto => Auto::new(spec),
     }

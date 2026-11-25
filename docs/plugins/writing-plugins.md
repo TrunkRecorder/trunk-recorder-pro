@@ -213,7 +213,7 @@ build events nobody subscribed to, so subscribe only to what you use.
 | Follow calls as they happen, recorded or not | [`call.start`, `call.update`, `call.end`](../developer/plugins/events.md#callstart-callupdate-and-callend) |
 | Stream live audio | [`audio`](../developer/plugins/events.md#audio) (with `call.start` and `call.end`) |
 | Relay digital voice without decoding it | [`voice`](../developer/plugins/events.md#voice): the vocoder frames |
-| Decode something the recorder doesn't (pagers, data), or watch how channels decode | A signal tap, [`tap.<id>`](../developer/plugins/events.md#tapid): the FM discriminator, P25 frames off the air, frame errors. Subscribing turns it on |
+| Decode something the recorder doesn't (pagers, data), or watch how channels decode | A signal tap, [`tap.<id>`](../developer/plugins/events.md#tapid): the FM discriminator, voice frames off the air, frame errors. Subscribing turns it on |
 | Watch radios register, affiliate, call for help | [`unit`](../developer/plugins/events.md#unit) |
 | Act on pages, alert tones, DTMF and Morse IDs | [`tone_pattern`](../developer/plugins/events.md#tone_pattern) |
 | Show how each site is doing | [`status`](../developer/plugins/events.md#status), every 5 s |
