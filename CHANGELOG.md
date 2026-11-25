@@ -20,7 +20,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     last control-channel mention. A site whose copy waited out the timeout, or heard the next talker's grant, so
     stretched its copy past the kept one. Copies are now compared by when their audio was heard, and by the talkers in
     it.
-  - **`end_reason`.** Each call's record, trunked or conventional, says why it ended: `terminator`, `squelch`,
+  - **`end_reason`** (SDK 0.16.1, additive). Each call's record, trunked or conventional, says why it ended: `terminator`, `squelch`,
     `next_transmission`, `timeout`, `too_long`, `reassigned` or `stopped`. So does the log's **Concluding Recorded Call** line (`Ended: …`).
 
 - **Setup: radios that can't be told apart, or another source's, say so, every kind alike** (#235, thanks
