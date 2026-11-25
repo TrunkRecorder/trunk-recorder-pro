@@ -936,7 +936,8 @@ Recorder's files read it too. The fields you'll want most: `talkgroup`,
 `freq`, `emergency`, `encrypted`, `srcList` (the radios that talked, with
 names in `tag`), and the reception fields `signal` / `noise` / `snr` (dB).
 Beyond Trunk Recorder's: `transmission_id` (the same on every copy of one
-transmission saved, [above](#concepts)), `site`, `system_id` and `site_id`
+transmission saved, [above](#concepts)), `end_reason` (why it ended: `terminator`,
+`next_transmission`, `timeout`, `too_long`, `reassigned` or `stopped`), `site`, `system_id` and `site_id`
 (its system's and site's ids, the same across renames and runs), `sites` (every
 site it was recorded on, `{ id, name }` each, `site` first), `system_type` and
 `voice_mode`, `clean_voice_pct`, `nac` (hex), `color_code` / `ran`,

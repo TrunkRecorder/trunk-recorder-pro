@@ -261,6 +261,50 @@ pub enum CarriesOn {
     /// Conversation mode off: the next transmission, and what the air said
     /// of the last one isn't said of it.
     NewTransmission,
+    /// Conversation mode off: its transmission ended on its terminator. The
+    /// channel is kept for the next one on it, a call told only once it has
+    /// audio ([`Call::untold`]).
+    Terminated,
+}
+
+/// Why a call ended: in its record (`end_reason`) and the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallEnd {
+    /// Its voice channel's terminator (conversation mode off: a call is one transmission).
+    Terminator,
+    /// The next transmission's audio on its channel (conversation mode off).
+    NextTransmission,
+    /// Nothing heard of it, on the control channel or its voice, for the call timeout.
+    Timeout,
+    /// It ran as long as a call may, and carries on in a new one.
+    TooLong,
+    /// Its channel was given to another talkgroup.
+    Reassigned,
+    /// The recording stopped.
+    Stopped,
+}
+
+impl CallEnd {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallEnd::Terminator => "terminator",
+            CallEnd::NextTransmission => "next_transmission",
+            CallEnd::Timeout => "timeout",
+            CallEnd::TooLong => "too_long",
+            CallEnd::Reassigned => "reassigned",
+            CallEnd::Stopped => "stopped",
+        }
+    }
+}
+
+impl From<CarriesOn> for CallEnd {
+    fn from(how: CarriesOn) -> CallEnd {
+        match how {
+            CarriesOn::TooLong => CallEnd::TooLong,
+            CarriesOn::NewTransmission => CallEnd::NextTransmission,
+            CarriesOn::Terminated => CallEnd::Terminator,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -316,6 +360,12 @@ pub struct Call {
     pub tone: Option<ToneHeard>,
     /// Conventional FM: the tone its channel row records (None: any).
     pub tone_set: Option<Tone>,
+    /// Why it ended, once it has.
+    pub end: Option<CallEnd>,
+    /// Not told yet: a channel kept after a transmission's terminator
+    /// ([`CarriesOn::Terminated`]), a call once audio comes ([`CallManager::tell`]),
+    /// and gone without a word if none does.
+    pub untold: bool,
 }
 
 impl Call {
@@ -356,6 +406,8 @@ impl Call {
             nac: None,
             tone: None,
             tone_set: None,
+            end: None,
+            untold: false,
         }
     }
 
@@ -393,6 +445,8 @@ impl Call {
             nac,
             tone,
             tone_set,
+            end: _,
+            untold: _,
         } = self.clone();
         let mut next = Call {
             id,
@@ -424,6 +478,8 @@ impl Call {
             nac,
             tone,
             tone_set,
+            end: None,
+            untold: false,
         };
         // (Its talkers unknown yet, encryption stays as it was: not known to be clear isn't clear.)
         if how == CarriesOn::NewTransmission && !next.sources.is_empty() {
@@ -603,6 +659,8 @@ pub enum CallEvent {
     Start(Call),
     Update(Call),
     End(Call),
+    /// A call never told ([`Call::untold`]) is over: its recorder is freed, nothing said.
+    Discard(Call),
 }
 
 /// What a system decides about its calls that can change while recording,
@@ -830,7 +888,7 @@ impl CallManager {
                 if self.hold_repeats {
                     self.gone.push((c.talkgroup, c.freq_hz, c.voice, c.heard_s));
                 }
-                Self::close(self.calls.remove(i), host, ev);
+                Self::close(self.calls.remove(i), CallEnd::Timeout, host, ev);
             } else if self.cfg.too_long(c, now_s) {
                 // The one talking now carries on.
                 let talking = c.talker().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect();
@@ -892,24 +950,55 @@ impl CallManager {
             Ok(()) => c.recording = true,
             Err(r) => c.reason = Some(r),
         }
-        Self::close(self.calls.remove(i), host, ev);
-        ev.push(CallEvent::Start(c.clone()));
+        Self::close(self.calls.remove(i), how.into(), host, ev);
+        // (A channel kept after a terminator is a call once it has audio.)
+        c.untold = how == CarriesOn::Terminated;
+        if !c.untold {
+            ev.push(CallEvent::Start(c.clone()));
+        }
         let id = c.id;
         self.calls.push(c);
         id
     }
 
+    /// Conversation mode off ([`CallConfig::conversation`]): recorded call
+    /// `id`'s voice channel sent its terminator at `now_s`, after its audio.
+    /// The transmission is over: it ends now, not once the control channel
+    /// has stopped mentioning the channel for the call timeout, and the
+    /// channel is kept for whatever comes next on it ([`CarriesOn::Terminated`]).
+    /// The id that keeps it; None: not so ended.
+    pub fn terminated(&mut self, id: CallId, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> Option<CallId> {
+        let i = self.calls.iter().position(|c| c.id == id && c.recording && !c.untold)?;
+        if self.cfg.conversation {
+            return None;
+        }
+        Some(self.split(i, now_s, Vec::new(), CarriesOn::Terminated, host, ev))
+    }
+
+    /// Audio came at `now_s` on a channel kept after a terminator
+    /// ([`Call::untold`]): it's a call now, begun then. The call to tell; None:
+    /// it was told already, or isn't one.
+    pub fn tell(&mut self, id: CallId, now_s: f64) -> Option<Call> {
+        let c = self.calls.iter_mut().find(|c| c.id == id && c.untold)?;
+        c.untold = false;
+        c.start_s = now_s;
+        c.last_audio_s = now_s;
+        Some(c.clone())
+    }
+
     /// End everything (source stopped).
     pub fn end_all(&mut self, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         for c in std::mem::take(&mut self.calls) {
-            Self::close(c, host, ev);
+            Self::close(c, CallEnd::Stopped, host, ev);
         }
     }
 
-    /// A call taken out of the list is over: its recorder released, its end told.
-    fn close(c: Call, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    /// A call taken out of the list is over (`why`): its recorder released, its end told
+    /// (one never told goes without a word).
+    fn close(mut c: Call, why: CallEnd, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         host.release(&c);
-        ev.push(CallEvent::End(c));
+        c.end = Some(why);
+        ev.push(if c.untold { CallEvent::Discard(c) } else { CallEvent::End(c) });
     }
 
     /// Whether talkgroup `tg` is call `c`'s conversation: its own, or one
@@ -929,7 +1018,7 @@ impl CallManager {
             i -= 1;
             let c = &self.calls[i];
             if c.freq_hz == freq_hz && c.voice.shares_channel(voice) && !self.one_conversation(c, tg) {
-                Self::close(self.calls.remove(i), host, ev);
+                Self::close(self.calls.remove(i), CallEnd::Reassigned, host, ev);
             }
         }
     }

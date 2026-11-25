@@ -247,6 +247,7 @@ CallEntry: a recorded call (rec.history, the "concluded" message)
     time (Unix s), pos (s into the audio), emergency, lat? lon? (GPS) }], signal / noise
     (dBFS) / snr (dB) (or null), clean_voice_pct (null for analog), tone_detected, patched_talkgroups?,
     transmission_id (the same on every copy of one transmission saved from a system's sites),
+    end_reason? (terminator | next_transmission | timeout | too_long | reassigned | stopped),
     decrypted / algid / key_id, color_code / ran (-1 none), clock_off,
     tones [the in-band tones heard], tone_patterns [{ pattern, text (in words), signals, … }],
     signals [ids of the system's named signals it carried]

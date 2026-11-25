@@ -887,7 +887,8 @@ are each site's own, for the log and voice channel counts. **Every copy is recor
 been quiet 0.5 s, whether or not the sites' calls are linked. When the last copy ends, they're tried best first: the talkgroup's preferred site
 if its clean voice is at least 90 % of the best, otherwise the most clean voice, then fewest FEC
 errors, then earliest start. Each is saved unless one saved holds it (`Kept::holds`: another site,
-its whole `Span`, the same talkers where known, at least as much clean voice give or take 90 %);
+its audio's whole `Span` (`Held::heard`: first to last audio, not how long its control channel went on
+mentioning the channel), the same talkers in it where known, at least as much clean voice give or take 90 %);
 those become `Duplicate` events. Every copy saved gets the same `transmission_id`, from the first
 copy's start (`SaveContext::first_s`).
 

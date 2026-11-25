@@ -242,6 +242,18 @@
           "type": "string",
           "description": "The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>`."
         },
+        "end_reason": {
+          "type": "string",
+          "enum": [
+            "terminator",
+            "next_transmission",
+            "timeout",
+            "too_long",
+            "reassigned",
+            "stopped"
+          ],
+          "description": "Why it ended (absent: not said, a conventional call)."
+        },
         "short_name": {
           "type": "string"
         },

@@ -5,6 +5,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Conversation mode off: a transmission ends on its terminator, and multi-site copies are judged by their audio**
+  (#240, #231, thanks @VoltTech21).
+  - **Ends on its terminator.** With `conversationMode` off a call is one transmission, but it ended only once the
+    control channel had stopped mentioning its channel for `callTimeoutS`, unless the next transmission's audio came on
+    that channel first. So about half of all calls waited out the timeout, and reached plugins late, on any signal.
+    Now a P25 transmission (Phase 1 TDU, Phase 2 end of PTT) ends on its terminator. Its voice channel is kept, so a
+    transmission right after it on that channel is a call of its own from its first audio, and nothing of it is lost.
+    A channel nothing more comes on goes without a word. With conversations on, nothing changes.
+  - **Duplicates judged by audio.** A transmission heard on several sites was sometimes saved twice under one
+    `transmission_id`. A copy was a duplicate only while the kept copy's time took in its own, and that time ran to the
+    last control-channel mention. A site whose copy waited out the timeout, or heard the next talker's grant, so
+    stretched its copy past the kept one. Copies are now compared by when their audio was heard, and by the talkers in
+    it.
+  - **`end_reason`.** Each call's record says why it ended: `terminator`, `next_transmission`, `timeout`, `too_long`,
+    `reassigned` or `stopped`. So does the log's **Concluding Recorded Call** line (`Ended: …`).
+
 - **Setup: radios that can't be told apart, or another source's, say so, every kind alike** (#235, thanks
   @blantonl). A second RTL-SDR with no serial, or a serial another has, was offered in the **Dongle** list but
   snapped back to *First available* when chosen. Now any radio found (RTL-SDR, Airspy, HydraSDR, HackRF, bladeRF,

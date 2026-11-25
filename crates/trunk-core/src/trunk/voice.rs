@@ -173,6 +173,11 @@ pub enum TrackerOut {
     /// User): the site gave it to that talkgroup, by a grant not heard
     /// ([`reassigned`]).
     Talkgroup(u32),
+    /// The transmission's terminator, after its voice (P25 Phase 1 TDU /
+    /// TDULC; Phase 2 MAC_END_PTT, or hangtime or idle in its place): the
+    /// transmission is over. With conversation mode off that ends its call
+    /// ([`super::calls::CallManager::terminated`]).
+    Ended,
 }
 
 /// What an output says of the protocol a receiver heard ([`TrackerOut::evidence`]).
@@ -201,7 +206,8 @@ impl TrackerOut {
             | TrackerOut::AliasLc(_)
             | TrackerOut::Position(_)
             | TrackerOut::BaseStationId(_)
-            | TrackerOut::Talkgroup(_) => Evidence::Checked,
+            | TrackerOut::Talkgroup(_)
+            | TrackerOut::Ended => Evidence::Checked,
         }
     }
 }

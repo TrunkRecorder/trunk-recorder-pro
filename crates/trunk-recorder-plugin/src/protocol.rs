@@ -503,6 +503,13 @@ pub struct CallRecord {
     /// conversation mode on, a call's first transmission names it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub transmission_id: String,
+    /// Why it ended: `terminator` (its voice channel's, conversation mode
+    /// off), `next_transmission` (the next one's audio on its channel),
+    /// `timeout` (nothing heard of it for the call timeout), `too_long` (it
+    /// carries on in the next call), `reassigned` (its channel given to
+    /// another talkgroup), `stopped`. Empty: not said (a conventional call).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub end_reason: String,
     /// Hz.
     pub freq: u64,
     /// How far off its channel the voice carrier came in, Hz (the mean over the call).
@@ -637,6 +644,7 @@ impl Default for CallRecord {
         CallRecord {
             call_num: 0,
             transmission_id: String::new(),
+            end_reason: String::new(),
             freq: 0,
             freq_error: 0,
             signal: None,

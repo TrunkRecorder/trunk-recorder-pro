@@ -1331,7 +1331,7 @@ impl Session {
                     // (A format's tokens are the record's field names.)
                     filename::render(format, &serde_json::to_value(r).unwrap_or_default(), k.call.system, offset)
                 };
-                let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: r.signal, noise_db: r.noise, snr_db: r.snr, clean_pct: r.clean_voice_pct };
+                let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: r.signal, noise_db: r.noise, snr_db: r.snr, clean_pct: r.clean_voice_pct, ended: r.end_reason.clone() };
                 out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), record: k.record, frames: k.frames, decrypted: k.call.decrypted });
                 let r = self.call_record(Level::Info, &k.call, body);
                 self.records.push(r);
