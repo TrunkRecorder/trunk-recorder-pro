@@ -901,19 +901,23 @@ function PluginSettingsFields(props: { p: PluginInfo; m: PluginManifest; values:
     else next[k] = v;
     change(next);
   };
+  const lists = fields
+    .filter(([, f]) => isList(f))
+    .map(([k, f]) => <ObjectList key={k} panel f={f} label={f.title ?? spell(k)} hint={f.description} value={values[k]} onChange={(v) => setField(k, v)} id={`pg-${p.id}-${k}`} />);
+  const settings = (rest.length > 0 || m.config?.["x-actions"]?.length) && (
+    <Card title="Settings">
+      <SchemaFields schema={restSchema} values={values} onChange={change} id={`pg-${p.id}`} required={props.needs.filter((k) => rest.some(([r]) => r === k))} grid />
+      <ActionButtons schema={m.config} value={values} />
+    </Card>
+  );
+  // The settings card goes where its first field is in the plugin's order: above the lists when that comes first
+  // (a page whose lists run long keeps its settings and buttons in reach), else below them.
+  const settingsFirst = rest.length > 0 && fields.findIndex(([, f]) => !isList(f)) < fields.findIndex(([, f]) => isList(f));
   return (
     <FormRoot.Provider value={{ plugin: p.id, values }}>
-      {fields
-        .filter(([, f]) => isList(f))
-        .map(([k, f]) => (
-          <ObjectList key={k} panel f={f} label={f.title ?? spell(k)} hint={f.description} value={values[k]} onChange={(v) => setField(k, v)} id={`pg-${p.id}-${k}`} />
-        ))}
-      {(rest.length > 0 || m.config?.["x-actions"]?.length) && (
-        <Card title="Settings">
-          <SchemaFields schema={restSchema} values={values} onChange={change} id={`pg-${p.id}`} required={props.needs.filter((k) => rest.some(([r]) => r === k))} grid />
-          <ActionButtons schema={m.config} value={values} />
-        </Card>
-      )}
+      {settingsFirst && settings}
+      {lists}
+      {!settingsFirst && settings}
     </FormRoot.Provider>
   );
 }

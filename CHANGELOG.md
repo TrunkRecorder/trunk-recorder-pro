@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A plugin's page can put its settings above its lists.** On a plugin's own page each list of items is a card, and
+  the rest of its settings (and its buttons) one card after them, so a long list (a paging plugin's hundreds of tone
+  sets) pushed them out of reach. The settings card now goes where its first field is in the plugin's order: a plugin
+  whose settings come before its lists gets the card on top.
+
 - **Tones: a tone's edges no longer throw the whole tone away.** A tone is looked at in 40 ms
   windows every 20 ms, so the windows at its start and end are partly on the tone before it or
   the noise or voice after, and read a little off its frequency. Those counted in the steadiness
