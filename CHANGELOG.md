@@ -5,6 +5,20 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **HydraSDR RFOne: a driver built in, and libairspy and libhydrasdr are no longer used.** An RFOne now works
+  with nothing installed, like an Airspy: no hydrasdr-host package, and on Windows no `hydrasdr.dll` or
+  `libusb-1.0.dll`. It speaks an Airspy's USB protocol with a handful of differences, so the Airspy's built-in
+  driver (`crates/libairspy-rs`) now drives both. **Not yet tested on a real RFOne: please report how it goes.**
+  - **RFOne sample rates are 10, 5 or 2.5 MSPS.** The lower ones libhydrasdr decimated to (1.25 MSPS and below)
+    are gone: a source set to one is refused at Start with the rates it can run at. Pick 2.5.
+  - An RFOne is listed without being opened, so one that's recording stays in Setup's list; and an Airspy source on
+    **First available** no longer opens an RFOne (nor the other way), whichever firmware the RFOne has.
+  - The libairspy fallback for Airspys is removed, as the built-in driver has held up. On Windows an Airspy given
+    a libusbK or libusb-win32 driver with Zadig has to go back to WinUSB.
+  - `TRUNK_PRO_AIRSPY`, `TRUNK_PRO_AIRSPY_NATIVE`, `TRUNK_PRO_AIRSPY_LIBRARY_IQ` and `TRUNK_PRO_HYDRASDR` do
+    nothing now. `trunk-pro devices` shows `Airspy: built in` and `HydraSDR: built in`.
+  - The Docker image no longer carries libairspy, and an RFOne works in it.
+
 ## [0.5.1] — 2026-11-25
 
 - **A plugin's list it fills in itself is shown, not edited** (#242, thanks @aknitt-rsos). A list in a plugin's

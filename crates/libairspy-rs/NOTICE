@@ -1,7 +1,19 @@
 (Trunk Recorder Pro's copy: only the libairspy crate of the repository this
 notice describes is here, in crates/libairspy-rs, with the changes its
 README.md lists. airspy-tools, and so its GPL-2.0 terms, are not included;
-the paths below are the original repository's.)
+the paths below are the original repository's.
+
+HydraSDR RFOne support — its USB ids, serial string, and the requests that
+differ from an Airspy's (the 64-bit frequency, the bias-T, the RF port, the
+order the receiver starts in) — is transcribed from libhydrasdr, of
+https://github.com/hydrasdr/hydrasdr-host (hydrasdr_rfone.c,
+hydrasdr_commands.h, hydrasdr.c):
+
+  Copyright (C) 2013-2026, Benjamin Vernoux <bvernoux@hydrasdr.com>
+  Released under the MIT License (hydrasdr.c: BSD-3-Clause, with the
+  libairspy authors below).
+
+None of libhydrasdr's IQ converters, decimators or filters are included.)
 
 libairspy-rs
 ============

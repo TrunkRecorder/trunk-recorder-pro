@@ -73,6 +73,9 @@ pub enum Command {
     SetPacking = 26,
     /// `AIRSPY_SPIFLASH_ERASE_SECTOR` (`= AIRSPY_CMD_MAX`)
     SpiflashEraseSector = 27,
+    /// `HYDRASDR_SET_RF_PORT` (hydrasdr_commands.h): an RFOne's, past
+    /// the Airspy's last.
+    SetRfPort = 28,
 }
 
 /// Receiver mode (`receiver_mode_t`).
@@ -239,6 +242,8 @@ mod tests {
         assert_eq!(Command::SetPacking as u8, 26);
         assert_eq!(Command::SpiflashEraseSector as u8, 27);
         assert_eq!(CMD_MAX, 27);
+        // hydrasdr_vendor_request in hydrasdr_commands.h.
+        assert_eq!(Command::SetRfPort as u8, 28);
     }
 
     #[test]

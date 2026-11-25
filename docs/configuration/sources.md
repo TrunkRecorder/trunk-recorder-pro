@@ -257,15 +257,14 @@ The Airspy gains are the driver's steps, not dB.
 
 ## `"type": "hydrasdr"`
 
-A HydraSDR RFOne, through libhydrasdr 1.1 or newer (from [hydrasdr-host](https://github.com/hydrasdr/hydrasdr-host),
-installed separately). Its tuner and gain stages are an Airspy R2's, so its gain is set the same way.
+A HydraSDR RFOne, driven directly over USB by the driver built in (nothing to install). Its tuner and gain stages are an Airspy R2's, so its gain is set the same way.
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `type` | ✓ | | string | `"hydrasdr"` |
 | `serial` | | `""` | string | Serial number in hex. `""` = the first found |
 | `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
-| `rateHz` | ✓ | | number | 10 000 000, 5 000 000 or 2 500 000; or a lower one libhydrasdr decimates to (1 250 000, 625 000, …) |
+| `rateHz` | ✓ | | number | 10 000 000, 5 000 000 or 2 500 000 |
 | `gainMode` | | `"linearity"` | string | `"linearity"`, `"sensitivity"` or `"manual"`, as an Airspy's |
 | `gainStep` | | `14` | integer | Linearity or sensitivity step, 0–21 |
 | `lnaStep` | | `10` | integer | Manual mode: LNA step, 0–14 |

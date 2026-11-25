@@ -181,8 +181,8 @@ test("a new HackRF source: the driver's gain defaults, a native kind with a devi
 
 test("a HydraSDR: found by its driver, started at a rate it runs at, its gain as an Airspy's; imported from gr-osmosdr's hydrasdr", () => {
   const none = { available: true, detail: "", devices: [] };
-  const rfone = { serial: "1A2B3C4D5E6F7081", label: "HydraSDR RFOne · SN 1A2B3C4D5E6F7081", model: "RFOne", rates: [10_000_000, 5_000_000, 2_500_000, 1_250_000] };
-  const radios: Radios = { usrp: none, hackrf: none, airspy: none, hydrasdr: { available: true, detail: "libhydrasdr 1.1.4", devices: [rfone] }, bladerf: none };
+  const rfone = { serial: "1A2B3C4D5E6F7081", label: "HydraSDR RFOne · SN 1A2B3C4D5E6F7081", model: "RFOne", rates: [10_000_000, 5_000_000, 2_500_000] };
+  const radios: Radios = { usrp: none, hackrf: none, airspy: none, hydrasdr: { available: true, detail: "built in", devices: [rfone] }, bladerf: none };
   const [found] = detectRadios([], radios);
   assert.equal(found.kind, "hydrasdr");
   assert.equal(found.key, "hydrasdr:1A2B3C4D5E6F7081");

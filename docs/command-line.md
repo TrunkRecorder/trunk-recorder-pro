@@ -120,7 +120,7 @@ trunk-pro --log-level debug
 trunk-pro devices [--usrp [args]]
 ```
 
-Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened), the HackRFs and the Airspys, then whether the optional HydraSDR (libhydrasdr), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy,
+Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened), the HackRFs, the Airspys and the HydraSDRs (the Airspy and HydraSDR drivers are built in: `Airspy: built in`, `HydraSDR: built in`), then whether the optional bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy,
 HydraSDR and bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
 at, HydraSDRs with theirs, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
@@ -389,7 +389,7 @@ seconds: 114 by default.
 **Each kind of radio has a plan**, from how it is built. The front of the chain (the LNA) sets the
 noise figure and is what strong signals overload, so it moves first; the stages after it only bring
 the level into the ADC's range, so they move last. Where the radio's maker drew a path through its
-stages (libairspy's tables, an R820T's gain table, the gain table behind an AD9361's one number),
+stages (an Airspy's linearity and sensitivity tables, an R820T's gain table, the gain table behind an AD9361's one number),
 the search goes along that path: each step on it is a setting the maker measured. A move goes one
 way while each step is better; refused at its first step, it tries the other way. When any move
 was kept, the moves are walked once more (one stage moved can change what suits another), never
@@ -676,10 +676,6 @@ systemctl --user restart trunk-pro    # or however the recorder runs
 | Variable | What it does |
 |---|---|
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
-| `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching (libairspy is optional: an Airspy's driver is built in) |
-| `TRUNK_PRO_AIRSPY_NATIVE` | Set to `0` to drive Airspys through libairspy alone, not the built-in driver |
-| `TRUNK_PRO_AIRSPY_LIBRARY_IQ` | Set to `1` for an Airspy to have its driver convert to IQ (libairspy's conversion), instead of the recorder converting the samples on the source's decoding thread |
-| `TRUNK_PRO_HYDRASDR` | The libhydrasdr library file to load, instead of searching |
 | `TRUNK_PRO_BLADERF` | The libbladeRF library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |
 | `TRP_CORPUS_CACHE` | Where [`tool corpus`](developer/tools.md#tool-corpus) keeps its files, when `--cache` isn't given |

@@ -41,7 +41,7 @@ pub enum Block {
     U8(Pooled<u8>),
     /// Float I/Q.
     Iq(Pooled<Complex32>),
-    /// Real samples at twice the I/Q rate (an Airspy's ADC, libairspy's
+    /// Real samples at twice the I/Q rate (an Airspy's or RFOne's ADC, libairspy's
     /// INT16_REAL): turned into I/Q by the [`Inbox`], on the thread that takes
     /// them, not the driver's.
     Real16(Pooled<i16>),

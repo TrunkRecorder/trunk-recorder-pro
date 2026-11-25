@@ -47,7 +47,7 @@ The sample rates offered for each kind:
 | SpyServer | 2.5, 3, 2.4, 5, 6, 10, 1.25 MSPS, or any rate typed in | one the server offers: its top rate halved, to the nearest whole Hz (an R2's usually starts at 2.5, then 1.25…); another is refused, with the ones it offers (the recorder asks the server at the address, and Setup lists those) |
 | USRP | 2.4 to 20 MSPS, or any rate typed in | any rate its master clock divides to; default 8 MSPS |
 | Airspy | 10, 6, 3, 2.5 MSPS | R2: 10 or 2.5; Mini: 6 or 3 |
-| HydraSDR | 10, 5, 2.5, 1.25 MSPS | |
+| HydraSDR | 10, 5, 2.5 MSPS | |
 | bladeRF | any rate typed in, 0.52 to 61.44 MSPS | over ~40 MSPS needs USB 3 and a fast CPU |
 | SoapySDR | 2 to 10 MSPS, or any rate typed in | one the device supports |
 
@@ -308,8 +308,8 @@ them: give it its own too.
 
 Every kind is checked the same way: an Airspy, HydraSDR, HackRF or bladeRF reporting the serial
 of another (clones can) is greyed out as *(same serial as another)*. Their serials are set by
-their makers, so **First available** is the way to use one of them. A HydraSDR RFOne counts with
-the Airspys: libairspy may open one as "the first".
+their makers, so **First available** is the way to use one of them. A HydraSDR RFOne isn't counted
+with the Airspys: an Airspy source on **First available** never opens an RFOne.
 
 Airspys, HydraSDRs and bladeRFs are picked by serial the same way. USRPs and SoapySDR devices are picked by their device
 arguments (`serial=...`, `addr=192.168.10.2`, `driver=sdrplay,serial=...`); **Find** lists what's

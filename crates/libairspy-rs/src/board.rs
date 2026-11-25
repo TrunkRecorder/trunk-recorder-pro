@@ -5,6 +5,8 @@
 use crate::commands::Command;
 use crate::device::Device;
 use crate::error::{Error, Result};
+use crate::transfer::{CTRL_TIMEOUT, VENDOR_IN_REQUEST_TYPE};
+use crate::transport::UsbTransport;
 
 /// `VERSION_LOCAL_SIZE` in `airspy_version_string_read` — the wire
 /// read requests `VERSION_LOCAL_SIZE - 1` bytes.
@@ -60,6 +62,23 @@ fn parse_version(raw: &[u8]) -> String {
     String::from_utf8_lossy(&raw[..end]).into_owned()
 }
 
+/// `airspy_version_string_read` on a transport no [`Device`] is built
+/// over yet: what opening asks, to tell whose firmware answers.
+pub(crate) fn read_version(handle: &dyn UsbTransport) -> Result<String> {
+    let mut raw = [0u8; VERSION_LOCAL_SIZE - 1];
+    let n = handle.read_control(
+        VENDOR_IN_REQUEST_TYPE,
+        Command::VersionStringRead as u8,
+        0,
+        0,
+        &mut raw,
+        CTRL_TIMEOUT,
+    )?;
+    // C only rejects result < 0 (a libusb error), which read_control
+    // already surfaced; any byte count is accepted.
+    Ok(parse_version(&raw[..n]))
+}
+
 impl Device {
     /// Read the raw board id byte (`airspy_board_id_read`). Interpret
     /// it with [`crate::commands::BoardId::from_u8`].
@@ -82,11 +101,7 @@ impl Device {
     /// C does; the caller-buffer truncation dance of the C signature
     /// has no Rust counterpart — the full string is returned.
     pub fn version_string(&self) -> Result<String> {
-        let mut raw = [0u8; VERSION_LOCAL_SIZE - 1];
-        let n = self.vendor_in(Command::VersionStringRead, 0, 0, &mut raw)?;
-        // C only rejects result < 0 (a libusb error), which vendor_in
-        // already surfaced; any byte count is accepted.
-        Ok(parse_version(&raw[..n]))
+        read_version(self.usb_handle())
     }
 
     /// Read the MCU part id and serial number

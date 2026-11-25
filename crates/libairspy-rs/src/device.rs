@@ -21,6 +21,113 @@ pub const AIRSPY_USB_VID: u16 = 0x1d50;
 /// USB product id (`airspy_usb_pid` in airspy.c).
 pub const AIRSPY_USB_PID: u16 = 0x60a1;
 
+/// USB vendor id of a HydraSDR RFOne with current firmware
+/// (`hydrasdr_device_registry` in hydrasdr.c). One with the firmware it
+/// shipped with (v1.0.0-rc2) enumerates with the Airspy's ids.
+pub const HYDRASDR_USB_VID: u16 = 0x38af;
+/// USB product id of an RFOne with current firmware.
+pub const HYDRASDR_USB_PID: u16 = 0x0001;
+
+/// `HYDRASDR_EXPECTED_SERIAL_PREFIX` in hydrasdr.c.
+const RFONE_SERIAL_PREFIX: &str = "HYDRASDR SN:";
+/// `HYDRASDR_EXPECTED_SERIAL_TOTAL_LEN` in hydrasdr.c.
+const RFONE_SERIAL_EXPECTED_LEN: usize = 28;
+/// `HYDRASDR_EXPECTED_FW_PREFIX` in hydrasdr.c — what an RFOne's
+/// firmware version string starts with, and an Airspy's doesn't.
+const RFONE_FIRMWARE_PREFIX: &str = "HydraSDR RF";
+
+/// The radios this driver opens: the Airspy R2 / Mini, and the HydraSDR
+/// RFOne, a radio with the same tuner, clock and gain stages whose
+/// firmware (a fork of the Airspy's) takes the same vendor requests
+/// with the few differences this type switches on. Not in C: libairspy
+/// drives the first, its fork libhydrasdr the second.
+///
+/// What an RFOne does differently, from libhydrasdr (hydrasdr.c,
+/// hydrasdr_shared.c, hydrasdr_rfone.c; MIT):
+///
+/// - it is found by two USB ids, and by its own serial string;
+/// - its firmware version must say it is one (an Airspy's must not);
+/// - the frequency travels as 8 bytes, not 4;
+/// - the bias tee has a request of its own, not a GPIO pin;
+/// - it has three inputs ([`Device::set_rf_port`]);
+/// - starting, the endpoint's halt is cleared after the receiver is
+///   switched on, not before.
+///
+/// Not ported: libhydrasdr's decimation below the firmware's rates
+/// (1.25 MSPS and under), its bandwidth requests (an RFOne lists none)
+/// and the extended sample-rate table (an RFOne's rates are all 12-bit
+/// real samples, as an Airspy's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Family {
+    /// Airspy R2 / Mini.
+    Airspy,
+    /// HydraSDR RFOne.
+    Rfone,
+}
+
+/// An RFOne's inputs, by the number [`Device::set_rf_port`] takes
+/// (`hydrasdr_rf_port_t`; names from `rfone_get_device_info`). The
+/// bias tee is on the first alone.
+pub const RFONE_RF_PORTS: [&str; 3] = ["ANT", "CABLE1", "CABLE2"];
+
+impl Family {
+    /// The USB ids its radios enumerate with.
+    const fn usb_ids(self) -> &'static [(u16, u16)] {
+        match self {
+            Self::Airspy => &[(AIRSPY_USB_VID, AIRSPY_USB_PID)],
+            // hydrasdr_device_registry: legacy, then official.
+            Self::Rfone => &[
+                (AIRSPY_USB_VID, AIRSPY_USB_PID),
+                (HYDRASDR_USB_VID, HYDRASDR_USB_PID),
+            ],
+        }
+    }
+
+    /// Its serial-number string descriptor, parsed.
+    fn parse_serial(self, descriptor: &str) -> Option<u64> {
+        match self {
+            Self::Airspy => parse_serial(descriptor),
+            Self::Rfone => parse_rfone_serial(descriptor),
+        }
+    }
+
+    /// The other one.
+    const fn other(self) -> Self {
+        match self {
+            Self::Airspy => Self::Rfone,
+            Self::Rfone => Self::Airspy,
+        }
+    }
+
+    /// Whether a firmware version string is one of its radios'. C
+    /// libairspy doesn't ask (and so opens an RFOne on the shared USB
+    /// id as an Airspy); libhydrasdr does (`verify_and_claim_device`).
+    fn owns_firmware(self, version: &str) -> bool {
+        version.starts_with(RFONE_FIRMWARE_PREFIX) == (self == Self::Rfone)
+    }
+
+    /// The rates assumed when the firmware won't list its own:
+    /// `airspy_open_init`'s pair, and the three an RFOne has
+    /// (libhydrasdr assumes none).
+    const fn fallback_samplerates(self) -> &'static [u32] {
+        match self {
+            Self::Airspy => &FALLBACK_SAMPLERATES,
+            Self::Rfone => &[10_000_000, 5_000_000, 2_500_000],
+        }
+    }
+}
+
+/// Parse an RFOne's serial-number string descriptor, as
+/// `hydrasdr_open_device` does: exactly
+/// [`RFONE_SERIAL_EXPECTED_LEN`] chars, the prefix checked (unlike
+/// libairspy's), then `strtoull(_, _, 16)`.
+fn parse_rfone_serial(descriptor: &str) -> Option<u64> {
+    if descriptor.len() != RFONE_SERIAL_EXPECTED_LEN {
+        return None;
+    }
+    strtoull_16(descriptor.strip_prefix(RFONE_SERIAL_PREFIX)?)
+}
+
 /// `STR_PREFIX_SERIAL_AIRSPY_SIZE` in airspy.c — chars before the hex
 /// digits ("AIRSPY SN:").
 const SERIAL_PREFIX_LEN: usize = 10;
@@ -152,13 +259,15 @@ fn strtoull_16(s: &str) -> Option<u64> {
     })
 }
 
-/// Enumerate connected devices matching the Airspy VID/PID via nusb.
+/// Enumerate connected devices matching a family's VID/PID via nusb.
 /// Centralizes the filter both `airspy_list_devices` and
 /// `airspy_open_device` perform in C.
-fn airspy_devices() -> Result<impl Iterator<Item = nusb::DeviceInfo>> {
-    Ok(nusb::list_devices()
-        .wait()?
-        .filter(|info| info.vendor_id() == AIRSPY_USB_VID && info.product_id() == AIRSPY_USB_PID))
+fn family_devices(family: Family) -> Result<impl Iterator<Item = nusb::DeviceInfo>> {
+    Ok(nusb::list_devices().wait()?.filter(move |info| {
+        family
+            .usb_ids()
+            .contains(&(info.vendor_id(), info.product_id()))
+    }))
 }
 
 /// Read and parse an Airspy's serial the way the C library does
@@ -171,7 +280,7 @@ fn airspy_devices() -> Result<impl Iterator<Item = nusb::DeviceInfo>> {
 /// Returns `None` when the device has no serial descriptor index, the
 /// descriptor read fails, or the string doesn't parse (mirroring C's
 /// "skip and keep scanning" on each of those).
-fn read_serial(device: &nusb::Device) -> Option<u64> {
+fn read_serial(device: &nusb::Device, family: Family) -> Option<u64> {
     // C only reads when iSerialNumber > 0.
     let index = device.device_descriptor().serial_number_string_index()?;
     // libusb_get_string_descriptor_ascii reads the language-ID table and
@@ -187,7 +296,7 @@ fn read_serial(device: &nusb::Device) -> Option<u64> {
         .get_string_descriptor(index, language_id, DESCRIPTOR_TIMEOUT)
         .wait()
         .ok()?;
-    parse_serial(&descriptor)
+    family.parse_serial(&descriptor)
 }
 
 /// List the serial numbers of all connected Airspy devices, mirroring
@@ -199,25 +308,35 @@ fn read_serial(device: &nusb::Device) -> Option<u64> {
 /// fail on) a device another program is streaming from; only a device
 /// without one is opened to read the descriptor, as C does for all.
 pub fn list_devices() -> Result<Vec<u64>> {
-    Ok(airspy_devices()?
+    list_family(Family::Airspy)
+}
+
+/// [`list_devices`], for either family (`hydrasdr_list_devices` for an
+/// RFOne's). Each lists its own radios alone: on the USB id they share,
+/// the serial string tells them apart.
+pub fn list_family(family: Family) -> Result<Vec<u64>> {
+    Ok(family_devices(family)?
         .filter_map(|info| {
-            enumerated_serial(&info).or_else(|| read_serial(&info.open().wait().ok()?))
+            enumerated_serial(&info, family)
+                .or_else(|| read_serial(&info.open().wait().ok()?, family))
         })
         .collect())
 }
 
 /// The serial from the enumeration metadata, when the operating system
-/// has it and it parses as an Airspy's.
-fn enumerated_serial(info: &nusb::DeviceInfo) -> Option<u64> {
-    info.serial_number().and_then(parse_serial)
+/// has it and it parses as one of the family's.
+fn enumerated_serial(info: &nusb::DeviceInfo, family: Family) -> Option<u64> {
+    info.serial_number()
+        .and_then(|serial| family.parse_serial(serial))
 }
 
-/// An open Airspy device with interface 0 claimed.
+/// An open Airspy (or RFOne: [`Family`]) with interface 0 claimed.
 ///
 /// Dropping the device releases the interface and closes the USB
 /// handle (`airspy_open_exit` semantics).
 pub struct Device {
     handle: Arc<dyn UsbTransport>,
+    family: Family,
     supported_samplerates: Vec<u32>,
     workers: Option<StreamWorkers>,
     sample_type: SampleType,
@@ -246,7 +365,7 @@ impl core::fmt::Debug for Device {
 impl Device {
     /// Open the first Airspy found (`airspy_open`).
     pub fn open() -> Result<Self> {
-        Self::open_impl(None)
+        Self::open_impl(Family::Airspy, None)
     }
 
     /// Open the Airspy with the given serial number (`airspy_open_sn`).
@@ -255,17 +374,34 @@ impl Device {
     /// the first device found instead of matching a literal zero
     /// serial, and this port preserves that contract.
     pub fn open_serial(serial_number: u64) -> Result<Self> {
-        Self::open_impl(serial_filter(serial_number))
+        Self::open_impl(Family::Airspy, serial_filter(serial_number))
     }
 
-    fn open_impl(serial_number: Option<u64>) -> Result<Self> {
+    /// [`Device::open_serial`], for either family (`hydrasdr_open_sn`
+    /// for an RFOne; serial `0` opens the first there too).
+    pub fn open_family(family: Family, serial_number: u64) -> Result<Self> {
+        Self::open_impl(family, serial_filter(serial_number))
+    }
+
+    /// Which family's radio this is.
+    #[must_use]
+    pub fn family(&self) -> Family {
+        self.family
+    }
+
+    fn open_impl(family: Family, serial_number: Option<u64>) -> Result<Self> {
         // Deviation: C reports NOT_FOUND whatever went wrong. A device
         // that was there but wouldn't open or claim (no WinUSB driver
         // bound, another program has it) reports that error instead, so
         // the caller can say why.
         let mut refused = None;
-        for info in airspy_devices()? {
-            let enumerated = enumerated_serial(&info);
+        for info in family_devices(family)? {
+            let enumerated = enumerated_serial(&info, family);
+            // Deviation: a device whose serial string is the other
+            // family's (they share a USB id) is passed over unopened.
+            if enumerated.is_none() && enumerated_serial(&info, family.other()).is_some() {
+                continue;
+            }
             // A device the operating system already read another serial
             // from isn't opened at all (see `list_devices`).
             if let (Some(wanted), Some(serial)) = (serial_number, enumerated)
@@ -294,16 +430,27 @@ impl Device {
                 // (issue #75, finding #1). C requires iSerialNumber > 0
                 // and the exact descriptor length; read_serial/
                 // parse_serial fold those into their None path.
-                match read_serial(&device) {
+                match read_serial(&device, family) {
                     Some(serial) if serial == wanted => {}
                     _ => continue,
                 }
             }
             match Self::configure(&device) {
                 Ok(interface) => {
-                    return Ok(Self::from_transport(Arc::new(NusbTransport::new(
-                        interface,
-                    ))));
+                    let handle: Arc<dyn UsbTransport> = Arc::new(NusbTransport::new(interface));
+                    // libhydrasdr's verify_and_claim_device: an RFOne
+                    // is one whose firmware says so (unread, it isn't).
+                    // Deviation: nor is one that says so an Airspy.
+                    let version = crate::board::read_version(handle.as_ref());
+                    let ours = match (family, version) {
+                        (_, Ok(version)) => family.owns_firmware(&version),
+                        (Family::Rfone, Err(_)) => false,
+                        (Family::Airspy, Err(_)) => true,
+                    };
+                    if !ours {
+                        continue;
+                    }
+                    return Ok(Self::from_transport_as(family, handle));
                 }
                 // C closes the handle and keeps scanning on any
                 // configuration/claim failure.
@@ -353,9 +500,16 @@ impl Device {
     /// `airspy_open_init`'s post-open half — defaults, then the
     /// samplerate cache with its fixed fallback pair. Test builds use
     /// this directly with a mock transport.
+    #[cfg(test)]
     pub(crate) fn from_transport(handle: Arc<dyn UsbTransport>) -> Self {
+        Self::from_transport_as(Family::Airspy, handle)
+    }
+
+    /// [`Device::from_transport`], for either family.
+    pub(crate) fn from_transport_as(family: Family, handle: Arc<dyn UsbTransport>) -> Self {
         let mut device = Self {
             handle,
+            family,
             supported_samplerates: Vec::new(),
             workers: None,
             // airspy_open_init: sample_type = AIRSPY_SAMPLE_FLOAT32_IQ,
@@ -369,7 +523,7 @@ impl Device {
         // falling back to a fixed pair when the query fails.
         device.supported_samplerates = device
             .read_samplerates_from_fw()
-            .unwrap_or_else(|_| FALLBACK_SAMPLERATES.to_vec());
+            .unwrap_or_else(|_| family.fallback_samplerates().to_vec());
         // airspy_open_init then switches packing off, whatever the last
         // program left the firmware in, ignoring the result (firmware
         // before v1.0.0-rc7 has no such request).
@@ -489,6 +643,51 @@ mod tests {
             parse_serial("AIRSPY SN:00000000644064dc"),
             Some(0x6440_64DC)
         );
+    }
+
+    #[test]
+    fn rfone_serial_descriptor_is_its_own() {
+        // HYDRASDR_EXPECTED_SERIAL_PREFIX (12 chars) then 16 hex
+        // digits: HYDRASDR_EXPECTED_SERIAL_TOTAL_LEN (28).
+        let rfone = "HYDRASDR SN:1A2B3C4D5E6F7081";
+        assert_eq!(rfone.len(), RFONE_SERIAL_EXPECTED_LEN);
+        assert_eq!(
+            Family::Rfone.parse_serial(rfone),
+            Some(0x1A2B_3C4D_5E6F_7081)
+        );
+        // Neither family reads the other's: on the USB id they share,
+        // the serial string is what tells an RFOne from an Airspy.
+        assert_eq!(Family::Airspy.parse_serial(rfone), None);
+        assert_eq!(
+            Family::Rfone.parse_serial("AIRSPY SN:0123456789ABCDEF"),
+            None
+        );
+        // hydrasdr_open_device takes the exact length and prefix only.
+        assert_eq!(Family::Rfone.parse_serial("HYDRASDR SN:1A2B"), None);
+        assert_eq!(
+            Family::Rfone.parse_serial("HYDRASDR SN 1A2B3C4D5E6F7081"),
+            None
+        );
+    }
+
+    #[test]
+    fn firmware_string_tells_the_families_apart() {
+        let rfone = "HydraSDR RFOne v1.0.2 2025-06-01";
+        let airspy = "AirSpy NOS v1.0.0-rc10-6-g4008185 2020-05-08";
+        assert!(Family::Rfone.owns_firmware(rfone));
+        assert!(!Family::Rfone.owns_firmware(airspy));
+        assert!(Family::Airspy.owns_firmware(airspy));
+        assert!(!Family::Airspy.owns_firmware(rfone));
+    }
+
+    #[test]
+    fn rfone_usb_ids_match_c_registry() {
+        // hydrasdr_device_registry in hydrasdr.c.
+        assert_eq!(
+            Family::Rfone.usb_ids(),
+            [(0x1d50, 0x60a1), (0x38af, 0x0001)]
+        );
+        assert_eq!(Family::Airspy.usb_ids(), [(0x1d50, 0x60a1)]);
     }
 
     #[test]

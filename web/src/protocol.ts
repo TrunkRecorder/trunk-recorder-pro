@@ -42,7 +42,7 @@ export type Source = (
       /** 12-bit samples packed on the USB: a quarter less of the bus (default true). */
       packing: boolean;
     } & AirspyGains)
-  /** HydraSDR RFOne through libhydrasdr 1.1+ (desktop app). `rfPort`: the input, 0 ANT (the one with the bias-T), 1 CABLE1, 2 CABLE2. */
+  /** HydraSDR RFOne, by the driver built in (desktop app). `rfPort`: the input, 0 ANT (the one with the bias-T), 1 CABLE1, 2 CABLE2. */
   | ({
       type: "hydrasdr";
       serial: string;
