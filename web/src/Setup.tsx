@@ -37,16 +37,16 @@ import {
   siteLockFields,
   siteText,
   systemType,
-  deviceKey,
+  pickable,
   needsDriver,
   kindDesktopOnly,
   hasBiasT,
   airspyGains,
   networkRadio,
   pickedBySerial,
+  type RadioPick,
   type SerialKind,
   sourceInputs,
-  sourceKey,
   foundRadio,
   highestRate,
   radioName,
@@ -83,7 +83,7 @@ import {
   type SetupTab,
 } from "./controller.ts";
 import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
-import { renameSystemRefs } from "./pluginSettings.ts";
+import { joinPluginSettings, renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
 import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconLock, IconPuzzle, IconTower } from "./Onboarding.tsx";
@@ -577,53 +577,98 @@ function RateInput(props: { hz: number; options: number[]; onChange: (hz: number
   );
 }
 
-/** Why an optional driver can't be used, and how to install it. */
-function DriverMissing(props: { kind: Source["type"]; detail: string }) {
+/**
+ * Why an optional driver can't be used, and how to install it: the recorder's own reason in full
+ * (not found, or there but refused and why: #219), and the steps for the computer it runs on (all
+ * three when that's unknown).
+ */
+function DriverMissing(props: { kind: Source["type"]; detail: string; platform: string }) {
   const k = SOURCE_KINDS[props.kind];
   const d = k.driver;
   if (!d) return null;
+  const on = (os: string) => !(props.platform in OS_LABEL) || props.platform === os;
   return (
     <div className="banner bad small wide driver-missing">
       <span>
-        <b>{d.name}</b> not installed
-        <Info>
-          {k.label} needs it: {props.detail}
-        </Info>
+        <b>{k.label}</b> needs {props.detail || d.name}
       </span>
       <Figs
         items={[
-          { k: "macOS", v: <code>{d.macos}</code> },
-          { k: "Debian / Ubuntu", v: <code>{d.linux}</code> },
-          { k: "Windows", v: d.windows },
+          on("macos") && { k: OS_LABEL.macos, v: <code>{d.macos}</code> },
+          on("linux") && { k: OS_LABEL.linux, v: <code>{d.linux}</code> },
+          on("windows") && { k: OS_LABEL.windows, v: d.windows },
           { k: "Then", v: d.then ? `${d.then}, restart` : "Restart the app" },
         ]}
       />
     </div>
   );
 }
+const OS_LABEL: Record<string, string> = { macos: "macOS", linux: "Debian / Ubuntu", windows: "Windows" };
 
-/** A radio picked by serial from those its driver found (Airspy, HydraSDR, bladeRF, HackRF). */
-function SerialPicker(props: { kind: SerialKind; serial: string; used: Set<string>; onChange: (serial: string) => void }) {
+/** A found radio's note in a picker's list: why it can't be picked ("", it can). */
+const pickNote = (p: RadioPick | undefined) => {
+  const u = p?.unpickable;
+  return !u ? "" : u.why === "source" ? ` (${u.title}'s)` : u.why === "noSerial" ? " (no serial)" : " (same serial as another)";
+};
+
+/** A found radio that can't be told apart from another of its family. */
+const twin = (p: RadioPick) => p.unpickable?.why === "noSerial" || p.unpickable?.why === "sameSerial";
+/** Whether a kind's found radios have anything to say about picking one (PickHint). */
+const pickSays = (picks: RadioPick[]) => picks.some((p) => twin(p) || p.first);
+
+/**
+ * What a kind's found radios say about picking one (Config::radio_picks): those that can't be
+ * told apart, and how to fix it (an RTL-SDR's serial is set with rtl_eeprom; another kind's is
+ * its maker's, the same on clones); another source on "the first found", which may take any.
+ */
+function PickHint(props: { kind: Source["type"]; picks: RadioPick[]; freeSerial?: string }) {
+  const web = !can("drivers");
+  const label = SOURCE_KINDS[props.kind].label;
+  if (!pickSays(props.picks)) return null;
+  const twins = props.picks.filter(twin).length;
+  const first = props.picks.find((p) => p.first)?.first;
+  const them = twins === 1 ? `A ${props.kind === "rtlsdr" ? "dongle" : label}` : `${twins} ${props.kind === "rtlsdr" ? "dongles" : `${label}s`}`;
+  return (
+    <span className="warn-text">
+      {twins > 0 &&
+        (props.kind === "rtlsdr" ? (
+          <>
+            {them} can&apos;t be picked: a dongle with no serial, or the same serial as another, can&apos;t be told apart. Give each its own: with only that dongle plugged in, run{" "}
+            <code>rtl_eeprom -d 0 -s {props.freeSerial}</code> on this computer, unplug it and plug it back in, then {web ? "Connect… it again" : "Refresh"}.
+          </>
+        ) : (
+          <>{them} can&apos;t be picked: they report the same serial (clones can), so a source naming it opens whichever is found first. First available uses one of them.</>
+        ))}
+      {twins > 0 && first && " "}
+      {first && (
+        <>
+          {first.title} opens the first {label} found, which may be any of these: give it its own too.
+        </>
+      )}
+    </span>
+  );
+}
+
+/** A radio picked by serial from those its driver found (Airspy, HydraSDR, bladeRF, HackRF), as this source may pick them (`picks`, in its driver's order). */
+function SerialPicker(props: { kind: SerialKind; serial: string; picks: RadioPick[]; freeSerial?: string; onChange: (serial: string) => void }) {
   const s = useApp();
-  const { kind, serial, used } = props;
+  const { kind, serial } = props;
   const k = SOURCE_KINDS[kind];
   const state = s.radios?.[kind];
   const devices = state?.devices ?? [];
+  const hint = !devices.length ? <span className="warn-text">None found</span> : pickSays(props.picks) ? <PickHint kind={kind} picks={props.picks} freeSerial={props.freeSerial} /> : state?.detail;
   return (
-    <Field label={k.label} hint={devices.length ? state?.detail : <span className="warn-text">None found</span>} info={devices.length ? undefined : `${state?.detail ?? k.driver?.name}. Plug one in, then Refresh.`}>
+    <Field label={k.label} hint={hint} info={devices.length ? undefined : `${state?.detail ?? k.driver?.name}. Plug one in, then Refresh.`}>
       <div className="row">
         <select value={serial} onChange={(e) => props.onChange(e.target.value)}>
           <option value="">First available</option>
           {serial && !devices.some((d) => d.serial === serial) && <option value={serial}>SN {serial} (not connected)</option>}
-          {devices.map((d) => {
-            const inUse = used.has(deviceKey(kind, d.serial ?? ""));
-            return (
-              <option key={d.serial} value={d.serial} disabled={inUse}>
-                {d.label}
-                {inUse ? " (in use)" : ""}
-              </option>
-            );
-          })}
+          {devices.map((d, n) => (
+            <option key={n} value={d.serial} disabled={!!props.picks[n]?.unpickable}>
+              {d.label}
+              {pickNote(props.picks[n])}
+            </option>
+          ))}
         </select>
         <button className="btn ghost small" disabled={s.findingRadios} onClick={findRadios}>
           Refresh
@@ -981,8 +1026,8 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
       x.sources[i] = { ...SOURCE_KINDS[kind].fresh(), centerHz: old.centerHz } as Source;
     });
   const fileRef = useRef<HTMLInputElement>(null);
-  const others = c.sources.filter((_, k) => k !== i);
-  const used = new Set(others.map(sourceKey));
+  // The radios found, as this source may pick them: none another source names, none that can't be told apart.
+  const picks = pickable(c, i, s.devices, s.radios);
   const radios = s.radios;
   // Its driver isn't installed (desktop app).
   const driverState = needsDriver(src) ? radios?.[src.type] : undefined;
@@ -1057,17 +1102,29 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           </Field>
         )}
         {src.type === "rtlsdr" && !viaNetwork && (
-          <Field label="Dongle" hint={s.devices.length ? undefined : <span className="warn-text">{web ? "None connected" : "None found"}</span>}>
+          <Field
+            label="Dongle"
+            hint={
+              !s.devices.length ? (
+                <span className="warn-text">{web ? "None connected" : "None found"}</span>
+              ) : (
+                <PickHint kind="rtlsdr" picks={picks.of("rtlsdr")} freeSerial={picks.freeSerial} />
+              )
+            }
+          >
             <div className="row">
               <select value={src.serial} onChange={(e) => edit((x) => x.type === "rtlsdr" && void (x.serial = e.target.value))}>
                 <option value="">First available</option>
-                {s.devices.map((d) => (
-                  <option key={d.serial || d.index} value={d.serial} disabled={used.has(`r:${d.serial}`)}>
-                    {d.product}
-                    {d.serial ? ` · SN ${d.serial}` : ""}
-                    {used.has(`r:${d.serial}`) ? " (in use)" : ""}
-                  </option>
-                ))}
+                {s.devices.map((d, n) => {
+                  const p = picks.of("rtlsdr")[n];
+                  return (
+                    <option key={d.index} value={d.serial} disabled={!!p?.unpickable}>
+                      {d.product}
+                      {d.serial ? ` · SN ${d.serial}` : ""}
+                      {pickNote(p)}
+                    </option>
+                  );
+                })}
               </select>
               {web ? (
                 <button className="btn ghost small" onClick={() => void connectDongle()}>
@@ -1106,7 +1163,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             </select>
           </Field>
         )}
-        {missing && <DriverMissing kind={src.type} detail={driverState.detail} />}
+        {missing && <DriverMissing kind={src.type} detail={driverState.detail} platform={s.platform} />}
         {src.type === "usrp" && !missing && (
             <Field
               label="USRP"
@@ -1127,9 +1184,10 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
                   onChange={(v) => edit((x) => x.type === "usrp" && void (x.args = v))}
                 />
                 <datalist id={`usrp-${i}`}>
-                  {(radios?.usrp.devices ?? []).map((d) => (
-                    <option key={d.args} value={d.args}>
+                  {(radios?.usrp.devices ?? []).map((d, n) => (
+                    <option key={n} value={d.args} disabled={!!picks.of("usrp")[n]?.unpickable}>
                       {d.label}
+                      {pickNote(picks.of("usrp")[n])}
                     </option>
                   ))}
                 </datalist>
@@ -1158,7 +1216,8 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           <SerialPicker
             kind={src.type}
             serial={src.serial}
-            used={used}
+            picks={picks.of(src.type)}
+            freeSerial={picks.freeSerial}
             onChange={(v) =>
               edit((x) => {
                 if (!pickedBySerial(x)) return;
@@ -1212,10 +1271,10 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
                     onChange={(v) => edit((x) => x.type === "soapy" && void (x.args = v))}
                   />
                   <datalist id={`soapy-${i}`}>
-                    {(radios?.soapy?.devices ?? []).map((d) => (
-                      <option key={d.args} value={d.args} disabled={used.has(deviceKey("soapy", d.args))}>
+                    {(radios?.soapy?.devices ?? []).map((d, n) => (
+                      <option key={n} value={d.args} disabled={!!picks.of("soapy")[n]?.unpickable}>
                         {d.label}
-                        {used.has(deviceKey("soapy", d.args)) ? " (in use)" : ""}
+                        {pickNote(picks.of("soapy")[n])}
                       </option>
                     ))}
                   </datalist>
@@ -2157,11 +2216,45 @@ const LOCK_INPUTS: { key: keyof SiteIdentity; label: string; hex: boolean }[] = 
   { key: "site", label: "Site", hex: false },
 ];
 
+/** A site's voice channels: where the radios are placed (with its channel table's), recorded when a grant names one. */
+function VoiceChannelsField(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
+  const { site, edit } = props;
+  return (
+    <Field
+      label="Voice channels, MHz"
+      hint={
+        <>
+          Optional · places the radios{" "}
+          <Info>
+            Auto places the radios over the control channels, then these (and a DMR or NXDN site's channel table). Nothing listens to one until a grant names it, so a site that learns its
+            channels from the air still records a channel left out, when a radio reaches it.
+          </Info>
+        </>
+      }
+      wide
+    >
+      <DraftInput className="mono" codec={mhzList} value={site.voiceChannelsHz} placeholder="452.5125, 453.3875" onChange={(list) => edit((x) => void (x.voiceChannelsHz = list))} />
+    </Field>
+  );
+}
+
 function DmrFields(props: { site: Site; edit: (fn: (x: Site) => void) => void }) {
   const { site, edit } = props;
   return (
     <>
-      <Field label="Voice frequencies, MHz" hint="Tier III, Capacity Max, Connect Plus" wide>
+      <Field
+        label="Watched frequencies, MHz"
+        hint={
+          <>
+            Optional · teaches channel numbers{" "}
+            <Info>
+              Each is listened to all the time, as the site frequencies are: a call on one is found by its own link control, and a grant naming a channel the table doesn't have is learned from it. To
+              place the radios over voice channels without watching them, list them under Voice channels.
+            </Info>
+          </>
+        }
+        wide
+      >
         <DraftInput
           className="mono"
           codec={mhzList}
@@ -2360,11 +2453,11 @@ function SmartnetFields(props: { site: Site; edit: (fn: (x: Site) => void) => vo
 
 const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)", edacs: "EDACS (analog / ProVoice)" };
 
-/** A system's own settings, as a confirm names them: making two systems one keeps the first's. */
+/** A system's own settings, as a confirm names them: making two systems one keeps the first's (plugin settings: see
+ * [`joinPluginSettings`]). */
 const SYSTEM_OWN: [keyof System, string][] = [
   ["unitNames", "unit names"],
   ["recording", "recording rules"],
-  ["plugins", "plugin settings"],
   ["pluginDelays", "plugin delays"],
   ["signals", "signals"],
   ["keys", "keys"],
@@ -2533,6 +2626,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
           />
         </Field>
         {sys.type === "smartnet" && <SmartnetFields site={site} edit={edit} />}
+        {sys.type !== "edacs" && !typeD && <VoiceChannelsField site={site} edit={edit} />}
         {sys.type === "dmr" && <DmrFields site={site} edit={edit} />}
         {sys.type === "nxdn" && <NxdnFields sys={sys} site={site} edit={edit} />}
         {sys.type === "edacs" && <EdacsFields site={site} edit={edit} />}
@@ -2634,10 +2728,13 @@ export function SystemCard(props: { c: Config; i: number }) {
       setCardOpen(siteKey(x, n), true);
     });
   };
-  // The other system's sites move here (each named as its system was, unless it has a name); this one's settings stay.
+  // The other system's sites move here (each named as its system was, unless it has a name); this one's settings stay,
+  // but for plugin settings a site can have of its own (an uploader's system ID): those go to the sites that move.
   const join = (other: System) => {
     const j = c.systems.indexOf(other);
     const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
+    const trial = structuredClone(c);
+    if (j >= 0) dropped.push(...joinPluginSettings(trial, trial.systems[j], trial.systems[i], plugins).map((name) => `${name} settings`));
     // Its talkgroups come along if this one has none.
     const [theirs, mine] = [app.talkgroups[other.shortName], app.talkgroups[sys.shortName]];
     if (theirs && mine && JSON.stringify(theirs) !== JSON.stringify(mine)) dropped.push("talkgroups");
@@ -2656,6 +2753,7 @@ export function SystemCard(props: { c: Config; i: number }) {
         to.sites.push({ ...s, name: taken.has(want) ? newSiteName(to) : want, enabled: s.enabled && from.enabled });
       }
       if (from.enabled) to.enabled = true;
+      joinPluginSettings(x, from, to, plugins);
       // Plugin settings that named it name this one.
       renameSystemRefs(x, from.shortName, to.shortName, plugins);
       if (!mine) moveNames(from.shortName, to.shortName);

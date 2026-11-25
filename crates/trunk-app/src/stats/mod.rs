@@ -279,6 +279,8 @@ pub struct Stats {
     locked: HashMap<String, bool>,
     /// Per source: dropping, clipping, quiet at the last tick.
     trouble: Vec<[bool; 3]>,
+    /// Per source: voice channels opened on it so far, and when the count last rose (unix s).
+    voice: Vec<(u64, Option<f64>)>,
     /// Calls this minute, per system (CallVolume for watchers).
     minute_calls: BTreeMap<String, u32>,
     /// Air time counted so far of each call in progress, ms (counted as it
@@ -296,6 +298,7 @@ impl Stats {
             agg: Aggregator::default(),
             meters: names.iter().map(|_| Default::default()).collect(),
             trouble: vec![[false; 3]; names.len()],
+            voice: vec![(0, None); names.len()],
             names,
             tally: Tally::default(),
             day: Day::default(),
@@ -449,8 +452,16 @@ impl Stats {
             out.push(Output::Rollup(r));
         }
         engine.report(&self.names, &mut self.agg);
+        let status = engine.status();
         for (i, m) in self.meters.iter().enumerate() {
-            m.lock().unwrap().report(&mut Scoped::new(&mut self.agg, format!("src/{}", self.names[i])));
+            // A source that carried a call lately has gain enough for its calls, however small its samples (meter::VOICE_VOUCHES_S).
+            let (n, at) = &mut self.voice[i];
+            let opened = status.sources.get(i).map_or(0, |r| r.voice_channels);
+            if opened > *n {
+                (*n, *at) = (opened, Some(self.now));
+            }
+            let voiced = at.is_some_and(|t| self.now - t < meter::VOICE_VOUCHES_S);
+            m.lock().unwrap().report(&mut Scoped::new(&mut self.agg, format!("src/{}", self.names[i])), voiced);
         }
         self.count_air(engine, site_names);
         self.tally.report(&mut self.agg);

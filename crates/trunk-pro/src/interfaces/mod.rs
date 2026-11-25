@@ -384,8 +384,8 @@ impl Interfaces {
             }
         }
         let data = crate::store::download(&shot.url, &sha, MAX_SCREENSHOT, "a screenshot")?;
-        let _ = std::fs::create_dir_all(cache.parent().unwrap());
-        let _ = crate::config::write_atomic(&cache, &data);
+        // (Only a cache: fetched again next time.)
+        let _ = trunk_app::files::make_parent(&cache).and_then(|_| trunk_app::files::write_atomic(&cache, &data));
         Ok((data, mime))
     }
 
@@ -424,7 +424,7 @@ impl Interfaces {
         if cfg.server.interfaces.get(id).is_none_or(|i| i.path.is_empty()) {
             let dir = interfaces_dir().join(id);
             if dir.is_dir() {
-                std::fs::remove_dir_all(&dir).map_err(|e| format!("Couldn't delete {}: {e}", dir.display()))?;
+                trunk_app::files::remove_dir_all(&dir).map_err(|p| format!("Couldn't delete {}. {p}", dir.display()))?;
             }
         }
         Ok(())

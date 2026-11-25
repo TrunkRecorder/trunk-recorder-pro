@@ -76,7 +76,7 @@ how many of that thing you have:
 | **Conventional** | Conventional systems and their channels | [Conventional](conventional.md) |
 | **Radios** | Your sources (dongles, other radios, capture files), **Add a source**, **Dongle not showing up?** | [Radios](radios.md) |
 | **Recording** | **Recorder** (recordings folder, RAM spool, recorders, pre-roll, voice decoder, **One copy per multi-site call**, start on launch), **Key containers** (when a key file is locked), **Call rules**, **Advanced** (**M4A audio**, **Log**) | [Recordings](recordings.md) |
-| **Access** | Who may reach the recorder: **Sign-in**, users and their roles, passkeys, **Proxy**, HTTPS. Desktop only | [Remote access](remote-access.md) |
+| **Access** | Who may reach the recorder: **Direct connections** (this computer only, or other devices too) and **Reachable at** (every way to it found: network, tailnet, Tailscale Serve or Funnel, Cloudflare Tunnel), **Sign-in**, users and their roles, passkeys, **Proxy**, HTTPS. Desktop only | [Remote access](remote-access.md) |
 | **Data** | Where the recorder keeps what it keeps: **Store** (SQLite or PostgreSQL), **Writing less** (**Normal** or **Low-write**, the call history indexes, **Write every**), **Radio registry** and **How long** (call and dashboard history, in days); then **Export and delete** (a CSV per table, **Delete**, **Compact DB…**). Desktop only | [The store](../configuration/storage.md) |
 | **Plugins** | Each plugin's settings | [Plugins](../plugins/README.md) |
 
@@ -154,8 +154,8 @@ coloured light. Click one to go to the page about it. These are the events you c
 | `<system>: control channel back` | green | Back to normal. |
 | `<source>: dropping samples` | amber | The computer or USB bus isn't keeping up; calls on that source lose audio. See [Troubleshooting](../troubleshooting.md#dropped-samples). |
 | `<source>: gain too high · …% clipping` | amber | More than 0.5% of samples are at full scale: the gain is too high, or a strong signal is nearby. Lower the gain a few dB. |
-| `<source>: gain too low · peaks … dBFS` | amber | The source's samples stayed tiny for a minute (their peaks average the dBFS shown): the gain may be too low. Raise it a few dB. |
-| `<source>: clean again` | green | No more drops, clipping or low gain. |
+| `<source>: gain may be low · peaks … dBFS` | info | The source's samples stayed tiny for a minute (their peaks average the dBFS shown) and it carried no call in the last day: the gain may be too low. A suggestion, not a warning: a source on a few quiet voice channels can look like this at a working gain. Try a few dB more, or **Tune gain**. |
+| `<source>: clean again` | green | No more drops, clipping or low-gain suggestion. |
 | `<plugin>: error — …` / `warning — …` / `ok — …` | red / amber / green | A plugin's own status changed. See the Plugins page. |
 | `<target>: not answering` | red | One of the hosts checked (`monitor.checkHosts`) stopped answering. |
 | `<target>: back · down … s` | green | It's back. |
@@ -189,7 +189,8 @@ To start recording again after a restart without touching anything, turn on **Re
 ## Remote access
 
 By default the interface only answers on this computer (`127.0.0.1`). To reach it from another
-machine, start with `--bind 0.0.0.0` (or set `server.bind`), or leave it as it is and use an SSH
+machine, choose **Other devices too** under **Direct connections** in Setup → **Access** and restart
+the app (or start with `--bind 0.0.0.0`), or leave it as it is and use an SSH
 tunnel (`ssh -L 8080:localhost:8080 you@recorder.local`). Signing in is off until you turn it on
 in Setup → **Access**. All of this, with HTTPS, passkeys, proxies and Cloudflare
 Tunnel, is in [Remote access and signing in](remote-access.md).

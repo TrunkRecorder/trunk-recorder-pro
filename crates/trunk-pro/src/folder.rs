@@ -10,121 +10,18 @@
 //! dashboard's light and the folder's field in Setup.
 
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+pub use trunk_app::files::Problem;
+use trunk_app::files::{self, Doing};
 use trunk_app::stats::MonitorEvent;
 
 /// Files not written, said at most this often while a folder fails.
 const LOG_EVERY: Duration = Duration::from_secs(60);
-
-/// Why a folder can't be written to: `why`, in a few words; `detail`, what
-/// was being done and what the system said; `fix`, what to do, when known.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Problem {
-    pub why: String,
-    pub detail: String,
-    pub fix: Option<String>,
-}
-
-impl std::fmt::Display for Problem {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}: {}", self.why, self.detail)?;
-        if let Some(fix) = &self.fix {
-            write!(f, ". {fix}")?;
-        }
-        Ok(())
-    }
-}
-
-/// What was being done when it failed.
-#[derive(Clone, Copy)]
-enum Doing {
-    Make,
-    Write,
-    Delete,
-    Move,
-}
-
-impl Doing {
-    fn verb(self) -> &'static str {
-        match self {
-            Doing::Make => "making",
-            Doing::Write => "writing",
-            Doing::Delete => "deleting",
-            Doing::Move => "moving a file to",
-        }
-    }
-}
-
-impl Problem {
-    fn new(why: &str, detail: String, fix: Option<String>) -> Problem {
-        Problem { why: why.into(), detail, fix }
-    }
-
-    /// `e`, from `doing` `path`, in words: the kinds of failure a folder has
-    /// told apart, each with what to do about it.
-    fn of(doing: Doing, path: &Path, e: &std::io::Error) -> Problem {
-        let detail = format!("{} {}: {e}", doing.verb(), path.display());
-        // (macOS's privacy protection: "Operation not permitted", not "Permission denied".)
-        #[cfg(target_os = "macos")]
-        if e.raw_os_error() == Some(libc::EPERM) {
-            let fix = "Allow trunk-pro in System Settings → Privacy & Security → Files and Folders (or Full Disk Access), or choose a folder outside Documents, Desktop and Downloads";
-            return Problem::new("Blocked by macOS privacy", detail, Some(fix.into()));
-        }
-        match e.kind() {
-            ErrorKind::PermissionDenied => {
-                let (owner, fix) = owner_of(path);
-                Problem::new("Permission denied", format!("{detail}{owner}"), fix)
-            }
-            ErrorKind::ReadOnlyFilesystem => Problem::new("Disk is read-only", detail, Some("It's mounted read-only (a Docker volume with :ro?), or the system made it so after errors (a failing SD card or drive)".into())),
-            ErrorKind::StorageFull | ErrorKind::QuotaExceeded => Problem::new("Disk is full", detail, Some("Free some room, or choose a folder on another disk".into())),
-            ErrorKind::NotADirectory | ErrorKind::AlreadyExists => Problem::new("Not a folder", detail, Some("Something in its path is a file: choose another folder".into())),
-            ErrorKind::NotFound => Problem::new("Folder is gone", detail, Some("Its drive was disconnected, or the folder was deleted".into())),
-            _ => Problem::new("Can't write", detail, None),
-        }
-    }
-}
-
-/// Who owns the nearest folder of `path` there is, and who the app runs as
-/// (", owned by root (drwxr-xr-x); the app runs as luke"), and what to do.
-#[cfg(unix)]
-fn owner_of(path: &Path) -> (String, Option<String>) {
-    use std::os::unix::fs::MetadataExt;
-    let Some((at, m)) = path.ancestors().find_map(|a| fs::metadata(a).ok().filter(|m| m.is_dir()).map(|m| (a, m))) else {
-        return (String::new(), None);
-    };
-    let uid = unsafe { libc::geteuid() };
-    let (me, owner, mode) = (user_name(uid), user_name(m.uid()), m.mode() & 0o777);
-    let said = format!(" — {} is owned by {owner} ({mode:o}); the app runs as {me}", at.display());
-    let fix = if m.uid() == uid {
-        format!("Let its owner write to it (chmod u+w \"{}\"), or choose another folder", at.display())
-    } else {
-        format!("Give {me} the folder (sudo chown -R {me} \"{}\"), or choose one {me} can write to", at.display())
-    };
-    (said, Some(fix))
-}
-
-#[cfg(not(unix))]
-fn owner_of(_: &Path) -> (String, Option<String>) {
-    (String::new(), Some("Choose a folder this account can write to".into()))
-}
-
-#[cfg(unix)]
-fn user_name(uid: u32) -> String {
-    let mut buf = vec![0u8; 1024];
-    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut out = std::ptr::null_mut();
-    let found = unsafe { libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr().cast(), buf.len(), &mut out) } == 0 && !out.is_null();
-    if found {
-        unsafe { std::ffi::CStr::from_ptr(pw.pw_name) }.to_string_lossy().into_owned()
-    } else {
-        format!("uid {uid}")
-    }
-}
 
 /// Where drives are mounted: a folder right under one of these that isn't
 /// there is a drive that isn't (and making it would put the calls on the
@@ -163,7 +60,7 @@ pub fn probe(dir: &Path, make: bool) -> Result<(), Problem> {
             let detail = format!("{} was there, and isn't now", dir.display());
             return Err(Problem::new("Folder is gone", detail, Some("Its drive was disconnected, or the folder deleted: reconnect or make it again, and the next call is saved".into())));
         }
-        fs::create_dir_all(dir).map_err(|e| Problem::of(Doing::Make, dir, &e))?;
+        files::make_dir(dir)?;
     }
     let file = dir.join(format!(".trunk-pro-write-check-{}", std::process::id()));
     let written = fs::File::create(&file).and_then(|mut f| f.write_all(b"Trunk Recorder Pro checks it can write here. Safe to delete.\n").and_then(|_| f.sync_all()));
@@ -172,7 +69,7 @@ pub fn probe(dir: &Path, make: bool) -> Result<(), Problem> {
         return Err(Problem::of(Doing::Write, &file, &e));
     }
     // (Calls not kept are deleted once the plugins are done: that has to work too.)
-    fs::remove_file(&file).map_err(|e| Problem::of(Doing::Delete, &file, &e))
+    files::remove_file(&file)
 }
 
 /// A folder failing: since when (Unix s), why, the files not written since,
@@ -285,7 +182,7 @@ impl Folder {
 
     /// Write `bytes` to `file` (in this folder; its own folders made as needed).
     pub fn write(&self, file: &Path, bytes: &[u8]) -> Result<(), Problem> {
-        let r = self.make_parent(file).and_then(|_| fs::write(file, bytes).map_err(|e| Problem::of(Doing::Write, file, &e)));
+        let r = self.make_parent(file).and_then(|_| files::write(file, bytes));
         self.note(&r, true);
         r
     }
@@ -302,7 +199,7 @@ impl Folder {
 
     /// Move `from` (elsewhere: the spool) to `to`, in this folder.
     pub fn move_in(&self, from: &Path, to: &Path) -> Result<(), Problem> {
-        let r = self.make_parent(to).and_then(|_| crate::spool::move_file(from, to).map_err(|e| Problem::of(Doing::Move, to, &e)));
+        let r = self.make_parent(to).and_then(|_| crate::spool::move_file(from, to));
         self.note(&r, true);
         r
     }
@@ -319,7 +216,7 @@ impl Folder {
             probe(&root, !seen)?;
         }
         match file.parent() {
-            Some(d) => fs::create_dir_all(d).map_err(|e| Problem::of(Doing::Make, d, &e)),
+            Some(d) => files::make_dir(d),
             None => Ok(()),
         }
     }

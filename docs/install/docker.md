@@ -10,8 +10,8 @@ This page covers running Trunk Recorder Pro in a Docker container on a Linux hos
 - **Not Docker Desktop on macOS or Windows.** Containers there run inside a virtual machine that
   can't see your USB devices, so the recorder would find no dongles. Use the [macOS](macos.md) or
   [Windows](windows.md) app instead.
-- **RTL-SDRs, HackRF Ones and Airspy R2 / Mini only.** The image contains `trunk-pro`, a small
-  `ffmpeg` and the Airspy's driver (libairspy), nothing else: no UHD, libhydrasdr, libbladeRF or
+- **RTL-SDRs, HackRF Ones and Airspy R2 / Mini only.** The image contains `trunk-pro` (with its own drivers for these), a small
+  `ffmpeg` and libairspy (what an Airspy the built-in driver can't open falls back to), nothing else: no UHD, libhydrasdr, libbladeRF or
   SoapySDR, so USRP, HydraSDR, bladeRF and SoapySDR sources (and older RTL-SDRs that need SoapySDR)
   don't work in it. Use the [Linux](linux.md) package for those, or ask for one in an issue.
 - **Nothing else may hold the dongles.** Stop any SDR program on the host that has them open. The

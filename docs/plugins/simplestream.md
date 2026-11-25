@@ -94,9 +94,13 @@ Each packet is one slice of a call's audio, with, depending on the stream's sett
   then the audio:
 
   ```json
-  {"audio_sample_rate":8000,"event":"audio","freq":857587500,"patched_talkgroups":[1039],
-   "short_name":"dcfd","src":1234,"src_tag":"","talkgroup":1039}
+  {"audio_sample_rate":8000,"event":"audio","freq":857587500,"patched_talkgroup_tags":["Fire Dispatch"],
+   "patched_talkgroups":[1039],"short_name":"dcfd","src":1234,"src_tag":"Engine 5","talkgroup":1039}
   ```
+
+  `patched_talkgroup_tags` is the tag of the call's talkgroup, then of each one patched with it; a
+  talkgroup with no tag is left out, and the key is missing when none has one. A receiver can then
+  name each transmission without call start packets.
 
 With **Packets when calls start**, a call start is a JSON packet with no audio:
 `"event":"call_start"`, with `src`, `src_tag`, `talkgroup`, `talkgroup_tag`,
@@ -105,8 +109,9 @@ end**, a call end has `talkgroup`, `patched_talkgroups`, `freq`, `short_name` an
 `"event":"call_end"`.
 
 In an audio packet, `talkgroup` is the talkgroup the stream is for, which is the patched talkgroup
-when the call is on another one. `src` is the radio heard last when the call started, or `-1` when
-none was.
+when the call is on another one. `src` is the radio heard last, or `-1` when none was
+yet, and `src_tag` is its name (empty when the recorder knows none). Both follow the call
+as other radios talk.
 
 ## When it can't send
 
@@ -124,7 +129,6 @@ The **Health** tab lists each destination as up or down, and the bytes sent.
 ## Differences from Trunk Recorder
 
 - With **Talkgroup** `0`, a patched call is sent once, not once for each talkgroup in the patch.
-- `src_tag` is always empty.
 - Calls end when the recorder ends them, a little before their files are written (where Trunk
   Recorder sent `call_end`).
 - There's no `audioStreaming` setting to turn on: the recorder sends live audio to any plugin that

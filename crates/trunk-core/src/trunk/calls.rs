@@ -261,6 +261,60 @@ pub enum CarriesOn {
     /// Conversation mode off: the next transmission, and what the air said
     /// of the last one isn't said of it.
     NewTransmission,
+    /// Conversation mode off: its transmission ended on its terminator. The
+    /// channel is kept for the next one on it, a call told only once it has
+    /// audio ([`Call::untold`]).
+    Terminated,
+}
+
+/// Why a call ended: in its record (`end_reason`) and the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallEnd {
+    /// Its voice channel's terminator (conversation mode off: a call is one transmission).
+    Terminator,
+    /// Analog, which has no terminator: its squelch shut for the transmission gap (conversation mode off).
+    Squelch,
+    /// The next transmission's audio on its channel (conversation mode off).
+    NextTransmission,
+    /// Nothing heard of it, on the control channel or its voice, for the call timeout.
+    Timeout,
+    /// It ran as long as a call may, and carries on in a new one.
+    TooLong,
+    /// Its channel was given to another talkgroup.
+    Reassigned,
+    /// The recording stopped.
+    Stopped,
+}
+
+impl CallEnd {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallEnd::Terminator => "terminator",
+            CallEnd::Squelch => "squelch",
+            CallEnd::NextTransmission => "next_transmission",
+            CallEnd::Timeout => "timeout",
+            CallEnd::TooLong => "too_long",
+            CallEnd::Reassigned => "reassigned",
+            CallEnd::Stopped => "stopped",
+        }
+    }
+}
+
+impl CallEnd {
+    /// Why a call on `voice` that carries on (`how`) ended.
+    pub fn of(how: CarriesOn, voice: Voice) -> CallEnd {
+        match how {
+            CarriesOn::TooLong => CallEnd::TooLong,
+            CarriesOn::NewTransmission => CallEnd::NextTransmission,
+            CarriesOn::Terminated if voice.analog() => CallEnd::Squelch,
+            CarriesOn::Terminated => CallEnd::Terminator,
+        }
+    }
+
+    /// Its transmission's end, as [`super::voice::TrackerOut::Ended`] says it for `voice`.
+    pub fn ended(voice: Voice) -> CallEnd {
+        Self::of(CarriesOn::Terminated, voice)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -316,6 +370,12 @@ pub struct Call {
     pub tone: Option<ToneHeard>,
     /// Conventional FM: the tone its channel row records (None: any).
     pub tone_set: Option<Tone>,
+    /// Why it ended, once it has.
+    pub end: Option<CallEnd>,
+    /// Not told yet: a channel kept after a transmission's terminator
+    /// ([`CarriesOn::Terminated`]), a call once audio comes ([`CallManager::tell`]),
+    /// and gone without a word if none does.
+    pub untold: bool,
 }
 
 impl Call {
@@ -356,6 +416,8 @@ impl Call {
             nac: None,
             tone: None,
             tone_set: None,
+            end: None,
+            untold: false,
         }
     }
 
@@ -393,6 +455,8 @@ impl Call {
             nac,
             tone,
             tone_set,
+            end: _,
+            untold: _,
         } = self.clone();
         let mut next = Call {
             id,
@@ -424,6 +488,8 @@ impl Call {
             nac,
             tone,
             tone_set,
+            end: None,
+            untold: false,
         };
         // (Its talkers unknown yet, encryption stays as it was: not known to be clear isn't clear.)
         if how == CarriesOn::NewTransmission && !next.sources.is_empty() {
@@ -520,8 +586,15 @@ impl CallConfig {
     /// by the recorder's clock (`heard_s`: the air's times run behind it,
     /// [`Call::heard_s`]), and, while it records, no audio either.
     pub fn quiet(&self, c: &Call, now_s: f64) -> bool {
+        self.quiet_held(c, now_s, self.call_timeout_s)
+    }
+
+    /// [`CallConfig::quiet`], the control channel's side held `held_s`
+    /// (at least the call timeout): a site that grants a channel again
+    /// every few seconds while it's kept ([`CallManager::hold_repeats`]).
+    pub fn quiet_held(&self, c: &Call, now_s: f64, held_s: f64) -> bool {
         let t = self.call_timeout_s;
-        now_s - c.heard_s > t && (!c.recording || now_s - c.last_audio_s > t)
+        now_s - c.heard_s > held_s.max(t) && (!c.recording || now_s - c.last_audio_s > t)
     }
 
     /// Recorded call `c` has run as long as a call may: it is saved and
@@ -596,6 +669,8 @@ pub enum CallEvent {
     Start(Call),
     Update(Call),
     End(Call),
+    /// A call never told ([`Call::untold`]) is over: its recorder is freed, nothing said.
+    Discard(Call),
 }
 
 /// What a system decides about its calls that can change while recording,
@@ -640,11 +715,51 @@ pub struct CallManager {
     pub tally: super::tally::CopyTally,
     unresolved: Vec<Unresolved>,
     first_grant_s: Option<f64>,
+    /// Its control channel sends a call's grant again as an update every
+    /// few seconds while the call goes on, its hang time too (DMR's Late
+    /// Entry), which may be longer than the call timeout: a call is held as
+    /// long as that, so each repeat goes on with it rather than starting a
+    /// call with no voice.
+    pub hold_repeats: bool,
+    /// How often a call's update has come (seconds, smoothed), heard with `hold_repeats`.
+    repeat_s: Option<f64>,
+    /// With `hold_repeats`: calls that went quiet lately (talkgroup,
+    /// frequency, slot) and when they were last heard of: an update for one
+    /// says how often the site repeats too, longer than it was held.
+    gone: Vec<(u32, u64, Voice, f64)>,
 }
+
+/// Repeats this close are one grant heard twice (a burst), and this far apart
+/// not a repeat at all: only what's between is how often a site repeats.
+const REPEAT_S: std::ops::Range<f64> = 1.0..10.0;
 
 impl CallManager {
     pub fn new(cfg: CallConfig) -> Self {
-        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), tally: Default::default(), unresolved: Vec::new(), first_grant_s: None }
+        CallManager { calls: Vec::new(), cfg, site: 0, system: 0, ids: CallIds::default(), patches: Patches::default(), tally: Default::default(), unresolved: Vec::new(), first_grant_s: None, hold_repeats: false, repeat_s: None, gone: Vec::new() }
+    }
+
+    /// How long a call is held for the control channel ([`CallConfig::quiet_held`]):
+    /// the call timeout, or with `hold_repeats` a repeat and a quarter's time
+    /// (and a half second) once the site's been heard repeating.
+    pub fn held_s(&self) -> f64 {
+        let t = self.cfg.call_timeout_s;
+        self.repeat_s.filter(|_| self.hold_repeats).map_or(t, |r| t.max(r * 1.25 + 0.5))
+    }
+
+    /// An update `m` at `now_s`, for a call going on or one just over: how
+    /// often the site repeats one ([`CallManager::hold_repeats`]).
+    fn heard_again(&mut self, m: &Message, now_s: f64) {
+        if !self.hold_repeats || !matches!(m.kind, MessageType::Update | MessageType::UuVUpdate) {
+            return;
+        }
+        self.gone.retain(|g| now_s - g.3 < REPEAT_S.end);
+        let live = self.calls.iter().find(|c| Self::matches(c, m)).map(|c| c.heard_s);
+        let gone = || self.gone.iter().find(|g| g.0 == m.talkgroup && g.1 == m.freq_hz && g.2.same_place(m.voice)).map(|g| g.3);
+        let Some(heard_s) = live.or_else(gone) else { return };
+        let dt = now_s - heard_s;
+        if REPEAT_S.contains(&dt) {
+            self.repeat_s = Some(self.repeat_s.map_or(dt, |r| r * 0.7 + dt * 0.3));
+        }
     }
 
     /// For site `site` of system `system`, drawing ids from `ids` (shared with the other sites).
@@ -746,8 +861,24 @@ impl CallManager {
         !std::mem::replace(&mut c.decrypted, true)
     }
 
-    /// A voice channel gave a radio's position: kept on its latest entry
-    /// (returns true if it moved).
+    /// Radio `p.unit` was at `p`, whatever carried it (GPS sent with its voice, a location report
+    /// sent as data): kept on each of `calls` it's on ([`Self::note_position`]), each one that
+    /// changed pushed to `updated`. The event saying so, with the talkgroup of the call it's on (0
+    /// on none); none when every call it's on had it already.
+    pub fn position<'a>(system: u16, calls: impl IntoIterator<Item = &'a mut Call>, p: &Position, updated: &mut Vec<CallEvent>) -> Option<super::Event> {
+        let mut on = None;
+        let mut new = false;
+        for c in calls.into_iter().filter(|c| c.sources.iter().any(|s| s.src == p.unit)) {
+            on = Some(c.talkgroup);
+            if Self::note_position(c, p) {
+                new = true;
+                updated.push(CallEvent::Update(c.clone()));
+            }
+        }
+        (new || on.is_none()).then(|| super::Event::UnitPosition { system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: on.unwrap_or(0) })
+    }
+
+    /// A call's radio was at `p`: kept on its latest entry (returns true if it moved).
     pub fn note_position(c: &mut Call, p: &Position) -> bool {
         let Some(s) = c.sources.iter_mut().rev().find(|s| s.src == p.unit) else { return false };
         let at = Some((p.lat, p.lon));
@@ -763,8 +894,11 @@ impl CallManager {
         while i > 0 {
             i -= 1;
             let c = &self.calls[i];
-            if self.cfg.quiet(c, now_s) {
-                Self::close(self.calls.remove(i), host, ev);
+            if self.cfg.quiet_held(c, now_s, self.held_s()) {
+                if self.hold_repeats {
+                    self.gone.push((c.talkgroup, c.freq_hz, c.voice, c.heard_s));
+                }
+                Self::close(self.calls.remove(i), CallEnd::Timeout, host, ev);
             } else if self.cfg.too_long(c, now_s) {
                 // The one talking now carries on.
                 let talking = c.talker().map(|s| CallSource { time_s: now_s, ..s.clone() }).into_iter().collect();
@@ -826,24 +960,56 @@ impl CallManager {
             Ok(()) => c.recording = true,
             Err(r) => c.reason = Some(r),
         }
-        Self::close(self.calls.remove(i), host, ev);
-        ev.push(CallEvent::Start(c.clone()));
+        let why = CallEnd::of(how, self.calls[i].voice);
+        Self::close(self.calls.remove(i), why, host, ev);
+        // (A channel kept after a terminator is a call once it has audio.)
+        c.untold = how == CarriesOn::Terminated;
+        if !c.untold {
+            ev.push(CallEvent::Start(c.clone()));
+        }
         let id = c.id;
         self.calls.push(c);
         id
     }
 
+    /// Conversation mode off ([`CallConfig::conversation`]): recorded call
+    /// `id`'s voice channel sent its terminator at `now_s`, after its audio.
+    /// The transmission is over: it ends now, not once the control channel
+    /// has stopped mentioning the channel for the call timeout, and the
+    /// channel is kept for whatever comes next on it ([`CarriesOn::Terminated`]).
+    /// The id that keeps it; None: not so ended.
+    pub fn terminated(&mut self, id: CallId, now_s: f64, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) -> Option<CallId> {
+        let i = self.calls.iter().position(|c| c.id == id && c.recording && !c.untold)?;
+        if self.cfg.conversation {
+            return None;
+        }
+        Some(self.split(i, now_s, Vec::new(), CarriesOn::Terminated, host, ev))
+    }
+
+    /// Audio came at `now_s` on a channel kept after a terminator
+    /// ([`Call::untold`]): it's a call now, begun then. The call to tell; None:
+    /// it was told already, or isn't one.
+    pub fn tell(&mut self, id: CallId, now_s: f64) -> Option<Call> {
+        let c = self.calls.iter_mut().find(|c| c.id == id && c.untold)?;
+        c.untold = false;
+        c.start_s = now_s;
+        c.last_audio_s = now_s;
+        Some(c.clone())
+    }
+
     /// End everything (source stopped).
     pub fn end_all(&mut self, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         for c in std::mem::take(&mut self.calls) {
-            Self::close(c, host, ev);
+            Self::close(c, CallEnd::Stopped, host, ev);
         }
     }
 
-    /// A call taken out of the list is over: its recorder released, its end told.
-    fn close(c: Call, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
+    /// A call taken out of the list is over (`why`): its recorder released, its end told
+    /// (one never told goes without a word).
+    fn close(mut c: Call, why: CallEnd, host: &mut dyn RecorderHost, ev: &mut Vec<CallEvent>) {
         host.release(&c);
-        ev.push(CallEvent::End(c));
+        c.end = Some(why);
+        ev.push(if c.untold { CallEvent::Discard(c) } else { CallEvent::End(c) });
     }
 
     /// Whether talkgroup `tg` is call `c`'s conversation: its own, or one
@@ -863,7 +1029,7 @@ impl CallManager {
             i -= 1;
             let c = &self.calls[i];
             if c.freq_hz == freq_hz && c.voice.shares_channel(voice) && !self.one_conversation(c, tg) {
-                Self::close(self.calls.remove(i), host, ev);
+                Self::close(self.calls.remove(i), CallEnd::Reassigned, host, ev);
             }
         }
     }
@@ -889,6 +1055,7 @@ impl CallManager {
             self.unresolved(m, now_s, uu, false);
             return;
         }
+        self.heard_again(m, now_s);
         for c in self.calls.iter_mut().filter(|c| Self::matches(c, m)) {
             if Self::refresh(c, m, now_s, &self.patches) {
                 ev.push(CallEvent::Update(c.clone()));
@@ -906,6 +1073,7 @@ impl CallManager {
         }
         // Resolved now: not missed after all (it becomes a call below).
         self.unresolved.retain(|u| !(u.talkgroup == m.talkgroup && u.unit_to_unit == unit_to_unit));
+        self.heard_again(m, now_s);
         if let Some(c) = self.calls.iter_mut().find(|c| Self::matches(c, m)) {
             if Self::refresh(c, m, now_s, &self.patches) {
                 ev.push(CallEvent::Update(c.clone()));
@@ -1258,6 +1426,47 @@ mod tests {
         // A supergroup granted the channel of a talkgroup patched into it: the same conversation.
         m.handle(&[patch(3.0, 65001, [301, 0, 0]), Message { voice: slot(0), ..msg(MessageType::Grant, 3.0, 65001) }], &mut Host, &mut ev);
         assert_eq!(m.calls.iter().map(|c| c.talkgroup).collect::<Vec<_>>(), [301, 11501, 65001]);
+    }
+
+    /// A site that sends a call's grant again as an update every 5.3 s (DMR's
+    /// Late Entry, through its hang time; the call timeout 3 s): held, each repeat goes on with the
+    /// call: the first call, before the site's been heard repeating, ends
+    /// between two and teaches it; the next is one call to a hold past the
+    /// last repeat. Not held, each repeat starts a call of its own.
+    #[test]
+    fn a_site_repeating_its_grant_slower_than_the_timeout_holds_the_call() {
+        let starts = |hold: bool| {
+            let mut m = manager();
+            m.m.hold_repeats = hold;
+            let mut ev = Vec::new();
+            let mut now = 0.0;
+            for (t, kind) in [(0.0, MessageType::Grant), (0.12, MessageType::Grant), (0.78, MessageType::Update), (6.1, MessageType::Update), (11.4, MessageType::Update), (16.7, MessageType::Update), (22.0, MessageType::Update)] {
+                // The clock runs on to it, a quarter second at a time.
+                while now + 0.25 < t {
+                    now += 0.25;
+                    m.tick(now, &mut Host, &mut ev);
+                }
+                m.handle(&[msg(kind, t, 101)], &mut Host, &mut ev);
+                now = t;
+            }
+            let held = m.held_s();
+            m.tick(22.0 + held - 0.1, &mut Host, &mut ev);
+            let open = m.calls.len();
+            m.tick(22.0 + held + 0.1, &mut Host, &mut ev);
+            (ev.iter().filter(|e| matches!(e, CallEvent::Start(_))).count(), open, m.calls.len(), held)
+        };
+        let (n, open, after, held) = starts(true);
+        assert!((n, open, after) == (2, 1, 0) && (6.9..7.3).contains(&held), "{n} {open} {after} {held}");
+        let (n, _, _, held) = starts(false);
+        assert_eq!((n, held), (5, 3.0), "the burst is one, then each repeat a call of its own");
+        // A new grant after a call is over is a call of its own (a reply), not a repeat: nothing learned.
+        let mut m = manager();
+        m.m.hold_repeats = true;
+        let mut ev = Vec::new();
+        m.handle(&[msg(MessageType::Grant, 0.0, 101)], &mut Host, &mut ev);
+        m.tick(3.5, &mut Host, &mut ev);
+        m.handle(&[Message { source: 8, ..msg(MessageType::Grant, 6.0, 101) }], &mut Host, &mut ev);
+        assert_eq!(m.held_s(), 3.0);
     }
 
     /// The rules trunked and conventional calls share, on one call.

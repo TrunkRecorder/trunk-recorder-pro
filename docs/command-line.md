@@ -120,8 +120,7 @@ trunk-pro --log-level debug
 trunk-pro devices [--usrp [args]]
 ```
 
-Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened) and the HackRFs, then whether the optional Airspy
-(libairspy), HydraSDR (libhydrasdr), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy,
+Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened), the HackRFs and the Airspys, then whether the optional HydraSDR (libhydrasdr), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy,
 HydraSDR and bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
 at, HydraSDRs with theirs, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
@@ -677,8 +676,9 @@ systemctl --user restart trunk-pro    # or however the recorder runs
 | Variable | What it does |
 |---|---|
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
-| `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching |
-| `TRUNK_PRO_AIRSPY_LIBRARY_IQ` | Set to `1` for an Airspy to use libairspy's own conversion to IQ, instead of the recorder converting the samples on the source's decoding thread |
+| `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching (libairspy is optional: an Airspy's driver is built in) |
+| `TRUNK_PRO_AIRSPY_NATIVE` | Set to `0` to drive Airspys through libairspy alone, not the built-in driver |
+| `TRUNK_PRO_AIRSPY_LIBRARY_IQ` | Set to `1` for an Airspy to have its driver convert to IQ (libairspy's conversion), instead of the recorder converting the samples on the source's decoding thread |
 | `TRUNK_PRO_HYDRASDR` | The libhydrasdr library file to load, instead of searching |
 | `TRUNK_PRO_BLADERF` | The libbladeRF library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |

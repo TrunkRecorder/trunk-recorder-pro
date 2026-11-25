@@ -4,8 +4,19 @@
 //! Payload formats and receive-only behavior are described in docs/developer/protocols/xpt.md.
 
 use super::slot::{FID_HYTERA, Lc, SlotEvent};
+use super::trunking::Variant;
 use crate::bits::field;
 use serde::Serialize;
+
+/// The XPT control message an event carries on a site heard as `variant`, if any: positive XPT
+/// signaling. None on a site heard granting as standard trunking does ([`Variant::grants`]): Hytera
+/// radios on a Tier III site send Hytera's own blocks too, which aren't XPT's there.
+pub fn control_on(variant: Option<Variant>, e: &SlotEvent) -> Option<Control> {
+    if variant.is_some_and(Variant::grants) {
+        return None;
+    }
+    control(e)
+}
 
 /// The XPT control message an event carries, if any: positive XPT signaling.
 pub fn control(e: &SlotEvent) -> Option<Control> {

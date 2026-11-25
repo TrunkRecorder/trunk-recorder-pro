@@ -206,7 +206,7 @@ mod tests {
     use super::*;
     use crate::dmr::{Channel, Framer, SlotEvent};
     use crate::dsp::c4fm::C4fm;
-    use crate::dsp::Receiver;
+    use crate::dsp::{Receiver, Symbol};
     use crate::trunk::conventional::{ConvChannel, ConvMode};
     use crate::trunk::{Engine, EngineConfig, Event, SourceConfig, SiteConfig, SystemConfig};
 
@@ -245,6 +245,177 @@ mod tests {
         assert!(lcs.iter().all(|&(s, _, tg, src)| s == 1 && tg == 4321 && src == 98765), "{lcs:?}");
         assert_eq!(lcs.iter().filter(|l| l.1 == crate::dmr::LcFrom::Embedded).count(), 6);
         assert_eq!(ch.slots[1].color_code, Some(5));
+    }
+
+
+    /// Every dibit sign-flipped, as spectrally inverted IQ gives them: the
+    /// framer locks on the syncs (each voice sync flipped is a data sync),
+    /// finds the bursts' codes read clean only flipped, and turns them back.
+    #[test]
+    fn an_inverted_transmission_decodes() {
+        let (mut f, mut ch) = (Framer::new(), Channel::default());
+        let mut bursts = Vec::new();
+        for (i, &d) in dibits(&tx()).iter().enumerate() {
+            f.push(&Symbol { dibit: d ^ 2, sample: i as f64, rel_hi: 1.0, rel_lo: 1.0 }, &mut bursts);
+        }
+        assert!(f.inverted);
+        let mut ev = Vec::new();
+        for b in &bursts {
+            ch.burst(b, &mut ev);
+        }
+        // All but the superframe the framer spent finding out.
+        let voice = ev.iter().filter(|(s, e)| *s == 1 && matches!(e, SlotEvent::Voice { frame, .. } if frame.errs == 0)).count();
+        assert!(voice >= 5 * 6 * 3, "{voice} voice frames");
+        assert_eq!(ch.slots[1].color_code, Some(5));
+    }
+
+    /// Standard voice headers, GPS interleaved with ordinary embedded voice LC.
+    fn gps_dibits(t: &Tx, fid: u8) -> Vec<u8> {
+        let mut d = dibits(t);
+        let gps = [8, fid, 1, 0x80, 0, 0, 0x40, 0, 0]; // 45 N, 90 W
+        let emb = embedded_lc_encode(&unpack(&gps).try_into().unwrap());
+        for sf in (1..t.superframes).step_by(2) {
+            for pos in 1..=4 {
+                let burst = (t.idle_before + 3 + sf * 6 + pos) * 2 + t.slot as usize;
+                let start = burst * 144 + 12 + 54 + 4;
+                d[start..start + 16].copy_from_slice(&bits_to_dibits(&emb[(pos - 1) * 32..pos * 32]));
+            }
+        }
+        d
+    }
+
+    #[test]
+    fn embedded_gps_reaches_voice_outputs_through_fec() {
+        for fid in [0, 0x68] {
+            let t = tx();
+            let mut ph = 0.0;
+            let iq = modulate(&gps_dibits(&t, fid), 24_000.0, 0.0, 1.0, &mut ph);
+            let mut rx = C4fm::dmr(24_000.0);
+            let mut syms = Vec::new();
+            rx.push(&iq, &mut syms);
+            let mut voice = crate::dmr::DmrVoice::new(1);
+            let mut out = Vec::new();
+            voice.push(&syms, 0.0, 24_000.0, &mut out);
+            let positions: Vec<_> = out.iter().filter_map(|o| match o.out {
+                crate::trunk::voice::TrackerOut::Position(p) => Some((o.slot, p)),
+                _ => None,
+            }).collect();
+            assert_eq!(positions.len(), t.superframes / 2);
+            for (slot, p) in positions {
+                assert_eq!((slot, p.unit, p.lat, p.lon), (t.slot, t.source, 45.0, -90.0));
+            }
+        }
+    }
+
+    fn packet_dibits(damaged: bool) -> Vec<u8> {
+        let (h, mut b) = crate::dmr::data::tests::gps();
+        if damaged { b[16] ^= 1; } // FEC-valid blocks, invalid packet CRC.
+        let idle = data_burst(5, DT_IDLE, &[0; 196]);
+        let mut out = Vec::new();
+        for i in 0..60 {
+            for slot in 0..2 {
+                out.extend(cach_dibits(slot));
+                let bytes = if slot != 1 { None } else {
+                    match i { 30 => Some(h.as_slice()), 31..=33 => Some(&b[(i-31)*12..(i-30)*12]), _ => None }
+                };
+                out.extend(bytes.map_or(idle, |b| data_burst(5, if i == 30 { 6 } else { 7 }, &bptc196_encode(&unpack(b).try_into().unwrap()))));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn standalone_packet_gps_emits_positions_without_creating_voice_calls() {
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
+        for damaged in [false, true] {
+            let mut ph = 0.0;
+            let iq = modulate(&packet_dibits(damaged), fs, freq - center, 0.3, &mut ph);
+            for (trunked, wrong_code) in [(false, false), (true, false), (false, true), (true, true)] {
+                let mut cfg = EngineConfig {
+                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                    ..Default::default()
+                };
+                if trunked {
+                    cfg.systems = vec![SystemConfig::trunked("gps", vec![SiteConfig { control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(crate::dmr::DmrConfig { color_code: wrong_code.then_some(6), ..Default::default() }), ..Default::default() }])];
+                } else {
+                    let mut ch = ConvChannel::new(freq, ConvMode::Dmr);
+                    if wrong_code { ch.access = Some(crate::trunk::conventional::Access::Dmr { cc: Some(6), slot: None, tg: None }); }
+                    cfg.conventional = vec![ch];
+                }
+                let e = Engine::new(cfg).unwrap();
+                for c in iq.chunks(8192) { e.push_iq(0, c); }
+                e.finish(); let ev = e.drain_events();
+                let positions: Vec<_> = ev.iter().filter_map(|e| match e {
+                    Event::UnitPosition { unit, lat, lon, talkgroup, .. } => Some((*unit, *lat, *lon, *talkgroup)), _ => None
+                }).collect();
+                assert_eq!(positions, if damaged || wrong_code { vec![] } else { vec![(123,45.5,-90.25,0)] }, "damaged {damaged}, trunked {trunked}, wrong code {wrong_code}");
+                assert!(!ev.iter().any(|e| matches!(e, Event::Concluded(_))), "data must not create a voice call");
+            }
+        }
+    }
+
+    #[test]
+    fn packet_header_crc_is_required_even_on_a_keyed_system() {
+        use crate::dmr::slot::SlotDecoder;
+        let (mut h, _) = crate::dmr::data::tests::gps(); h[10] ^= 1;
+        let b = crate::dmr::Burst { cach: [0;12], dibits: data_burst(5,6,&bptc196_encode(&unpack(&h).try_into().unwrap())), rel: [1.0;264], sync: Some(SyncKind::BsData), sync_errs: 0, sample: 0.0 };
+        let mut s = SlotDecoder::default(); s.keyed = true;
+        let mut out=Vec::new();s.burst(&b,&mut out);
+        assert!(matches!(out.as_slice(), [SlotEvent::Data { data_type: 6, ok: false }]));
+    }
+
+    #[test]
+    fn gps_reaches_call_json_and_unit_events_on_conventional_and_trunked_channels() {
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
+        for fid in [0, 0x68] {
+            let mut ph = 0.0;
+            let iq = modulate(&gps_dibits(&tx(), fid), fs, freq - center, 0.3, &mut ph);
+            for trunked in [false, true] {
+                let mut cfg = EngineConfig {
+                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                    ..Default::default()
+                };
+                if trunked {
+                    cfg.systems = vec![SystemConfig::trunked("gps", vec![SiteConfig { control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }])];
+                } else {
+                    cfg.conventional = vec![ConvChannel::new(freq, ConvMode::Dmr)];
+                }
+                let e = Engine::new(cfg).unwrap();
+                for c in iq.chunks(8192) {
+                    e.push_iq(0, c);
+                }
+                e.finish();
+                let events = e.drain_events();
+                assert!(events.iter().any(|ev| matches!(ev, Event::UnitPosition { unit: 98765, lat, lon, .. } if (*lat, *lon) == (45.0, -90.0))), "fid {fid}, trunked {trunked}: position event");
+                let done: Vec<_> = events.iter().filter_map(|ev| match ev { Event::Concluded(c) => Some(c), _ => None }).collect();
+                assert_eq!(done.len(), 1, "fid {fid}, trunked {trunked}");
+                let src = done[0].record.src_list.iter().find(|s| s.src == 98765).unwrap();
+                assert_eq!((src.lat, src.lon), (Some(45.0), Some(-90.0)));
+                let json = done[0].record.to_json();
+                assert!(json.contains("\"lat\":45") && json.contains("\"lon\":-90"), "{json}");
+            }
+        }
+    }
+
+    #[test]
+    fn xpt_gps_uses_normalized_talker_ids_without_altering_coordinates() {
+        let t = Tx { talkgroup: 0xab0019, source: 0xcd1234, ..tx() };
+        let mut ph = 0.0;
+        let iq = modulate(&gps_dibits(&t, 0x68), 24_000.0, 0.0, 1.0, &mut ph);
+        let mut rx = C4fm::dmr(24_000.0);
+        let mut syms = Vec::new();
+        rx.push(&iq, &mut syms);
+        let mut voice = crate::dmr::DmrVoice::new(1);
+        voice.chan.variant = Some(crate::dmr::Variant::Xpt);
+        let mut out = Vec::new();
+        voice.push(&syms, 0.0, 24_000.0, &mut out);
+        assert_eq!(voice.talkgroup(t.slot), Some(25));
+        let positions: Vec<_> = out.iter().filter_map(|o| match o.out {
+            crate::trunk::voice::TrackerOut::Position(p) => Some(p),
+            _ => None,
+        }).collect();
+        assert_eq!(positions.len(), t.superframes / 2);
+        assert!(positions.iter().all(|p| (p.unit, p.lat, p.lon) == (0x1234, 45.0, -90.0)));
     }
 
     fn run(cfg: EngineConfig, iq: &[Complex32]) -> Vec<crate::trunk::Concluded> {
@@ -376,6 +547,28 @@ mod tests {
         assert!((secs - 6.0 * 0.36).abs() < 0.2, "{secs:.2} s of audio");
     }
 
+    /// Spectrally inverted IQ (I and Q swapped somewhere upstream): a
+    /// repeater's call and a mobile's in simplex are recorded all the same.
+    #[test]
+    fn calls_on_inverted_iq_are_recorded() {
+        let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
+        for mobile in [false, true] {
+            let t = Tx { mobile, slot: if mobile { 0 } else { 1 }, ..tx() };
+            let iq: Vec<Complex32> = wideband_of(&t, fs, center - freq).iter().map(|v| v.conj()).collect();
+            let cfg = EngineConfig {
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
+                ..Default::default()
+            };
+            let done = run(cfg, &iq);
+            assert_eq!(done.len(), 1, "mobile {mobile}: {:?}", done.iter().map(|k| &k.call).collect::<Vec<_>>());
+            let c = &done[0].call;
+            assert_eq!((c.talkgroup, c.voice.color_code()), (4321, Some(5)), "mobile {mobile}");
+            let secs = done[0].audio.len() as f64 / 8000.0;
+            assert!(secs > 5.0 * 0.36 - 0.2, "mobile {mobile}: {secs:.2} s of audio");
+        }
+    }
+
     #[test]
     fn a_conventional_dmr_call_has_its_frequency_error() {
         // A repeater and a mobile in simplex, both 600 Hz above the channel.
@@ -411,6 +604,22 @@ mod tests {
         }
         let ppm = e.status().sources[0].error_ppm.expect("the control carrier measured");
         assert!((ppm - 600.0 / 460.05).abs() < 0.2, "{ppm:.3} ppm");
+        // … and its history: the offset, eye opening and SNR a hunted channel's gives.
+        #[derive(Default)]
+        struct Collect(Vec<(String, f64)>);
+        impl crate::metrics::Sink for Collect {
+            fn counter(&mut self, _: &str, _: u64) {}
+            fn gauge(&mut self, name: &str, value: f64) {
+                self.0.push((name.to_string(), value));
+            }
+        }
+        let mut c = Collect::default();
+        e.report(&["src".to_string()], &mut c);
+        let cc = |n: &str| c.0.iter().find(|(k, _)| k.ends_with(&format!("/cc/{n}"))).map(|(_, v)| *v);
+        let off = cc("offset").expect("the offset reported");
+        assert!((off - 600.0).abs() < 100.0, "{off:.0} Hz");
+        // (A narrow source's noise slices are no wider than the carrier: only that there's an SNR.)
+        assert!(cc("sep").is_some() && cc("snr").is_some(), "{:?}", c.0);
     }
 
     #[test]

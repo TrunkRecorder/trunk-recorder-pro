@@ -141,7 +141,7 @@ from -1 to 42 dB, and manual gain is better than AGC, which sits low. It can't t
 1090–1230 MHz. For a dongle with an FC0012, FC0013 or FC2580 tuner, use a `soapy` source with
 `"args": "driver=rtlsdr"`; see [other radios](../install/other-radios.md).
 
-Two dongles with the same serial can't be told apart. Give each its own with `rtl_eeprom -s`.
+Two dongles with the same serial, or with none, can't be told apart: Setup greys them out and says the `rtl_eeprom -s` to run to give each its own.
 
 ## `"type": "usrp"`
 
@@ -233,7 +233,7 @@ is the first client's. `ppm` is not used: the receiver's own crystal is the serv
 
 ## `"type": "airspy"`
 
-An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
+An Airspy R2 or Mini, by the driver built in: nothing to install ([Other radios](../install/other-radios.md#airspy)).
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|

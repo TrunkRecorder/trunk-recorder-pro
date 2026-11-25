@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use rusqlite::types::{Value as Lit, ValueRef};
 use rusqlite::{params_from_iter, Connection, OpenFlags, TransactionBehavior};
+use trunk_app::files::{Doing, Problem};
 
 use super::schema;
 use super::sql::{question_marks, Dialect, Exec, Row, V};
@@ -39,7 +40,7 @@ impl SqliteBackend {
     /// moved aside and a fresh one made.
     pub fn open(path: &Path) -> Result<SqliteBackend, String> {
         let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        trunk_app::files::make_dir(dir)?;
         let lock = lock(path)?;
         let conn = match open_sound(path) {
             Ok(c) => c,
@@ -123,7 +124,7 @@ impl Backend for SqliteBackend {
         let _ = conn.execute_batch("detach database b");
         drop(conn);
         copied.map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &to).map_err(|e| e.to_string())?;
+        trunk_app::files::rename(&tmp, &to)?;
         Ok(Some(to.display().to_string()))
     }
 
@@ -238,7 +239,7 @@ fn open_sound(path: &Path) -> Result<Connection, OpenError> {
 fn lock(path: &Path) -> Result<std::fs::File, String> {
     let mut name = path.as_os_str().to_owned();
     name.push(".lock");
-    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&name).map_err(|e| format!("lock {}: {e}", Path::new(&name).display()))?;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&name).map_err(|e| Problem::of(Doing::Write, Path::new(&name), &e))?;
     match f.try_lock() {
         Ok(()) => Ok(f),
         Err(std::fs::TryLockError::WouldBlock) => Err(format!("another Trunk Recorder Pro is using {}", path.display())),
@@ -276,8 +277,8 @@ fn move_aside(path: &Path, why: &str) -> Result<PathBuf, String> {
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     let undo = |moved: &[(PathBuf, PathBuf)]| {
         for (from, to) in moved.iter().rev() {
-            if let Err(e) = std::fs::rename(to, from) {
-                log::warn!("Call store: could not put {} back: {e}", from.display());
+            if let Err(p) = trunk_app::files::rename(to, from) {
+                log::warn!("Call store: could not put {} back. {p}", from.display());
             }
         }
     };
@@ -287,22 +288,20 @@ fn move_aside(path: &Path, why: &str) -> Result<PathBuf, String> {
             continue;
         }
         let to = with(&aside, suffix);
-        match std::fs::rename(&from, &to) {
+        match trunk_app::files::rename(&from, &to) {
             Ok(()) => moved.push((from, to)),
             Err(_) if suffix == "-shm" => {
-                std::fs::remove_file(&from)
-                    .map_err(|e| format!("move {} aside: {e}", from.display()))
-                    .inspect_err(|_| undo(&moved))?;
+                trunk_app::files::remove_file(&from).inspect_err(|_| undo(&moved))?;
             }
-            Err(e) => {
+            Err(p) => {
                 undo(&moved);
-                return Err(format!("move {} aside: {e}", from.display()));
+                return Err(p.into());
             }
         }
     }
-    if let Err(e) = std::fs::rename(path, &aside) {
+    if let Err(p) = trunk_app::files::rename(path, &aside) {
         undo(&moved);
-        return Err(format!("move {} aside: {e}", path.display()));
+        return Err(p.into());
     }
     Ok(aside)
 }

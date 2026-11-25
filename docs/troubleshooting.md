@@ -78,7 +78,7 @@ the log says `Not started: <why>`, the first problem found. The reasons:
 |---|---|
 | `Add a source (a dongle or a capture file).` | Setup → Radios → **Add a source** |
 | `Choose the capture file to replay.` | A capture-file source has no file |
-| `<system>: it is set to receive on <source>, which isn't one of the sources — choose its sources again.` | A system's or conventional channel's **Receive on** names a radio that was taken out or renamed |
+| `Not started: <system> is set to receive on <source>, which isn't a source — choose its sources again. The sources: …` | A system's or conventional channel's **Receive on** names a radio that was taken out or renamed. The rest records; the sources there are are listed once, to copy a label from. With several left out it names each, `<system> (on <source>)` |
 | `Source N: the USB transfer size must be a multiple of 512 bytes, at most 16 MiB.` or `Source N: at most 256 USB transfers in flight.` | An RTL-SDR's `bufLen` or `buffers` (Setup's **USB transfer size**) is out of range; `65536` is the usual value |
 | `Source N: a HackRF runs at 1 to 20 MSPS.` or `Source N: a HackRF's LNA gain is 0–40 dB in 8 dB steps, its VGA gain 0–62 dB in 2 dB steps.` | A HackRF's `rateHz`, `lnaDb` or `vgaDb` is out of range |
 | `Source N: a HydraSDR's input is ANT, CABLE1, CABLE2.` or `Source N: the HydraSDR's bias-T is on ANT only, …` | A HydraSDR's `rfPort` is over 2, or its `biasTee` is on with another input |
@@ -289,11 +289,13 @@ doesn't collect them in time, they're lost. Causes, most likely first:
   have used up Linux's USB memory (16 MB by default). The message gives the command to raise it.
 - **Something else on the computer** hogging it for a moment (a backup, a screen-sharing session).
 
-**Airspys** hand their samples over through libairspy, whose own thread drops a buffer
-(6.5 ms at 10 MS/s) when it runs more than ~50 ms late. The recorder now takes the Airspy's raw
-samples and turns them into IQ on its own decoding thread, so libairspy's thread only copies.
+**Airspys** drop a buffer (6.5 ms at 10 MS/s) when the thread taking them runs more than ~50 ms
+late. The recorder takes the Airspy's raw samples and turns them into IQ on its own decoding
+thread, so the thread reading USB only copies.
 If an Airspy's channels ever look wrong (nothing decodes, or the spectrum looks mirrored), start
-the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have libairspy convert as before, and tell us.
+the recorder with `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` to have the driver convert, as libairspy does, and tell us.
+If an Airspy that worked before the built-in driver doesn't now, `TRUNK_PRO_AIRSPY_NATIVE=0` goes
+back to libairspy (which must be installed): tell us about that too.
 
 **USRPs** have a very small buffer by default, so the app asks UHD for a bigger one
 (`num_recv_frames=1024`, about 260 ms at 8 MSPS) unless your device arguments set `num_recv_frames`
@@ -303,7 +305,8 @@ themselves. Other USRP messages: `USRP can't run at … MSPS (it offers …); se
 ## Clipping or "Peaks at full scale"
 
 The source's light says `Gain too high · N% clipping` or `Gain too high · peaks at full scale`
-(and the event feed `Samples at full scale`), or `Gain too low · peaks … dBFS` for the opposite.
+(and the event feed `Samples at full scale`). For the opposite the card suggests `Gain may be low · peaks … dBFS`
+without changing its light, and not on a source that carried a call in the last day.
 For the first two, the gain is too high, or there's a strong transmitter nearby. Lower the gain a few dB. On the RF
 page, **Headroom** should stay a few dB above zero. More gain isn't better: past a point it
 raises the noise and overloads the radio. See [Radios](guides/radios.md).

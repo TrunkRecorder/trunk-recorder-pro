@@ -36,6 +36,8 @@ use super::{describe, executable, Encoder, RunSystem};
 pub enum Note {
     Log { plugin: String, level: Level, text: String },
     State { plugin: String, state: State, message: String },
+    /// One of its notices (`key`), or taken away (no `state`); `key` none: all of them (it stopped).
+    Notice { plugin: String, key: Option<String>, state: Option<State>, message: String },
     /// `took_ms`: the plugin's own time on it, when it said (SDK 0.6 and later).
     Result { plugin: String, path: String, outcome: Outcome, message: String, url: String, took_ms: Option<u64> },
     /// Its figures (queue, timing, the services it talks to).
@@ -327,7 +329,9 @@ impl PluginHost {
             topics.voice |= m.subscribes(topic::VOICE);
             live |= topic::ALL.iter().any(|&t| topic::is_live(t) && m.subscribes(t));
             let data_dir = s.data_dir.clone().unwrap_or_else(|| super::data_dir(&s.id));
-            let _ = std::fs::create_dir_all(&data_dir);
+            if let Err(p) = trunk_app::files::make_dir(&data_dir) {
+                log::warn!("Plugin {}: its data folder can't be made, so it may not keep its state. {p}", s.id);
+            }
             let mut formats = vec!["wav".to_string()];
             if encoder.is_some() && m.wants_format(format::M4A) {
                 formats.push(format::M4A.into());
@@ -1003,6 +1007,10 @@ fn supervise(sh: &Shared, i: usize, mut rx: Receiver<Arc<str>>) {
         rx = back;
         *p.started.lock().unwrap() = None;
         let stopping = sh.stopping.load(Ordering::Relaxed);
+        // What it said stays true goes with it (a host replacing this one starts afresh).
+        if !stopping {
+            (sh.notes)(Note::Notice { plugin: p.id.clone(), key: None, state: None, message: String::new() });
+        }
         match exit {
             _ if stopping => return,
             // Everything's been sent and the host is stopping.
@@ -1120,6 +1128,7 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
             Ok(PluginMessage::Ready) => Note::State { plugin: p.id.clone(), state: State::Ok, message: "running".into() },
             Ok(PluginMessage::Log { level, message }) => Note::Log { plugin: p.id.clone(), level, text: message },
             Ok(PluginMessage::Status { state, message }) => Note::State { plugin: p.id.clone(), state, message },
+            Ok(PluginMessage::Notice { key, state, message }) => Note::Notice { plugin: p.id.clone(), key: Some(key), state, message },
             Ok(PluginMessage::CallResult { path, outcome, message, url, took_ms }) => Note::Result { plugin: p.id.clone(), path, outcome, message, url, took_ms },
             Ok(PluginMessage::Metrics(metrics)) => Note::Metrics { plugin: p.id.clone(), metrics },
             // (To the button that was pressed, waiting in `action`.)

@@ -17,7 +17,7 @@
 //! - `"x-systems"`, `"x-signals"` (arrays of strings: systems, signals to
 //!   tick), `"x-ref": "<list>"` (items of another top-level list), `"x-title"`
 //!   and `"x-actions"` (an array's items: their title, their buttons); see
-//!   the guide, docs/plugins/writing-plugins.md
+//!   docs/developer/plugins/protocol.md#settings-schemas
 //! - `"x-required": true` — the field has to be filled in: until it is, the
 //!   recorder shows the plugin, or that system, as not set up. ([`normalize`]
 //!   moves these into the object's `required` list; `#[schemars(required)]`

@@ -34,8 +34,13 @@ In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunke
 
 - **Site frequencies, MHz** (`controlChannelsHz`): for Capacity Plus, **every repeater** of the
   site. For the others, the control channel(s).
-- **Voice frequencies, MHz** (`dmrChannelsHz`): for Tier III, Capacity Max and Connect Plus, the
-  site's voice frequencies. This is Trunk Recorder's `channels`.
+- **Watched frequencies, MHz** (`dmrChannelsHz`): for Tier III, Capacity Max and Connect Plus,
+  voice frequencies listened to all the time, as the site frequencies are. A call on one is found
+  by its own link control, and a grant naming a channel the table doesn't have is learned from it.
+  This is Trunk Recorder's `channels`. Each must be inside a source.
+- **Voice channels, MHz** (`voiceChannelsHz`): optional. The radios are placed over these, and
+  over the channel table's frequencies, but nothing listens to one until a grant names it. Use it
+  to place a radio for a site's voice channels without watching them.
 - **Colour code** (`colorCode`): leave empty ("auto") to take the control channel's.
 - **Channel table** (`lcnTableHz`): channel numbers you already know, as
   `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Leave it empty to learn them.
@@ -273,3 +278,16 @@ that the other frequencies have been added.
 
 **Calls from another system.** Set **Colour code** to the site's, so a neighbour on a shared
 frequency is ignored.
+
+
+## GPS positions
+
+- **GPS sent with voice** (standard DMR and Hytera, XPT included): the radio's position is kept on its entry in the
+  call JSON (`srcList[].lat`, `lon`), as a P25 radio's is. There's nothing to set.
+- **Hytera location reports sent as data** (as text, or compressed): add the data carrier to the site's **Watched
+  frequencies** (or as a conventional DMR channel). A report is a position event. It's kept on a call the radio is
+  on, else reported with talkgroup 0, and makes no recording of its own.
+- **Compressed reports** are experimental: only the north/west form seen so far is read. Others are kept raw.
+- **Hytera registration and offline messages** show as registrations in the log.
+
+See [DMR GPS and data](../developer/protocols/dmr-gps.md) for the formats and their sources.

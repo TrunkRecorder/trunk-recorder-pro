@@ -92,7 +92,7 @@ pub enum SourceKind {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         wire_format: String,
     },
-    /// An Airspy R2 / Mini through libairspy (installed separately; loaded
+    /// An Airspy R2 / Mini, by the driver built in (libairspy, where installed, is loaded
     /// at run time). `serial` hex, "" = the first.
     #[serde(rename_all = "camelCase")]
     Airspy {
@@ -454,29 +454,28 @@ impl Source {
         (!address.trim().is_empty()).then(|| endpoint(address, port))
     }
 
+    /// The radio it opens, as radios are compared: its family (kinds one driver opens alike
+    /// share one) and what names it there ("" = the first found). None: a capture file.
+    fn radio_id(&self) -> Option<(u8, String)> {
+        // (A radio on the network by its server: one `rtl_tcp` serves one client at a time; a SpyServer's
+        // second client can't move its receiver.)
+        if let Some(server) = self.server() {
+            return Some((if matches!(self.kind, SourceKind::Spyserver { .. }) { 7 } else { 6 }, server.to_lowercase()));
+        }
+        match &self.kind {
+            SourceKind::Rtlsdr { serial: id, .. } | SourceKind::Usrp { args: id, .. } | SourceKind::Airspy { serial: id, .. } | SourceKind::Hydrasdr { serial: id, .. } | SourceKind::Bladerf { serial: id, .. } | SourceKind::Soapy { args: id, .. } | SourceKind::Hackrf { serial: id, .. } => {
+                radio_id(self.kind_name(), id)
+            }
+            SourceKind::Spyserver { .. } | SourceKind::File { .. } => None,
+        }
+    }
+
     /// Whether the two may open the same radio (one program at a time can):
     /// of a kind and naming one device, or either "the first found". (A
     /// bladeRF may be named by the start of its serial.)
     pub fn may_be(&self, other: &Source) -> bool {
-        let id = |s: &Source| -> Option<(u8, String)> {
-            // (A radio on the network by its server: one `rtl_tcp` serves one client at a time; a SpyServer's
-            // second client can't move its receiver.)
-            if let Some(server) = s.server() {
-                return Some((if matches!(s.kind, SourceKind::Spyserver { .. }) { 7 } else { 6 }, server.to_lowercase()));
-            }
-            match &s.kind {
-                SourceKind::Rtlsdr { serial, .. } => Some((0, serial.trim().to_string())),
-                SourceKind::Usrp { args, .. } => Some((1, args.trim().to_string())),
-                // (libairspy opens an RFOne as "the first" when it comes first.)
-                SourceKind::Airspy { serial, .. } | SourceKind::Hydrasdr { serial, .. } => Some((2, serial.trim().to_lowercase())),
-                SourceKind::Bladerf { serial, .. } => Some((3, serial.trim().to_lowercase())),
-                SourceKind::Soapy { args, .. } => Some((4, args.trim().to_string())),
-                SourceKind::Hackrf { serial, .. } => Some((5, serial.trim().to_lowercase())),
-                SourceKind::Spyserver { .. } | SourceKind::File { .. } => None,
-            }
-        };
-        match (id(self), id(other)) {
-            (Some((k, a)), Some((j, b))) if k == j => a.is_empty() || b.is_empty() || a == b || (k == 3 && (a.starts_with(&b) || b.starts_with(&a))),
+        match (self.radio_id(), other.radio_id()) {
+            (Some((k, a)), Some((j, b))) if k == j => a.is_empty() || b.is_empty() || names_one(k, &a, &b),
             _ => false,
         }
     }
@@ -502,6 +501,39 @@ impl Source {
             SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
             SourceKind::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
         }
+    }
+}
+
+/// What a config sets to receive on a source that isn't one, left out of a run (the rest records):
+/// each system or conventional channel by its name, with the label it names; and the sources'
+/// labels there are, said once however many were (#216).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Unreceivable {
+    pub items: Vec<(String, String)>,
+    pub sources: Vec<String>,
+}
+
+impl Unreceivable {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+/// "dcfd is set to receive on "RTL-SDR SN 2", which isn't a source — choose its sources again. The
+/// sources: "RTL-SDR SN 1"." For several: "a (on "x"), b (on "y") are set to receive on radios that
+/// aren't sources — choose their sources again. The sources: …".
+impl std::fmt::Display for Unreceivable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.items[..] {
+            [] => return Ok(()),
+            [(name, gone)] => write!(f, "{name} is set to receive on \"{gone}\", which isn't a source — choose its sources again.")?,
+            items => {
+                let each: Vec<String> = items.iter().map(|(name, gone)| format!("{name} (on \"{gone}\")")).collect();
+                write!(f, "{} are set to receive on radios that aren't sources — choose their sources again.", each.join(", "))?
+            }
+        }
+        let labels: Vec<String> = self.sources.iter().map(|l| format!("\"{l}\"")).collect();
+        if labels.is_empty() { write!(f, " There are no sources.") } else { write!(f, " The sources: {}.", labels.join(", ")) }
     }
 }
 
@@ -697,6 +729,81 @@ fn engine_signals(defs: &[SignalDef]) -> Vec<trunk_core::dsp::inband::signal::Si
     defs.iter().filter_map(SignalDef::engine).collect()
 }
 
+/// A radio of kind `kind` named `id` (a serial, or device arguments; "" = the first found), as
+/// radios are compared: its family (libairspy opens an RFOne as "the first" when it comes first,
+/// so an Airspy's and a HydraSDR's are one) and the id as its driver matches it (hex serials in
+/// any case). None: not a radio a driver finds.
+fn radio_id(kind: &str, id: &str) -> Option<(u8, String)> {
+    let id = id.trim();
+    Some(match kind {
+        "rtlsdr" => (0, id.to_string()),
+        "usrp" => (1, id.to_string()),
+        "airspy" | "hydrasdr" => (2, id.to_lowercase()),
+        "bladerf" => (3, id.to_lowercase()),
+        "soapy" => (4, id.to_string()),
+        "hackrf" => (5, id.to_lowercase()),
+        _ => return None,
+    })
+}
+
+/// Whether two ids of family `k` name one radio: the same, or (a bladeRF's) one the start of the other.
+fn names_one(k: u8, a: &str, b: &str) -> bool {
+    a == b || (k == 3 && !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a)))
+}
+
+/// A radio a driver found (an RTL-SDR on USB, an Airspy, a SoapySDR device…): its kind and what
+/// a source names it by (`serial`, or `args`; "" when it has none).
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct FoundRadio {
+    pub kind: String,
+    pub id: String,
+}
+
+/// A source, by its place in the config and its title.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SourceRef {
+    pub index: usize,
+    pub title: String,
+}
+
+/// Why a found radio can't be a source's own.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "why", rename_all = "camelCase")]
+pub enum Unpickable {
+    /// It has no serial, and another of its kind is plugged in: a source opens it only as "the
+    /// first found". `twin`: the first found before it with none too (none: it's the first).
+    NoSerial { twin: Option<usize> },
+    /// Another plugged in has its serial: a source naming it opens whichever is found first.
+    /// `twin`: the first found with it (none: it's the first).
+    SameSerial { twin: Option<usize> },
+    /// Another source names it.
+    Source(SourceRef),
+}
+
+/// What each found radio is to one source ([`Config::radio_picks`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadioPick {
+    /// Why it can't be this source's, if it can't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unpickable: Option<Unpickable>,
+    /// Another source opens "the first found" of its kind: maybe this one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first: Option<SourceRef>,
+}
+
+/// The found radios as one source may pick them ([`Config::radio_picks`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RadioPicks {
+    /// One for each found radio, in its order.
+    pub radios: Vec<RadioPick>,
+    /// When an RTL-SDR can't be told apart: a serial none of them has, to give it with `rtl_eeprom`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub free_serial: Option<String>,
+}
+
 /// What's wrong with a system's signals: one's own problem, or an id used twice.
 fn signals_problem(system: &str, defs: &[SignalDef]) -> Option<String> {
     if let Some(p) = defs.iter().find_map(SignalDef::problem) {
@@ -727,7 +834,9 @@ pub struct Site {
     /// Only follow a control channel with this identity (fields left out
     /// match anything) — this site, not its neighbour on a nearby frequency.
     pub expect: SiteIdentity,
-    /// Voice channels the survey heard (for placing sources; informational).
+    /// Voice channels: what the survey heard, or (DMR, NXDN) frequencies
+    /// granted but not watched. For placing sources; nothing listens to them
+    /// until a grant does.
     pub voice_channels_hz: Vec<f64>,
     /// SmartNet (`type` "smartnet"): the band plan, as Trunk Recorder names
     /// it — "800_standard", "800_reband", "800_splinter", "900", or
@@ -1094,6 +1203,18 @@ impl Site {
         } else {
             vec![]
         }
+    }
+
+    /// Frequencies its calls may be granted on that it doesn't watch, for
+    /// placing sources: its voice channels, and a DMR or NXDN site's channel
+    /// table (a grant names a channel the table turns into a frequency, then
+    /// a recorder follows it, as a P25 grant's).
+    pub fn voice_hz(&self, sys: &System) -> Vec<f64> {
+        let table = (sys.is_dmr() || sys.is_nxdn()).then(|| self.lcn_table::<u32>().into_values().map(|f| f as f64)).into_iter().flatten();
+        let mut out: Vec<f64> = self.voice_channels_hz.iter().copied().chain(table).filter(|&f| f > 0.0).collect();
+        out.sort_by(f64::total_cmp);
+        out.dedup();
+        out
     }
 
     /// The DMR settings.
@@ -2164,6 +2285,17 @@ impl Server {
         self.hostname_parts().1
     }
 
+    /// Where the dashboard is reached by `hostname`, if set: `https://<hostname>`, at the port
+    /// written in it, else `port` when the recorder serves HTTPS itself (`tls`), else 443 (a
+    /// proxy or tunnel in front serves the HTTPS); no port written when it's 443.
+    pub fn hostname_url(&self, port: u16, tls: bool) -> Option<String> {
+        let name = self.host()?;
+        Some(match self.host_port().unwrap_or(if tls { port } else { 443 }) {
+            443 => format!("https://{name}"),
+            p => format!("https://{name}:{p}"),
+        })
+    }
+
     fn hostname_parts(&self) -> (&str, Option<u16>) {
         let h = self.hostname.trim();
         match h.rsplit_once(':') {
@@ -2589,26 +2721,6 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
-/// Write `data` to `path` so that a crash or power cut leaves the old file
-/// or the new one, never part of either: into a temporary file beside it,
-/// flushed to disk, then renamed over it.
-pub fn write_atomic(path: &Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
-    use std::io::Write;
-    let name = path.file_name().map_or_else(|| "file".into(), |n| n.to_string_lossy().into_owned());
-    let tmp = path.with_file_name(format!(".{name}.tmp"));
-    let written = std::fs::File::create(&tmp).and_then(|mut f| {
-        f.write_all(data.as_ref())?;
-        f.sync_all()
-    });
-    match written.and_then(|_| std::fs::rename(&tmp, path)) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(e)
-        }
-    }
-}
-
 pub fn default_capture_dir() -> PathBuf {
     // (The browser build has no home folder, and writes no folder: the default stays as said.)
     if cfg!(target_arch = "wasm32") {
@@ -2792,10 +2904,8 @@ impl Config {
         self.systems.iter().map(|s| (s.id, s.short_name.as_str())).chain(self.conventional.iter().map(|c| (c.id, c.short_name.as_str())))
     }
 
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(d) = path.parent() {
-            std::fs::create_dir_all(d)?;
-        }
+    pub fn save(&self, path: &Path) -> Result<(), crate::files::Problem> {
+        crate::files::make_parent(path)?;
         let mut c = self.clone();
         for v in &mut c.conventional {
             v.channel_file_status.clear();
@@ -2804,7 +2914,7 @@ impl Config {
                 v.channels.clear();
             }
         }
-        write_atomic(path, serde_json::to_string_pretty(&c).unwrap_or_default())
+        crate::files::write_atomic(path, serde_json::to_string_pretty(&c).unwrap_or_default())
     }
 
     /// Conventional system `k`'s linked channel file's location (relative
@@ -2922,7 +3032,7 @@ impl Config {
             return Ok(());
         };
         if !p.exists() {
-            let made = p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, crate::channels::write(&self.conventional[k].channels)));
+            let made = crate::files::make_parent(&p).and_then(|_| crate::files::write(&p, crate::channels::write(&self.conventional[k].channels)));
             if let Err(e) = made {
                 self.conventional[k].channel_file = old;
                 return Err(format!("Couldn't create {}: {e}", p.display()));
@@ -3033,7 +3143,7 @@ impl Config {
     pub fn advice(&self, found: &[Option<crate::rates::Rates>], heard: &Heard) -> Option<Advice> {
         let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
         let choices: Vec<Choices> = self.sources.iter().enumerate().map(|(k, s)| s.choices(found.get(k).and_then(Option::as_ref))).collect();
-        advise(&sources, &choices, &self.targets_with(heard))
+        advise(&sources, &choices, &self.targets_with(heard), &self.targets())
     }
 
     /// What the sources' advice ([`Config::advice`], by the config alone)
@@ -3052,7 +3162,7 @@ impl Config {
                 let mut set = Vec::new();
                 if x.released && src.center_hz > 0.0 {
                     set.push("on auto".to_string());
-                } else if let Some(c) = x.center_hz.filter(|c| src.center_hz > 0.0 && (c - src.center_hz).abs() >= 1000.0) {
+                } else if let Some(c) = x.center_hz.filter(|c| if src.center_hz > 0.0 { (c - src.center_hz).abs() >= 1000.0 } else { !x.released }) {
                     set.push(format!("{:.4} MHz", c / 1e6));
                 }
                 if (x.rate_hz - src.rate_hz).abs() >= 1.0 {
@@ -3081,7 +3191,7 @@ impl Config {
 
     /// What the radios are placed to reach, and what Start needs reached:
     /// each active site's control (and watched) channels and its voice
-    /// channels — one control channel needed (a DMR, NXDN or EDACS site:
+    /// channels ([`Site::voice_hz`]) — one control channel needed (a DMR, NXDN or EDACS site:
     /// every frequency it watches) — then each conventional system's
     /// channels, every one needed (a group for each set of sources its rows
     /// may be received on). Each on its sources. The sites' groups come
@@ -3095,7 +3205,7 @@ impl Config {
         };
         let mut groups: Vec<Group> = self
             .active_sites()
-            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.kind.info().watched, &s.voice_channels_hz, &sys.receive_on))
+            .map(|(sys, s)| group(s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).collect(), sys.kind.info().watched, &s.voice_hz(sys), &sys.receive_on))
             .collect();
         for v in self.conventional.iter().filter(|v| v.enabled) {
             let rows: Vec<&Channel> = v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0).collect();
@@ -3124,7 +3234,7 @@ impl Config {
     pub fn receivers(&self) -> Vec<Receiving> {
         let rx = self.receiving(&self.resolved_centers());
         let on = |system: &str, receive_on: &[String], hz: f64| Receiving { system: system.to_string(), hz, source: rx(receive_on, hz) };
-        let trunked = self.active_sites().flat_map(|(sys, s)| s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).chain(s.voice_channels_hz.iter().copied()).map(move |hz| (sys, hz))).map(|(sys, hz)| on(&sys.short_name, &sys.receive_on, hz));
+        let trunked = self.active_sites().flat_map(|(sys, s)| s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).chain(s.voice_hz(sys)).map(move |hz| (sys, hz))).map(|(sys, hz)| on(&sys.short_name, &sys.receive_on, hz));
         let conv = self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).map(move |c| (v, c))).map(|(v, c)| on(&v.short_name, &c.receive_on, c.freq_hz));
         trunked.chain(conv).collect()
     }
@@ -3162,6 +3272,38 @@ impl Config {
     /// build's worker both say so ([`crate::protocol::ToClient::State`]).
     pub fn needs_restart(&self, run: &Config) -> bool {
         self.at_start() != run.at_start()
+    }
+
+    /// The radios found (`found`), as source `i` (None: a new one, or a radio to scan with) may be
+    /// set to them: one that can't be told apart from another of its family (no serial, or the
+    /// same serial, with more than one plugged in), or that another source names, can't; and
+    /// another source opening "the first found" of its family may take any of them.
+    pub fn radio_picks(&self, i: Option<usize>, found: &[FoundRadio]) -> RadioPicks {
+        let ids: Vec<Option<(u8, String)>> = found.iter().map(|f| radio_id(&f.kind, &f.id)).collect();
+        let others: Vec<(usize, (u8, String))> = self.sources.iter().enumerate().filter(|(j, _)| Some(*j) != i).filter_map(|(j, s)| Some((j, s.radio_id()?))).collect();
+        let source = |j: usize| SourceRef { index: j, title: self.sources[j].title(j) };
+        let radios: Vec<RadioPick> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| {
+                let Some((k, a)) = id else { return RadioPick { unpickable: None, first: None } };
+                // The others of its family, and the first before it that can't be told from it.
+                let kin: Vec<(usize, &String)> = ids.iter().enumerate().filter(|(m, _)| *m != n).filter_map(|(m, o)| o.as_ref().filter(|(j, _)| j == k).map(|(_, b)| (m, b))).collect();
+                let twin = |same: &dyn Fn(&str) -> bool| kin.iter().find(|(m, b)| *m < n && same(b)).map(|(m, _)| *m);
+                let unpickable = match kin.first() {
+                    Some(_) if a.is_empty() => Some(Unpickable::NoSerial { twin: twin(&|b| b.is_empty()) }),
+                    Some(_) if kin.iter().any(|(_, b)| names_one(*k, a, b)) => Some(Unpickable::SameSerial { twin: twin(&|b| names_one(*k, a, b)) }),
+                    _ => others.iter().find(|(_, (j, b))| j == k && !a.is_empty() && !b.is_empty() && names_one(*k, a, b)).map(|(j, _)| Unpickable::Source(source(*j))),
+                };
+                let first = others.iter().find(|(_, (j, b))| j == k && b.is_empty()).map(|(j, _)| source(*j));
+                RadioPick { unpickable, first }
+            })
+            .collect();
+        let rtl = |n: usize| found[n].kind == "rtlsdr";
+        let free_serial = radios.iter().enumerate().any(|(n, r)| rtl(n) && matches!(r.unpickable, Some(Unpickable::NoSerial { .. } | Unpickable::SameSerial { .. }))).then(|| {
+            (2..).map(|n| format!("{n:08}")).find(|s| !found.iter().any(|f| f.kind == "rtlsdr" && f.id.trim() == s)).unwrap_or_default()
+        });
+        RadioPicks { radios, free_serial }
     }
 
     /// Where source `i` of this config is among `others`: the same radio, by
@@ -3206,18 +3348,16 @@ impl Config {
     }
 
     /// What's set to receive on a source that isn't one: each system or conventional channel being
-    /// recorded, and why, naming the sources there are (#216).
-    pub fn unreceivable(&self) -> Vec<String> {
-        let labels: Vec<String> = self.sources.iter().map(|s| format!("\"{}\"", s.label())).collect();
-        let why = |name: &str, gone: &str| format!("{name}: it is set to receive on \"{gone}\", which isn't one of the sources ({}) — choose its sources again.", labels.join(", "));
-        let systems = self.active_systems().filter_map(|s| self.missing_source(&s.receive_on).map(|g| why(&s.short_name, g)));
-        let channels = self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).filter_map(move |c| self.missing_source(&c.receive_on).map(|g| why(&format!("{} {:.5} MHz", v.short_name, c.freq_hz / 1e6), g))));
-        systems.chain(channels).collect()
+    /// recorded, with the label it names, and the sources there are (#216).
+    pub fn unreceivable(&self) -> Unreceivable {
+        let systems = self.active_systems().filter_map(|s| self.missing_source(&s.receive_on).map(|g| (s.short_name.clone(), g.clone())));
+        let channels = self.active_conventional().flat_map(|v| v.channels.iter().filter(|c| c.enabled).filter_map(move |c| self.missing_source(&c.receive_on).map(|g| (format!("{} {:.5} MHz", v.short_name, c.freq_hz / 1e6), g.clone()))));
+        Unreceivable { items: systems.chain(channels).collect(), sources: self.sources.iter().map(Source::label).collect() }
     }
 
     /// This config to run with what's [`Config::unreceivable`] left out (a system, a conventional
-    /// channel): the rest records. Why each was, to say.
-    pub fn set_aside_unreceivable(&mut self) -> Vec<String> {
+    /// channel): the rest records. What was, to say.
+    pub fn set_aside_unreceivable(&mut self) -> Unreceivable {
         let why = self.unreceivable();
         let off: Vec<bool> = self.systems.iter().map(|s| self.missing_source(&s.receive_on).is_some()).collect();
         let off_rows: Vec<bool> = self.conventional.iter().flat_map(|v| &v.channels).map(|c| self.missing_source(&c.receive_on).is_some()).collect();
@@ -3261,14 +3401,23 @@ impl Config {
     }
 
     /// Why this config can't start, or None: as it would run, with what's [`Config::unreceivable`]
-    /// left out (that alone doesn't stop the rest); when what's left can't, why both.
+    /// left out (that alone doesn't stop the rest); when what's left can't, why both, and when
+    /// nothing is left, only why it was left out.
     pub fn problem(&self) -> Option<String> {
         if self.unreceivable().is_empty() {
             return self.problem_as_it_runs();
         }
         let mut run = self.clone();
         let aside = run.set_aside_unreceivable();
-        run.problem_as_it_runs().map(|p| aside.into_iter().chain([p]).collect::<Vec<_>>().join(" "))
+        if run.records_nothing() {
+            return Some(aside.to_string());
+        }
+        run.problem_as_it_runs().map(|p| format!("{aside} {p}"))
+    }
+
+    /// No system and no conventional channel to record.
+    fn records_nothing(&self) -> bool {
+        self.active_systems().next().is_none() && self.enabled_channels().next().is_none()
     }
 
     /// [`Config::problem`] of a config as it is, nothing left out.
@@ -3339,8 +3488,7 @@ impl Config {
                 _ => {}
             }
         }
-        let trunked = self.active_systems().next().is_some();
-        if !trunked && self.enabled_channels().next().is_none() {
+        if self.records_nothing() {
             return Some("Add a system with a control channel, or a conventional channel.".into());
         }
         if let Some(p) = self.name_problem() {
@@ -4157,6 +4305,43 @@ mod tests {
         assert!(!h.may_be(&airspy("735863DC2F650AE3")));
     }
 
+    /// Found radios as a source picks them, every kind alike: one with no serial, or another's,
+    /// can't be (with more than one of its family plugged in); one another source names can't
+    /// be; one may be the radio of a source on "the first found"; RTL-SDRs get a free serial.
+    #[test]
+    fn radio_picks_say_which_can_be_told_apart() {
+        let f = |kind: &str, id: &str| FoundRadio { kind: kind.into(), id: id.into() };
+        let src = |v: serde_json::Value| -> Source { serde_json::from_value(v).unwrap() };
+        let mut c: Config = serde_json::from_str(r#"{ "sources": [] }"#).unwrap();
+        c.sources.push(src(serde_json::json!({ "type": "rtlsdr", "serial": "00000001", "centerHz": 851e6, "rateHz": 2.4e6 })));
+        c.sources.push(src(serde_json::json!({ "type": "rtlsdr", "serial": "", "centerHz": 851e6, "rateHz": 2.4e6 })));
+        c.sources.push(src(serde_json::json!({ "type": "airspy", "serial": "735863DC2F650AE3", "centerHz": 0, "rateHz": 10e6 })));
+        let why = |p: &RadioPicks| p.radios.iter().map(|r| r.unpickable.clone()).collect::<Vec<_>>();
+        let s0 = || Some(Unpickable::Source(SourceRef { index: 0, title: "Source 1".into() }));
+
+        // Source 2 picks: dongle 1 is Source 1's, dongle 2 has no serial; an Airspy Source 3 names in another case is Source 3's.
+        let found = [f("rtlsdr", "00000001"), f("rtlsdr", ""), f("airspy", "735863dc2f650ae3"), f("hackrf", "0000a1")];
+        let p = c.radio_picks(Some(1), &found);
+        assert_eq!(why(&p), [s0(), Some(Unpickable::NoSerial { twin: None }), Some(Unpickable::Source(SourceRef { index: 2, title: "Source 3".into() })), None]);
+        assert_eq!(p.free_serial.as_deref(), Some("00000002"));
+        assert!(p.radios.iter().all(|r| r.first.is_none()), "Source 2 itself is the one on the first found");
+        // Source 1 picks: Source 2 opens the first RTL-SDR found, so either may be its.
+        let p = c.radio_picks(Some(0), &found);
+        assert_eq!(p.radios[0].first, Some(SourceRef { index: 1, title: "Source 2".into() }));
+        assert_eq!((p.radios[0].unpickable.clone(), p.radios[2].first.clone()), (None, None));
+
+        // Two of one serial, any kind (clones): neither; a lone radio with no serial is the first found, and fine.
+        let same = c.radio_picks(None, &[f("rtlsdr", "00000001"), f("rtlsdr", "00000001"), f("hackrf", "0000a1"), f("hackrf", "0000A1"), f("bladerf", "")]);
+        let first = |t: Option<usize>| Some(Unpickable::SameSerial { twin: t });
+        assert_eq!(why(&same), [first(None), first(Some(0)), first(None), first(Some(2)), None], "each with the first of its twins");
+        assert_eq!(same.free_serial.as_deref(), Some("00000002"));
+        // An Airspy and an RFOne are one family: the RFOne with no serial can't be told from the Airspy.
+        assert_eq!(why(&c.radio_picks(None, &[f("airspy", "1a2b"), f("hydrasdr", "")]))[1], Some(Unpickable::NoSerial { twin: None }));
+        assert_eq!(why(&c.radio_picks(None, &[f("rtlsdr", ""), f("rtlsdr", "")])), [Some(Unpickable::NoSerial { twin: None }), Some(Unpickable::NoSerial { twin: Some(0) })]);
+        let fine = c.radio_picks(Some(1), &[f("rtlsdr", "00000002"), f("rtlsdr", "00000003")]);
+        assert_eq!((why(&fine), fine.free_serial), (vec![None, None], None));
+    }
+
     /// A radio on the network is named by its address (the port left off is its server's usual one), is
     /// read in any case of its type, keeps what only it has flat beside the rest, and can't start without
     /// an address or at a rate its radio doesn't run at. An RTL-SDR on the network is an RTL-SDR, given
@@ -4336,6 +4521,43 @@ mod tests {
         assert_eq!(c.problem(), None, "{:?}", c.resolved_centers());
         // Only the control channel known: the spares are placed, but nothing listed needs them.
         assert_eq!(c.placement().iter().map(|p| p.listed).collect::<Vec<_>>(), [1, 0, 0, 0]);
+    }
+
+    /// A Tier III site learning its channels from the air, an auto radio for
+    /// its control channel and one for its voice: the voice one goes over the
+    /// channel table's frequencies (or the voice channels), which are
+    /// recorded when granted; knowing only the control channel, it's put
+    /// beside the others, where the advice heard the calls tells it to go.
+    #[test]
+    fn a_dmr_sites_granted_channels_place_a_radio() {
+        let rtl = |rate_hz: f64, center_hz: f64| Source { kind: SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz, rate_hz, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let mut dmr = system("tier3", &[451_012_500.0]);
+        dmr.kind = SystemKind::Dmr;
+        let voice = [452_512_500.0, 453_387_500.0];
+        let c = |dmr: &System| Config { sources: vec![rtl(2_400_000.0, 852_731_250.0), rtl(1_024_000.0, 0.0), rtl(1_920_000.0, 0.0)], systems: vec![system("p25", &[853_750_000.0]), dmr.clone()], ..Default::default() };
+        let over_voice = |c: &Config| voice.iter().all(|&f| c.sources[2].reaches(c.resolved_centers()[2], f));
+
+        dmr.sites[0].lcn_table_hz = [("1".to_string(), voice[0]), ("2".to_string(), voice[1])].into();
+        let with_table = c(&dmr);
+        assert_eq!(with_table.problem(), None);
+        assert!(over_voice(&with_table), "{:?}", with_table.resolved_centers());
+        assert!(with_table.placement()[2].listed > 0);
+        // Not watched: the engine's DMR site still listens to the control channel alone.
+        assert!(with_table.systems[1].sites[0].watched_channels(&with_table.systems[1]).is_empty());
+
+        dmr.sites[0].lcn_table_hz.clear();
+        dmr.sites[0].voice_channels_hz = voice.to_vec();
+        assert!(over_voice(&c(&dmr)), "voice channels place it as the table does");
+
+        dmr.sites[0].voice_channels_hz.clear();
+        let bare = c(&dmr);
+        assert!(!over_voice(&bare) && bare.placement()[2].listed == 0, "{:?}", bare.resolved_centers());
+        // Heard there: the advice gives it a centre over them, as auto wouldn't put it there.
+        let heard: Heard = [("tier3".to_string(), voice.iter().map(|&hz| Weighted { hz, weight: 1700.0 }).collect())].into();
+        let a = bare.advice(&[], &heard).expect("advice");
+        let s = &a.sources[2];
+        assert!(s.changed && !s.auto && !s.released && a.after.reached > a.before.reached, "{a:?}");
+        assert!(voice.iter().all(|&f| bare.sources[2].reaches(s.center_hz.unwrap(), f)), "{a:?}");
     }
 
     #[test]
@@ -4815,9 +5037,16 @@ mod tests {
         c.sources.remove(0);
         assert_eq!(c.pins(&["file b.cu8".into()]), Pins::only(vec![]), "none, not any");
         let why = c.unreceivable();
-        assert_eq!(why.len(), 2, "{why:?}");
-        assert_eq!(why[0], format!("trunked: it is set to receive on \"file b.cu8\", which isn't one of the sources (\"{}\") — choose its sources again.", c.sources[0].label()));
-        assert!(why[1].starts_with("conv 154.43000 MHz: it is set to receive on \"file b.cu8\""), "{}", why[1]);
+        assert_eq!(why.items, [("trunked".to_string(), "file b.cu8".to_string()), ("conv 154.43000 MHz".to_string(), "file b.cu8".to_string())]);
+        // The sources said once, however many are left out (SoapyRemote labels are long).
+        let a = format!("\"{}\"", c.sources[0].label());
+        assert_eq!(why.to_string(), format!("trunked (on \"file b.cu8\"), conv 154.43000 MHz (on \"file b.cu8\") are set to receive on radios that aren't sources — choose their sources again. The sources: {a}."));
+        let one = Unreceivable { items: why.items[..1].to_vec(), ..why.clone() };
+        assert_eq!(one.to_string(), format!("trunked is set to receive on \"file b.cu8\", which isn't a source — choose its sources again. The sources: {a}."));
+        // All of it left out: why, and not "Add a system…", which it has.
+        let mut none = c.clone();
+        none.conventional[0].channels[1].receive_on = vec!["file b.cu8".into()];
+        assert_eq!(none.problem(), Some(none.unreceivable().to_string()));
         let mut run = c.clone();
         assert_eq!(run.set_aside_unreceivable(), why);
         assert!(!run.systems[0].enabled && !run.conventional[0].channels[0].enabled, "left out of the run");

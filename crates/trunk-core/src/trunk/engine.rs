@@ -403,7 +403,7 @@ pub enum Event {
     /// (Motorola's base station ID: a control channel's for one of its
     /// channels, or a voice channel's for itself). Each time it's heard anew.
     CallSign { system: u16, freq_hz: u64, call_sign: String },
-    /// A radio on a call of system `system` gave a new GPS position (decimal degrees).
+    /// A radio gave a GPS position (decimal degrees); talkgroup 0 for standalone data.
     UnitPosition { system: u16, unit: u32, lat: f64, lon: f64, talkgroup: u32 },
     Concluded(Concluded),
     /// A recorded call wasn't saved: no audio, or less than its system's minimum.
@@ -1398,15 +1398,21 @@ impl Trunk {
         !matches!(self.listening, Listening::Off)
     }
 
-    /// Hunting: the control channel open, its source and frequency.
     /// The source its control channel is received on (none: searching).
     fn control_source(&self) -> Option<usize> {
+        self.carrier().map(|(src, _)| src)
+    }
+
+    /// Where its control channel is now, hunted or watched: its source and frequency (none: searching).
+    fn carrier(&self) -> Option<(usize, f64)> {
         match &self.listening {
-            Listening::Watching(carriers) => carriers.iter().find(|c| Some(c.hz.round() as u64) == self.cc_hz).map(|c| c.source),
-            _ => self.hunted().map(|(src, _)| src),
+            // Watching (DMR, NXDN, EDACS): the carrier it's on.
+            Listening::Watching(carriers) => carriers.iter().find(|c| Some(c.hz.round() as u64) == self.cc_hz).map(|c| (c.source, c.hz)),
+            _ => self.hunted(),
         }
     }
 
+    /// Hunting: the control channel open, its source and frequency.
     fn hunted(&self) -> Option<(usize, f64)> {
         match (&self.listening, self.cc_hz) {
             (Listening::Hunting(h), Some(hz)) => Some((h.source, hz as f64)),
@@ -1597,6 +1603,10 @@ impl Trunk {
                 // Not yet known to be ours (the site comes every few seconds):
                 // hold the grants — a call still going is granted again.
                 continue;
+            }
+            // A location report the control channel carried (DMR data: a radio between calls).
+            for p in st.msgs.iter().filter_map(|m| m.position) {
+                events.extend(CallManager::position(self.system, &mut self.calls.calls, &p, call_events));
             }
             // What the voice channels need from it (Phase 2's scrambler key), to every source's copy as it changes.
             let was = self.voice_params;
@@ -1824,11 +1834,11 @@ impl Core {
                 lc_protected_tgs: BTreeSet::new(),
                 cfg: sc.clone(),
             };
-            let (hold_s, id_fields, reopens) = {
+            let (hold_s, repeats, id_fields, reopens) = {
                 let c = t.cc();
-                (c.patch_hold_s(), c.identity_fields(), c.reopens())
+                (c.patch_hold_s(), c.repeats_grants(), c.identity_fields(), c.reopens())
             };
-            (t.calls.patches.hold_s, t.id_fields, t.reopens) = (hold_s, id_fields, reopens);
+            (t.calls.patches.hold_s, t.calls.hold_repeats, t.id_fields, t.reopens) = (hold_s, repeats, id_fields, reopens);
             t.start(&mut radio, sys, &mut events)?;
             trunks.push(t);
         }
@@ -2013,7 +2023,8 @@ impl Core {
             cc.gauge("locked", (t.now_s - t.last_good_s < LOCKED_S && t.mismatch.is_none()) as u8 as f64);
             // What its protocol measures (framing, eye opening, deviation…).
             t.cc().report(&mut cc);
-            if let Some((src, hz)) = t.hunted() {
+            // Its level, on the carrier it's on (hunted or watched).
+            if let Some((src, hz)) = t.carrier() {
                 levels.push(Leveled { key: format!("{key}/cc"), src, hz, open: None });
             }
         }
@@ -2172,7 +2183,7 @@ impl Core {
                         if tune_ref {
                             self.radio.score_call(on.source, &call, rec.freq_error_hz());
                         }
-                        self.write_call(Held { call: call.clone(), rec, on }, None, None, &[]);
+                        self.write_call(Held::new(call.clone(), rec, on), None, None, &[]);
                     }
                     let (_, told) = self.multisite.conclude(&call, None, |_| false);
                     self.events.push(Event::CopyEnd(call));
@@ -2229,6 +2240,22 @@ impl Core {
             let Some(t) = self.trunks.get_mut(site as usize) else { continue };
             let system = t.system;
             let now = t.now_s;
+            // Conversation mode off: the transmission's terminator ends its call; the channel is kept for the next.
+            if let TrackerOut::Ended = o {
+                if self.radio.recordings.get(&id).is_some_and(|r| !r.rec.audio.is_empty()) {
+                    let mut host = t.host(&mut self.radio, &self.systems[system as usize].cfg);
+                    if let Some(next) = t.calls.terminated(id, now, &mut host, &mut self.call_events) {
+                        went_on.push((id, next));
+                    }
+                }
+                continue;
+            }
+            // Audio on a channel kept after a terminator: the next transmission, a call now.
+            if matches!(o, TrackerOut::Audio(..) | TrackerOut::AnalogAudio(_))
+                && let Some(c) = t.calls.tell(id, now)
+            {
+                self.call_events.push(CallEvent::Start(c));
+            }
             // Conversation mode off: audio again after a gap is a new transmission, and a call of its own.
             if matches!(o, TrackerOut::Audio(..) | TrackerOut::AnalogAudio(_)) && self.radio.recordings.get(&id).is_some_and(|r| !r.rec.audio.is_empty()) {
                 let mut host = t.host(&mut self.radio, &self.systems[system as usize].cfg);
@@ -2326,15 +2353,8 @@ impl Core {
                 // (Only conventional FM asks for it.)
                 TrackerOut::Subaudible(_) => {}
                 // (Handled above.)
-                TrackerOut::Talkgroup(_) => {}
-                TrackerOut::Position(p) => {
-                    if let Some(c) = call {
-                        if CallManager::note_position(c, &p) {
-                            self.events.push(Event::UnitPosition { system, unit: p.unit, lat: p.lat, lon: p.lon, talkgroup: c.talkgroup });
-                            self.call_events.push(CallEvent::Update(c.clone()));
-                        }
-                    }
-                }
+                TrackerOut::Talkgroup(_) | TrackerOut::Ended => {}
+                TrackerOut::Position(p) => self.events.extend(CallManager::position(system, call, &p, &mut self.call_events)),
                 TrackerOut::Alias(a) => {
                     let tg = call.map(|c| c.talkgroup);
                     self.learn_alias(system, Some(site), a, tg);
@@ -2411,6 +2431,12 @@ impl Core {
                 self.events.push(Event::CopyEnd(c));
                 self.events.extend(told);
             }
+            // A channel kept after a terminator that no transmission followed: never told, nothing to save.
+            CallEvent::Discard(c) => {
+                if let Some(r) = self.radio.recordings.remove(&c.id) {
+                    self.radio.free_nums.push(r.on.recorder);
+                }
+            }
         }
     }
 
@@ -2449,7 +2475,7 @@ impl Core {
                 call.encrypted = true;
                 call.decrypted = true;
             }
-            let mut h = Held { call, rec: r.rec, on: r.on };
+            let mut h = Held::new(call, r.rec, r.on);
             // Now, so copies of a multi-site call are ranked by the audio they'd be saved with.
             h.trim(self.systems.get(h.call.system as usize).map_or(0.0, |s| s.cfg.save.min_transmission_s));
             h
@@ -3395,6 +3421,135 @@ mod tests {
         for (call, kept) in dups {
             assert!(call.site != kept.site && call.sources[0].src == kept.sources[0].src, "a copy of the same talker's, from the other site");
         }
+    }
+
+    /// East and west, two sites of one system, conversation mode as given
+    /// (talkgroup 101 told of with [`say`], its voice channels' output with [`heard`]).
+    fn east_west(conversation: bool) -> Core {
+        let site = |n: &str, cc: f64| SiteConfig { name: n.into(), control_channels: vec![cc], ..Default::default() };
+        let mut sys = SystemConfig { save: SaveRules { normalize: false, ..Default::default() }, ..SystemConfig::trunked("dc", vec![site("east", 851.0125e6), site("west", 851.2125e6)]) };
+        sys.calls.conversation = conversation;
+        let cfg = EngineConfig { systems: vec![sys], sources: vec![SourceConfig { center_hz: 851e6, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ }], ..Default::default() };
+        Core::new(cfg).unwrap()
+    }
+
+    fn say(e: &mut Core, i: usize, kind: MessageType, t: f64, f: u64, src: i64) {
+        handle(e, i, &[Message { kind, time_s: t, talkgroup: 101, freq_hz: f, source: src, ..Default::default() }]);
+        e.emit_call_events();
+    }
+
+    /// What site `i`'s voice channel on `f` gave at `t`: 100 ms of voice (with `errs` errors), or its terminator.
+    fn heard(e: &mut Core, i: usize, f: u64, t: f64, o: Option<u32>) {
+        use super::super::frames::{Codec, VoiceFrame};
+        let id = e.trunks[i].calls.calls.iter().find(|c| c.freq_hz == f).unwrap().id;
+        let out = match o {
+            Some(errs) => TrackerOut::Audio(vec![0.1; mbe::FRAME_SAMPLES * 5], VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind: mbe::Kind::Voice, tone: None }),
+            None => TrackerOut::Ended,
+        };
+        e.trunks[i].now_s = t;
+        e.radio.pending.push((i as u16, id, out));
+        e.apply_pending();
+        e.emit_call_events();
+    }
+
+    /// #231: one transmission heard on two sites, saved once, whichever is
+    /// kept: east's control channel goes on giving its channel to the
+    /// talkgroup after the audio, naming the next talker, west's doesn't.
+    /// The copies are judged by their audio, not by how long each site
+    /// mentioned the channel (east's copy, so stretched, was saved too).
+    #[test]
+    fn a_copy_the_control_channel_went_on_mentioning_is_still_a_duplicate() {
+        for (west_better, next) in [(false, 7), (true, 7), (true, 9)] {
+            let mut e = east_west(false);
+            let (east, west) = (851_500_000, 851_600_000);
+            say(&mut e, 0, MessageType::Grant, 0.0, east, 7);
+            say(&mut e, 1, MessageType::Grant, 0.05, west, 7);
+            for t in [0.5, 0.7, 0.9, 1.1] {
+                heard(&mut e, 0, east, t, Some(if west_better { 3 } else { 0 }));
+                heard(&mut e, 1, west, t + 0.02, Some(0));
+            }
+            for t in [2.0, 3.0, 4.0, 5.0, 6.0] {
+                say(&mut e, 0, MessageType::Update, t, east, next);
+                tick(&mut e, 0, t);
+                tick(&mut e, 1, t);
+                e.emit_call_events();
+            }
+            for i in [0, 1] {
+                tick(&mut e, i, 20.0);
+                e.emit_call_events();
+            }
+            let ev = e.drain_events();
+            let saved = concluded(&ev);
+            assert_eq!(saved.len(), 1, "west better {west_better}, next talker {next}: {:?}", saved.iter().map(|k| (&k.record.transmission_id, k.call.site)).collect::<Vec<_>>());
+            assert_eq!(saved[0].call.site, Some(if west_better { 1 } else { 0 }), "the better copy");
+            assert_eq!(ev.iter().filter(|x| matches!(x, Event::Duplicate { .. })).count(), 1);
+        }
+    }
+
+    /// #240: conversation mode off, a transmission ends on its voice
+    /// channel's terminator, not once the control channel has gone quiet for
+    /// the call timeout. Its channel is kept: the next transmission on it is a
+    /// call of its own from its first audio; a channel nothing more comes on
+    /// goes without a word. Each record says why it ended.
+    #[test]
+    fn with_conversation_mode_off_a_terminator_ends_the_transmission() {
+        let mut e = east_west(false);
+        let ch = 851_500_000;
+        say(&mut e, 0, MessageType::Grant, 0.0, ch, 7);
+        e.drain_events();
+        for t in [0.5, 0.7, 0.9] {
+            heard(&mut e, 0, ch, t, Some(0));
+        }
+        heard(&mut e, 0, ch, 1.0, None);
+        let ev = e.drain_events();
+        let saved = concluded(&ev);
+        assert_eq!(saved.len(), 1, "saved at its terminator, the control channel still mentioning it");
+        assert_eq!((saved[0].record.end_reason.as_str(), saved[0].call.sources.iter().map(|s| s.src).collect::<Vec<_>>()), ("terminator", vec![7]));
+        assert!(ev.iter().any(|x| matches!(x, Event::CallEnd(c) if c.talkgroup == 101)), "the call is over");
+        assert!(!ev.iter().any(|x| matches!(x, Event::CallStart(_) | Event::CopyStart(_))), "the channel kept is no call yet");
+        assert_eq!(e.trunks[0].calls.calls.len(), 1, "its channel kept");
+
+        // The next talker on the same channel: a call of its own, from its first audio.
+        say(&mut e, 0, MessageType::Update, 1.5, ch, 9);
+        for t in [1.8, 2.0, 2.2] {
+            heard(&mut e, 0, ch, t, Some(0));
+        }
+        let ev = e.drain_events();
+        assert!(ev.iter().any(|x| matches!(x, Event::CallStart(c) if c.start_s == 1.8)), "told at its first audio");
+        // No terminator heard this time: it ends on the timeout.
+        tick(&mut e, 0, 10.0);
+        e.emit_call_events();
+        let ev = e.drain_events();
+        let saved = concluded(&ev);
+        assert_eq!(saved.len(), 1);
+        assert_eq!((saved[0].record.end_reason.as_str(), saved[0].call.sources.iter().map(|s| s.src).collect::<Vec<_>>(), saved[0].audio.len()), ("timeout", vec![9], mbe::FRAME_SAMPLES * 15), "all its audio");
+
+        // A terminator, then nothing: the channel kept goes without a word.
+        say(&mut e, 0, MessageType::Grant, 20.0, ch, 11);
+        heard(&mut e, 0, ch, 20.5, Some(0));
+        heard(&mut e, 0, ch, 20.7, None);
+        tick(&mut e, 0, 30.0);
+        e.emit_call_events();
+        let ev = e.drain_events();
+        assert_eq!(concluded(&ev).len(), 1);
+        assert!(!ev.iter().any(|x| matches!(x, Event::NotSaved(_))), "nothing said of the channel kept");
+        assert_eq!(ev.iter().filter(|x| matches!(x, Event::CallStart(_))).count(), 1, "the one transmission's");
+        assert!(e.trunks[0].calls.calls.is_empty() && e.radio.recordings.is_empty(), "its recorder freed");
+    }
+
+    /// Conversation mode on, a terminator ends nothing: the call is the
+    /// conversation until it's quiet for the call timeout.
+    #[test]
+    fn with_conversation_mode_on_a_terminator_ends_no_call() {
+        let mut e = east_west(true);
+        let ch = 851_500_000;
+        say(&mut e, 0, MessageType::Grant, 0.0, ch, 7);
+        heard(&mut e, 0, ch, 0.5, Some(0));
+        heard(&mut e, 0, ch, 0.7, None);
+        assert!(concluded(&e.drain_events()).is_empty());
+        tick(&mut e, 0, 10.0);
+        e.emit_call_events();
+        assert_eq!(concluded(&e.drain_events()).iter().map(|k| k.record.end_reason.as_str()).collect::<Vec<_>>(), ["timeout"]);
     }
 
     fn three_sites(conversation: bool) -> Core {

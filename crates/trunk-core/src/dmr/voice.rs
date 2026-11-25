@@ -22,14 +22,16 @@ struct Slot {
     group: bool,
     encrypted: bool,
     emergency: bool,
-    /// The talker alias being put together (embedded LC), and when voice LC last named the talker.
+    /// The talker alias being put together, and when voice LC last named the talker for alias/GPS attribution.
     alias: Assembler,
     lc_s: f64,
+    /// Voice heard since its last terminator.
+    voiced: bool,
 }
 
 impl Slot {
     fn new(seed: u32) -> Self {
-        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false, alias: Assembler::default(), lc_s: f64::NEG_INFINITY }
+        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false, alias: Assembler::default(), lc_s: f64::NEG_INFINITY, voiced: false }
     }
 }
 
@@ -85,7 +87,7 @@ impl DmrVoice {
         for b in std::mem::take(&mut self.bursts) {
             let t = t0 + b.sample / rate;
             self.ev.clear();
-            self.chan.burst(&b, &mut self.ev);
+            self.chan.burst_at(&b, t, &mut self.ev);
             for (slot, e) in std::mem::take(&mut self.ev) {
                 self.event(slot, e, t, out);
             }
@@ -102,8 +104,15 @@ impl DmrVoice {
         let s = &mut self.slots[slot as usize];
         let mut push = |o: TrackerOut| out.push(Out { slot, t, out: o });
         match e {
+            SlotEvent::Packet(p) => {
+                if let Some(p) = super::hytera::packet(&p).position { push(TrackerOut::Position(p)); }
+            }
             SlotEvent::Lc { lc, from } => {
                 if from == LcFrom::Embedded {
+                    let talker = s.source.filter(|_| t - s.lc_s < super::gps::HOLD_S);
+                    if let Some(p) = super::gps::lc(&lc, talker) {
+                        push(TrackerOut::Position(p));
+                    }
                     // A talker alias block: whole, it names the radio voice LC named lately.
                     let fresh = t - s.lc_s < alias::HOLD_S;
                     let name = s.alias.push(lc, t).and_then(|d| d.alias(s.source.filter(|&u| u != 0 && fresh)?, s.talkgroup));
@@ -111,15 +120,18 @@ impl DmrVoice {
                         push(TrackerOut::Alias(a));
                     }
                 }
-                let Some(group) = lc.voice_user() else { return };
-                if from == LcFrom::Terminator {
+                if from == LcFrom::Terminator && lc.ends_voice() {
                     // End of the transmission (repeated through the hang time): not a call of its own.
+                    if std::mem::take(&mut s.voiced) {
+                        push(TrackerOut::Ended);
+                    }
                     s.alias.reset();
                     s.source = None;
                     s.encrypted = false;
                     s.emergency = false;
                     return;
                 }
+                let Some(group) = lc.voice_user() else { return };
                 let (tg, src) = (lc.target(), lc.source());
                 let fresh = s.talkgroup != Some(tg) || s.source != Some(src) || s.encrypted != lc.encrypted() || s.emergency != lc.emergency();
                 if s.source != Some(src) {
@@ -151,6 +163,7 @@ impl DmrVoice {
             }
             SlotEvent::Voice { frame, pos } => {
                 self.frames += 1;
+                s.voiced = true;
                 if pos == Some(0) && s.source.is_none() {
                     // A new superframe with no LC yet: a fresh transmission's vocoder state.
                     s.dec.reset();
@@ -198,6 +211,71 @@ mod tests {
         assert!(v.slots[0].encrypted);
     }
 
+    #[test]
+    fn gps_belongs_to_a_recent_talker_on_its_slot() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        let gps = Lc([8, 0x68, 1, 0x80, 0, 0, 0x40, 0, 0]); // 45 N, 90 W
+        let report = SlotEvent::Lc { lc: gps, from: LcFrom::Embedded };
+        v.event(0, report.clone(), 0.0, &mut out);
+        assert!(out.is_empty(), "GPS cannot name its own talker");
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Header }, 0.1, &mut out);
+        out.clear();
+        v.event(1, report.clone(), 0.2, &mut out);
+        assert!(out.is_empty(), "the other slot has no talker");
+        v.event(0, report.clone(), 0.3, &mut out);
+        assert_eq!(out.len(), 1, "encrypted voice still has clear GPS metadata");
+        assert_eq!((out[0].slot, out[0].t), (0, 0.3));
+        let TrackerOut::Position(p) = out[0].out else { panic!("position output") };
+        assert_eq!((p.unit, p.lat, p.lon, p.source), (5, 45.0, -90.0, "HyteraDMR"));
+        assert_eq!(v.talkgroup(0), Some(201));
+        assert!(v.slots[0].encrypted, "coordinates are not service options");
+        out.clear();
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Terminator }, 0.4, &mut out);
+        v.event(0, report.clone(), 0.5, &mut out);
+        assert!(out.is_empty(), "the transmission ended");
+        let mut next = lc(0, 0, false);
+        next.0[8] = 7;
+        v.event(0, SlotEvent::Lc { lc: next, from: LcFrom::Header }, 0.6, &mut out);
+        out.clear();
+        v.event(0, report.clone(), 0.7, &mut out);
+        assert!(matches!(out[0].out, TrackerOut::Position(p) if p.unit == 7));
+        out.clear();
+        v.event(0, SlotEvent::Lc { lc: gps, from: LcFrom::Header }, 0.8, &mut out);
+        v.event(0, SlotEvent::Lc { lc: gps, from: LcFrom::Terminator }, 0.9, &mut out);
+        assert!(out.is_empty(), "only embedded GPS describes the active talker");
+        let terminator = Lc([0x30, 0x68, 0, 0, 0, 201, 0, 0, 7]);
+        v.event(0, SlotEvent::Lc { lc: terminator, from: LcFrom::Terminator }, 1.0, &mut out);
+        v.event(0, report.clone(), 1.1, &mut out);
+        assert!(out.is_empty(), "Hytera's own terminator clears its talker");
+        v.event(0, SlotEvent::Lc { lc: next, from: LcFrom::Header }, 2.0, &mut out);
+        out.clear();
+        v.event(0, report.clone(), 2.0 + super::super::gps::HOLD_S, &mut out);
+        assert!(out.is_empty(), "a missed terminator cannot keep the talker forever");
+        v.event(0, SlotEvent::Lc { lc: next, from: LcFrom::Embedded }, 6.1, &mut out);
+        v.event(0, report, 6.2, &mut out);
+        assert!(matches!(out[0].out, TrackerOut::Position(p) if p.unit == 7), "repeated voice LC refreshes the talker");
+    }
+
+    /// The terminator's link control after voice ends the transmission,
+    /// once: not again as it repeats through the hang time, nor with no voice before it.
+    #[test]
+    fn a_terminator_after_voice_ends_the_transmission_once() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        let ended = |out: &[Out]| out.iter().filter(|o| matches!(o.out, TrackerOut::Ended)).count();
+        let term = SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Terminator };
+        v.event(0, term.clone(), 0.0, &mut out);
+        assert_eq!(ended(&out), 0, "no voice yet");
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Header }, 0.1, &mut out);
+        v.event(0, SlotEvent::Voice { frame: crate::ambe::AmbeFrame { bits: [0; 49], errs: 0 }, pos: Some(0) }, 0.2, &mut out);
+        for t in [0.5, 0.86, 1.22] {
+            v.event(0, term.clone(), t, &mut out);
+        }
+        assert_eq!(ended(&out), 1);
+        assert_eq!(out.iter().filter(|o| matches!(o.out, TrackerOut::Ended)).map(|o| (o.slot, o.t)).collect::<Vec<_>>(), [(0, 0.5)]);
+    }
+
     /// Motorola restricted access (RAS): a call's embedded LC sets the FLCO's
     /// 0x20 bit. It is still a clear call, group (0x20) or private (0x23).
     #[test]
@@ -230,6 +308,23 @@ mod tests {
         assert_eq!((aliases[0].0, aliases[0].1.unit, aliases[0].1.alias.as_str(), aliases[0].1.talkgroup), (0, 5006, "Hytera", Some(149)));
         assert!(!v.slots[0].encrypted && !v.slots[0].emergency, "alias format byte is not service options");
         assert!(v.slots[1].source.is_none());
+    }
+
+    #[test]
+    fn gps_interleaved_with_an_alias_preserves_both() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0x68, true), from: LcFrom::Header }, 0.0, &mut out);
+        for (i, raw) in [
+            [4, 0x68, 0x50, 0x44, 0x45, 0x53, 0x4b, 0x20, 0x31], // "DESK 123"
+            [8, 0x68, 1, 0x80, 0, 0, 0x40, 0, 0], // GPS, 45 N, 90 W
+            [5, 0x68, 0x32, 0x33, 0, 0, 0, 0, 0],
+        ].into_iter().enumerate() {
+            v.event(0, SlotEvent::Lc { lc: Lc(raw), from: LcFrom::Embedded }, 0.2 + i as f64 * 0.36, &mut out);
+        }
+        assert_eq!(out.iter().filter(|o| matches!(&o.out, TrackerOut::Alias(a) if a.unit == 5 && a.alias == "DESK 123")).count(), 1);
+        assert_eq!(out.iter().filter(|o| matches!(o.out, TrackerOut::Position(p) if (p.unit, p.lat, p.lon) == (5, 45.0, -90.0))).count(), 1);
+        assert!(v.slots[0].encrypted && v.slots[0].source == Some(5));
     }
 
     #[test]

@@ -4,12 +4,11 @@ This page covers using radios other than a current RTL-SDR: USRPs, Airspy R2 / M
 a SoapySDR module, and older RTL-SDR dongles. It explains which driver each needs, how Trunk
 Recorder Pro finds it, and how to check it worked. These radios only work in the desktop app, not
 in the [browser version](browser.md) or the [Docker image](docker.md). The exceptions are the
-[HackRF One](#hackrf-one), which needs no driver, and the Airspy R2 / Mini, whose driver is in the
-image: both work in Docker.
+[HackRF One](#hackrf-one) and the [Airspy R2 / Mini](#airspy), which need no driver: both work in Docker.
 
 ## How drivers are found
 
-RTL-SDRs with an R820T, R828D or E4000 tuner, and HackRF Ones, need nothing: Trunk Recorder Pro has its
+RTL-SDRs with an R820T, R828D or E4000 tuner, HackRF Ones and Airspy R2 / Minis need nothing: Trunk Recorder Pro has its
 own driver for them. Every other radio uses its maker's driver library, which you install yourself. Trunk
 Recorder Pro isn't built against these libraries. It looks for each one when it starts, so the
 same download works with or without them:
@@ -17,7 +16,6 @@ same download works with or without them:
 | Radio | Driver library | Source type in Setup |
 |---|---|---|
 | USRP (Ettus / NI) | UHD (`libuhd`) | **USRP** |
-| Airspy R2, Airspy Mini | libairspy | **Airspy** |
 | HydraSDR RFOne | libhydrasdr 1.1+ | **HydraSDR** |
 | bladeRF 2.0 micro xA4 / xA9, original bladeRF x40 / x115 | libbladeRF 2.x | **bladeRF** |
 | SDRplay, LimeSDR, PlutoSDR, Airspy HF+, older RTL-SDRs, ... | SoapySDR plus the device's module | **SoapySDR** |
@@ -31,7 +29,6 @@ Radios** says what's missing and how to install it.
 | | macOS (Homebrew) | Debian / Ubuntu / Raspberry Pi OS | Windows |
 |---|---|---|---|
 | USRP | `brew install uhd` | `sudo apt install libuhd-dev uhd-host` | Ettus's UHD installer (puts `uhd.dll` on the `PATH`) |
-| Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll`, `libusb-1.0.dll` and `pthreadVC2.dll` from the `x64` folder of [airspy_host_tools](https://github.com/airspy/airspyone_host/releases) (v1.0.10), next to `trunk-pro.exe`; and the Microsoft Visual C++ 2010 Redistributable (x64), which `pthreadVC2.dll` needs |
 | HydraSDR | `libhydrasdr.1.dylib` from the [hydrasdr-host release](https://github.com/hydrasdr/hydrasdr-host/releases) (point `TRUNK_PRO_HYDRASDR` at it unless it's in `/usr/local/lib`) | the `hydrasdr-host-tools` package for your distribution from the same release | `hydrasdr.dll` and `libusb-1.0.dll` from the Windows zip of the same release, next to `trunk-pro.exe` |
 | bladeRF | `brew install libbladerf` | `sudo apt install libbladerf2 bladerf-fpga-hostedxa4` (xA9: `bladerf-fpga-hostedxa9`; or Nuand's PPA `ppa:nuandllc/bladerf`) | Nuand's bladeRF installer (`bladeRF.dll`) |
 | SoapySDR | `brew install soapysdr` and the device's module, e.g. `brew install soapyhackrf` | `sudo apt install libsoapysdr0.8` and the device's module, e.g. `soapysdr0.8-module-hackrf` (or `soapysdr0.8-module-all`) | PothosSDR or radioconda |
@@ -43,8 +40,8 @@ uhd_images_downloader          # sudo uhd_images_downloader on Linux
 ```
 
 On Linux, the udev rule from the [Linux](linux.md#dongle-access-udev) package already covers the
-Airspy R2 / Mini, the HydraSDR RFOne and the USB USRPs (B200, B210, B200mini, B206mini); UHD's and libairspy's own packages
-usually add rules for them as well. bladeRFs get theirs from the libbladeRF package
+Airspy R2 / Mini, the HydraSDR RFOne and the USB USRPs (B200, B210, B200mini, B206mini); UHD's own package
+usually adds rules for its radios as well. bladeRFs get theirs from the libbladeRF package
 (`88-nuand-bladerf*.rules`). Other SoapySDR devices need the udev rules their own packages
 install.
 
@@ -75,7 +72,7 @@ an environment variable:
 | Variable | For |
 |---|---|
 | `TRUNK_PRO_UHD` | UHD, e.g. `/opt/uhd/lib/libuhd.so.4.6.0` |
-| `TRUNK_PRO_AIRSPY` | libairspy |
+| `TRUNK_PRO_AIRSPY` | libairspy (optional: see [Airspy](#airspy)) |
 | `TRUNK_PRO_HYDRASDR` | libhydrasdr |
 | `TRUNK_PRO_BLADERF` | libbladeRF |
 | `TRUNK_PRO_SOAPY` | SoapySDR |
@@ -115,9 +112,20 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 
 ### Airspy
 
+An **Airspy** source is driven directly over USB, like an RTL-SDR: nothing to install. The Linux
+udev rule covers it, and on Windows an Airspy installs its own WinUSB driver when it's plugged in
+(no Zadig).
+
+libairspy, Airspy's own library, is used instead when it's installed *and* the built-in driver
+can't open the radio: on Windows, an Airspy whose driver was replaced with Zadig (libusbK or
+libusb-win32). The log says so. `trunk-pro devices` shows `Airspy: built in`, with libairspy's
+version beside it when it was found. To use libairspy alone, start the recorder with
+`TRUNK_PRO_AIRSPY_NATIVE=0` (and [tell us](https://github.com/TrunkRecorder/trunk-recorder-pro/issues)
+what the built-in driver got wrong).
+
 - **Airspy**: pick it from the list (blank is the first one found). Each is listed with its model
-  ("Airspy R2 · SN …"), asked once per run. One another program has open may be missing from the
-  list, and on some systems so may one that's recording (the source keeps its serial either way).
+  ("Airspy R2 · SN …"), asked once per run. One another program has open is listed too, without
+  its model.
 - **Sample rate**: 10 or 2.5 MSPS on the R2, 6 or 3 MSPS on the Mini. The list offers what the
   Airspy picked runs at, and moves to one of its rates when you pick a different Airspy. A rate it
   can't do is flagged here, and the source won't start at it ("this Airspy R2 runs at 10 / 2.5
@@ -132,7 +140,7 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 - **HydraSDR**: pick it from the list (blank is the first one found), listed as
   "HydraSDR RFOne · SN …". Either firmware works: the one RFOnes shipped with (v1.0.0-rc2)
   enumerates with the Airspy's USB ID, `1d50:60a1`, and updated firmware (v1.0.2) with HydraSDR's
-  own, `38af:0001`. With the shipped firmware libairspy opens it too, as "the first": give an
+  own, `38af:0001`. With the shipped firmware an Airspy source opens it too, as "the first": give an
   Airspy source its serial when both are plugged in.
 - **Sample rate**: 10, 5 or 2.5 MSPS, or a lower one that libhydrasdr decimates to (1.25, 0.625 …).
   libhydrasdr turns the samples into IQ itself, on a thread of its own.

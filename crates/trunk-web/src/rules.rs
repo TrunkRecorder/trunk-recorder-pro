@@ -182,6 +182,16 @@ pub fn config_sources(json: &str) -> String {
     read(json).map_or_else(|_| "[]".into(), |c| serde_json::json!(named(c)).to_string())
 }
 
+/// The radios found, as source `i` (-1: a new one, or one to scan with) may be set to them
+/// ([`Config::radio_picks`]): `found` JSON `[{ kind, id }]` (`id` the serial or device arguments
+/// a source names it by); out `{ radios: [{ unpickable?, first? }], freeSerial? }`.
+#[wasm_bindgen(js_name = configRadioPicks)]
+pub fn config_radio_picks(json: &str, i: i32, found: &str) -> String {
+    let found: Vec<trunk_app::config::FoundRadio> = serde_json::from_str(found).unwrap_or_default();
+    let c = read(json).unwrap_or_default();
+    serde_json::json!(c.radio_picks(usize::try_from(i).ok(), &found)).to_string()
+}
+
 /// The source each frequency the config lists is received on, as the engine
 /// will choose it ([`Config::receivers`]): JSON `[{ system, hz, source }]`
 /// (`source` null: none it may be received on reaches it).

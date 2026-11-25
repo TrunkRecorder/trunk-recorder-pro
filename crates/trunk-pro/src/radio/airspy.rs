@@ -1,11 +1,15 @@
-//! Airspy R2 / Mini through libairspy, and HydraSDR RFOne through libhydrasdr 1.1 or newer:
-//! one driver, as libhydrasdr is libairspy's fork (the same calls, named hydrasdr_…) for a
-//! radio with the R2's tuner and gain stages ([`Lib`]; what only libhydrasdr has is in
-//! [`hydrasdr`]). Each library is loaded at run time, and needs installing:
-//! - libairspy: `brew install airspy`, `apt install libairspy0`, or airspy.dll (from the
-//!   airspy-tools release) next to trunk-pro.exe / on PATH on Windows. It hands over real
-//!   samples, turned into IQ (centred on the tuned frequency, at the chosen rate) on the
-//!   source's decoding thread; its own conversion is kept behind
+//! Airspy R2 / Mini, and HydraSDR RFOne through libhydrasdr 1.1 or newer.
+//!
+//! An Airspy is driven by the driver built in ([`native`]: libairspy ported to Rust, nothing
+//! to install), and by libairspy where that can't open it and libairspy is installed
+//! ([`stream_once`]). The rest of this file is the libairspy path, which is the RFOne's too:
+//! one driver for both libraries, as libhydrasdr is libairspy's fork (the same calls, named
+//! hydrasdr_…) for a radio with the R2's tuner and gain stages ([`Lib`]; what only
+//! libhydrasdr has is in [`hydrasdr`]). Each library is loaded at run time:
+//! - libairspy (optional): `brew install airspy`, `apt install libairspy0`, or airspy.dll (from
+//!   the airspy-tools release) next to trunk-pro.exe / on PATH on Windows. Either way an Airspy
+//!   hands over real samples, turned into IQ (centred on the tuned frequency, at the chosen
+//!   rate) on the source's decoding thread; the driver's own conversion is kept behind
 //!   `TRUNK_PRO_AIRSPY_LIBRARY_IQ=1` ([`library_iq`]).
 //! - libhydrasdr: hydrasdr-host from https://github.com/hydrasdr/hydrasdr-host
 //!   (`libhydrasdr.so.1`; on Windows hydrasdr.dll next to trunk-pro.exe / on PATH). It turns
@@ -14,6 +18,7 @@
 //!   with the bias-T, and CABLE1 / CABLE2).
 
 mod hydrasdr;
+mod native;
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -207,15 +212,22 @@ fn load(lib: Lib) -> Result<Api, String> {
     }
 }
 
+/// The driver's state for the list of drivers. Airspy's is built in ([`native`]), so always
+/// there: libairspy is named beside it when it's installed too (what a radio the built-in
+/// driver can't open is tried with).
 pub fn info(lib: Lib) -> DriverInfo {
     let name = format!("lib{}", lib.id());
-    match api(lib) {
-        Ok(a) => {
-            let mut v = LibVersion::default();
-            // SAFETY: fills the struct.
-            unsafe { (a.lib_version)(&mut v) };
-            DriverInfo { loaded: true, detail: format!("{name} {}.{}.{}", v.major, v.minor, v.revision) }
-        }
+    let library = api(lib).map(|a| {
+        let mut v = LibVersion::default();
+        // SAFETY: fills the struct.
+        unsafe { (a.lib_version)(&mut v) };
+        format!("{name} {}.{}.{}", v.major, v.minor, v.revision)
+    });
+    let built_in = lib == Lib::Airspy && native::on();
+    match library {
+        Ok(l) if built_in => DriverInfo { loaded: true, detail: format!("{}, and {l}", native::DETAIL) },
+        Ok(l) => DriverInfo { loaded: true, detail: l },
+        Err(_) if built_in => DriverInfo { loaded: true, detail: native::DETAIL.into() },
         Err(e) => DriverInfo { loaded: false, detail: format!("{name} {e}") },
     }
 }
@@ -229,21 +241,30 @@ fn check(a: &Api, what: &str, r: c_int) -> Result<(), String> {
     Err(format!("{} {what}: {name}", a.lib.brand()))
 }
 
+/// What a radio is opened as ([`super::open`]): "Airspy 735863DC2F650AE3", "Airspy (first)".
+fn open_name(lib: Lib, serial: &str) -> String {
+    format!("{} {}", lib.brand(), if serial.is_empty() { "(first)" } else { serial })
+}
+
+/// A source's `serial` (hex) as a number; None for "" (the first radio).
+fn serial_number(lib: Lib, serial: &str) -> Result<Option<u64>, String> {
+    if serial.is_empty() {
+        return Ok(None);
+    }
+    u64::from_str_radix(serial.trim_start_matches("0x"), 16).map(Some).map_err(|_| format!("{} serial {serial:?} isn't hex", lib.brand()))
+}
+
 /// Open the radio `serial` (hex; "" = the first), with a deadline, one
 /// radio at a time ([`super::open`]).
 fn open(a: &'static Api, serial: &str) -> Result<Device, String> {
-    let brand = a.lib.brand();
-    let name = format!("{brand} {}", if serial.is_empty() { "(first)" } else { serial });
-    let serial = serial.to_string();
-    super::open(&name, Deadline::Quick, true, move || {
+    let sn = serial_number(a.lib, serial)?;
+    super::open(&open_name(a.lib, serial), Deadline::Quick, true, move || {
         let mut dev: Dev = std::ptr::null_mut();
         // SAFETY: the library fills `dev`; the Device closes it.
         unsafe {
-            if serial.is_empty() {
-                check(a, "open", (a.open)(&mut dev))?;
-            } else {
-                let sn = u64::from_str_radix(serial.trim_start_matches("0x"), 16).map_err(|_| format!("{brand} serial {serial:?} isn't hex"))?;
-                check(a, "open", (a.open_sn)(&mut dev, sn))?;
+            match sn {
+                None => check(a, "open", (a.open)(&mut dev))?,
+                Some(sn) => check(a, "open", (a.open_sn)(&mut dev, sn))?,
             }
         }
         Ok(Device { a, dev, streaming: false, ppm: 0.0, off_ant: false })
@@ -266,6 +287,8 @@ struct Identity {
     /// Its inputs, by number, and whether each has the bias-T; none when it has just the one.
     inputs: Vec<(String, bool)>,
     can: Can,
+    /// An Airspy's firmware string; "" when it didn't say (and for a HydraSDR, whose model its device info has).
+    version: String,
 }
 
 /// What an open radio says it is: its model and the IQ rates it lists (as opened, for IQ
@@ -282,25 +305,25 @@ unsafe fn identify(a: &Api, dev: Dev) -> Result<Identity, String> {
         if !rates.is_empty() && (a.get_samplerates)(dev, rates.as_mut_ptr(), rates.len() as u32) != 0 {
             rates.clear();
         }
-        let (model, serial, inputs, can) = match &a.own {
+        let (model, serial, inputs, can, version) = match &a.own {
             Own::Airspy { version_string_read, board_partid_serialno_read, .. } => {
                 let mut v = [0 as c_char; 128];
                 let version = if version_string_read(dev, v.as_mut_ptr(), v.len() as u8) == 0 { super::cstr(v.as_ptr()) } else { String::new() };
                 let mut sn = SerialRead::default();
                 let serial = (board_partid_serialno_read(dev, &mut sn) == 0).then(|| sn.serial());
-                (model_of(&version, &rates).to_string(), serial, vec![], Can { input: false, bias_tee: true, packing: true })
+                (model_of(&version, &rates).to_string(), serial, vec![], Can { input: false, bias_tee: true, packing: true }, version)
             }
             Own::Hydrasdr { get_device_info, .. } => {
                 let mut info = hydrasdr::DeviceInfo::zeroed();
                 check(a, "device info", get_device_info(dev, &mut *info))?;
-                (info.model(), Some(info.part_serial.serial()), info.inputs(), info.can())
+                (info.model(), Some(info.part_serial.serial()), info.inputs(), info.can(), String::new())
             }
         };
         let caps = Caps { model, rates: Rates::List(rates), gains: Vec::new() };
         if let Some(sn) = serial {
             super::remember(&key(a.lib, sn), caps.clone());
         }
-        Ok(Identity { caps, inputs, can })
+        Ok(Identity { caps, inputs, can, version })
     }
 }
 
@@ -364,24 +387,35 @@ fn describe(lib: Lib, serial: u64, caps: Option<&Caps>) -> serde_json::Value {
 
 /// Attached radios: [{serial (hex), label, model ("R2" / "Mini" / "RFOne"), rates (IQ, Hz)}].
 /// One not opened yet in this run is opened for a moment to ask (as airspy_info does), once.
-/// One streaming for a source is shown as it said when it opened — or isn't listed at all: on
-/// Windows libairspy's own listing can't open it to read its serial. (libairspy doesn't list
-/// a HydraSDR RFOne, its USB serial string isn't an Airspy's, but may still open one as "the first".)
+/// One streaming for a source is shown as it said when it opened. Airspys are found by the
+/// built-in driver, which reads serials without opening anything; libairspy's own listing is
+/// asked when that finds none (it opens each, so on Windows it misses one that's streaming).
+/// (Neither lists a HydraSDR RFOne as an Airspy, its USB serial string isn't one's, but may
+/// still open one as "the first".)
 pub fn devices(lib: Lib) -> Vec<serde_json::Value> {
-    let Ok(a) = api(lib) else { return vec![] };
-    let found = super::open(&format!("{} search", lib.brand()), Deadline::Quick, true, move || {
-        let mut sn = [0u64; 16];
-        // SAFETY: buffer and its length.
-        let n = unsafe { (a.list_devices)(sn.as_mut_ptr(), sn.len() as c_int) };
-        Ok(sn[..n.clamp(0, 16) as usize].to_vec())
-    });
+    let library = api(lib).ok();
+    let built_in = lib == Lib::Airspy && native::on();
+    let mut found = if built_in { native::list() } else { vec![] };
+    if let (true, Some(a)) = (found.is_empty(), library) {
+        found = super::open(&format!("{} search", lib.brand()), Deadline::Quick, true, move || {
+            let mut sn = [0u64; 16];
+            // SAFETY: buffer and its length.
+            let n = unsafe { (a.list_devices)(sn.as_mut_ptr(), sn.len() as c_int) };
+            Ok(sn[..n.clamp(0, 16) as usize].to_vec())
+        })
+        .unwrap_or_default();
+    }
     found
-        .unwrap_or_default()
         .into_iter()
         .map(|s| {
+            let serial = format!("{s:016X}");
             // (Opened here and closed when dropped: nothing else uses the handle.)
-            // SAFETY: an open device, as opened (IQ).
-            let caps = super::known(&key(lib, s)).or_else(|| open(a, &format!("{s:016X}")).ok().and_then(|d| unsafe { identify(a, d.dev) }.ok().map(|i| i.caps)));
+            let asked = || {
+                let by_built_in = built_in.then(|| native::open(&serial).ok().map(|d| native::identify(&d).caps)).flatten();
+                // SAFETY: an open device, as opened (IQ).
+                by_built_in.or_else(|| library.and_then(|a| open(a, &serial).ok().and_then(|d| unsafe { identify(a, d.dev) }.ok().map(|i| i.caps))))
+            };
+            let caps = super::known(&key(lib, s)).or_else(asked);
             describe(lib, s, caps.as_ref())
         })
         .collect()
@@ -626,7 +660,22 @@ fn input_refusal(what: &str, inputs: &[(String, bool)], port: u8, bias_tee: bool
     }
 }
 
+/// One run of a source's radio, from opening it to its stopping. An Airspy is opened by the
+/// built-in driver; one that's there but won't open that way (no WinUSB driver bound to it
+/// on Windows, say) is tried through libairspy when that's installed, and said so once.
 fn stream_once(cfg: &AirspyConfig, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+    if cfg.lib == Lib::Airspy && native::on() {
+        match native::open(&cfg.serial) {
+            Ok(d) => return native::stream(d, cfg, sink, stop, ctl),
+            Err(native::Unopened::Refused(e)) if api(cfg.lib).is_ok() => {
+                static SAID: AtomicBool = AtomicBool::new(false);
+                if !SAID.swap(true, Ordering::Relaxed) {
+                    log::warn!("{}: the built-in driver couldn't open it ({e}); using libairspy", open_name(cfg.lib, &cfg.serial));
+                }
+            }
+            Err(e) => return Err(e.said()),
+        }
+    }
     let a = api(cfg.lib)?;
     // SAFETY: the library calls on the device this function opens.
     unsafe {

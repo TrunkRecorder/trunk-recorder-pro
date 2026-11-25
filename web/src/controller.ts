@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { feedSeries } from "./series.ts";
 import { LivePlayer } from "../../docs/api/client.js";
-import { copyOverride, copyOwn, copyPerSite, OVERRIDE, PER_SITE, pluginCopies } from "./protocol.ts";
+import { blank, copyOf, copyOverride, copyOwn, copyPerSite, pluginCopies } from "./protocol.ts";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
 import type {
@@ -66,7 +66,7 @@ import {
   type ImportTodo,
   activeSites,
   detectRadios,
-  deviceId,
+  pickable,
   fccKey,
   fccPrimary,
   newConventional,
@@ -80,7 +80,6 @@ import {
   shortNameFor,
   siteNameOf,
   receiverOf,
-  sourceKey,
   trpBase,
 } from "./config.ts";
 import { WsTransport, type CallExt, type Transport } from "./transport.ts";
@@ -1372,17 +1371,6 @@ export function pluginOn(c: Config | null, id: string): boolean {
   return !!c?.plugins?.[id]?.enabled;
 }
 
-/** Settings with nothing in them: nothing to keep. */
-function blank(v: PluginValues | undefined): boolean {
-  return !v || Object.values(v).every((x) => x === undefined || x === null || x === "" || (Array.isArray(x) && x.length === 0));
-}
-
-/** A copy from its parts, each left out when there's nothing in it: its own settings, what it overrides, its sites' own. */
-function copyOf(own: PluginValues, over: PluginValues, perSite: Record<string, PluginValues>): PluginValues {
-  const sites = Object.fromEntries(Object.entries(perSite).filter(([, v]) => !blank(v)));
-  return { ...own, ...(blank(over) ? {} : { [OVERRIDE]: over }), ...(Object.keys(sites).length ? { [PER_SITE]: sites } : {}) };
-}
-
 export function setPluginEnabled(id: string, enabled: boolean): void {
   updateConfig((x) => {
     const all = (x.plugins ??= {});
@@ -1653,9 +1641,10 @@ export function startSurvey(radio: number | Source, bands: string[], findGain: b
  */
 export function spareRadios(s: Pick<AppState, "devices" | "radios" | "config">): Source[] {
   if (!can("drivers")) return [];
-  const used = new Set((s.config?.sources ?? []).map(sourceKey));
+  // (None a source names or may open as "the first found", and none that can't be told apart: Config::radio_picks.)
+  const picks = s.config ? pickable(s.config, null, s.devices, s.radios) : null;
   return detectRadios(s.devices, s.radios)
-    .filter((d) => !d.busy && !used.has(d.key) && !(s.config?.sources ?? []).some((x) => x.type === d.kind && deviceId(x).trim() === ""))
+    .filter((d) => !d.busy && !picks?.at(d.at).unpickable && !picks?.at(d.at).first)
     .map((d) => d.source);
 }
 /** The survey's bands that hold any of these frequencies (none: the usual ones). */

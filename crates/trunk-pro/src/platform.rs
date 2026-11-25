@@ -313,6 +313,11 @@ impl Platform {
         }
     }
 
+    /// Every network interface's addresses, as last sampled (tunnels' too: a tailnet's is on one).
+    pub fn addresses(&self) -> Vec<(String, std::net::IpAddr)> {
+        self.nets.list().iter().flat_map(|(name, n)| n.ip_networks().iter().map(move |a| (name.clone(), a.addr))).collect()
+    }
+
     /// The disk a path is on: the mount point that is its longest prefix.
     fn disk_of(&self, path: &Path) -> Option<&sysinfo::Disk> {
         let p = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());

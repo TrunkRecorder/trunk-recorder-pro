@@ -1080,6 +1080,7 @@ function PluginPageOf(props: { p: PluginInfo; m: PluginManifest; c: Config }) {
         <PluginHead p={p} on={on} tone={st.tone} state={state} titleId={`pp-${p.id}`} />
         {m.description && <p className="plugin-desc">{m.description}</p>}
         {message && <p className={`small ${st.tone === "bad" ? "bad-text" : st.tone === "warn" ? "warn-text" : "muted"}`}>{message}</p>}
+        {on && <PluginNotices p={p} shown={message} />}
         {recording && on && <ChangesNote m={m} />}
       </section>
       {hasFields(m.config) && <PluginSettingsForm p={p} m={m} settings={c.plugins?.[p.id]?.settings} needs={needs} page />}
@@ -1198,6 +1199,21 @@ export function M4aSettings() {
   );
 }
 
+/** What a plugin says stays true (a setting to fix), under its status: all but the one `shown` already. */
+function PluginNotices(props: { p: PluginInfo; shown: string }) {
+  const notices = (props.p.runtime.notices ?? []).filter((n) => n.message && n.message !== props.shown);
+  if (!notices.length) return null;
+  return (
+    <>
+      {notices.map((n) => (
+        <p key={n.message} className={`small plugin-notice ${n.state === "error" ? "bad-text" : n.state === "warning" ? "warn-text" : "muted"}`}>
+          {n.message}
+        </p>
+      ))}
+    </>
+  );
+}
+
 /** How a plugin is doing, in a word or two, and its tone. */
 function stateOf(p: PluginInfo, on: boolean, recording: boolean): { tone: "ok" | "warn" | "bad" | "off"; text: string } {
   if (p.problem) return { tone: "bad", text: "Can't run" };
@@ -1267,6 +1283,7 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
       />
       {m?.description && <p className="plugin-desc">{m.description}</p>}
       {message && <p className={`small ${st.tone === "bad" ? "bad-text" : st.tone === "warn" ? "warn-text" : "muted"}`}>{message}</p>}
+      {on && <PluginNotices p={p} shown={message} />}
       {counted && (
         <p className="small muted plugin-counts" title={r.lastFailure || undefined}>
           <span>{recording ? "This recording" : "Last recording"}</span>

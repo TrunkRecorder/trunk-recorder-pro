@@ -1530,6 +1530,8 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 /* Setup's radios and data (Setup.tsx, DataTools.tsx, Rolloff.tsx): figures beside their controls. */
 .driver-missing { flex-direction: column; align-items: flex-start; gap: 8px; }
 .driver-missing .figs code { font-weight: 500; }
+/* Its reason and steps are sentences, some long (a Windows driver's DLLs): they wrap. */
+.driver-missing > span, .driver-missing .fig { white-space: normal; overflow-wrap: anywhere; }
 .autotune-figs { gap: 10px 20px; align-items: flex-end; }
 .rolloff-figs { gap: 6px 12px; align-items: flex-end; }
 .index-switch { gap: 4px; }
@@ -1570,8 +1572,8 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .mini-stats span { font-size: 12.5px; }
 .band .legend { font-size: 13px; }
 .site-row .site-figs { justify-self: end; display: inline-flex; gap: 10px; }
-.src-unused { gap: 8px; margin-top: 10px; font-size: 13.5px; }
-.src-unused .chip { font-size: 12.5px; }
+.src-note { gap: 8px; margin-top: 10px; font-size: 13.5px; }
+.src-note .chip { font-size: 12.5px; }
 .src-tune { gap: 6px 14px; margin-top: 10px; font-size: 13.5px; flex-wrap: wrap; }
 .src-tune .chip { font-size: 12.5px; }
 .src-facts { gap: 6px 18px; margin-top: 10px; font-size: 14px; }

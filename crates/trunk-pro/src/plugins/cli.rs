@@ -216,7 +216,7 @@ fn uninstall(a: &Args) {
         die(&format!("{id} isn't installed"));
     }
     if !custom && dir.is_dir() {
-        std::fs::remove_dir_all(&dir).unwrap_or_else(|e| die(&format!("Couldn't delete {}: {e}", dir.display())));
+        trunk_app::files::remove_dir_all(&dir).unwrap_or_else(|p| die(&format!("Couldn't delete {}. {p}", dir.display())));
     }
     super::forget(&mut cfg, id);
     cfg.save(&path).unwrap_or_else(|e| die(&format!("{}: {e}", path.display())));
@@ -324,6 +324,16 @@ fn print_note(n: Note) {
             };
             eprintln!("[{plugin}] status {s}: {message}");
         }
+        Note::Notice { plugin, key: Some(key), state, message } => {
+            let s = match state {
+                Some(State::Ok) => "ok",
+                Some(State::Warning) => "warning",
+                Some(State::Error) => "error",
+                None => "cleared",
+            };
+            eprintln!("[{plugin}] notice {key} {s}: {message}");
+        }
+        Note::Notice { .. } => {}
         Note::Result { plugin, path, outcome, message, url, .. } => {
             let mark = match outcome {
                 Outcome::Ok => "✓",

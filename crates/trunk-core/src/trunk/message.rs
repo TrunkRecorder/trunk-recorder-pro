@@ -254,6 +254,8 @@ pub struct Message {
     /// P25 SYNC_BCST: the system's time as it sent this, Unix ms (to its
     /// 7.5 ms micro-slot), and whether the system vouches for it (IST clear).
     pub system_time_ms: Option<(i64, bool)>,
+    /// Standalone packet-data GPS: attributed by the packet header, without a voice call.
+    pub position: Option<crate::position::Position>,
     /// Human-readable summary, as Trunk Recorder logs it.
     pub meta: String,
 }

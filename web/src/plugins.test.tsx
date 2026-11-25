@@ -25,6 +25,18 @@ test("Plugins: a build of the user's own and one from GitHub can be reinstalled;
   assert.ok(!html.includes(">Remove<"));
 });
 
+test("Plugins: a plugin's notices show under its status, the one its status already says once", () => {
+  const c = defaultConfig();
+  c.plugins = { up: { enabled: true, settings: {} } };
+  transport.onMessage({ type: "config", config: c, version: 1 });
+  const notices = [{ state: "warning" as const, message: "System 77 is uploading 2 sites." }, { state: "error" as const, message: "Key refused." }];
+  const runtime = { state: "error" as const, message: "Key refused.", ok: 0, skipped: 0, failed: 0, lastFailure: "", log: [], notices };
+  transport.onMessage({ type: "plugins", encoderFound: null, plugins: [plugin("up", { runtime })] });
+  const page = renderToString(<PluginsPage />);
+  assert.match(page, /plugin-notice warn-text">System 77 is uploading 2 sites\.</);
+  assert.equal((page.match(/Key refused\./g) ?? []).length, 1, page);
+});
+
 /** Rendered, without React's text markers. */
 const html = (n: React.ReactElement) => renderToString(n).replace(/<!-- -->/g, "");
 

@@ -83,7 +83,9 @@ message, and the developer pages cover the internals. Other pages link to them.
 - [The interface API](api/README.md): the WebSocket protocol the built-in interface uses, for
   building your own ([for language models](api/llms.txt)), and
   [publishing an interface](interfaces/publishing.md) in the interface store
-- [Writing a plugin](plugins/writing-plugins.md), and [node health reports](api/node-health.md)
+- [Writing a plugin](plugins/writing-plugins.md): its [events](developer/plugins/events.md),
+  [protocol](developer/plugins/protocol.md) and [writing an uploader](developer/plugins/uploading.md),
+  and [node health reports](api/node-health.md)
 
 ## Developers
 
@@ -95,4 +97,4 @@ message, and the developer pages cover the internals. Other pages link to them.
 - [Developer tools](developer/tools.md): the `tool` subcommands for measuring and synthesizing
 - [Performance](developer/performance.md): CPU use measured against Trunk Recorder
 - [Interface style](developer/ui-style.md)
-- Protocol notes: [Hytera XPT](developer/protocols/xpt.md)
+- Protocol notes: [Hytera XPT](developer/protocols/xpt.md), [DMR GPS and data](developer/protocols/dmr-gps.md)

@@ -10,6 +10,121 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   in, though nothing in it could be added or changed. It is now one row each, its title over its line (`x-title`,
   `x-summary`), with a count, and it scrolls within its own height. A list that isn't `readOnly` is as before.
 
+- **Airspy R2 / Mini: a driver built in** (#225). An Airspy now works with nothing installed, like an RTL-SDR or
+  a HackRF: no `brew install airspy` or `libairspy0`, and on Windows no `airspy.dll`, `libusb-1.0.dll`,
+  `pthreadVC2.dll` or Visual C++ 2010 runtime (#219). The driver is libairspy ported to Rust
+  (`crates/libairspy-rs`, our fork of [libairspy-rs](https://github.com/jasonherald/libairspy-rs)).
+  - Airspys are listed without being opened, so one that's recording stays in Setup's list.
+  - libairspy, when it's installed, is still used for an Airspy the built-in driver can't open (on Windows, one
+    given a libusbK or libusb-win32 driver with Zadig); the log says so. `trunk-pro devices` shows
+    `Airspy: built in, and libairspy 1.0.10`.
+  - `TRUNK_PRO_AIRSPY_NATIVE=0` goes back to libairspy alone. Please report anything that needs it.
+  - HydraSDR RFOnes are unchanged (libhydrasdr).
+- **Conversation mode off: a transmission ends on its terminator, and multi-site copies are judged by their audio**
+  (#240, #231, thanks @VoltTech21).
+  - **Ends on its terminator.** With `conversationMode` off a call is one transmission, but it ended only once the
+    control channel had stopped mentioning its channel for `callTimeoutS`, unless the next transmission's audio came on
+    that channel first. So about half of all calls waited out the timeout, and reached plugins late, on any signal.
+    Now a transmission ends on its terminator: P25 (Phase 1 TDU, Phase 2 end of PTT), DMR (its terminator's link
+    control) and NXDN (TX_REL, DISC). Analog (SmartNet, EDACS, conventional FM and AM) has none, so it ends once its
+    squelch has been shut for half a second. Trunked and conventional alike. Its voice channel is kept, so a
+    transmission right after it on that channel is a call of its own from its first audio, and nothing of it is lost.
+    A channel nothing more comes on goes without a word. With conversations on, nothing changes.
+  - **Duplicates judged by audio.** A transmission heard on several sites was sometimes saved twice under one
+    `transmission_id`. A copy was a duplicate only while the kept copy's time took in its own, and that time ran to the
+    last control-channel mention. A site whose copy waited out the timeout, or heard the next talker's grant, so
+    stretched its copy past the kept one. Copies are now compared by when their audio was heard, and by the talkers in
+    it.
+  - **`end_reason`.** Each call's record, trunked or conventional, says why it ended: `terminator`, `squelch`,
+    `next_transmission`, `timeout`, `too_long`, `reassigned` or `stopped`. So does the log's **Concluding Recorded Call** line (`Ended: …`).
+
+- **Setup: radios that can't be told apart, or another source's, say so, every kind alike** (#235, thanks
+  @blantonl). A second RTL-SDR with no serial, or a serial another has, was offered in the **Dongle** list but
+  snapped back to *First available* when chosen. Now any radio found (RTL-SDR, Airspy, HydraSDR, HackRF, bladeRF,
+  USRP, SoapySDR) that can't be told apart from another of its kind is greyed out, *(no serial)* or *(same serial
+  as another)*. For a dongle the list gives the `rtl_eeprom -d 0 -s 00000002` to run (a serial none has, with only
+  that dongle plugged in); for the others (clones) it says **First available** uses one. A radio another source
+  names says whose (*(Source 1's)*), and while another source is on **First available** the list says it may take
+  any of them. The setup guide's radio cards no longer drop a dongle it can't tell apart without a word, and the
+  scanner's spare radios, the import's dongle swap and every picker go by the recorder's one rule for which
+  radio a source names.
+
+- **Setup: Direct connections and Reachable at** (#237, thanks @blantonl). Setup → **Access** switches
+  `server.bind` between **This computer only** (`127.0.0.1`) and **Other devices too** (`0.0.0.0`), from the
+  next start; it was `--bind` or the config file only. **Reachable at** lists every way to the recorder it finds
+  this run, as links: this computer, each network's address, the tailnet's (by its MagicDNS name), Tailscale
+  Serve and Funnel, Cloudflare Tunnel hostnames (from cloudflared's metrics server) and `server.hostname`; those
+  open to the internet are marked. It says when a `--bind` overrides the setting, when a change waits for a
+  restart, and, while sign-in is off, that anyone who can open them can change settings. From a browser that
+  came in directly, it asks before choosing **This computer only**. The Interfaces page's **Listening on** is
+  the address listened on this run, not the config's. See
+  [Remote access](docs/guides/remote-access.md#reaching-it-from-another-computer).
+
+- **A file that can't be written says where, why and what to do, wherever it is** (#236, thanks @blantonl). A plugin
+  or interface install refused for want of permission said only the OS error (*Permission denied*, *Access is
+  denied*). It now names the folder, says it's beside the config file and why the user Trunk Recorder Pro runs as
+  must be able to write there, and how to fix it. The same words now come from everything that writes, as they did
+  only for the recordings folder: saving the config, the call store, the log file, sign-in, held calls, a plugin's
+  data folder, IQ captures and the RAM spool. Permission denied says whose folder it is, who Trunk Recorder Pro runs
+  as and the `chmod` or `chown` to run; macOS privacy, a read-only or full disk and a folder that's gone are told
+  apart; on Windows, a folder under Program Files says to keep the config elsewhere. The log file and a plugin's
+  data folder failing were silent: now they're said. See
+  [Where plugins live](docs/plugins/README.md#where-plugins-live).
+
+- **GPS positions from DMR radios** (#221, thanks @n71fs). A radio's position is kept on its entry in the call
+  JSON (`lat`, `lon` in `srcList`) and reported as a position event, as P25's are:
+  - the GPS a DMR or Hytera radio sends while it talks (embedded in its voice), XPT included;
+  - Hytera location reports sent as data (a radio's position between calls, talkgroup 0), as text or, experimentally,
+    compressed (only the north/west form seen so far is read);
+  - Hytera radio registration and offline messages, as registrations.
+  Reports sent as data are put together from CRC-checked rate-1/2 short data on each slot. See
+  [DMR GPS](docs/developer/protocols/dmr-gps.md).
+
+- **Trunked DMR fixes** (#220, thanks @taclane):
+  - **Fewer empty recordings on Tier III.** A Tier III site repeats a call's grant (Late Entry) every few seconds,
+    through its hang time, which can be longer than the call timeout. Each repeat started a new call with no voice
+    (22–25% of recordings on one site). A site's calls are now held as long as it's heard repeating, and empty
+    recordings on that site went to 5%.
+  - **A Tier III site with Hytera radios stays Tier III.** It was switched to XPT, which cut its radio IDs to 16 bits.
+  - **Radios placed over the voice channels.** A DMR or NXDN site's channel table, and a new **Voice channels** field
+    in Setup, now count when Auto places the radios, and the source advice judges an Auto source where Start would put
+    it. DMR's watched list is now labelled **Watched frequencies**.
+  - **Site labels.** A DMR site read `site ?-4`; a Tier III network's now reads `net 12 · site 4`.
+
+- **A shorter message for what's left out** (#216, thanks @jschmall). With several systems set to receive on a source
+  that isn't one, the message names each with the label it gives, and lists the sources there are once instead of for
+  each. And when that leaves nothing to record, it says only that, not "Add a system with a control channel".
+
+- **"Gain may be low" is a suggestion, not a warning** (#222). A source whose samples stay tiny keeps its green light;
+  its card suggests *Gain may be low · peaks … dBFS* with the way out (Tune gain, or raise it in Setup), and the event
+  feed says it as info. And a source that carried a call in the last day isn't called quiet at all: a source on a few
+  rarely used voice channels hears nothing for hours, and its samples stay small at a working gain. Gain too high
+  (clipping) still warns, since clipped samples lose calls.
+
+- **DMR, NXDN and EDACS control channels have a history like P25's and SmartNet's** (#218, thanks @taclane). Their
+  sites now record the control channel's offset, eye opening, signal, noise and SNR, so the Decode page's charts show
+  them.
+
+- **Making two systems one keeps their uploads apart** (with broadcastify 0.2.1, TrunkRecorder/trunk-plugin-broadcastify#16).
+  **Make them one system** dropped the merged system's plugin settings, so its Broadcastify system ID was lost and
+  its sites uploaded under the other system's ID, labeled as the wrong site. Plugin settings a site can have of its
+  own (`site_overrides`: Broadcastify's API key and system ID) now go to each site that moves, and a plugin off for
+  the merged system stays off for its sites. The confirm names the plugins whose other settings are dropped.
+
+- **Plugin notices** (SDK 0.16.0, additive). A plugin can say something that stays true while it runs (a setting
+  to fix) with `Host::notice(key, state, message)`, shown on its card under its status: a later `status` (the
+  recorder's "running", an upload queue's "ok" once retries clear) no longer replaces it, and the plugin's health
+  is the worst of the two, so a recovering queue doesn't add a health event each time. `clear_notice(key)` takes
+  one away; they go when the plugin stops or restarts.
+
+- **Node health reports never have an empty window** (SDK 0.16.0). A plugin started while recording had long been
+  under way had one totals to go on, and its first report's window ended where it began (Broadcastify answers
+  `400 window.end must be after window.start`). `Reporter::report` now waits for the next totals.
+
+- **Plugins are told the names of a call's patched talkgroups** (SDK 0.15.1, additive). `CallInfo.patched` lists the
+  talkgroups patched with the call's own, each with its alpha tag (`TalkgroupName { talkgroup, alpha_tag }`), as the
+  dashboard's calls list them.
+
 ## [0.5.0] — 2026-11-23
 
 **Before you update:** the recordings folder (`recording.captureDir`) must be a full path, such as `/data/recordings` or
@@ -25,7 +140,9 @@ Recording first. The default, and the Docker image's, are already full paths.
   `pthreadVC2.dll` beside it, from the same `x64` folder of Airspy's airspy_host_tools, and `pthreadVC2.dll` needs the
   Visual C++ 2010 runtime; Setup's hint and the docs said only `airspy.dll`. A driver that's there but won't load now
   says why (Windows' reason, and for a missing DLL or a 32-bit one what to do) instead of only "LoadLibraryExW failed",
-  and a DLL beside `trunk-pro.exe` is seen there whatever folder the app was started from.
+  and a DLL beside `trunk-pro.exe` is seen there whatever folder the app was started from. Setup shows that reason
+  outright (it was behind the ⓘ, under "not installed"), with the steps for the computer the recorder runs on only,
+  and they wrap.
 
 - **Every plugin can be off for a system or site.** One that takes `totals` (the Broadcastify plugin's node health
   reports, from its next release) couldn't be, and was on for every system with a warning in its log. Now it's sent the
@@ -169,6 +286,7 @@ Recording first. The default, and the Docker image's, are already full paths.
   longer read: give those sites their accounts in their rows on the system's card.
 - **Held plugin items** (delayed calls) from before this release are dropped, and a multi-site call's copies share one
   `call_num`.
+
 
 ## [0.3.9] — 2026-11-20
 

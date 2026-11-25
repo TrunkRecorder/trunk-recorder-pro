@@ -2,8 +2,8 @@
 // pages that show them (so the setup guide and Setup can share these
 // without importing each other).
 
-import { copyOverride, copyPerSite, pluginCopies } from "./protocol.ts";
-import type { Config, PluginInfo, PluginManifest, PluginSchema, PluginValues } from "./protocol.ts";
+import { blank, blankValue, copyOf, copyOverride, copyOwn, copyPerSite, pluginCopies } from "./protocol.ts";
+import type { Config, PluginInfo, PluginManifest, PluginSchema, PluginValues, System } from "./protocol.ts";
 
 /** A schema's fields, in its `x-order`. */
 export function fieldsOf(schema: PluginSchema | undefined): [string, PluginSchema][] {
@@ -88,3 +88,41 @@ export function renameSystemRefs(x: Config, from: string, to: string, plugins: P
   }
 }
 
+
+/** `from`'s sites join `to` ("Make them one system"; `from` goes). For each plugin: what `from` sets that a site may set
+ * again (`site_overrides`: an uploader's system ID, say) and `to` sets otherwise becomes each of those sites' own (beside
+ * what they set already), and a plugin off for `from` is off for its sites. Changes `x`. Returns the plugins (by name) some
+ * of whose settings for `from` can't come along, and are dropped: `to`'s are kept. */
+export function joinPluginSettings(x: Config, from: System, to: System, plugins: PluginInfo[]): string[] {
+  const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const moved = from.sites.map((s) => s.id).filter((id): id is number => id !== undefined);
+  const dropped: string[] = [];
+  for (const id of new Set([...Object.keys(from.plugins ?? {}), ...Object.keys(x.plugins ?? {})])) {
+    const m = plugins.find((p) => p.id === id)?.manifest;
+    const offered = new Set(m ? siteOverridable(m).map(([k]) => k) : []);
+    const [mine, theirs] = [pluginCopies(to.plugins?.[id]), pluginCopies(from.plugins?.[id])];
+    let lost = false;
+    // Copy by copy (the first with the first).
+    const copies = Array.from({ length: Math.max(mine.length, theirs.length) }, (_, i) => {
+      const [t, f] = [mine[i], theirs[i]];
+      if (!f) return t;
+      const [tOwn, fOwn] = [copyOwn(t), copyOwn(f)];
+      const differ = Object.entries(fOwn).filter(([k, v]) => !blankValue(v) && !same(v, tOwn[k]));
+      if (differ.some(([k]) => !offered.has(k)) || (!blank(copyOverride(f)) && !same(copyOverride(f), copyOverride(t)))) lost = true;
+      const carried = Object.fromEntries(differ.filter(([k]) => offered.has(k)));
+      const sites = { ...copyPerSite(t) };
+      for (const s of moved) sites[String(s)] = { ...carried, ...copyPerSite(f)[String(s)] };
+      return copyOf(tOwn, copyOverride(t), sites);
+    }).filter((c) => c !== undefined);
+    if (lost) dropped.push(m?.name ?? id);
+    if (copies.length > 0 && !(copies.length === 1 && !Object.keys(copies[0]).length)) (to.plugins ??= {})[id] = copies.length === 1 ? copies[0] : copies;
+    // Off for `from`: off for its sites (unless off for `to`, and so for them anyway).
+    const p = x.plugins?.[id];
+    if (p && from.id !== undefined && p.systemsOff?.includes(from.id)) {
+      if (to.id === undefined || !p.systemsOff.includes(to.id)) p.sitesOff = [...new Set([...(p.sitesOff ?? []), ...moved])].sort((a, b) => a - b);
+      p.systemsOff = p.systemsOff.filter((y) => y !== from.id);
+      if (!p.systemsOff.length) delete p.systemsOff;
+    }
+  }
+  return dropped;
+}

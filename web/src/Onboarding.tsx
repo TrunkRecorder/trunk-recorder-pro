@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, kindLabel, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os, networkRadio, onNetwork, desktopOnly } from "./config.ts";
+import { detectRadios, pickable, siteNumber, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, kindLabel, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os, networkRadio, onNetwork, desktopOnly } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -286,7 +286,14 @@ async function connectWebDongle(): Promise<void> {
 
 export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack: () => void }) {
   const { s } = props;
-  const detected = useMemo(() => detectRadios(s.devices, s.radios), [s.devices, s.radios]);
+  // Each radio found, a source each; one that can't be told apart from one before it isn't (Config::radio_picks).
+  const detected = useMemo(() => {
+    const picks = pickable({ ...props.c, sources: [] }, null, s.devices, s.radios);
+    return detectRadios(s.devices, s.radios).map((d) => {
+      const u = picks.at(d.at).unpickable;
+      return u && u.why !== "source" && u.twin != null ? { ...d, busy: `can't be told apart from another: ${u.why === "noSerial" ? "no serial" : "the same serial"}` } : d;
+    });
+  }, [s.devices, s.radios, props.c]);
   const [picked, setPicked] = useState<Set<string> | null>(null);
   // Which radios power an LNA through their bias-T: as saved, until changed here.
   const [biasT, setBiasT] = useState<Set<string> | null>(null);
@@ -346,7 +353,7 @@ export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; 
           {[...free, ...detected.filter((d) => d.busy)].map((d) => {
             const on = !d.busy && chosen.has(d.key);
             return (
-              <div key={d.key} className="ob-pick">
+              <div key={`${d.key}#${d.at}`} className="ob-pick">
                 <button className={`ob-card pick${on ? " on" : ""}${d.busy ? " busy" : ""}`} role="checkbox" aria-checked={on} disabled={!!d.busy} onClick={() => toggle(d.key)}>
                   {!d.busy && (
                     <span className="ob-check" aria-hidden="true">
@@ -868,7 +875,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
                 items={[
                   { k: "System ID", v: hex(id.sysId) },
                   id.wacn != null && { k: "WACN", v: hex(id.wacn) },
-                  id.site != null && { k: "Site", v: `${id.rfss ?? "?"}-${id.site}` },
+                  id.site != null && { k: "Site", v: siteNumber(id) },
                 ]}
               />
             ) : (
@@ -1851,7 +1858,6 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   // What this config brings (adding: not what was here already).
   const bringsSource = (i: number) => result.added.sources.includes(i);
   const brings = (name: string) => !merge || result.added.systems.includes(name);
-  const used = (i: number) => new Set(cfg.sources.filter((x, k) => k !== i && x.type === "rtlsdr").map((x) => (x.type === "rtlsdr" ? x.serial : "")));
   const addFile = async (name: string, f: File | undefined) => {
     if (f) setFiles({ ...files, [name]: await f.text() });
   };
@@ -1915,7 +1921,8 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
           {cfg.sources.map((src, i) => {
             if (!bringsSource(i)) return null;
             const st = sourceState(src, s);
-            const free = s.devices.filter((d) => !d.busy && !used(i).has(d.serial));
+            const picks = pickable(cfg, i, s.devices, s.radios).of("rtlsdr");
+            const free = s.devices.filter((d, n) => !d.busy && !picks[n]?.unpickable);
             const orig = result.config.sources[i];
             return (
               <li key={i} className={st.tone}>

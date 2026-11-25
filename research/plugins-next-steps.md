@@ -2,8 +2,8 @@
 
 October 2026. Where the plugin system stands, and what's left before users
 can install plugins from a store inside the app. The design of the registry
-and the installer is in the template repo's
-[docs/registry.md](../../trunk-plugin-template/docs/registry.md). This page is
+and the installer is in
+[Writing plugins](../docs/plugins/writing-plugins.md#publishing-to-the-registry). This page is
 the plan for building it.
 
 **Constraint:** this repo (the app) stays private for now. Everything plugin

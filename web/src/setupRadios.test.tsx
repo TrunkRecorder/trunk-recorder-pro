@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { gainLine } from "./dash/Rf.tsx";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, SOURCE_KINDS } from "./config.ts";
+import { defaultConfig, kindNeedsDriver, SOURCE_KINDS } from "./config.ts";
 import { transport } from "./controller.ts";
 import type { Config, EngineStatus, FromRecorder, NetworkRadio, Radios } from "./protocol.ts";
 import { SourceCard } from "./Setup.tsx";
@@ -39,6 +39,36 @@ test("Setup: a HackRF's editor has its stages and bias-T, and needs no driver", 
   assert.deepEqual([...lna.matchAll(/value="(\d+)"/g)].map((m) => m[1]), ["0", "8", "16", "24", "32", "40"]);
   const vga = html.match(/<select[^>]*aria-label="VGA \(baseband\) gain"[^>]*>(.*?)<\/select>/)?.[1] ?? "";
   assert.equal([...vga.matchAll(/value="(\d+)"/g)].length, 32);
+});
+
+test("Setup: a driver that won't load says why in full, with the steps for the computer it runs on (#219)", () => {
+  const c = defaultConfig();
+  c.sources = [SOURCE_KINDS.hydrasdr.fresh()];
+  setup(c);
+  const why = "libhydrasdr found but couldn't be loaded: LoadLibraryExW failed (os error 126) — a DLL it needs is missing: hydrasdr.dll needs libusb-1.0.dll beside it";
+  const radios = (platform: string) => {
+    transport.onMessage({ type: "hello", version: "test", platform, api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers"] });
+    transport.onMessage({ type: "radios", radios: { hydrasdr: { available: false, detail: why, devices: null } } as unknown as Radios });
+    return text(renderToString(<SourceCard c={c} i={0} />));
+  };
+  const win = radios("windows");
+  assert.ok(win.includes(`HydraSDR needs ${why}`), "the recorder's reason, shown outright");
+  assert.match(win, /Windows put hydrasdr\.dll and libusb-1\.0\.dll .* next to trunk-pro\.exe Then Restart the app/);
+  assert.doesNotMatch(win, /dylib|host-tools/, "not another computer's steps");
+  // A computer it can't place: every way to install it.
+  assert.match(radios("test"), /libhydrasdr\.1\.dylib .* hydrasdr-host-tools .* put hydrasdr\.dll/);
+});
+
+test("Setup: an Airspy's driver is built in — nothing to install, its radios listed (#225)", () => {
+  const c = defaultConfig();
+  c.sources = [SOURCE_KINDS.airspy.fresh()];
+  setup(c);
+  transport.onMessage({ type: "radios", radios: { airspy: { available: true, detail: "built in", devices: [{ serial: "735863DC2F650AE3", label: "Airspy R2 735863DC2F650AE3" }] } } as unknown as Radios });
+  const page = text(renderToString(<SourceCard c={c} i={0} />));
+  assert.equal(SOURCE_KINDS.airspy.driver, undefined, "nothing to install");
+  assert.ok(kindNeedsDriver("airspy"), "the desktop app's all the same");
+  assert.match(page, /Airspy R2 735863DC2F650AE3/, "the radio its driver found");
+  assert.doesNotMatch(page, /needs|brew install|apt install|airspy\.dll/, "nothing to install");
 });
 
 test("Setup: the browser build offers only the radios it opens (no driver, no HackRF)", () => {
@@ -138,4 +168,33 @@ test("Setup: an RTL-SDR on USB or through rtl_tcp: the dongle list for one, the 
   assert.doesNotMatch(text(net), /Dongle|USB transfers/, "nothing of USB");
   assert.match(net, /value="pi.local"/);
   assert.match(text(net), /Bias-T/, "its bias-T, as on USB");
+});
+
+test("Setup: a dongle with no serial, or another's serial, can't be picked; the list says why and what to run (forum: second dongle snaps back to First available)", () => {
+  const c = defaultConfig();
+  c.sources = [{ ...SOURCE_KINDS.rtlsdr.fresh(), serial: "00000001" } as Config["sources"][number], SOURCE_KINDS.rtlsdr.fresh()];
+  setup(c);
+  const dongle = (index: number, serial: string) => ({ index, serial, product: "RTL2838UHIDIR" });
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "")] });
+  const html = renderToString(<SourceCard c={c} i={1} />).replace(/<!-- -->/g, "");
+  assert.match(html, /<option value="" disabled="" selected="">RTL2838UHIDIR \(no serial\)<\/option>/);
+  assert.match(text(html), /A dongle can't be picked: .* rtl_eeprom -d 0 -s 00000002 /);
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "00000001")] });
+  const same = renderToString(<SourceCard c={c} i={1} />).replace(/<!-- -->/g, "");
+  assert.equal(same.match(/SN 00000001 \(same serial as another\)/g)?.length, 2, "both, each its own option");
+  assert.match(text(same), /2 dongles can't be picked/);
+  transport.onMessage({ type: "devices", devices: [dongle(0, "00000001"), dongle(1, "00000002")] });
+  const fine = text(renderToString(<SourceCard c={c} i={1} />));
+  assert.doesNotMatch(fine, /can't be picked|rtl_eeprom/);
+  assert.match(fine, /SN 00000001 \(Source 1's\)/, "the first source's, by its title");
+
+  // Every kind alike: two Airspys with one serial (clones), and Source 1 on the first found.
+  const a = defaultConfig();
+  a.sources = [{ ...SOURCE_KINDS.airspy.fresh(), serial: "" } as Config["sources"][number], { ...SOURCE_KINDS.airspy.fresh(), serial: "" } as Config["sources"][number]];
+  setup(a);
+  const airspy = { serial: "735863dc2f650ae3", label: "Airspy R2 · SN 735863DC2F650AE3" };
+  transport.onMessage({ type: "radios", radios: { usrp: { available: false, detail: "" }, hackrf: { available: true, detail: "built in", devices: [] }, airspy: { available: true, detail: "libairspy", devices: [airspy, airspy] }, hydrasdr: { available: false, detail: "" }, bladerf: { available: false, detail: "" } } as unknown as Radios });
+  const clones = text(renderToString(<SourceCard c={a} i={1} />));
+  assert.equal(clones.match(/\(same serial as another\)/g)?.length, 2);
+  assert.match(clones, /2 Airspys can't be picked: they report the same serial \(clones can\).* Source 1 opens the first Airspy found, which may be any of these: give it its own too/);
 });
