@@ -1124,6 +1124,8 @@ export interface CallRecord {
   call_num: number;
   /** The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>`. */
   transmission_id?: string;
+  /** Why it ended (absent: not said). */
+  end_reason?: "terminator" | "squelch" | "next_transmission" | "timeout" | "too_long" | "reassigned" | "stopped";
   short_name?: string;
   /** The site its copy was kept from (a system of one site: its short name). */
   site?: string;

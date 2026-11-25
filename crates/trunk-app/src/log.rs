@@ -91,6 +91,8 @@ pub enum Body {
         noise_db: Option<f64>,
         snr_db: Option<f64>,
         clean_pct: Option<f64>,
+        /// Why it ended (the record's `end_reason`; empty: not said).
+        ended: String,
     },
     /// A call ended without being saved (no audio, or shorter than the minimum).
     Dropped,
@@ -268,13 +270,16 @@ pub fn line(r: &Record, f: &Format, color: bool) -> String {
             };
             s.push_str(&format!("{}Not Recording: {what}{rst}", c(tone)));
         }
-        Body::Concluded { length_s, signal_db, noise_db, snr_db, clean_pct } => {
+        Body::Concluded { length_s, signal_db, noise_db, snr_db, clean_pct, ended } => {
             s.push_str(&format!("{}Concluding Recorded Call{rst} - Call Length: {length_s:.1}s", c(YEL)));
             if signal_db.is_some() || noise_db.is_some() {
                 s.push_str(&format!("\t Signal: {}dBFS\t Noise: {}dBFS\t SNR: {}dB", db(*signal_db), db(*noise_db), db(*snr_db)));
             }
             if let Some(p) = clean_pct {
                 s.push_str(&format!("\t Clean voice: {p:.0}%"));
+            }
+            if !ended.is_empty() {
+                s.push_str(&format!("\t Ended: {ended}"));
             }
         }
         Body::Dropped => s.push_str(&format!("{}Call not saved{rst} - no audio, or shorter than the minimum", c(CYN))),
@@ -320,9 +325,9 @@ mod tests {
         let f = Format::default();
         assert_eq!(line(&st, &f, false).rsplit('\t').next(), Some("Elapsed:    4 State: Monitoring: UNKNOWN TG"));
         let done =
-            Record { body: Body::Concluded { length_s: 8.46, signal_db: Some(-22.4), noise_db: Some(-51.9), snr_db: Some(29.5), clean_pct: Some(100.0) }, ..r.clone() };
+            Record { body: Body::Concluded { length_s: 8.46, signal_db: Some(-22.4), noise_db: Some(-51.9), snr_db: Some(29.5), clean_pct: Some(100.0), ended: "terminator".into() }, ..r.clone() };
         assert!(
-            line(&done, &f, false).ends_with("Concluding Recorded Call - Call Length: 8.5s\t Signal: -22dBFS\t Noise: -52dBFS\t SNR: 30dB\t Clean voice: 100%")
+            line(&done, &f, false).ends_with("Concluding Recorded Call - Call Length: 8.5s\t Signal: -22dBFS\t Noise: -52dBFS\t SNR: 30dB\t Clean voice: 100%\t Ended: terminator")
         );
         assert_eq!(Level::parse("WARN"), Some(Level::Warning));
         // A conventional row filing the air's talkgroup under its own: both shown.

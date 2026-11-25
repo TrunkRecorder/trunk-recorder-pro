@@ -140,6 +140,11 @@ impl Transmissions {
         }
     }
 
+    /// When its audio was appended, the first piece to the last: (start, end), s. None: none was.
+    pub fn heard(&self) -> Option<(f64, f64)> {
+        Some((self.marks.first()?.0, self.last_s?))
+    }
+
     /// Where in the call's `len` samples of audio each source not yet
     /// placed starts talking: the first audio appended at or after it was
     /// heard (the gaps between transmissions aren't in the audio, so its
@@ -208,6 +213,7 @@ pub fn call_record(call: &Call, info: &ConcludeInfo) -> (CallRecord, String) {
     let record = CallRecord {
         call_num: info.call_num.unwrap_or(call.id) as u64,
         transmission_id: format!("{}-{}-{talker}-{}", info.short_name, call.talkgroup, ms(info.first_s.unwrap_or(call.start_s))),
+        end_reason: call.end.map_or_else(String::new, |e| e.as_str().into()),
         freq: call.freq_hz,
         freq_error: info.freq_error_hz as i64,
         signal: info.reception.signal_db(),
@@ -651,7 +657,7 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
     // "audio" is a few frames vocoded before the cipher was known: noise).
     h.trim(rules.min_transmission_s);
     let freq_error_hz = h.rec.freq_error_hz();
-    let Held { call, rec, on } = h;
+    let Held { call, rec, on, .. } = h;
     let Recorded { mut audio, frames, inband, reception, .. } = rec;
     let short = (audio.len() as f64) < rules.min_call_s * mbe::SAMPLE_RATE as f64 && !audio.is_empty();
     if (audio.is_empty() && !(rules.keep_silent || call.encrypted && cx.keep_encrypted)) || short {

@@ -70,6 +70,8 @@ struct Detail {
     sites: Vec<SiteRef>,
     #[serde(skip_serializing_if = "is_zero")]
     site_id: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    end_reason: String,
     /// Fields of the record this version doesn't know.
     #[serde(skip_serializing_if = "Map::is_empty")]
     extra: Map<String, Value>,
@@ -95,6 +97,7 @@ pub fn call_values(row: &CallRow) -> Vec<V> {
         patched_talkgroups: r.patched_talkgroups.clone(),
         sites: r.sites.clone(),
         site_id: r.site_id,
+        end_reason: r.end_reason.clone(),
         extra: r.extra.clone(),
     };
     vec![
@@ -211,6 +214,7 @@ pub fn stored_call(r: &Row, at: usize, short_name: String, src_list: Vec<SrcEntr
     let record = CallRecord {
         call_num: r.int(i(9)) as u64,
         transmission_id: r.text(i(10)),
+        end_reason: detail.end_reason,
         freq: r.int(i(11)) as u64,
         freq_error: r.int(i(12)),
         signal: r.opt_real(i(13)),

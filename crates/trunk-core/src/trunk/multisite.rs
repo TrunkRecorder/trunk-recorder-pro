@@ -96,24 +96,27 @@ impl Span {
 pub struct Kept {
     pub call: Call,
     clean_s: f64,
+    heard: Span,
+    talkers: Vec<u32>,
 }
 
 impl Kept {
     pub fn of(h: &Held) -> Kept {
-        Kept { call: h.call.clone(), clean_s: h.clean_s() }
+        Kept { call: h.call.clone(), clean_s: h.clean_s(), heard: h.heard(), talkers: h.talkers() }
     }
 
-    /// `h` is a duplicate of this: another site's copy of the same time, the
-    /// same talkers (those known on both), decoded no better (but for
-    /// [`PREFERRED_SHARE`], as [`pick`] has it). A copy of what this missed
-    /// (a transmission it didn't have, a talker it didn't hear, a part it
-    /// lost to a fade) isn't.
+    /// `h` is a duplicate of this: another site's copy of the same audio
+    /// ([`Held::heard`]), the same talkers in it (those known on both),
+    /// decoded no better (but for [`PREFERRED_SHARE`], as [`pick`] has it).
+    /// A copy of what this missed (a transmission it didn't have, a talker it
+    /// didn't hear, a part it lost to a fade) isn't. How long each site's
+    /// control channel went on mentioning the channel afterwards, and whom
+    /// it named then, is no part of it.
     pub fn holds(&self, h: &Held) -> bool {
-        let talkers = |c: &Call| c.sources.iter().map(|s| s.src).filter(|&s| s != 0).collect::<Vec<_>>();
-        let (mine, theirs) = (talkers(&self.call), talkers(&h.call));
+        let theirs = h.talkers();
         self.call.site != h.call.site
-            && Span::of(&self.call).holds(Span::of(&h.call))
-            && (mine.is_empty() || theirs.iter().all(|t| mine.contains(t)))
+            && self.heard.holds(h.heard())
+            && (self.talkers.is_empty() || theirs.iter().all(|t| self.talkers.contains(t)))
             && self.clean_s >= h.clean_s() * PREFERRED_SHARE
     }
 }
@@ -125,9 +128,31 @@ pub struct Held {
     pub rec: Recorded,
     /// Where it was recorded.
     pub on: super::record::RecordedOn,
+    /// When its audio was heard, from the first to the last (none: it has none).
+    audio: Option<Span>,
 }
 
 impl Held {
+    /// Call `call`'s recording `rec`, made `on`: as it ended, before it's trimmed.
+    pub fn new(call: Call, rec: Recorded, on: super::record::RecordedOn) -> Held {
+        let audio = rec.tx.heard().map(|(start_s, end_s)| Span { start_s, end_s });
+        Held { call, rec, on, audio }
+    }
+
+    /// When it was heard: its audio's first to last, else (none) its call's
+    /// grant to last mention ([`Span::of`]).
+    pub fn heard(&self) -> Span {
+        self.audio.unwrap_or_else(|| Span::of(&self.call))
+    }
+
+    /// Its talkers known, those heard by the time its audio ended (the
+    /// control channel may name the next talker on the channel before this
+    /// call is over).
+    pub fn talkers(&self) -> Vec<u32> {
+        let end_s = self.heard().end_s + super::record::TRANSMISSION_GAP_S;
+        self.call.sources.iter().filter(|s| s.src != 0 && s.time_s <= end_s).map(|s| s.src).collect()
+    }
+
     /// Leave out what the saved call won't have ([`Recorded::trim`]).
     pub fn trim(&mut self, min_tx_s: f64) {
         self.rec.trim(&mut self.call.sources, min_tx_s);
@@ -371,7 +396,7 @@ mod tests {
             rec.frames.push(&VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind, tone: None });
         }
         rec.audio = vec![0.1; (good + bad) * FRAME_SAMPLES];
-        Held { call: call(id, site, id as f64 * 0.1), rec, on: Default::default() }
+        Held::new(call(id, site, id as f64 * 0.1), rec, Default::default())
     }
 
     /// Copy `c` begins, linked.
