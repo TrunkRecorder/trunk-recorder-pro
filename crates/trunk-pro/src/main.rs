@@ -23,6 +23,7 @@
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
 //!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
 //!     --keys keys.json|keys.ekc [--keys-password-file F] (P25 encryption keys for every system: see trunk-app's keys.rs)
+//!     --taps fm.discriminator,voice.air,voice.errors (signal taps saved beside the calls)
 //!     --messages (print every control channel message)
 //!     --summary FILE (each site's control channel blocks as JSON, over all of
 //!     it and, for one of our captures, over the part its live figures cover)
@@ -137,6 +138,7 @@ mod statstore;
 mod store;
 mod submission;
 mod tape_file;
+mod taps;
 mod tls;
 mod waterfall;
 mod toolkit;
@@ -477,6 +479,11 @@ fn replay(a: &Args) {
     // (A command line's folder is the shell's: the config's is a full path.)
     cfg.recording.capture_dir = std::path::absolute(&out_dir).map_or(out_dir.clone(), |p| p.display().to_string());
     cfg.recording.capture_frames = a.flag("capture-frames");
+    // --taps fm.discriminator,voice.air: those signal taps saved, of every system.
+    if let Some(ids) = a.get("taps") {
+        cfg.recording.taps = ids.split(',').map(|id| config::TapRoute { tap: trunk_recorder_plugin::Tap::from_id(id.trim()).unwrap_or_else(|| die(&format!("--taps {id}: no such tap"))), systems: Vec::new() }).collect();
+    }
+    let tap_files = taps::TapFiles::default();
     let multi = cfg.active_systems().count() > 1;
     let plan_of = cfg.engine_config(0.0, &names);
     let site_keys: Vec<String> = trunk_core::trunk::sites(&plan_of.systems).map(|(n, s)| trunk_app::session::bandplan_key(&plan_of.systems[n as usize], s)).collect();
@@ -552,7 +559,7 @@ fn replay(a: &Args) {
     let at = |s: f64| epoch_ms + s * 1000.0;
     let mut deliver = |session: &mut Session, now_s: f64, out: &mut Vec<Output>| {
         session.poll(at(now_s), out);
-        written += write_calls(out, session, &out_dir, multi, quiet);
+        written += write_calls(out, session, &out_dir, multi, quiet, &tap_files);
     };
     // Interleave the sources in ~13.6 ms chunks (rtl_sdr's 32768-sample transfers
     // at 2.4 MSPS), so their clocks advance together as they would live.
@@ -664,7 +671,7 @@ fn replay(a: &Args) {
         }
     }
     session.finish(&mut out);
-    written += write_calls(&mut out, &session, &out_dir, multi, quiet);
+    written += write_calls(&mut out, &session, &out_dir, multi, quiet, &tap_files);
     let (st, plans) = session.status_and_bandplans();
     if let Some(dir) = a.get("tapes") {
         write_tapes(&session, &st, &plans, std::path::Path::new(dir), capture.as_ref()).unwrap_or_else(|e| die(&e));
@@ -910,12 +917,30 @@ fn print_event(ev: &Event, engine: &Engine, quiet: bool, messages: bool) {
 
 /// The calls among `out` (the rest let go), written to `out_dir` as the
 /// recorder names them (several systems: each in `<out>/<shortName>/`). How many.
-fn write_calls(out: &mut Vec<Output>, session: &Session, out_dir: &str, multi: bool, quiet: bool) -> usize {
+fn write_calls(out: &mut Vec<Output>, session: &Session, out_dir: &str, multi: bool, quiet: bool, taps: &taps::TapFiles) -> usize {
     let mut written = 0;
-    for o in out.drain(..) {
-        let Output::File { rel, system, wav, record, frames, .. } = o else { continue };
-        let dir = if multi { Path::new(out_dir).join(session.config().short_name_of(system).unwrap_or("conv")) } else { Path::new(out_dir).to_path_buf() };
+    let dir_of = |short_name: &str| {
+        let dir = if multi { Path::new(out_dir).join(short_name) } else { Path::new(out_dir).to_path_buf() };
         let _ = fs::create_dir_all(&dir);
+        dir
+    };
+    for o in out.drain(..) {
+        // A signal tap's stream (--taps), once it has ended: beside the calls, as the recorder names it.
+        if let Output::Tap { chunk, save: Some(rel) } = o {
+            let dir = dir_of(&chunk.short_name);
+            if let Some((rel, file)) = taps.gather(rel, chunk) {
+                let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+                for (ext, bytes) in file.files() {
+                    let _ = fs::write(dir.join(format!("{name}.{ext}")), bytes);
+                }
+                if !quiet {
+                    println!("         wrote {name}");
+                }
+            }
+            continue;
+        }
+        let Output::File { rel, system, wav, record, frames, .. } = o else { continue };
+        let dir = dir_of(session.config().short_name_of(system).unwrap_or("conv"));
         // (Its name as the recorder gives it, without the date folders. Appended, not
         // with_extension: a TDMA base name ends in ".<slot>".)
         let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
@@ -1128,6 +1153,7 @@ fn serve(a: &Args) {
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
         folders: Default::default(),
+        taps: Default::default(),
         clock: Default::default(),
         unlocked: Default::default(),
         iq: Default::default(),

@@ -11,6 +11,12 @@ use trunk_core::dsp::inband::subaudible::{PrivacyCode, Tone};
 use trunk_core::trunk::{Access, ConvMode};
 use wasm_bindgen::prelude::*;
 
+/// Every signal tap ([`trunk_recorder_plugin::TAPS`]), as JSON: the settings' list.
+#[wasm_bindgen(js_name = signalTaps)]
+pub fn signal_taps() -> String {
+    serde_json::json!(trunk_core::trunk::taps::TAPS).to_string()
+}
+
 fn read(json: &str) -> Result<Config, String> {
     Config::from_json(json).map_err(|e| format!("Bad config: {e}"))
 }

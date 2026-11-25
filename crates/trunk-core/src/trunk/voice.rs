@@ -22,6 +22,7 @@ use num_complex::Complex32;
 
 use super::calls::Flags;
 use super::frames::VoiceFrame;
+use super::taps::{Tap, TapData, TapPiece, TapSet, DISCRIMINATOR_RATE};
 use super::tdma::TdmaTracker;
 use super::tracker::VoiceTracker;
 use crate::alias::Alias;
@@ -180,6 +181,9 @@ pub enum TrackerOut {
     /// transmission is over. With conversation mode off that ends its call
     /// ([`super::calls::CallManager::terminated`]).
     Ended,
+    /// A signal tap's piece ([`VoiceSpec::taps`]): for whoever taps the channel, not its call
+    /// ([`super::taps::Streams::sift`] takes it out).
+    Tap(TapPiece),
 }
 
 /// What an output says of the protocol a receiver heard ([`TrackerOut::evidence`]).
@@ -198,7 +202,7 @@ impl TrackerOut {
     /// What it says of the protocol that put it out.
     pub fn evidence(&self) -> Evidence {
         match self {
-            TrackerOut::AnalogAudio(_) | TrackerOut::Subaudible(_) => Evidence::None,
+            TrackerOut::AnalogAudio(_) | TrackerOut::Subaudible(_) | TrackerOut::Tap(_) => Evidence::None,
             TrackerOut::Audio(..) => Evidence::Frame,
             TrackerOut::Info { .. }
             | TrackerOut::Cipher(_)
@@ -239,6 +243,10 @@ pub(super) enum Encryption {
 impl Encryption {
     pub(super) fn encrypted(self) -> bool {
         matches!(self, Encryption::Hinted | Encryption::Encrypted(_))
+    }
+    /// Whether the voice is encrypted, where anything has said (a hint counts: [`Self::encrypted`]).
+    pub(super) fn known(self) -> Option<bool> {
+        (self != Encryption::Unknown).then(|| self.encrypted())
     }
     pub(super) fn from_sync(es: &crate::p25::voice::EncryptionSync) -> Self {
         if es.algid == crate::p25::voice::ALGID_CLEAR { Encryption::Clear } else { Encryption::Encrypted(es.algid) }
@@ -425,6 +433,10 @@ pub struct VoiceSpec {
     /// The system's keys: P25 voice it has the key for is decrypted.
     #[serde(skip)]
     pub keys: Option<Arc<Keyring>>,
+    /// The signal taps turned on for the channel ([`super::taps`]): its decoder puts their
+    /// pieces among its outputs ([`TrackerOut::Tap`]). (Not kept with a tape: a replay taps nothing.)
+    #[serde(skip)]
+    pub taps: TapSet,
 }
 
 /// One voice channel's decoding: channel IQ in, outputs for the calls on
@@ -484,7 +496,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
     match spec.kind {
         VoiceKind::Fdma => Box::new(P25Fdma {
             bank: Bank::new(spec.rate, spec.bank),
-            tracker: VoiceTracker::new(mbe::lcg(spec.seed), spec.vocoder, spec.keys.clone()),
+            tracker: VoiceTracker::new(mbe::lcg(spec.seed), spec.vocoder, spec.keys.clone()).tapped(spec.taps),
             groups: Vec::new(),
             t0: spec.t0,
             rate: spec.rate,
@@ -495,12 +507,13 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
         VoiceKind::Tdma => {
             let mut tracker = TdmaTracker::new(spec.seed, spec.keys.clone());
             tracker.soft = spec.bank.soft;
+            tracker.taps = spec.taps;
             Box::new(P25Tdma { bank: Bank::phase2(spec.rate, spec.bank), tracker, groups: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
         }
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
         VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
         VoiceKind::Analog => Box::new(Analog {
-            demod: Demod::Fm(Nbfm::with(spec.rate, &spec.analog)),
+            demod: Demod::Fm(Nbfm::with(spec.rate, &spec.analog).tapped(spec.taps.has(Tap::FmDiscriminator).then_some(DISCRIMINATOR_RATE))),
             squelch: spec.squelch,
             subaudible: spec.subaudible,
             carrier: false,
@@ -1002,6 +1015,12 @@ impl VoiceDecoder for Analog {
             Demod::Am(am) => am.push(iq, self.squelch, &mut audio),
         };
         let ended = self.ending.after(iq.len(), !audio.is_empty());
+        if let Demod::Fm(fm) = &mut self.demod {
+            let samples = fm.take_tapped();
+            if !samples.is_empty() {
+                out.push(VoiceOut { slot: 0, out: TrackerOut::Tap(TapPiece { tap: Tap::FmDiscriminator, data: TapData::Pcm { rate: DISCRIMINATOR_RATE, samples }, notes: Vec::new() }) });
+            }
+        }
         if !audio.is_empty() {
             out.push(VoiceOut { slot: 0, out: TrackerOut::AnalogAudio(audio) });
         }

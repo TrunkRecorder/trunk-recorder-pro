@@ -7354,6 +7354,13 @@
           "type": "boolean",
           "description": "Save each digital call's vocoder frames (<call>.sdr; NXDN <call>.frames.jsonl) for diagnosis."
         },
+        "taps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/TapRoute"
+          },
+          "description": "Desktop: the signal taps saved to files (Setup → Recording → Advanced)."
+        },
         "dropDuplicateCalls": {
           "type": "boolean",
           "description": "A call heard on several sites of one system: save the best copy only."
@@ -10018,6 +10025,26 @@
       ],
       "additionalProperties": false,
       "description": "A talkgroup and its alpha tag from the system's talkgroup file (\"\" when not in it)."
+    },
+    "TapRoute": {
+      "type": "object",
+      "properties": {
+        "tap": {
+          "type": "string"
+        },
+        "systems": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "System ids; absent: every system."
+        }
+      },
+      "required": [
+        "tap"
+      ],
+      "additionalProperties": false,
+      "description": "A signal tap saved to files beside the calls (a plugin takes one by subscribing to `tap.<id>`: no row)."
     },
     "TgRow": {
       "type": "object",

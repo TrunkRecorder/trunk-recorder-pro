@@ -147,6 +147,8 @@ pub struct Ctx {
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
     /// The folders calls are written to, and how writing to them goes ([`crate::folder`]).
     pub folders: crate::folder::Folders,
+    /// The signal taps' streams being saved to files.
+    pub taps: crate::taps::TapFiles,
     /// The computer's clock, watched (#61): what calls' `clock_off` and the dashboard go by.
     pub clock: Arc<crate::clock::Clock>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).
@@ -1431,6 +1433,14 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
             Output::Plugin(m) => {
                 if let Some(p) = plugins {
                     p.event(&m);
+                }
+            }
+            Output::Tap { chunk, save } => {
+                if let Some(p) = plugins {
+                    p.tap(&chunk);
+                }
+                if let Some(rel) = save {
+                    ctx.taps.take(&ctx.folders.recordings, rel, chunk);
                 }
             }
             Output::Log(r) => crate::logging::record(&r),

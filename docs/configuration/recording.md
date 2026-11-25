@@ -47,6 +47,7 @@ plugin fails**).
 | `dropDuplicateCalls` | | `true` | bool | Multi-site: a call heard on several sites of one system is saved once, keeping the cleanest copy or the talkgroup's Preferred Site. See [systems.md](systems.md#multi-site) |
 | `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (also `"fixed-point"`; usually sounds most natural), `"enhanced"` or `"mbelib"` (any case; anything else is refused when the config is read) |
 | `captureFrames` | | `false` | bool | Also save each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for diagnosis and `trunk-pro tool revoice` |
+| `taps` | | `[]` | list | Signal taps saved to files: what a voice channel's receiver makes on the way to a call's audio. See [`taps`](#taps) |
 | `m4a` | | see below | object | The M4A encoder for `archiveM4a` and for plugins that upload M4A |
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
 
@@ -86,6 +87,63 @@ deleted right after (see [The archive](../guides/recordings.md#the-archive-whats
 - It applies at the next **Start**. If it can't be made, the log says why and calls go to
   `captureDir`.
 - Its room is shown on the dashboard's **Platform** page, with an event as it fills.
+
+### `taps`
+
+A signal tap is a place part-way through a voice channel's receive chain (after the demodulator,
+after error correction) whose data can be had as it is made: for another decoder, or to see how
+well a channel decodes. Each row of `taps` saves one tap to files. A [plugin](../plugins/README.md)
+that takes a tap asks for it itself (it subscribes to `tap.<id>`), needs no row, and is listed
+beside the rows in **Setup → Recording → Advanced → Signal taps**.
+
+```json
+"recording": {
+  "taps": [
+    { "tap": "fm.discriminator", "systems": [3] },
+    { "tap": "voice.errors" }
+  ]
+}
+```
+
+| Key | Required | Default | Type | Description |
+|---|---|---|---|---|
+| `tap` | ✓ | | string | Which tap (below) |
+| `systems` | | every system | list of numbers | The systems (their `id`s, trunked or conventional) whose channels it's saved from |
+
+| Tap | From | Files | What it is |
+|---|---|---|---|
+| `fm.discriminator` | Analog FM channels | `.wav` + `.jsonl` | The FM demodulator's output before de-emphasis, the voice filters and the CTCSS notch: 16-bit mono at 22,050 Hz, ±5 kHz deviation as half of full scale, while the squelch is open. What `multimon-ng` and its kind decode POCSAG, FLEX and other data from |
+| `voice.air` | P25 voice channels (Phase 1 and 2) | `.jsonl` | Each voice frame as it came off the air: error-corrected, **not** decrypted (encrypted voice stays encrypted, whether or not the recorder has its key), with its place in the superframe, its bit errors and the encryption sync (`algid`, `keyid`, `mi`) it is under |
+| `voice.errors` | Digital voice channels | `.jsonl` | No data, only figures: for each frame vocoded, the bit errors corrected and what the vocoder made of it (`voice`, `repeat`, `muted`, …) |
+
+Each **transmission** on a channel is a stream with files of its own, since a channel is only
+decoded while there is something on it. A stream ends at the air's terminator, when the squelch
+closes, after half a second of nothing, or when the channel is closed; a carrier that never drops
+is cut every 10 minutes. The files are written when the stream ends, beside the system's calls:
+
+```
+<captureDir>/<shortName>/<year>/<month>/<day>/<start>_<freqHz>-tap_<stream>.<tap>.wav
+<captureDir>/<shortName>/<year>/<month>/<day>/<start>_<freqHz>-tap_<stream>.<tap>.jsonl
+```
+
+The `.jsonl` is the stream's sidecar, there for every tap. Its first line describes the stream;
+each line after it is one item of it that something is known about, `at` its place in the stream
+(a sample of the `.wav`, a frame, or a note of a tap with no data):
+
+```json
+{"tap":"voice.air","stream":41,"system":0,"system_id":3,"short_name":"dcfd","freq_hz":854612500.0,"slot":0,"call_id":912,"talkgroup":101,"time":1795600000.2,"data":{"kind":"frames","codec":"imbe","frames":[]},"items":36}
+{"at":0,"bits":"a3f0…","n":0,"errs":1,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
+{"at":1,"bits":"7c21…","n":1,"errs":0,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
+```
+
+`call_id` and `talkgroup` are the call on the channel when the stream began, left out when there
+was none yet. A frame's `bits` are as in a call's `.frames.jsonl`: hex, first bit first, the last
+byte padded with zeros. The line and note fields are those of the plugin topic:
+[Plugin events](../developer/plugins/events.md#tapid).
+
+Taps apply at the next **Start**. They aren't a call's files: no plugin uploads them, the archive
+rules (`archiveWav`, …) don't touch them, and nothing deletes them. The IQ a channel is decoded
+from is not a tap: see [Captures](../guides/captures.md).
 
 ## Per-system rules
 

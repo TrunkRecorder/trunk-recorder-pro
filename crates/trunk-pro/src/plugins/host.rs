@@ -23,7 +23,7 @@ use serde_json::Value;
 use trunk_app::PluginTopics;
 use trunk_recorder_plugin::{
     format, topic, Action, AudioChunk, CallFiles, CallRecord, CallsPage, CallsQuery, ConcludedCall, Hello, HostInfo, HostMessage, Level, LogLine, Manifest, Metrics, Outcome, PluginMessage, Shutdown, State,
-    SiteInfo, Status, SystemInfo, Totals, VoiceChunk, API_VERSION, EXIT_CONFIG,
+    SiteInfo, Status, SystemInfo, TapChunk, TapSet, Totals, VoiceChunk, API_VERSION, EXIT_CONFIG,
 };
 use trunk_core::trunk::{LiveAudio, SiteId, SystemId};
 
@@ -327,6 +327,7 @@ impl PluginHost {
             topics.totals |= m.subscribes(topic::TOTALS);
             topics.tone_patterns |= m.subscribes(topic::TONE_PATTERN);
             topics.voice |= m.subscribes(topic::VOICE);
+            topics.taps = topics.taps.and(TapSet::of_topics(m.subscribe.iter().map(String::as_str)));
             live |= topic::ALL.iter().any(|&t| topic::is_live(t) && m.subscribes(t));
             let data_dir = s.data_dir.clone().unwrap_or_else(|| super::data_dir(&s.id));
             if let Err(p) = trunk_app::files::make_dir(&data_dir) {
@@ -539,6 +540,18 @@ impl PluginHost {
         if let Some(chunk) = voice.filter(|_| self.topics.voice) {
             self.shared.dispatch(topic::VOICE, &line(&HostMessage::Voice(chunk.clone())), &about, None, None);
         }
+    }
+
+    /// A piece of a signal tap's stream, to the plugins subscribed to its topic (`tap.<id>`). Never
+    /// late: a plugin delayed for its system or talkgroup isn't sent it, as with a call's live
+    /// audio. (Nothing of it is decrypted: a tap is of the air, or of how it decoded.)
+    pub fn tap(&self, chunk: &TapChunk) {
+        let t = chunk.tap.topic();
+        if !self.shared.wants(&t) {
+            return;
+        }
+        let about = About { system: self.shared.id_at(chunk.system), talkgroup: chunk.talkgroup, ..Default::default() };
+        self.shared.dispatch(&t, &line(&HostMessage::Tap(chunk.clone())), &about, None, None);
     }
 
     /// The plugins that take finished call `record` of `system` (its index;

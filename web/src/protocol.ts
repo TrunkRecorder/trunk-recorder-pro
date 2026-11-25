@@ -492,12 +492,32 @@ export interface LogSettings {
   controlWarnRatePerS: number;
 }
 
+/** A signal tap, described (the recorder's list: rules.ts signalTaps). */
+export interface TapInfo {
+  /** As configs, plugin topics (`tap.<id>`) and file names have it: `<stage>.<what>`. */
+  id: string;
+  title: string;
+  about: string;
+  /** The channels it comes from. */
+  from: string;
+  carries: "samples" | "frames" | "notes";
+}
+
+/** A signal tap saved to files beside the calls (a plugin takes one by subscribing to `tap.<id>`: no row). */
+export interface TapRoute {
+  tap: string;
+  /** System ids; absent: every system. */
+  systems?: number[];
+}
+
 export interface Recording extends RecordingRules {
   captureDir: string;
   prerollS: number;
   maxRecorders: number;
   /** Save each digital call's vocoder frames (<call>.sdr; NXDN <call>.frames.jsonl) for diagnosis. */
   captureFrames: boolean;
+  /** Desktop: the signal taps saved to files (Setup → Recording → Advanced). */
+  taps?: TapRoute[];
   /** A call heard on several sites of one system: save the best copy only. */
   dropDuplicateCalls: boolean;
   /** IMBE vocoder for P25 Phase 1 voice. */

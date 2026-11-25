@@ -260,6 +260,7 @@ called `conv`.
 | `--transmissions` | off | Conversation mode off: each transmission is a call of its own (`conversationMode`) |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
 | `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](developer/tools.md#tool-channel) |
+| `--taps` | none | Signal taps to save beside the calls, by id (`fm.discriminator,voice.air,voice.errors`): see [`taps`](configuration/recording.md#taps) |
 | `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
 | `--messages` | off | Print every control channel message |
 | `--summary file` | | Also write each site's control channel blocks, good and bad, as JSON: over all of it and, for one of our captures, over the part its live figures (`trp:live`) cover |

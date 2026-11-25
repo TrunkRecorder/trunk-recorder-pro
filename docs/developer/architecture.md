@@ -554,6 +554,37 @@ comes from (`MultiSite::leads`). The session gives it to plugins (topic `tone_pa
 those allowed decrypted calls when it was), the log, and the stats: the radio registry's tones log
 and, for a signal, the event feed (`MonitorEvent::TonePattern`).
 
+### 4.10 Signal taps (`trunk/taps.rs`, `trunk-recorder-plugin/src/tap.rs`)
+
+A tap hands out what a voice channel's chain holds part-way through: the one way anything but a
+call's audio and frames leaves a decoder. (IQ is not a tap: it is what the chain starts from.)
+
+- **The list** is the SDK's: `Tap` (ids `<stage>.<what>`), `TAPS` (title, what it carries, where
+  it is from: Setup's list and the docs' tables), `TapSet`. A piece is `TapData` (`Pcm`, `Frames`
+  or `None`) plus `TapNote`s: `at` an item of the data, the rest a typed note's fields
+  (`AirFrame`, `FrameErrors`). A tap with only notes has data `None`.
+- **Decoders** are told their taps in `VoiceSpec::taps` and put pieces among their outputs
+  (`TrackerOut::Tap(TapPiece)`), behind `taps.has(..)`: off, a tap costs a branch.
+- **Streams.** The channel's owner (`Channel` for trunked, `Open` for conventional) has a
+  `taps::Streams`, which sifts the pieces out of the decoder's output, and makes of each tap and
+  slot a stream per transmission: `TapChunk`s numbered `seq`, `first` and `last` marked, ended by
+  `TrackerOut::Ended`, `TRANSMISSION_GAP_S` idle, `MAX_STREAM_S`, or the channel closing. Some
+  taps are made here from outputs there already (`voice.errors`, from `TrackerOut::Audio`).
+  Chunks leave as `Event::Tap`.
+- **Which are on.** `Session::set_taps` gives the engine each system's set: the config's rows
+  (`recording.taps`, saved to files) and the topics plugins subscribe to (`PluginTopics::taps`).
+  Channels opened from then on have them.
+- **Where they go.** The session names the chunk's system and, when a row saves it, the stream's
+  path (`Output::Tap { chunk, save }`). The desktop runtime sends every chunk to the plugins
+  subscribed to `tap.<id>` (`PluginHost::tap`) and gathers saved streams (`trunk-pro/src/taps.rs`)
+  into `trunk_app::taps::TapFile`: a `.wav` for samples, and a `.jsonl` sidecar for every tap.
+
+**Adding a tap**: a variant of `Tap` and its `TAPS` entry; a note struct if it says something of
+its items; the decoder's `TrackerOut::Tap` behind `spec.taps.has(..)` (or an arm of
+`Streams::sift`, when it is made of outputs already there); a test beside the decoder; its rows in
+[recording.md](../configuration/recording.md#taps) and [events.md](plugins/events.md#tapid).
+Routing, streams, files, the plugin topic and Setup's table need nothing.
+
 ---
 
 ## 5. How trunking messages are processed
@@ -1367,7 +1398,7 @@ The fields are `CallRecord`'s, in its order: the finisher writes `<rel>.json` fr
 
 ### 9.7 Plugin protocol (`trunk-recorder-plugin/src/protocol.rs`)
 
-`HostMessage` (host → plugin) and `PluginMessage` (plugin → host), both tagged by `type`, and the
+(Signal taps' chunks are `HostMessage::Tap`: §4.10.) `HostMessage` (host → plugin) and `PluginMessage` (plugin → host), both tagged by `type`, and the
 `Manifest` a plugin prints for `--describe`; `API_VERSION` = 1, `EXIT_CONFIG` = 78. Every message
 and field is in [Plugin protocol](plugins/protocol.md) and [Plugin events](plugins/events.md), and on
 [docs.rs](https://docs.rs/trunk-recorder-plugin).

@@ -63,8 +63,8 @@ fn to_js(out: &mut Vec<Output>, history: &mut History) -> Array {
     for o in out.drain(..) {
         let obj = Object::new();
         match o {
-            // (No plugins in the browser; none are asked for.)
-            Output::Plugin(_) | Output::Log(_) => continue,
+            // (No plugins in the browser; none are asked for. Nor signal taps: nowhere to save them.)
+            Output::Plugin(_) | Output::Log(_) | Output::Tap { .. } => continue,
             // (Capture rules are the desktop app's.)
             Output::Fact { .. } => {}
             Output::Rollup(r) => {

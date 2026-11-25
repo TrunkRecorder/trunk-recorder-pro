@@ -1420,6 +1420,10 @@ table.channels tr.rule-edit .field-hint { display: block; max-width: 72ch; white
 .row-meta { display: block; max-width: 24ch; margin-top: 2px; padding: 0; border: 0; background: none; color: var(--muted); font: inherit; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 .row-meta:hover { color: var(--text); text-decoration: underline; }
 .csv-help .csv-example { overflow-x: auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+table.taps { border-collapse: collapse; width: 100%; }
+table.taps th, table.taps td { text-align: left; vertical-align: middle; padding: 5px 10px 5px 0; border-bottom: 1px solid var(--line); }
+table.taps th { font-weight: 500; color: var(--muted); }
+table.taps tr.auto td { color: var(--muted); }
 .csv-help table.csv-columns { border-collapse: collapse; margin: 6px 0; }
 .csv-help table.csv-columns th, .csv-help table.csv-columns td { text-align: left; vertical-align: top; padding: 3px 10px 3px 0; border-bottom: 1px solid var(--line); }
 

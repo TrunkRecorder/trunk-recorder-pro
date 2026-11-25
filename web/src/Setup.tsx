@@ -85,6 +85,7 @@ import {
 import { M4aSettings, PluginSetupPanel, SystemPluginSettings, useM4aPlugins } from "./Plugins.tsx";
 import { joinPluginSettings, renameSystemRefs } from "./pluginSettings.ts";
 import { SystemDelays } from "./Delays.tsx";
+import { SignalTaps } from "./Taps.tsx";
 import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconLock, IconPuzzle, IconTower } from "./Onboarding.tsx";
 import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, SampleFormat, StorageSettings, System } from "./protocol.ts";
@@ -3676,6 +3677,7 @@ export function Setup() {
       {tab === "recording" && can("service") && (
         <Section title="Advanced">
           <M4aSettings />
+          <SignalTaps />
           <LogPanel c={c} />
         </Section>
       )}

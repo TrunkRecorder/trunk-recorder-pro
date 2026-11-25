@@ -20,6 +20,7 @@ pub mod sdr;
 pub mod tally;
 pub mod talkgroups;
 pub mod tape;
+pub mod taps;
 pub mod tdma;
 pub mod tracker;
 pub mod units;
@@ -37,5 +38,6 @@ pub use message::{AdjacentSite, Message, MessageType, Neighbours, P25Parser, Pat
 pub use names::{replace_rows, NameRow, Origin, OriginKind};
 pub use patches::Patches;
 pub use talkgroups::{edit_rows, parse_csv, parse_rows, read_rows, rows_csv, TalkgroupFile, Talkgroup, TalkgroupRow, Talkgroups};
+pub use taps::{Tap, TapChunk, TapSet};
 pub use units::{edit_unit_names, read_unit_names, unit_names_csv, UnitAlias, UnitAliases, UnitNameRow, UnitNamesFile, UnitTags, UnitTagsMode};
 pub use voice::{ChannelQuality, CipherId};

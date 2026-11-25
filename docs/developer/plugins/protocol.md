@@ -119,7 +119,7 @@ sends a `status` of `error` saying why, and exits with status **78**.
 ### Events
 
 `call.concluded`, `call.start`, `call.update`, `call.end`, `unit`, `audio`, `voice`, `status`,
-`totals`, `tone_pattern` and `log`, each only to a plugin that subscribed to it. Their fields are
+`totals`, `tone_pattern`, `log` and the signal taps (`tap.<id>`, all of `type` `tap`), each only to a plugin that subscribed to it. Their fields are
 in [Plugin events](events.md).
 
 ### `action`

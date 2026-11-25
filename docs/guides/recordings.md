@@ -354,3 +354,7 @@ A call that isn't kept logs `Call not saved - no audio, or shorter than the mini
   tools read it, and `trunk-pro tool revoice` turns it back into a WAV with a different vocoder, so
   you can compare them on the same call. NXDN, which the format doesn't cover, is saved as
   `<name>.frames.jsonl`. See the [command line](../command-line.md).
+- **Signal taps** (`taps`, none; Setup → Recording → Advanced): data from part-way through a
+  channel's receiver, a file for each transmission with a `.jsonl` beside it: the FM discriminator
+  (for pager and data decoders), P25 frames as they came off the air, each frame's errors. See
+  [`taps`](../configuration/recording.md#taps).

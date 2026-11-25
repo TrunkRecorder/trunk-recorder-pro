@@ -44,6 +44,7 @@ use super::talkgroups::Talkgroups;
 
 use super::wall::WallEpoch;
 use super::tape::{ControlTape, Tapes, VoiceTape};
+use super::taps::{Streams, TapChunk, TapSet};
 use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitNameRow, UnitTags};
 use super::identity::{IdField, Identity};
@@ -186,6 +187,8 @@ pub struct SystemConfig {
     pub unit_tags: UnitTags,
     /// Its encryption keys (P25): voice it has the key for is decrypted.
     pub keys: Option<Arc<Keyring>>,
+    /// The signal taps on for its channels ([`super::taps`]).
+    pub taps: TapSet,
     /// Trunked: its sites (one at least). Conventional: none.
     pub sites: Vec<SiteConfig>,
     /// The tone signals it sends, by id.
@@ -213,6 +216,7 @@ impl SystemConfig {
             talkgroups: Talkgroups::default(),
             unit_tags: UnitTags::default(),
             keys: None,
+            taps: TapSet::NONE,
             sites: Vec::new(),
             signals: Vec::new(),
             pins: Pins::any(),
@@ -406,6 +410,9 @@ pub enum Event {
     /// A radio gave a GPS position (decimal degrees); talkgroup 0 for standalone data.
     UnitPosition { system: u16, unit: u32, lat: f64, lon: f64, talkgroup: u32 },
     Concluded(Concluded),
+    /// A piece of a signal tap's stream ([`super::taps`]), short of what the host knows (the
+    /// system's name, the time of day). `time_s`: sample-clock seconds.
+    Tap { time_s: f64, chunk: TapChunk },
     /// A recorded call wasn't saved: no audio, or less than its system's minimum.
     NotSaved(super::record::Unsaved),
     /// Multi-site: `call` was another site's copy of `kept` (saved instead).
@@ -748,6 +755,22 @@ struct Channel {
     tape: Option<VoiceTape>,
     /// What each slot with no call on it decoded ([`Unclaimed`]).
     unclaimed: [Unclaimed; 2],
+    /// Its signal taps' streams.
+    streams: Streams,
+}
+
+impl Channel {
+    /// The channel is closing: its taps' streams end.
+    fn close_taps(&mut self, out: &mut Vec<TapChunk>) {
+        let Channel { streams, calls, voice, .. } = self;
+        streams.close(|slot| on_slot(calls, &**voice, slot), out);
+    }
+}
+
+/// The call on a channel's slot and its talkgroup (with no call, the one the voice channel names), for a tap's chunk.
+fn on_slot(calls: &[Option<OnSlot>; 2], voice: &dyn VoiceDecoder, slot: u8) -> (Option<CallId>, Option<u32>) {
+    let c = calls[slot as usize & 1];
+    (c.map(|c| c.id), c.map(|c| c.talkgroup).or_else(|| voice.air(slot & 1).talkgroup))
 }
 
 /// A voice channel's outputs for a slot no call is on, a pre-roll's worth,
@@ -871,6 +894,8 @@ struct VoiceResult {
     reception: Vec<(CallId, f64, f64)>,
     /// A call's voice frequency error, Hz from nominal.
     freq_error: Vec<(CallId, f64)>,
+    /// Its signal taps' chunks.
+    tapped: Vec<TapChunk>,
 }
 
 /// A block of one source, decoded: what its voice channels heard (by
@@ -928,7 +953,7 @@ impl SourceRx {
                 }
             }
         }
-        Radio::route(ch, tout, &mut r.routed);
+        Radio::route(ch, tout, iq.len(), &mut r.routed, &mut r.tapped);
         if let Some(off) = ch.voice.offset_hz() {
             let err = ch.tuning.error_hz(ch.freq_hz, off as f64);
             for c in ch.calls.iter().flatten() {
@@ -1021,6 +1046,8 @@ struct Radio {
     tape_sink: Tapes,
     /// Audio / info produced by the voice channels, as (site, call, output), applied after.
     pending: Vec<(u16, CallId, TrackerOut)>,
+    /// The voice channels' signal taps' chunks, reported after ([`Event::Tap`]).
+    tapped: Vec<TapChunk>,
     /// Calls followed without a recorder now ([`Call::followed`]): a
     /// recorder's worth of room is kept for recordings.
     followed: usize,
@@ -1056,6 +1083,7 @@ impl Radio {
             }
         }
         self.pending.extend(v.routed);
+        self.tapped.extend(v.tapped);
         for (id, err) in v.freq_error {
             if let Some(r) = self.recordings.get_mut(&id) {
                 r.rec.freq_error(err);
@@ -1089,10 +1117,12 @@ impl Radio {
         tout.extend(out.into_iter().map(|v| (v.slot as usize, v.out)));
     }
 
-    /// Hand a channel's outputs to the calls on its slots (a slot's with
-    /// none, kept for one put on it later).
-    fn route(ch: &mut Channel, tout: &mut Vec<(usize, TrackerOut)>, pending: &mut Vec<(u16, CallId, TrackerOut)>) {
+    /// Hand a channel's outputs for `n` samples to the calls on its slots (a slot's with
+    /// none, kept for one put on it later). Its taps' pieces go to their streams instead,
+    /// call or none: `tapped` takes the chunks they come to.
+    fn route(ch: &mut Channel, tout: &mut Vec<(usize, TrackerOut)>, n: usize, pending: &mut Vec<(u16, CallId, TrackerOut)>, tapped: &mut Vec<TapChunk>) {
         for (slot, o) in tout.drain(..) {
+            let Some(o) = ch.streams.sift(slot, o) else { continue };
             match ch.calls[slot & 1] {
                 Some(c) => pending.push((ch.site, c.id, o)),
                 None => {
@@ -1101,6 +1131,8 @@ impl Radio {
                 }
             }
         }
+        let Channel { streams, calls, voice, .. } = ch;
+        streams.flush(n, |slot| on_slot(calls, &**voice, slot), tapped);
     }
 }
 
@@ -1110,6 +1142,8 @@ struct SysHost<'a> {
     site: u16,
     bank: BankConfig,
     keys: Option<Arc<Keyring>>,
+    /// Its system's signal taps.
+    taps: TapSet,
     /// How its analog calls are demodulated ([`ControlChannel::analog`]).
     analog: AnalogTuning,
 }
@@ -1137,6 +1171,7 @@ impl SysHost<'_> {
             // one are over; they end when their timeout comes.
             let mut old = rx.channels.remove(&key).unwrap();
             rx.src.chz.remove_head(old.head);
+            old.close_taps(&mut r.tapped);
             keep_tape(&r.tape_sink, &mut old);
         }
         let s = &mut rx.src;
@@ -1164,6 +1199,7 @@ impl SysHost<'_> {
             analog: self.analog,
             ignore_hz: Vec::new(),
             keys: self.keys.clone(),
+            taps: self.taps,
         };
         let voice = voice::build(&spec);
         let tape = r.tape_sink.on().then(|| VoiceTape::new(spec, call.freq_hz as f64));
@@ -1171,12 +1207,13 @@ impl SysHost<'_> {
         calls[slot] = Some(OnSlot::of(call));
         let keep = (r.preroll_s * rate) as u64;
         let unclaimed = [Unclaimed::new(keep), Unclaimed::new(keep)];
-        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise, tape, unclaimed };
+        let streams = Streams::new(self.taps, call.system, call.freq_hz as f64, rate);
+        let mut ch = Channel { site: self.site, head, calls, voice, freq_hz: call.freq_hz as f64, tuning, meter: ChannelFilter::new(rate), noise, tape, unclaimed, streams };
         // Pre-roll: decode the replayed air now.
         let params = rx.voice_params.get(self.site as usize).copied().unwrap_or_default();
         rx.tout.clear();
         Radio::run_channel(&mut ch, &pre, &params, &mut rx.tout, false);
-        Radio::route(&mut ch, &mut rx.tout, &mut r.pending);
+        Radio::route(&mut ch, &mut rx.tout, pre.len(), &mut r.pending, &mut r.tapped);
         rx.channels.insert(key, ch);
     }
 
@@ -1249,11 +1286,15 @@ impl RecorderHost for SysHost<'_> {
                 *c = None;
             }
         }
+        let mut tapped = Vec::new();
         if ch.calls.iter().all(Option::is_none) {
             let mut ch = rx.channels.remove(&key).unwrap();
             rx.src.chz.remove_head(ch.head);
+            ch.close_taps(&mut tapped);
             keep_tape(&sink, &mut ch);
         }
+        drop(rx);
+        self.radio.tapped.extend(tapped);
     }
 }
 
@@ -1352,7 +1393,7 @@ struct Trunk {
 
 impl Trunk {
     fn host<'a>(&self, radio: &'a mut Radio, sys: &SystemConfig) -> SysHost<'a> {
-        SysHost { radio, site: self.site, bank: self.cfg.bank, keys: sys.keys.clone(), analog: self.cc().analog() }
+        SysHost { radio, site: self.site, bank: self.cfg.bank, keys: sys.keys.clone(), taps: sys.taps, analog: self.cc().analog() }
     }
 
     /// A note about this site.
@@ -1804,6 +1845,7 @@ impl Core {
             vocoder: cfg.vocoder,
             tape_sink,
             pending: Vec::new(),
+            tapped: Vec::new(),
             followed: 0,
         };
         let mut events = Vec::new();
@@ -2160,9 +2202,15 @@ impl Core {
             }
         }
         self.apply_pending();
+        let mut tapped = Vec::new();
         for r in self.radio.rx.iter() {
-            r.lock().unwrap().channels.values_mut().for_each(|ch| keep_tape(&self.radio.tape_sink, ch));
+            r.lock().unwrap().channels.values_mut().for_each(|ch| {
+                ch.close_taps(&mut tapped);
+                keep_tape(&self.radio.tape_sink, ch)
+            });
         }
+        self.radio.tapped.extend(tapped);
+        self.emit_taps();
         for t in self.trunks.iter_mut() {
             let mut host = t.host(&mut self.radio, &self.systems[t.system as usize].cfg);
             t.calls.end_all(&mut host, &mut self.call_events);
@@ -2233,8 +2281,17 @@ impl Core {
         self.emit_call_events();
     }
 
+    /// Report the voice channels' signal taps' chunks, each under its call's id (not its copy's).
+    fn emit_taps(&mut self) {
+        for mut chunk in self.radio.tapped.drain(..) {
+            chunk.call_id = chunk.call_id.map(|id| self.multisite.call_of(id));
+            self.events.push(Event::Tap { time_s: self.now_s, chunk });
+        }
+    }
+
     /// Route what the voice trackers produced to their calls.
     fn apply_pending(&mut self) {
+        self.emit_taps();
         let mut heard = Vec::new();
         // Calls that went on as new ones in this pass (what's queued for them is the new ones').
         let mut went_on: Vec<(CallId, CallId)> = Vec::new();
@@ -2356,7 +2413,8 @@ impl Core {
                 // (Only conventional FM asks for it.)
                 TrackerOut::Subaudible(_) => {}
                 // (Handled above.)
-                TrackerOut::Talkgroup(_) | TrackerOut::Ended => {}
+                // (A tap's piece went to its stream: [`Radio::route`].)
+                TrackerOut::Talkgroup(_) | TrackerOut::Ended | TrackerOut::Tap(_) => {}
                 TrackerOut::Position(p) => self.events.extend(CallManager::position(system, call, &p, &mut self.call_events)),
                 TrackerOut::Alias(a) => {
                     let tg = call.map(|c| c.talkgroup);
@@ -2806,6 +2864,14 @@ impl Engine {
     }
     /// The encryption keys of system `system` (a call's; trunked or
     /// conventional). False when there's no such system.
+    /// The signal taps on for system `system`'s channels: those opened from now on.
+    pub fn set_taps(&self, system: u16, taps: TapSet) {
+        let mut c = self.core();
+        if let Some(s) = c.systems.get_mut(system as usize) {
+            s.cfg.taps = taps;
+        }
+        *self.shared.systems.lock().unwrap() = Arc::new(c.system_configs());
+    }
     pub fn set_keys(&self, system: u16, keys: Option<Arc<Keyring>>) -> bool {
         let mut c = self.core();
         let ok = c.set_keys(system, keys);

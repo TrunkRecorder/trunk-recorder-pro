@@ -61,6 +61,7 @@ use super::record::RecordedOn;
 use super::recorded::Recorded;
 use super::tally::{CopyTally, FrameCount};
 use super::tape::{Tapes, VoiceTape};
+use super::taps::{Streams, TapSet};
 use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
@@ -681,6 +682,25 @@ struct Open {
     /// Per slot: a cipher heard ahead of any voice (a P25 HDU in a run of
     /// its own), for the voice that follows it.
     cipher_ahead: [Option<CipherId>; 2],
+    /// Its signal taps' streams.
+    streams: Streams,
+}
+
+impl Open {
+    /// What its taps' streams came to over `n` more samples (None: the channel is closing, and they end).
+    fn tapped(&mut self, n: Option<usize>, now_s: f64, out: &mut Vec<ConvOut>) {
+        let Open { streams, live, voice, .. } = self;
+        let who = |slot: u8| {
+            let call = live[slot as usize & 1].as_ref().map(|l| &l.call);
+            (call.map(|c| c.id), call.map(|c| c.talkgroup).or_else(|| voice.air(slot & 1).talkgroup))
+        };
+        let mut chunks = Vec::new();
+        match n {
+            Some(n) => streams.flush(n, who, &mut chunks),
+            None => streams.close(who, &mut chunks),
+        }
+        out.extend(chunks.into_iter().map(|chunk| ConvOut::Event(Event::Tap { time_s: now_s, chunk })));
+    }
 }
 
 /// A channel that closed: its tape to the host.
@@ -831,11 +851,13 @@ struct CallRules<'a> {
     talkgroups: &'a Talkgroups,
     /// Its encryption keys.
     keys: Option<&'a Arc<Keyring>>,
+    /// Its signal taps.
+    taps: TapSet,
 }
 
 impl<'a> CallRules<'a> {
     fn of(sys: &'a SystemConfig, capture_frames: bool) -> Self {
-        CallRules { calls: &sys.calls, capture_frames, talkgroups: &sys.talkgroups, keys: sys.keys.as_ref() }
+        CallRules { calls: &sys.calls, capture_frames, talkgroups: &sys.talkgroups, keys: sys.keys.as_ref(), taps: sys.taps }
     }
 
     /// What its calls are recorded by ([`CallConfig::gate`]).
@@ -1108,6 +1130,7 @@ impl Conventional {
                 }
                 let mut o = ch.open.take().unwrap();
                 chz.remove_head(o.head);
+                o.tapped(None, now_s, out);
                 keep_tape(&self.tape_sink, &mut o);
             }
         }
@@ -1122,6 +1145,7 @@ impl Conventional {
         for (slot, h) in heard.into_iter().enumerate() {
             Self::slot_call(ch, slot, h, now_s, num, ids, rules, out);
         }
+        ch.open.as_mut().unwrap().tapped(Some(0), now_s, out);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1147,11 +1171,12 @@ impl Conventional {
             analog: ch.analog,
             ignore_hz: ch.ignored.clone(),
             keys: rules.keys.cloned(),
+            taps: rules.taps,
         };
         let voice = voice::build(&spec);
         let tape = tapes.then(|| VoiceTape::new(spec, ch.freq_hz));
         let meter = (!ch.mode().analog()).then(|| ChannelFilter::new(rate));
-        ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], held_until_s: 0.0, tx: None, cipher_ahead: [None; 2] });
+        ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], held_until_s: 0.0, tx: None, cipher_ahead: [None; 2], streams: Streams::new(rules.taps, ch.system as u16, ch.freq_hz, rate) });
         Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, out);
     }
 
@@ -1184,6 +1209,7 @@ impl Conventional {
         for (slot, h) in heard.into_iter().enumerate() {
             Self::slot_call(ch, slot, h, now_s, num, ids, rules, out);
         }
+        ch.open.as_mut().unwrap().tapped(Some(iq.len()), now_s, out);
     }
 
     /// What the channel's receiver put out, gathered for each slot's call
@@ -1196,7 +1222,9 @@ impl Conventional {
         let mut heard: [Heard; 2] = Default::default();
         for v in vout {
             let h = &mut heard[v.slot as usize & 1];
-            match v.out {
+            // (A tap's piece goes to its stream.)
+            let Some(vo) = o.streams.sift(v.slot as usize, v.out) else { continue };
+            match vo {
                 TrackerOut::Audio(a, f) => {
                     h.audio.extend_from_slice(&a);
                     h.frames.push(f);
@@ -1211,7 +1239,7 @@ impl Conventional {
                 TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.system as u16, c)),
                 TrackerOut::Ended => h.ended = true,
                 // (A conventional channel has no grants: the air's talkgroup is its own.)
-                TrackerOut::AliasLc(_) | TrackerOut::Talkgroup(_) => {}
+                TrackerOut::AliasLc(_) | TrackerOut::Talkgroup(_) | TrackerOut::Tap(_) => {}
                 TrackerOut::BaseStationId(call_sign) => out.push(ConvOut::Event(Event::CallSign { system: ch.system as u16, freq_hz: ch.freq_hz.round() as u64, call_sign })),
             }
         }
@@ -1554,6 +1582,7 @@ impl Conventional {
             let rules = &CallRules::of(system(ch.system), self.capture_frames);
             Self::flush_open(ch, now_s, idx as u32, ids, rules, out);
             let mut o = ch.open.take().unwrap();
+            o.tapped(None, now_s, out);
             keep_tape(&self.tape_sink, &mut o);
             for l in o.live.into_iter().flatten() {
                 Self::end(l, CallEnd::Stopped, ch.on(idx), ch.tune_ref, out);

@@ -5,6 +5,23 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Signal taps: data from part-way through a channel's receiver, to files and to plugins** (#136, #212, thanks
+  @steve-horvath and @connorjfarrell). One way out for everything a voice channel makes on the way to a call's
+  audio, with whatever is known about it beside it:
+  - `fm.discriminator`: an analog FM channel's demodulated signal before de-emphasis and the voice filters, 16-bit
+    at 22,050 Hz, for `multimon-ng` and other pager and data decoders (POCSAG, FLEX).
+  - `voice.air`: each P25 voice frame (Phase 1 and 2) as it came off the air, error-corrected and not decrypted,
+    with its place in the superframe, its errors and its encryption sync (ALGID, key ID, MI).
+  - `voice.errors`: no data, only each voice frame's corrected errors and what the vocoder made of it.
+  - **To files**: **Setup → Recording → Advanced → Signal taps** (`recording.taps`), for every system or some.
+    Each transmission is a file of its own beside the system's calls: a `.wav` for samples, and a `.jsonl`
+    sidecar for every tap (the stream, then a line for each frame or note).
+  - **To plugins** (SDK 0.17.0, additive): a plugin subscribes to `tap.<id>` and that turns the tap on; nothing
+    to set up. `Plugin::tap(TapChunk)`, with `TapData`, `TapNote`, `AirFrame`, `FrameErrors`, `TAPS`. Setup lists
+    the taps plugins take beside the saved ones.
+  - Off, a tap costs nothing, and calls are recorded as before either way. More taps can be added without new
+    plumbing (`docs/developer/architecture.md` §4.10).
+
 ## [0.5.1] — 2026-11-25
 
 - **A plugin's list it fills in itself is shown, not edited** (#242, thanks @aknitt-rsos). A list in a plugin's
