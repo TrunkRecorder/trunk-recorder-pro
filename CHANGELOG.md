@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-11-25
+
 - **A plugin's list it fills in itself is shown, not edited** (#242, thanks @aknitt-rsos). A list in a plugin's
   settings marked `readOnly` (channels or destinations it looked up from a service, say) had the same Add, Edit,
   Remove and on/off controls as a list you type in, though the plugin rewrote it on its next sync. It's now counted,
