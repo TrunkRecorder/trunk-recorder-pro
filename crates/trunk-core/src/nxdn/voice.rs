@@ -52,9 +52,8 @@ pub struct NxdnVoice {
     pub messages: Vec<(f64, Message)>,
     /// Keep `messages` (a trunked voice channel, for late entry and other calls' DUPs).
     pub keep_messages: bool,
-    /// The taps on ([`Tap::VoiceAir`] is this decoder's), and what its frames are sent as.
+    /// The taps on ([`Tap::VoiceAir`] is this decoder's).
     pub taps: TapSet,
-    pub mode: &'static str,
     /// Voice codewords / those not synthesized as sent, over the carrier's life.
     pub vch: u64,
     pub bad_vch: u64,
@@ -82,16 +81,14 @@ impl NxdnVoice {
             messages: Vec::new(),
             keep_messages: false,
             taps: TapSet::NONE,
-            mode: "",
             vch: 0,
             bad_vch: 0,
         }
     }
 
-    /// With `taps` on, at `rate`.
-    pub fn tapped(mut self, taps: TapSet, rate: super::Rate) -> Self {
+    /// With `taps` on.
+    pub fn tapped(mut self, taps: TapSet) -> Self {
         self.taps = taps;
-        self.mode = rate.name();
         self
     }
 
@@ -301,7 +298,6 @@ impl NxdnVoice {
         if tapped {
             let cipher = self.cipher.filter(|c| c.0 != 0);
             let note = AirFrame {
-                voice_mode: self.mode.into(),
                 n,
                 errs: v.errs,
                 encrypted: self.cipher.map(|c| c.0 != 0),
@@ -353,7 +349,7 @@ mod tests {
         let mut rx = tx.rate.receiver(fs);
         let mut syms = Vec::new();
         rx.push(&iq, &mut syms);
-        let mut v = NxdnVoice { taps, mode: tx.rate.name(), ..NxdnVoice::new(1) };
+        let mut v = NxdnVoice { taps, ..NxdnVoice::new(1) };
         let mut out = Vec::new();
         v.push(&syms, 0.0, fs, &mut out);
         (v, out)
@@ -478,7 +474,7 @@ mod tests {
                     assert_eq!(p.data, crate::trunk::taps::TapData::Frames { codec: Codec::Ambe, frames: vec![vf.bits.clone()] });
                 }
             }
-            assert!(a.iter().all(|(_, f)| f.voice_mode == rate.name() && f.errs <= 1 && f.encrypted != Some(true) && f.algid.is_none() && f.mi.is_none()), "{rate:?}");
+            assert!(a.iter().all(|(_, f)| f.errs <= 1 && f.encrypted != Some(true) && f.algid.is_none() && f.mi.is_none()), "{rate:?}");
             assert_eq!(a.last().unwrap().1.encrypted, Some(false), "{rate:?}: once its VCALL has said");
             let places: Vec<u8> = a.iter().filter_map(|(_, f)| f.n).collect();
             assert_eq!(places.len(), a.len(), "{rate:?}: every frame's SACCH said where it is");
@@ -491,7 +487,7 @@ mod tests {
         assert!(!out.iter().any(|o| matches!(o.out, TrackerOut::Audio(..))));
         assert!(a.iter().all(|(_, f)| (f.encrypted, f.algid) == (Some(true), Some(3)) && f.keyid.is_some()));
         // Its IV, once a VCALL_IV has brought it.
-        let mut v = NxdnVoice { taps: TapSet::of([Tap::VoiceAir]), mode: "nxdn48", ..NxdnVoice::new(1) };
+        let mut v = NxdnVoice { taps: TapSet::of([Tap::VoiceAir]), ..NxdnVoice::new(1) };
         let mut out = Vec::new();
         heard(&mut v, &crate::nxdn::layer3::build::vcall(&CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 501, destination: 3100 }, 3, 5), &mut out);
         heard(&mut v, &[crate::nxdn::layer3::VCALL_IV, 1, 2, 3, 4, 5, 6, 7, 8], &mut out);

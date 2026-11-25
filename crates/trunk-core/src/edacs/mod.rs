@@ -112,7 +112,7 @@ impl ProVoice {
             let (d, e0, et) = provoice::decode(&words);
             let t = self.sync.t + header_s + f as f64 * 0.02;
             if self.taps.has(Tap::VoiceAir) {
-                let note = AirFrame { voice_mode: "provoice".into(), n: Some(f as u8), errs: et, e0, ..Default::default() };
+                let note = AirFrame { n: Some(f as u8), errs: et, e0, ..Default::default() };
                 out.push(PvOut { t, out: TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Imbe, &d, &note)) });
             }
             let mut buf = [0f32; mbe::FRAME_SAMPLES];
@@ -218,7 +218,7 @@ pub(crate) mod tests {
                 let TrackerOut::Audio(_, vf) = &out[i + 1].out else { panic!("its audio next") };
                 assert_eq!(p.data, crate::trunk::taps::TapData::Frames { codec: Codec::Imbe, frames: vec![vf.bits.clone()] });
                 let f: AirFrame = p.notes[0].get().unwrap();
-                assert_eq!(f, AirFrame { voice_mode: "provoice".into(), n: Some(tapped as u8 % 4), errs: vf.errs, e0: vf.e0, ..Default::default() });
+                assert_eq!(f, AirFrame { n: Some(tapped as u8 % 4), errs: vf.errs, e0: vf.e0, ..Default::default() });
                 tapped += 1;
             }
             assert!(tapped >= 36, "rate {rate}: {tapped} tapped");

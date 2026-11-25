@@ -44,7 +44,7 @@ fn decode_wideband(folder: &Path, out: &Path) -> Result<(corpus::Results, Replay
     let stdout = fs::File::create(out.join(format!("{id}.stdout"))).map_err(|e| e.to_string())?;
     let summary = out.join(format!("{id}.summary.json"));
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let status = Command::new(exe).arg("replay").arg(folder).arg("--out").arg(&calls).args(["--capture-frames", "--messages"]).arg("--summary").arg(&summary).stdout(stdout).stderr(Stdio::null()).status().map_err(|e| e.to_string())?;
+    let status = Command::new(exe).arg("replay").arg(folder).arg("--out").arg(&calls).args(["--taps", "voice.frames", "--messages"]).arg("--summary").arg(&summary).stdout(stdout).stderr(Stdio::null()).status().map_err(|e| e.to_string())?;
     if !status.success() {
         return Err("It wouldn't replay.".into());
     }

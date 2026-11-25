@@ -44,12 +44,12 @@ use super::talkgroups::Talkgroups;
 
 use super::wall::WallEpoch;
 use super::tape::{ControlTape, Tapes, VoiceTape};
-use super::taps::{Streams, TapChunk, TapSet};
+use super::taps::{OnAir, Streams, TapChunk, TapSet};
 use super::voice::TrackerOut;
 use super::units::{UnitAlias, UnitAliases, UnitNameRow, UnitTags};
 use super::identity::{IdField, Identity};
 use super::control::{self, CarrierPlan, ControlChannel, Protocol, ProtocolStatus, Step};
-use super::voice::{self, ChannelQuality, CipherId, VoiceDecoder, VoiceParams, VoiceSpec};
+use super::voice::{self, ChannelQuality, CipherId, VoiceDecoder, VoiceKind, VoiceParams, VoiceSpec};
 use crate::alias::Alias;
 use crate::dsp::inband::pattern::{Pattern, PatternKind};
 use crate::dsp::inband::signal::{matching, Signal};
@@ -326,8 +326,6 @@ pub struct EngineConfig {
     /// Conventional channels, energy-detected on whichever source covers them.
     pub conventional: Vec<ConvChannel>,
     pub conv: ConvConfig,
-    /// Keep each call's vocoder frames ([`Concluded::frames`]).
-    pub capture_frames: bool,
     /// Keep what each channel receives ([`super::tape`]): off, it costs nothing.
     pub tapes: bool,
     /// Save a call heard on several sites of one system once ([`super::multisite`]).
@@ -347,7 +345,6 @@ impl Default for EngineConfig {
             bank: BankConfig::default(),
             conventional: vec![],
             conv: ConvConfig::default(),
-            capture_frames: false,
             tapes: false,
             drop_duplicates: true,
             vocoder: mbe::Profile::Enhanced,
@@ -768,9 +765,10 @@ impl Channel {
 }
 
 /// The call on a channel's slot and its talkgroup (with no call, the one the voice channel names), for a tap's chunk.
-fn on_slot(calls: &[Option<OnSlot>; 2], voice: &dyn VoiceDecoder, slot: u8) -> (Option<CallId>, Option<u32>) {
+/// (Its talker is the call's to say: [`Core::emit_taps`].)
+fn on_slot(calls: &[Option<OnSlot>; 2], voice: &dyn VoiceDecoder, slot: u8) -> OnAir {
     let c = calls[slot as usize & 1];
-    (c.map(|c| c.id), c.map(|c| c.talkgroup).or_else(|| voice.air(slot & 1).talkgroup))
+    OnAir { call_id: c.map(|c| c.id), talkgroup: c.map(|c| c.talkgroup).or_else(|| voice.air(slot & 1).talkgroup), unit: None, voice_mode: voice.resolved().map_or("", VoiceKind::name) }
 }
 
 /// A voice channel's outputs for a slot no call is on, a pre-roll's worth,
@@ -1040,7 +1038,6 @@ struct Radio {
     next_num: u32,
     max_recorders: usize,
     preroll_s: f64,
-    capture_frames: bool,
     vocoder: mbe::Profile,
     /// Where closed channels' tapes go ([`EngineConfig::tapes`]).
     tape_sink: Tapes,
@@ -1232,7 +1229,7 @@ impl SysHost<'_> {
             Recording {
                 // Analog: who is talking, by the unit IDs it sends (no sub-audible tone: a SmartNet
                 // channel's connect tone would read as one).
-                rec: Recorded::new(r.capture_frames, InBandSpec { units: call.voice.analog().then_some(self.analog.deemph_tau_s), subaudible: false }),
+                rec: Recorded::new(InBandSpec { units: call.voice.analog().then_some(self.analog.deemph_tau_s), subaudible: false }),
                 on: RecordedOn { recorder: recorder_num, source: src },
                 decrypted: false,
             },
@@ -1820,7 +1817,7 @@ impl Core {
         let spans: Vec<(f64, f64, f64)> = cfg.sources.iter().map(|s| (s.center_hz, s.rate_hz, s.usable_half_width())).collect();
         let tape_sink = Tapes::default();
         tape_sink.set(cfg.tapes);
-        let mut conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank, cfg.capture_frames)?;
+        let mut conv = Conventional::new(&cfg.conventional, &spans, ConvConfig { vocoder: cfg.vocoder, ..cfg.conv }, cfg.bank)?;
         conv.tape_sink = tape_sink.clone();
         // (The engine's one copy of the sources' settings, shared.)
         let cfgs: Arc<[SourceConfig]> = std::mem::take(&mut cfg.sources).into();
@@ -1841,7 +1838,6 @@ impl Core {
             next_num: 0,
             max_recorders: cfg.max_recorders,
             preroll_s: cfg.preroll_s,
-            capture_frames: cfg.capture_frames,
             vocoder: cfg.vocoder,
             tape_sink,
             pending: Vec::new(),
@@ -2216,6 +2212,7 @@ impl Core {
             t.calls.end_all(&mut host, &mut self.call_events);
         }
         self.emit_call_events();
+        self.emit_taps();
         let mut out = std::mem::take(&mut self.conv_out);
         self.conv.finish(self.now_s, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
         self.emit_conv(out);
@@ -2279,12 +2276,20 @@ impl Core {
         }
         self.apply_pending();
         self.emit_call_events();
+        self.emit_taps();
     }
 
-    /// Report the voice channels' signal taps' chunks, each under its call's id (not its copy's).
+    /// Report the voice channels' signal taps' chunks, each under its call's id (not its copy's) and with its talker.
+    /// (One of a call begun in this pass waits, with those after it, until the call has been told:
+    /// only then is its conversation known.)
     fn emit_taps(&mut self) {
-        for mut chunk in self.radio.tapped.drain(..) {
-            chunk.call_id = chunk.call_id.map(|id| self.multisite.call_of(id));
+        let begun = |c: &TapChunk| c.call_id.is_some_and(|id| self.call_events.iter().any(|e| matches!(e, CallEvent::Start(call) if call.id == id)));
+        let ready = self.radio.tapped.iter().position(begun).unwrap_or(self.radio.tapped.len());
+        for mut chunk in self.radio.tapped.drain(..ready) {
+            if let Some(id) = chunk.call_id {
+                chunk.unit = self.trunks.iter().flat_map(|t| &t.calls.calls).find(|c| c.id == id).and_then(|c| c.talker()).map(|s| s.src).filter(|&u| u != 0);
+                chunk.call_id = Some(self.multisite.call_of(id));
+            }
             self.events.push(Event::Tap { time_s: self.now_s, chunk });
         }
     }
@@ -2617,9 +2622,6 @@ impl Core {
                 epoch_ms_at_zero: epoch_ms,
                 units: Some(&sys.aliases),
                 unit_tags: Some(&sys.cfg.unit_tags).filter(|t| !t.is_empty() || t.mode != Default::default()),
-                wacn: trunk.and_then(|t| t.identity.wacn()),
-                sys_id: trunk.and_then(|t| t.identity.sys_id()),
-                nac: trunk.and_then(|t| t.identity.nac()),
                 signals: &sys.cfg.signals,
                 first_s,
                 call_num,
@@ -3068,7 +3070,6 @@ impl Engine {
 mod tests {
     use super::*;
     use super::super::calls::Voice;
-    use super::super::voice::VoiceKind;
 
     /// A call put on a slot later takes what the slot heard of it: the
     /// latest outputs not named for another talkgroup, a pre-roll's worth.

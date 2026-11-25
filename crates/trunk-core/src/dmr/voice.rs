@@ -185,7 +185,6 @@ impl DmrVoice {
                 }
                 if self.taps.has(Tap::VoiceAir) {
                     let note = AirFrame {
-                        voice_mode: "dmr".into(),
                         n: pos.map(|p| p * 3 + k),
                         errs: frame.errs,
                         // (Until link control or a privacy header has said, it isn't known.)
@@ -408,17 +407,17 @@ mod tests {
         v.event(1, voice(None, 2), 0.0, &mut out);
         let a = air(&out);
         assert_eq!(a[0].0, bits);
-        assert_eq!(a[0].1, AirFrame { voice_mode: "dmr".into(), errs: 1, ..Default::default() });
+        assert_eq!(a[0].1, AirFrame { errs: 1, ..Default::default() });
         out.clear();
         v.event(1, SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Header }, 0.1, &mut out);
         v.event(1, voice(Some(4), 1), 0.2, &mut out);
-        assert_eq!(air(&out)[0].1, AirFrame { voice_mode: "dmr".into(), n: Some(13), errs: 1, encrypted: Some(false), ..Default::default() });
+        assert_eq!(air(&out)[0].1, AirFrame { n: Some(13), errs: 1, encrypted: Some(false), ..Default::default() });
         assert_eq!(out.iter().filter(|o| matches!(o.out, TrackerOut::Audio(..))).count(), 1);
         out.clear();
         v.event(1, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Header }, 1.0, &mut out);
         v.event(1, SlotEvent::Privacy { alg: 5, key: 9, iv: [0xde, 0xad, 0xbe, 0xef] }, 1.1, &mut out);
         v.event(1, voice(Some(0), 0), 1.2, &mut out);
-        let want = AirFrame { voice_mode: "dmr".into(), n: Some(0), errs: 1, encrypted: Some(true), algid: Some(5), keyid: Some(9), mi: Some("deadbeef".into()), ..Default::default() };
+        let want = AirFrame { n: Some(0), errs: 1, encrypted: Some(true), algid: Some(5), keyid: Some(9), mi: Some("deadbeef".into()), ..Default::default() };
         assert_eq!(air(&out), [(bits.to_vec(), want)]);
         assert!(!out.iter().any(|o| matches!(o.out, TrackerOut::Audio(..))));
         // The next transmission isn't under the last one's privacy header.

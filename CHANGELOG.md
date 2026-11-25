@@ -13,12 +13,25 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - `voice.air`: each digital voice frame (P25 Phase 1 and 2, DMR, NXDN, EDACS ProVoice) as it came off the air,
     error-corrected and not decrypted, with its place in the superframe, its errors and the encryption it is under
     (P25's ALGID, key ID and MI; DMR's privacy header; NXDN's cipher, key and IV).
+  - `voice.frames`: each digital voice frame the vocoder was given, after error correction and decryption, with
+    its errors and what the vocoder made of it: to hear a transmission through another vocoder
+    (`trunk-pro tool revoice`) or in MimoSDR.
   - `voice.errors`: no data, only each voice frame's corrected errors and what the vocoder made of it.
   - **To files**: **Setup → Recording → Advanced → Signal taps** (`recording.taps`), for every system or some.
     Each transmission is a file of its own beside the system's calls: a `.wav` for samples, and a `.jsonl`
     sidecar for every tap (the stream, then a line for each frame or note).
+  - **Save vocoder frames is now the `voice.frames` tap** (breaking). The `recording.captureFrames` setting, its
+    switch in Setup → Recording and `replay --capture-frames` are gone: add the tap instead (`replay --taps
+    voice.frames`). A config that still has `captureFrames` is read as before and the key ignored. What changes:
+    a file per **transmission** rather than per call, named as every tap's is
+    (`<start>_<freq>-tap_<n>.voice.frames.sdr` and `.jsonl`) and not tied to the call's archive rules; every frame
+    vocoded is there, for calls the recorder didn't keep too; the `.jsonl` sidecar is written for every mode
+    (NXDN and ProVoice included) and its lines are the frames `tool revoice`, `tool tones` and `tool p25synth
+    --voice` read; the `.sdr` (P25 and DMR) no longer names the NAC, WACN, system ID or talkgroup alias in its
+    header. Voice decrypted with your keys is marked `decrypted` and reaches only plugins allowed decrypted calls.
   - **To plugins** (SDK 0.17.0, additive): a plugin subscribes to `tap.<id>` and that turns the tap on; nothing
-    to set up. `Plugin::tap(TapChunk)`, with `TapData`, `TapNote`, `AirFrame`, `FrameErrors`, `TAPS`. Setup lists
+    to set up. `Plugin::tap(TapChunk)`, with `TapData`, `TapNote`, `AirFrame`, `FrameErrors`, `TAPS`; a chunk says its
+    call, who is talking, its `voice_mode` and whether it is `decrypted`. Setup lists
     the taps plugins take beside the saved ones.
   - Off, a tap costs nothing, and calls are recorded as before either way. More taps can be added without new
     plumbing (`docs/developer/architecture.md` §4.10).

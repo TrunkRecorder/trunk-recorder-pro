@@ -3,13 +3,20 @@
 //!
 //! Samples are a `.wav` (mono, 16-bit, at the tap's rate) with a `.jsonl` sidecar beside it;
 //! frames and notes alone are the `.jsonl`. The sidecar's first line is the stream: its tap,
-//! system, frequency, slot, call and talkgroup as it began, the time, what its data is, and
-//! how many `items` (samples, frames or notes) it came to. Each line after it is one item
-//! that something is said of, `at` its place in the stream: a frame's `bits` (hex) with its
-//! note's fields beside them, or a note about the sample at `at`.
+//! system, frequency, slot, the time it began, the call, talkgroup and talker (the first it
+//! had of each), what its data is, and how many `items` (samples, frames or notes) it came
+//! to. Each line after it is one item that something is said of, `at` its place in the
+//! stream: a frame's `bits` (hex) with its note's fields beside them, or a note about the
+//! sample at `at`.
+//!
+//! The vocoded frames (`voice.frames`) are also an `.sdr` file ([`trunk_core::trunk::sdr`]:
+//! MimoSDR's container) where the format has a layout for the stream's voice: P25 and DMR.
+//! Each of their sidecar's lines is a [`VoiceFrame`], so the sidecar alone is the stream for
+//! every voice (NXDN and ProVoice have no other).
 
 use serde_json::{json, Map, Value};
-use trunk_recorder_plugin::{bits_hex, TapChunk, TapData, TapNote};
+use trunk_core::trunk::sdr::{call_sdr, SdrInfo, SdrMode};
+use trunk_recorder_plugin::{bits_hex, FrameErrors, Tap, TapChunk, TapData, TapNote, VoiceFrame};
 
 /// A stream being gathered, from its first chunk to its last.
 pub struct TapFile {
@@ -30,8 +37,15 @@ impl TapFile {
         f
     }
 
-    /// Its next chunk.
+    /// Its next chunk. (What the stream began without, it has from the first chunk with it:
+    /// voice comes before its call.)
     pub fn push(&mut self, chunk: TapChunk) {
+        let h = &mut self.head;
+        (h.call_id, h.talkgroup, h.unit) = (h.call_id.or(chunk.call_id), h.talkgroup.or(chunk.talkgroup), h.unit.or(chunk.unit));
+        if h.voice_mode.is_empty() {
+            h.voice_mode.clone_from(&chunk.voice_mode);
+        }
+        h.decrypted |= chunk.decrypted;
         let n = chunk.items() as u64;
         self.notes.extend(chunk.notes.into_iter().map(|TapNote { at, fields }| (chunk.offset + at as u64, fields)));
         self.data.append(chunk.data);
@@ -73,18 +87,60 @@ impl TapFile {
         let jsonl = lines.iter().fold(String::new(), |s, l| s + &l.to_string() + "\n").into_bytes();
         match &self.data {
             TapData::Pcm { rate, samples } => vec![("wav", trunk_core::wav::encode_pcm16(samples, *rate)), ("jsonl", jsonl)],
-            _ => vec![("jsonl", jsonl)],
+            _ => self.sdr().map(|sdr| ("sdr", sdr)).into_iter().chain([("jsonl", jsonl)]).collect(),
         }
     }
+
+    /// [`Tap::VoiceFrames`]: its frames, in order (one without its note is no frame: left out).
+    pub fn voice_frames(&self) -> Vec<VoiceFrame> {
+        let TapData::Frames { frames, .. } = &self.data else { return Vec::new() };
+        let note = |(at, fields): &(u64, Map<String, Value>)| serde_json::from_value::<FrameErrors>(Value::Object(fields.clone())).ok()?.frame(frames.get(*at as usize)?);
+        self.notes.iter().filter_map(note).collect()
+    }
+
+    /// The vocoded frames as an `.sdr` file, where the stream's voice has a layout there.
+    fn sdr(&self) -> Option<Vec<u8>> {
+        let h = &self.head;
+        let mode = match (h.tap, h.voice_mode.as_str()) {
+            (Tap::VoiceFrames, "p25") => SdrMode::P25Fdma,
+            (Tap::VoiceFrames, "p25_phase2") => SdrMode::P25Tdma,
+            (Tap::VoiceFrames, "dmr") => SdrMode::Dmr,
+            _ => return None,
+        };
+        let frames = self.voice_frames();
+        let unit = h.unit.unwrap_or(0);
+        let info = SdrInfo {
+            start_us: (h.time * 1e6).round().max(0.0) as u64,
+            duration_ms: frames.len() as u32 * 20,
+            hz: h.freq_hz.round() as u32,
+            system: h.short_name.clone(),
+            slot: h.slot,
+            tg: h.talkgroup.unwrap_or(0),
+            first_src: unit,
+            src: unit,
+            encrypted: h.decrypted,
+            ..Default::default()
+        };
+        call_sdr(mode, &frames, &info)
+    }
+}
+
+/// A saved stream's sidecar read back: its head, and the vocoded frames its lines are
+/// ([`Tap::VoiceFrames`]'s; none of another tap's). None: not a sidecar.
+pub fn sidecar_frames(text: &str) -> Option<(Value, Vec<VoiceFrame>)> {
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let head: Value = serde_json::from_str(lines.next()?).ok()?;
+    head.get("tap")?;
+    Some((head, lines.filter_map(|l| serde_json::from_str(l).ok()).collect()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use trunk_recorder_plugin::{AirFrame, Codec, Tap};
+    use trunk_recorder_plugin::{AirFrame, Codec, FrameKind};
 
     fn chunk(tap: Tap, seq: u32, offset: u64, data: TapData, notes: Vec<TapNote>) -> TapChunk {
-        TapChunk { tap, stream: 7, seq, first: seq == 0, last: false, offset, system: 0, system_id: 3, short_name: "dcfd".into(), freq_hz: 854_612_500.0, slot: 0, call_id: Some(9), talkgroup: Some(101), time: 1_800_000_000.0, data, notes }
+        TapChunk { tap, stream: 7, seq, first: seq == 0, last: false, offset, system: 0, system_id: 3, short_name: "dcfd".into(), freq_hz: 854_612_500.0, slot: 0, call_id: Some(9), talkgroup: Some(101), unit: None, voice_mode: String::new(), decrypted: false, time: 1_800_000_000.0, data, notes }
     }
 
     fn lines(bytes: &[u8]) -> Vec<Value> {
@@ -121,5 +177,39 @@ mod tests {
         assert_eq!(l.len(), 4);
         assert_eq!(l[0]["items"], 3);
         assert_eq!(l[3], json!({ "at": 2, "bits": "f".repeat(22), "n": 2, "errs": 2, "e0": 0 }));
+    }
+
+    /// The vocoded frames: an `.sdr` file where the voice has a layout, and a sidecar whose
+    /// lines are the frames either way. What the stream began without (its call), it takes
+    /// from the first chunk that has it.
+    #[test]
+    fn vocoded_frames_are_an_sdr_file_and_lines_that_are_frames() {
+        let frame = |k: u32| VoiceFrame { codec: Codec::Imbe, bits: (0..88).map(|i| ((i + k) % 3 == 0) as u8).collect(), e0: 0, errs: k % 4, erased: false, kind: FrameKind::Voice, tone: None };
+        let all: Vec<VoiceFrame> = (0..27).map(frame).collect();
+        let part = |seq: u32, mode: &str, f: &[VoiceFrame], offset: u64| TapChunk {
+            call_id: (seq > 0).then_some(12),
+            talkgroup: (seq > 0).then_some(101),
+            unit: (seq > 0).then_some(7001),
+            voice_mode: mode.into(),
+            decrypted: seq > 0,
+            ..chunk(Tap::VoiceFrames, seq, offset, TapData::Frames { codec: f[0].codec, frames: f.iter().map(|f| f.bits.clone()).collect() }, f.iter().enumerate().map(|(i, f)| TapNote::of(i as u32, &FrameErrors::of(f))).collect())
+        };
+        let mut f = TapFile::new(part(0, "p25", &all[..9], 0));
+        f.push(part(1, "p25", &all[9..], 9));
+        assert_eq!(f.voice_frames(), all);
+        let files = f.files();
+        assert_eq!(files.iter().map(|f| f.0).collect::<Vec<_>>(), ["sdr", "jsonl"]);
+        assert_eq!(trunk_core::trunk::sdr::sdr_frames(&files[0].1), all, "the .sdr holds the frames");
+        let l = lines(&files[1].1);
+        assert_eq!((&l[0]["call_id"], &l[0]["talkgroup"], &l[0]["unit"], &l[0]["voice_mode"], &l[0]["decrypted"], &l[0]["items"]), (&json!(12), &json!(101), &json!(7001), &json!("p25"), &json!(true), &json!(27)));
+        let back: Vec<VoiceFrame> = l[1..].iter().map(|l| serde_json::from_value(l.clone()).unwrap()).collect();
+        assert_eq!(back, all, "each line is a frame");
+        let (head, read) = sidecar_frames(std::str::from_utf8(&files[1].1).unwrap()).unwrap();
+        assert_eq!((&head["call_id"], read), (&json!(12), all.clone()), "and the sidecar reads back");
+        assert!(sidecar_frames(&VoiceFrame::to_jsonl(&all)).is_none(), "bare frame lines aren't one");
+        // A voice the format has no layout for: the sidecar alone. And the frames as they came off the air are no .sdr.
+        let ambe: Vec<VoiceFrame> = (0..4).map(|k| VoiceFrame { codec: Codec::Ambe, bits: vec![(k % 2) as u8; 49], ..frame(k) }).collect();
+        assert_eq!(TapFile::new(part(0, "nxdn48", &ambe, 0)).files().iter().map(|f| f.0).collect::<Vec<_>>(), ["jsonl"]);
+        assert_eq!(TapFile::new(TapChunk { tap: Tap::VoiceAir, ..part(0, "p25", &all, 0) }).files().len(), 1);
     }
 }

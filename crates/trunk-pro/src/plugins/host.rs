@@ -544,13 +544,14 @@ impl PluginHost {
 
     /// A piece of a signal tap's stream, to the plugins subscribed to its topic (`tap.<id>`). Never
     /// late: a plugin delayed for its system or talkgroup isn't sent it, as with a call's live
-    /// audio. (Nothing of it is decrypted: a tap is of the air, or of how it decoded.)
+    /// audio. (A stream of voice we decrypted, [`TapChunk::decrypted`], goes only to plugins with
+    /// `shareDecrypted`, as that call's audio does; the rest is of the air, or of how it decoded.)
     pub fn tap(&self, chunk: &TapChunk) {
         let t = chunk.tap.topic();
         if !self.shared.wants(&t) {
             return;
         }
-        let about = About { system: self.shared.id_at(chunk.system), talkgroup: chunk.talkgroup, ..Default::default() };
+        let about = About { system: self.shared.id_at(chunk.system), talkgroup: chunk.talkgroup, decrypted: chunk.decrypted, ..Default::default() };
         self.shared.dispatch(&t, &line(&HostMessage::Tap(chunk.clone())), &about, None, None);
     }
 

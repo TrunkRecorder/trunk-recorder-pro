@@ -511,7 +511,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             Box::new(P25Tdma { bank: Bank::phase2(spec.rate, spec.bank), tracker, groups: Vec::new(), tout: Vec::new(), t0: spec.t0, rate: spec.rate })
         }
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed).tapped(spec.taps)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
-        VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed).tapped(spec.taps, r)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
+        VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed).tapped(spec.taps)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
         VoiceKind::Analog => Box::new(Analog {
             demod: Demod::Fm(Nbfm::with(spec.rate, &spec.analog).tapped(spec.taps.has(Tap::FmDiscriminator).then_some(DISCRIMINATOR_RATE))),
             squelch: spec.squelch,

@@ -19,7 +19,7 @@ const plugin = (id: string, subscribe: string[]): PluginInfo => ({
 });
 
 test("Signal taps: the list is the recorder's", () => {
-  assert.deepEqual(signalTaps().map((t) => [t.id, t.carries]), [["fm.discriminator", "samples"], ["voice.air", "frames"], ["voice.errors", "notes"]]);
+  assert.deepEqual(signalTaps().map((t) => [t.id, t.carries]), [["fm.discriminator", "samples"], ["voice.air", "frames"], ["voice.frames", "frames"], ["voice.errors", "notes"]]);
 });
 
 test("Signal taps: saved rows can be edited; a plugin's are automatic", () => {
@@ -33,17 +33,19 @@ test("Signal taps: saved rows can be edited; a plugin's are automatic", () => {
   assert.match(page, />Add tap</);
   assert.ok(!page.includes("<table"), "nothing on: no table");
 
-  c.recording.taps = [{ tap: "fm.discriminator", systems: [2] }, { tap: "voice.errors" }];
+  c.recording.taps = [{ tap: "fm.discriminator", systems: [2] }, { tap: "voice.errors" }, { tap: "voice.frames" }];
   c.plugins = { pager: { enabled: true, settings: {} }, idle: { enabled: false, settings: {} } };
   transport.onMessage({ type: "config", config: c, version: 2 });
   transport.onMessage({ type: "plugins", encoderFound: null, plugins: [plugin("pager", ["call.concluded", "tap.voice.air"]), plugin("idle", ["tap.fm.discriminator"])] });
   page = html(<SignalTaps />);
-  assert.match(page, />3 on</);
+  assert.match(page, />4 on</);
   // The first row: west alone; the second: every system.
   assert.match(page, /aria-label="Systems tap 1 is taken from".*?aria-pressed="false"[^>]*>All<.*?aria-pressed="false"[^>]*>east<.*?aria-pressed="true"[^>]*>west</);
   assert.match(page, /aria-label="Systems tap 2 is taken from".*?aria-pressed="true"[^>]*>All</);
   assert.match(page, /\.wav \+ \.jsonl/);
-  assert.equal((page.match(/>Remove</g) ?? []).length, 2);
+  // The vocoded frames (what "Save vocoder frames" was): MimoSDR's file beside the sidecar.
+  assert.match(page, /\.sdr \+ \.jsonl/);
+  assert.equal((page.match(/>Remove</g) ?? []).length, 3);
   // The plugin that's on: its tap, with no controls. The one that's off: nothing.
   assert.match(page, /<tr class="auto"><td>Voice frames off the air.*?>pager<.*?>Automatic</);
   assert.equal((page.match(/class="auto"/g) ?? []).length, 1);

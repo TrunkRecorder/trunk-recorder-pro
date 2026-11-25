@@ -41,6 +41,17 @@ impl TapPiece {
     }
 }
 
+/// What a channel knows of one of its slots as a chunk is handed out: the call on it and its
+/// talkgroup, the radio talking, and what its voice is, as far as each is known.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OnAir {
+    pub call_id: Option<u32>,
+    pub talkgroup: Option<u32>,
+    pub unit: Option<u32>,
+    /// [`TapChunk::voice_mode`].
+    pub voice_mode: &'static str,
+}
+
 /// Each stream of a run has a number of its own.
 static NEXT_STREAM: AtomicU64 = AtomicU64::new(1);
 
@@ -76,6 +87,9 @@ pub struct Streams {
     gap: u64,
     max: u64,
     open: Vec<Stream>,
+    /// Each slot's transmission is encrypted on the air, as far as the decoder has said: what
+    /// is vocoded of it was decrypted ([`TapChunk::decrypted`]).
+    secret: [bool; 2],
     /// Chunks cut and not yet handed out.
     ready: Vec<TapChunk>,
 }
@@ -84,7 +98,7 @@ impl Streams {
     /// For a channel of system `system` (its number in the run) at `freq_hz`, decoded at `rate`
     /// samples a second, with `set` turned on.
     pub fn new(set: TapSet, system: u16, freq_hz: f64, rate: f64) -> Streams {
-        Streams { set, system, freq_hz, gap: (TRANSMISSION_GAP_S * rate) as u64, max: (MAX_STREAM_S * rate) as u64, open: Vec::new(), ready: Vec::new() }
+        Streams { set, system, freq_hz, gap: (TRANSMISSION_GAP_S * rate) as u64, max: (MAX_STREAM_S * rate) as u64, open: Vec::new(), secret: [false; 2], ready: Vec::new() }
     }
 
     /// The taps its decoder is asked for.
@@ -93,8 +107,8 @@ impl Streams {
     }
 
     /// One of the decoder's outputs for `slot`: a tap's piece is kept (None), anything else is
-    /// handed back, noted on the way where a tap is made of it (a frame's errors, a
-    /// transmission's end).
+    /// handed back, noted on the way where a tap is made of it (a frame vocoded, a
+    /// transmission's encryption and its end).
     pub fn sift(&mut self, slot: usize, o: TrackerOut) -> Option<TrackerOut> {
         if self.set.is_empty() {
             return Some(o);
@@ -105,13 +119,28 @@ impl Streams {
                 self.piece(slot, p);
                 None
             }
-            TrackerOut::Audio(_, ref f) if self.set.has(Tap::VoiceErrors) => {
-                let note = FrameErrors { codec: f.codec, errs: f.errs, e0: f.e0, erased: f.erased, kind: f.kind };
-                self.piece(slot, TapPiece::note(Tap::VoiceErrors, &note));
+            TrackerOut::Audio(_, ref f) => {
+                let note = FrameErrors::of(f);
+                if self.set.has(Tap::VoiceFrames) {
+                    self.piece(slot, TapPiece::frame(Tap::VoiceFrames, f.codec, &f.bits, &note));
+                }
+                if self.set.has(Tap::VoiceErrors) {
+                    self.piece(slot, TapPiece::note(Tap::VoiceErrors, &note));
+                }
+                Some(o)
+            }
+            // (Told before the voice it's of is vocoded: a frame nothing has said of yet is held for it.)
+            TrackerOut::Info { flags, .. } if flags.encrypted => {
+                self.secret[slot as usize] = true;
+                Some(o)
+            }
+            TrackerOut::Decrypted => {
+                self.secret[slot as usize] = true;
                 Some(o)
             }
             TrackerOut::Ended => {
                 self.end(|s| s.slot == slot);
+                self.secret[slot as usize] = false;
                 Some(o)
             }
             o => Some(o),
@@ -166,6 +195,9 @@ impl Streams {
             slot: s.slot,
             call_id: None,
             talkgroup: None,
+            unit: None,
+            voice_mode: String::new(),
+            decrypted: s.tap == Tap::VoiceFrames && self.secret[s.slot as usize & 1],
             time: 0.0,
             data,
             notes: std::mem::take(&mut s.notes),
@@ -175,13 +207,17 @@ impl Streams {
         s.fresh = false;
     }
 
-    /// End the streams `which` picks: each one's last chunk.
+    /// End the streams `which` picks: each one's last chunk. (A transmission whose vocoded
+    /// frames end is over: the next is encrypted only if it says so.)
     fn end(&mut self, which: impl Fn(&Stream) -> bool) {
         let mut i = 0;
         while i < self.open.len() {
             if which(&self.open[i]) {
                 self.cut(i, true);
-                self.open.remove(i);
+                let s = self.open.remove(i);
+                if s.tap == Tap::VoiceFrames {
+                    self.secret[s.slot as usize & 1] = false;
+                }
             } else {
                 i += 1;
             }
@@ -190,9 +226,9 @@ impl Streams {
 
     /// `n` more channel samples were decoded and sifted: each stream's chunk of them, and the
     /// end of those the air has left for the gap between transmissions (or that have gone on
-    /// too long). `who`: the call on a slot now and its talkgroup, as far as each is known. The
+    /// too long). `who`: what the channel knows of a slot now. The
     /// chunks go to `out`, short of what only the host knows (the system's name, the time).
-    pub fn flush(&mut self, n: usize, who: impl Fn(u8) -> (Option<u32>, Option<u32>), out: &mut Vec<TapChunk>) {
+    pub fn flush(&mut self, n: usize, who: impl Fn(u8) -> OnAir, out: &mut Vec<TapChunk>) {
         if self.open.is_empty() && self.ready.is_empty() {
             return;
         }
@@ -211,14 +247,15 @@ impl Streams {
     }
 
     /// The channel closed: every stream ends.
-    pub fn close(&mut self, who: impl Fn(u8) -> (Option<u32>, Option<u32>), out: &mut Vec<TapChunk>) {
+    pub fn close(&mut self, who: impl Fn(u8) -> OnAir, out: &mut Vec<TapChunk>) {
         self.end(|_| true);
         self.hand(who, out);
     }
 
-    fn hand(&mut self, who: impl Fn(u8) -> (Option<u32>, Option<u32>), out: &mut Vec<TapChunk>) {
+    fn hand(&mut self, who: impl Fn(u8) -> OnAir, out: &mut Vec<TapChunk>) {
         out.extend(self.ready.drain(..).map(|mut c| {
-            (c.call_id, c.talkgroup) = who(c.slot);
+            let on = who(c.slot);
+            (c.call_id, c.talkgroup, c.unit, c.voice_mode) = (on.call_id, on.talkgroup, on.unit, on.voice_mode.to_string());
             c
         }));
     }
@@ -240,8 +277,8 @@ mod tests {
         TrackerOut::Audio(vec![0.0; 160], VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind: Kind::Voice, tone: None })
     }
 
-    fn nobody(_: u8) -> (Option<u32>, Option<u32>) {
-        (None, None)
+    fn nobody(_: u8) -> OnAir {
+        OnAir::default()
     }
 
     /// With no tap on, everything is handed back and nothing is made.
@@ -265,13 +302,13 @@ mod tests {
         let mut out = Vec::new();
         assert!(s.sift(0, pcm(100)).is_none());
         assert!(s.sift(0, pcm(50)).is_none());
-        s.flush(2400, |_| (Some(7), Some(101)), &mut out);
+        s.flush(2400, |_| OnAir { call_id: Some(7), talkgroup: Some(101), unit: Some(9), voice_mode: "fm" }, &mut out);
         s.sift(0, pcm(10));
         s.flush(2400, nobody, &mut out);
         assert_eq!(out.len(), 2);
         assert_eq!((out[0].seq, out[0].first, out[0].last, out[0].offset, out[0].data.len()), (0, true, false, 0, 150));
         assert_eq!((out[1].seq, out[1].first, out[1].last, out[1].offset, out[1].data.len()), (1, false, false, 150, 10));
-        assert_eq!((out[0].system, out[0].freq_hz, out[0].call_id, out[0].talkgroup), (2, 152.0e6, Some(7), Some(101)));
+        assert_eq!((out[0].system, out[0].freq_hz, out[0].call_id, out[0].talkgroup, out[0].unit, out[0].voice_mode.as_str()), (2, 152.0e6, Some(7), Some(101), Some(9), "fm"));
         assert_eq!(out[0].stream, out[1].stream);
         // Quiet for the gap: over, with a last chunk that carries nothing.
         out.clear();
@@ -318,6 +355,55 @@ mod tests {
         out.clear();
         s.close(nobody, &mut out);
         assert!(out.len() == 1 && out[0].slot == 1 && out[0].last);
+    }
+
+    /// The frames a vocoder was given are a tap: each with its note is the frame again. Those of a
+    /// transmission the air says is encrypted are marked decrypted, and the next transmission's aren't.
+    #[test]
+    fn vocoded_frames_are_a_tap_and_say_when_they_were_decrypted() {
+        use crate::trunk::calls::Flags;
+        let mut s = Streams::new(TapSet::of([Tap::VoiceFrames, Tap::VoiceErrors]), 0, 1.0, RATE);
+        let mut out = Vec::new();
+        let frame = |errs| match voice(errs) {
+            TrackerOut::Audio(_, f) => f,
+            _ => unreachable!(),
+        };
+        s.sift(0, voice(2));
+        s.sift(0, voice(5));
+        s.flush(2400, nobody, &mut out);
+        let of = |out: &[TapChunk], tap| out.iter().filter(|c| c.tap == tap).cloned().collect::<Vec<_>>();
+        let frames = of(&out, Tap::VoiceFrames);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].voice_frames(), [(0, frame(2)), (1, frame(5))]);
+        assert!(!frames[0].decrypted);
+        assert_eq!(of(&out, Tap::VoiceErrors)[0].notes.len(), 2, "its errors, as before");
+        s.sift(0, TrackerOut::Ended);
+        s.flush(0, nobody, &mut out);
+        // An encrypted transmission, on this slot only.
+        out.clear();
+        s.sift(0, TrackerOut::Info { source: None, flags: Flags { encrypted: true, ..Default::default() } });
+        s.sift(0, voice(0));
+        s.sift(1, voice(0));
+        s.flush(2400, nobody, &mut out);
+        let frames = of(&out, Tap::VoiceFrames);
+        assert_eq!(frames.iter().map(|c| (c.slot, c.decrypted)).collect::<Vec<_>>(), [(0, true), (1, false)]);
+        assert!(of(&out, Tap::VoiceErrors).iter().all(|c| !c.decrypted), "its error counts are no secret");
+        // Its terminator: the next one is clear again. (So is one after the gap, with no terminator heard.)
+        s.sift(0, TrackerOut::Ended);
+        s.flush(0, nobody, &mut out);
+        assert!(out.iter().any(|c| c.tap == Tap::VoiceFrames && c.last && c.decrypted), "its last chunk is its own");
+        out.clear();
+        s.sift(0, voice(0));
+        s.flush(2400, nobody, &mut out);
+        assert!(!of(&out, Tap::VoiceFrames)[0].decrypted);
+        s.sift(0, TrackerOut::Decrypted);
+        for _ in 0..6 {
+            s.flush(2400, nobody, &mut out);
+        }
+        out.clear();
+        s.sift(0, voice(0));
+        s.flush(2400, nobody, &mut out);
+        assert!(of(&out, Tap::VoiceFrames).iter().all(|c| c.first && !c.decrypted));
     }
 
     /// A carrier that never drops is cut into streams of [`MAX_STREAM_S`].

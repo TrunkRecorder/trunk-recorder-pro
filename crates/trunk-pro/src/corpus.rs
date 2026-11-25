@@ -36,6 +36,7 @@ use sha2::{Digest, Sha256};
 use crate::iq_capture;
 use crate::toolkit::{hex, sha256_hex};
 use crate::{die, Args};
+use trunk_core::trunk::frames::VoiceFrame;
 
 const EXPECTED: &str = "corpus/expected";
 const CACHE: &str = "captures/.corpus";
@@ -374,20 +375,41 @@ pub(crate) fn envelope_of(samples: &[f64], rate: usize) -> String {
 }
 
 /// A hash of each [`FRAMES_PER_HASH`] frames' bits, joined.
-pub(crate) fn frame_hashes(frames: &[trunk_core::trunk::frames::VoiceFrame]) -> String {
+pub(crate) fn frame_hashes(frames: &[VoiceFrame]) -> String {
     frames.chunks(FRAMES_PER_HASH).map(|w| short_hash(&w.iter().flat_map(|f| f.bits.iter().copied()).collect::<Vec<u8>>(), 4)).collect()
 }
 
-fn summarize_call(json_path: &Path) -> Result<CallSummary, String> {
+/// A saved `voice.frames` stream: its call, when it began, its frequency, its file's name and its frames.
+type Heard = (u64, f64, f64, String, Vec<VoiceFrame>);
+
+/// Each call's vocoded frames among `dir`'s saved `voice.frames` streams (a transmission
+/// each), in the order they were heard: by the call's number.
+fn call_frames(dir: &Path, found: &mut Vec<Heard>) {
+    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().into_owned();
+        if p.is_dir() {
+            call_frames(&p, found);
+        } else if name.ends_with(".voice.frames.jsonl") {
+            let Some((head, frames)) = fs::read_to_string(&p).ok().and_then(|t| trunk_app::taps::sidecar_frames(&t)) else { continue };
+            if let Some(call) = head["call_id"].as_u64() {
+                found.push((call, head["time"].as_f64().unwrap_or(0.0), head["freq_hz"].as_f64().unwrap_or(0.0), name, frames));
+            }
+        }
+    }
+}
+
+fn summarize_call(json_path: &Path, heard: &[Heard]) -> Result<CallSummary, String> {
     let v: serde_json::Value = serde_json::from_str(&fs::read_to_string(json_path).map_err(|e| format!("{}: {e}", json_path.display()))?).map_err(|e| format!("{}: {e}", json_path.display()))?;
     let n = |k: &str| v[k].as_i64().unwrap_or(0);
     let mut c = CallSummary { c: short_hash(format!("{}|{}|{}", n("talkgroup"), n("tdma_slot"), n("encrypted")).as_bytes(), 8), f: n("freq") as u64, t: n("start_time_ms"), l: n("call_length_ms"), ..Default::default() };
-    let frames = [json_path.with_extension("sdr"), json_path.with_extension("frames.jsonl")].into_iter().find(|p| p.exists());
-    if let Some(path) = frames {
-        let frames = crate::tool::load_frames(path.to_str().ok_or("A path isn't text")?);
-        c.frames = frames.len() as u64;
-        c.bad = frames.iter().filter(|f| f.bad()).count() as u64;
-        c.errs = frames.iter().map(|f| f.errs as u64).sum();
+    // (Heard on several sites, a call is each site's streams: those of the copy kept, by its frequencies.)
+    let on = |hz: f64| v["freqList"].as_array().is_some_and(|l| l.iter().any(|f| f["freq"].as_f64().is_some_and(|f| (f - hz).abs() < 1.0)));
+    let frames: Vec<VoiceFrame> = heard.iter().filter(|h| h.0 == v["call_num"].as_u64().unwrap_or(u64::MAX) && on(h.2)).flat_map(|h| h.4.iter().cloned()).collect();
+    if !frames.is_empty() {
+        // What the call kept, as its JSON counts it; the bits, of every frame vocoded for it.
+        let kept = |k: &str| v["errorList"].as_array().into_iter().flatten().map(|e| e[k].as_u64().unwrap_or(0)).sum::<u64>();
+        (c.frames, c.bad, c.errs) = (kept("frames"), kept("bad_frames"), kept("error_count"));
         c.h = frame_hashes(&frames);
     } else if v["audio_type"] == "analog" {
         c.env = envelope(&fs::read(json_path.with_extension("wav")).unwrap_or_default());
@@ -412,7 +434,10 @@ pub(crate) fn summarize(out: &Path, id: &str) -> Result<Results, String> {
     let stdout = fs::read_to_string(&stdout_path).map_err(|e| format!("{}: {e}", stdout_path.display()))?;
     let mut files = Vec::new();
     call_files(&out.join(id), &mut files);
-    let mut calls = files.iter().map(|p| summarize_call(p)).collect::<Result<Vec<_>, _>>()?;
+    let mut heard = Vec::new();
+    call_frames(&out.join(id), &mut heard);
+    heard.sort_by(|a, b| (a.1, &a.3).partial_cmp(&(b.1, &b.3)).unwrap_or(std::cmp::Ordering::Equal));
+    let mut calls = files.iter().map(|p| summarize_call(p, &heard)).collect::<Result<Vec<_>, _>>()?;
     calls.sort_by(|a, b| (a.t, &a.c, a.f).cmp(&(b.t, &b.c, b.f)));
     let mut r = Results { calls, ..Default::default() };
     add_messages(&stdout, &mut r);
@@ -862,7 +887,7 @@ fn run_all(o: &RunOptions, cache: &Path, entries: &[&Entry], out: &Path) -> Resu
             let dir = out.join(&e.id);
             fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
             let log = |ext: &str| File::create(out.join(format!("{}.{ext}", e.id))).map(Stdio::from).map_err(|err| format!("{}: {err}", out.display()));
-            let status = Command::new(&exe).arg("replay").arg(&folder).arg("--out").arg(&dir).args(["--capture-frames", "--messages"]).stdout(log("stdout")?).stderr(log("stderr")?).status().map_err(|err| err.to_string())?;
+            let status = Command::new(&exe).arg("replay").arg(&folder).arg("--out").arg(&dir).args(["--taps", "voice.frames", "--messages"]).stdout(log("stdout")?).stderr(log("stderr")?).status().map_err(|err| err.to_string())?;
             if !status.success() {
                 println!("{}: failed, exit {}", e.id, status.code().unwrap_or(-1));
                 rows.push(Row { id: e.id.clone(), tier: e.tier.clone(), result: "failed", ..Default::default() });

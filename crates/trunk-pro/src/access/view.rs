@@ -68,7 +68,7 @@ fn signal(d: SignalDef) -> SignalDef {
 }
 
 fn recording(r: Recording) -> Recording {
-    let mut r = shown!(r, Recording { call_timeout_s, conversation_mode, record_unknown, record_encrypted, record_unit_to_unit, keep_silent_calls, min_call_s, max_call_s, min_transmission_s, normalize_audio, digital_level_db, analog_level_db, archive_wav, archive_m4a, call_log, archive_files_on_failure, filename_format, preroll_s, max_recorders, capture_frames, taps, drop_duplicate_calls, vocoder, m4a, ram_spool }
+    let mut r = shown!(r, Recording { call_timeout_s, conversation_mode, record_unknown, record_encrypted, record_unit_to_unit, keep_silent_calls, min_call_s, max_call_s, min_transmission_s, normalize_audio, digital_level_db, analog_level_db, archive_wav, archive_m4a, call_log, archive_files_on_failure, filename_format, preroll_s, max_recorders, taps, drop_duplicate_calls, vocoder, m4a, ram_spool }
         withheld { capture_dir, other });
     r.ram_spool = shown!(r.ram_spool, RamSpool { enabled, size_mb } withheld { dir });
     r

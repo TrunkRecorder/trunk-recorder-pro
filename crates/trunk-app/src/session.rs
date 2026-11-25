@@ -37,9 +37,8 @@ pub enum Output {
     /// the recordings folder); `record` is its call JSON, and [`call_entry`]
     /// its history entry, which the platform sends as a `concluded` message
     /// once the files are stored.
-    /// `frames`: the frame capture, for `<rel>.sdr` (NXDN: `<rel>.frames.jsonl`).
     /// `decrypted`: some of it was decrypted with our keys.
-    File { rel: String, system: u16, wav: Vec<u8>, record: trunk_recorder_plugin::CallRecord, frames: Option<trunk_core::trunk::Capture>, decrypted: bool },
+    File { rel: String, system: u16, wav: Vec<u8>, record: trunk_recorder_plugin::CallRecord, decrypted: bool },
     /// An event for plugins (only those [`Session::plugin_topics`] asks for).
     Plugin(HostMessage),
     /// A piece of a signal tap's stream, for the plugins subscribed to its topic. `save`: its
@@ -1373,7 +1372,7 @@ impl Session {
                     filename::render(format, &serde_json::to_value(r).unwrap_or_default(), k.call.system, offset)
                 };
                 let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: r.signal, noise_db: r.noise, snr_db: r.snr, clean_pct: r.clean_voice_pct, ended: r.end_reason.clone() };
-                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), record: k.record, frames: k.frames, decrypted: k.call.decrypted });
+                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), record: k.record, decrypted: k.call.decrypted });
                 let r = self.call_record(Level::Info, &k.call, body);
                 self.records.push(r);
             }
@@ -2062,6 +2061,9 @@ mod tone_tests {
             slot: 0,
             call_id: None,
             talkgroup: None,
+            unit: None,
+            voice_mode: String::new(),
+            decrypted: false,
             time: 0.0,
             data: TapData::Pcm { rate: 22_050, samples: vec![0; 4] },
             notes: Vec::new(),

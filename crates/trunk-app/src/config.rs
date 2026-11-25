@@ -1800,8 +1800,6 @@ recording! {
         pub capture_dir: String,
         pub preroll_s: f64,
         pub max_recorders: usize,
-        /// Save each call's vocoder frames next to its audio, for diagnosis.
-        pub capture_frames: bool,
         /// Signal taps saved to files ([`TapRoute`]).
         #[serde(skip_serializing_if = "Vec::is_empty")]
         pub taps: Vec<TapRoute>,
@@ -1936,7 +1934,6 @@ impl Default for Recording {
             min_call_s: 0.0,
             max_call_s: 0.0,
             min_transmission_s: 0.0,
-            capture_frames: false,
             taps: Vec::new(),
             normalize_audio: true,
             digital_level_db: 0.0,
@@ -3671,7 +3668,6 @@ impl Config {
             bank: BankConfig::default(),
             conventional: self.engine_channels(),
             conv: ConvConfig::default(),
-            capture_frames: self.recording.capture_frames,
             tapes: self.diagnostics.needs_tapes(),
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: self.recording.vocoder.engine(),

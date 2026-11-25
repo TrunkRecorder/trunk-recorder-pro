@@ -514,8 +514,6 @@ export interface Recording extends RecordingRules {
   captureDir: string;
   prerollS: number;
   maxRecorders: number;
-  /** Save each digital call's vocoder frames (<call>.sdr; NXDN <call>.frames.jsonl) for diagnosis. */
-  captureFrames: boolean;
   /** Desktop: the signal taps saved to files (Setup → Recording → Advanced). */
   taps?: TapRoute[];
   /** A call heard on several sites of one system: save the best copy only. */
@@ -1080,7 +1078,7 @@ export interface LogLine {
   site?: string;
 }
 
-/** One vocoder frame (20 ms) as the recorder decoded it: the `voice` plugin topic's, and a line of a call's `.frames.jsonl`. */
+/** One vocoder frame (20 ms) as the recorder decoded it: the `voice` plugin topic's, and a line of the `voice.frames` signal tap's sidecar. */
 export interface VoiceFrame {
   /** "imbe": P25 Phase 1, ProVoice (88 bits); "ambe": AMBE+2 half rate, P25 Phase 2, DMR, NXDN (49 bits). */
   codec: "imbe" | "ambe";

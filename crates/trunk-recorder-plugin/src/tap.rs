@@ -1,7 +1,7 @@
 //! Signal taps: what a voice channel's receive chain holds part-way through, handed out as it
 //! is made. A tap is a named place in the chain, after the channel's IQ and before the call's
-//! audio: the FM discriminator's output, a voice frame before decryption, each frame's error
-//! count. Every tap gives the same thing, a stream of [`TapChunk`]s: its data (samples,
+//! audio: the FM discriminator's output, a voice frame before decryption, the frame its
+//! vocoder was given, each frame's error count. Every tap gives the same thing, a stream of [`TapChunk`]s: its data (samples,
 //! frames, or none) and the notes about it, one stream for each transmission on a channel.
 //! The recorder saves a stream to files and sends its chunks to the plugins subscribed to the
 //! tap's topic ([`Tap::topic`]), both from the one [`TapChunk`].
@@ -9,7 +9,7 @@
 //! Adding a tap: a [`Tap`] and its [`TapInfo`] here, and the place in the recorder's decoder
 //! that makes its pieces. Routing, files, the plugin topic and the settings follow from the list.
 
-use crate::protocol::{base64, bits_hex, hex_bits, Codec, FrameKind};
+use crate::protocol::{base64, bits_hex, hex_bits, Codec, FrameKind, VoiceFrame};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -29,6 +29,13 @@ pub enum Tap {
     /// Notes: an [`AirFrame`] for each.
     #[serde(rename = "voice.air")]
     VoiceAir,
+    /// Digital voice frames as the vocoder was given them: after error correction and, where
+    /// the recorder has the key, decryption ([`TapChunk::decrypted`]), in the order of the
+    /// audio they made. With its note each is a [`VoiceFrame`], which `trunk-pro tool revoice`
+    /// and other vocoders decode again; saved, a stream is also an `.sdr` file where the
+    /// format has a layout for its voice. Notes: a [`FrameErrors`] for each.
+    #[serde(rename = "voice.frames")]
+    VoiceFrames,
     /// How well each voice frame decoded: no data, a [`FrameErrors`] note for each frame vocoded.
     #[serde(rename = "voice.errors")]
     VoiceErrors,
@@ -75,6 +82,14 @@ pub const TAPS: &[TapInfo] = &[
         id: "voice.air",
         title: "Voice frames off the air",
         about: "Each digital voice frame (P25, DMR, NXDN, ProVoice) after error correction and before decryption, with its place in the superframe, its errors and the encryption it is under.",
+        from: "Digital voice",
+        carries: Carries::Frames,
+    },
+    TapInfo {
+        tap: Tap::VoiceFrames,
+        id: "voice.frames",
+        title: "Voice frames as vocoded",
+        about: "Each digital voice frame the vocoder was given, after error correction and decryption, with its errors and what the vocoder made of it: to decode again with another vocoder. Also an .sdr file (P25, DMR).",
         from: "Digital voice",
         carries: Carries::Frames,
     },
@@ -288,12 +303,7 @@ impl TapNote {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AirFrame {
-    /// What it was sent as, named as [`crate::CallInfo::voice_mode`] names it: "p25" |
-    /// "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice". `n` and the encryption fields
-    /// are that protocol's.
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub voice_mode: String,
-    /// Its place in the superframe. P25 Phase 1: 0–17 (LDU1's nine frames, then LDU2's).
+    /// Its place in the superframe, by what it was sent as ([`TapChunk::voice_mode`]). P25 Phase 1: 0–17 (LDU1's nine frames, then LDU2's).
     /// Phase 2: 0–17 (four 4V bursts, then the 2V). DMR: 0–17 (bursts A–F, three frames
     /// each). NXDN: 0–15 (four frames of four; a 9600 baud FACCH1 takes two at a time).
     /// ProVoice: 0–3 (its frame's four). None where the count isn't known: a lost burst, a
@@ -331,7 +341,7 @@ impl AirFrame {
     }
 }
 
-/// [`Tap::VoiceErrors`]'s note: how one voice frame decoded.
+/// [`Tap::VoiceFrames`]'s and [`Tap::VoiceErrors`]'s note: how one voice frame decoded.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FrameErrors {
     pub codec: Codec,
@@ -344,6 +354,22 @@ pub struct FrameErrors {
     pub erased: bool,
     /// What the vocoder made of it.
     pub kind: FrameKind,
+    /// AMBE+2: the tone the vocoder played for it, (ID, level) ([`VoiceFrame::tone`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<(u8, u8)>,
+}
+
+impl FrameErrors {
+    /// `f`'s.
+    pub fn of(f: &VoiceFrame) -> FrameErrors {
+        FrameErrors { codec: f.codec, errs: f.errs, e0: f.e0, erased: f.erased, kind: f.kind, tone: f.tone }
+    }
+
+    /// The frame it is the note of, whose bits (0 / 1, at least [`Codec::bits`] of them) are `bits`.
+    pub fn frame(&self, bits: &[u8]) -> Option<VoiceFrame> {
+        let bits = bits.get(..self.codec.bits())?.to_vec();
+        Some(VoiceFrame { codec: self.codec, bits, e0: self.e0, errs: self.errs, erased: self.erased, kind: self.kind, tone: self.tone })
+    }
 }
 
 /// A piece of a tap's stream ([`crate::HostMessage::Tap`], on topic [`Tap::topic`]), and the
@@ -382,6 +408,19 @@ pub struct TapChunk {
     pub call_id: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub talkgroup: Option<u32>,
+    /// The radio talking, where the call has named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<u32>,
+    /// What the channel's voice is, named as [`crate::CallInfo::voice_mode`] names it: "p25" |
+    /// "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice" | "fm" | "am". Empty while a
+    /// channel that takes any (a conventional one on auto) hasn't heard which.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub voice_mode: String,
+    /// [`Tap::VoiceFrames`]: its transmission is encrypted on the air, so what it holds was
+    /// (or may have been) decrypted with the system's keys. Such a chunk goes only to plugins
+    /// that may have decrypted calls (`shareDecrypted`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub decrypted: bool,
     /// Unix seconds when the recorder handed it out (its data is from just before).
     pub time: f64,
     pub data: TapData,
@@ -395,6 +434,12 @@ impl TapChunk {
         self.notes.iter().filter_map(|n| Some((self.offset + n.at as u64, n.get()?))).collect()
     }
 
+    /// [`Tap::VoiceFrames`]: its frames, each with its place in the stream (one without its note, left out).
+    pub fn voice_frames(&self) -> Vec<(u64, VoiceFrame)> {
+        let TapData::Frames { frames, .. } = &self.data else { return Vec::new() };
+        self.notes_as::<FrameErrors>().into_iter().filter_map(|(at, n)| Some((at, n.frame(frames.get((at - self.offset) as usize)?)?))).collect()
+    }
+
     /// How many items (samples, frames, or notes where there's no data) it adds to its stream.
     pub fn items(&self) -> usize {
         if self.data == TapData::None { self.notes.len() } else { self.data.len() }
@@ -404,6 +449,10 @@ impl TapChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn v_has_no(v: &Value, keys: &[&str]) -> bool {
+        keys.iter().all(|k| v.get(k).is_none())
+    }
 
     #[test]
     fn ids_are_the_serde_names_and_topics() {
@@ -424,7 +473,7 @@ mod tests {
     #[test]
     fn a_chunk_round_trips_with_its_data_and_notes() {
         let frame: Vec<u8> = (0..88).map(|i| (i % 3 == 0) as u8).collect();
-        let air = AirFrame { voice_mode: "p25".into(), n: Some(9), errs: 2, encrypted: Some(true), algid: Some(0x84), keyid: Some(1), mi: Some("00".repeat(9)), ..Default::default() };
+        let air = AirFrame { n: Some(9), errs: 2, encrypted: Some(true), algid: Some(0x84), keyid: Some(1), mi: Some("00".repeat(9)), ..Default::default() };
         let chunk = TapChunk {
             tap: Tap::VoiceAir,
             stream: 7,
@@ -439,6 +488,9 @@ mod tests {
             slot: 0,
             call_id: Some(4),
             talkgroup: Some(101),
+            unit: None,
+            voice_mode: "p25".into(),
+            decrypted: false,
             time: 1.75e9,
             data: TapData::Frames { codec: Codec::Imbe, frames: vec![frame.clone()] },
             notes: vec![TapNote::of(0, &air)],
@@ -452,6 +504,17 @@ mod tests {
         let TapData::Frames { frames, .. } = &back.data else { panic!("frames") };
         assert_eq!(frames[0][..88], frame[..]);
         assert_eq!(back.notes_as::<AirFrame>(), [(9, air)]);
+        assert!(v_has_no(&serde_json::to_value(&chunk).unwrap(), &["unit", "decrypted"]) && back.voice_mode == "p25");
+
+        // A vocoded frame: its bits and its note are the frame again, and a saved line of them reads as one.
+        let vf = VoiceFrame { codec: Codec::Ambe, bits: (0..49).map(|i| (i % 2) as u8).collect(), e0: 0, errs: 3, erased: false, kind: FrameKind::Tone, tone: Some((5, 20)) };
+        let vocoded = TapChunk { tap: Tap::VoiceFrames, offset: 40, decrypted: true, data: TapData::Frames { codec: Codec::Ambe, frames: vec![vf.bits.clone()] }, notes: vec![TapNote::of(0, &FrameErrors::of(&vf))], ..chunk };
+        let back: TapChunk = serde_json::from_value(serde_json::to_value(&vocoded).unwrap()).unwrap();
+        assert!(back.decrypted);
+        assert_eq!(back.voice_frames(), [(40, vf.clone())]);
+        let mut line = serde_json::to_value(&back.notes[0]).unwrap();
+        line["bits"] = bits_hex(&vf.bits).into();
+        assert_eq!(serde_json::from_value::<VoiceFrame>(line).unwrap(), vf);
 
         let pcm = TapData::Pcm { rate: 22_050, samples: vec![-3, 0, 32_767] };
         let v = serde_json::to_value(&pcm).unwrap();

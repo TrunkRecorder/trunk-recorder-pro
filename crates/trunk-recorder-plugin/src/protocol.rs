@@ -1105,7 +1105,7 @@ pub enum FrameKind {
 }
 
 /// One vocoder frame (20 ms) as the recorder decoded it: the `voice` topic's,
-/// and a line of a call's `.frames.jsonl`. In JSON its `bits` are hex, MSB
+/// and a line of the `voice.frames` signal tap's sidecar. In JSON its `bits` are hex, MSB
 /// first, the last byte zero-padded ([`bits_hex`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "FrameJson")]
@@ -1134,7 +1134,7 @@ impl VoiceFrame {
         self.erased || !matches!(self.kind, FrameKind::Voice | FrameKind::Tone)
     }
 
-    /// A call's frames as `.frames.jsonl`: one a line, in order (frame k
+    /// Frames as JSON lines: one a line, in order (frame k
     /// covers the call's audio from k × 20 ms).
     pub fn to_jsonl(frames: &[VoiceFrame]) -> String {
         frames.iter().map(|f| serde_json::to_string(f).unwrap_or_default() + "\n").collect()

@@ -11,6 +11,8 @@ import { Group } from "./SetupLayout.tsx";
 import type { TapInfo, TapRoute } from "./protocol.ts";
 
 const FILES: Record<TapInfo["carries"], string> = { samples: ".wav + .jsonl", frames: ".jsonl", notes: ".jsonl" };
+// (The vocoded frames are also an .sdr file, where the voice has a layout there: P25 and DMR.)
+const filesOf = (t: TapInfo) => (t.id === "voice.frames" ? ".sdr + .jsonl" : FILES[t.carries]);
 
 export function SignalTaps() {
   const s = useApp();
@@ -112,7 +114,7 @@ export function SignalTaps() {
                       </div>
                     </td>
                     <td>
-                      Files <span className="muted mono">{t ? FILES[t.carries] : ""}</span>
+                      Files <span className="muted mono">{t ? filesOf(t) : ""}</span>
                     </td>
                     <td>
                       <button type="button" className="btn ghost small danger" aria-label={`Remove tap ${i + 1}`} onClick={() => change((x) => void x.splice(i, 1))}>

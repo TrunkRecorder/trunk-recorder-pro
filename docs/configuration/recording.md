@@ -42,18 +42,16 @@ plugin fails**).
 | `archiveWav` | | `true` | bool | Per system. **Keep .wav**: keep each call's `.wav` once the plugins are done with it. `false`: deleted then (with no plugin, never written) |
 | `archiveM4a` | | `false` | bool | Per system. **Keep .m4a**: keep an `.m4a` of each call. Needs an encoder: see `m4a`. An `.m4a` is still made for a plugin that uploads M4A (OpenMHz, say) whether this is on or not; off, that one is deleted once the plugins are done |
 | `callLog` | | `true` | bool | Per system. **Keep call JSON**: the same, for the call JSON |
-| `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps every file the call has (WAV, M4A, JSON, frames) whatever the three above say (a skip doesn't) |
+| `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps every file the call has (WAV, M4A, JSON) whatever the three above say (a skip doesn't) |
 | `filenameFormat` | | `""` | string | Per system. Folders and file names under `captureDir`. See [File names](#file-names) |
 | `dropDuplicateCalls` | | `true` | bool | Multi-site: a call heard on several sites of one system is saved once, keeping the cleanest copy or the talkgroup's Preferred Site. See [systems.md](systems.md#multi-site) |
 | `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (also `"fixed-point"`; usually sounds most natural), `"enhanced"` or `"mbelib"` (any case; anything else is refused when the config is read) |
-| `captureFrames` | | `false` | bool | Also save each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for diagnosis and `trunk-pro tool revoice` |
 | `taps` | | `[]` | list | Signal taps saved to files: what a voice channel's receiver makes on the way to a call's audio. See [`taps`](#taps) |
 | `m4a` | | see below | object | The M4A encoder for `archiveM4a` and for plugins that upload M4A |
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
 
 If `archiveM4a` is on but no `.m4a` could be made (no encoder, or the encode failed), the `.wav` is
-kept in its place: a call whose audio is to be kept never loses all of it. The frames file
-(`captureFrames`) stays when either kind of audio is kept.
+kept in its place: a call whose audio is to be kept never loses all of it.
 
 When a call flagged encrypted at its grant isn't kept (`recordEncrypted` off), it isn't recorded at
 all, unless its system has [encryption keys](systems.md#encryption-keys-keys). One that turns
@@ -100,7 +98,7 @@ beside the rows in **Setup → Recording → Advanced → Signal taps**.
 "recording": {
   "taps": [
     { "tap": "fm.discriminator", "systems": [3] },
-    { "tap": "voice.errors" }
+    { "tap": "voice.frames" }
   ]
 }
 ```
@@ -113,7 +111,8 @@ beside the rows in **Setup → Recording → Advanced → Signal taps**.
 | Tap | From | Files | What it is |
 |---|---|---|---|
 | `fm.discriminator` | Analog FM channels | `.wav` + `.jsonl` | The FM demodulator's output before de-emphasis, the voice filters and the CTCSS notch: 16-bit mono at 22,050 Hz, ±5 kHz deviation as half of full scale, while the squelch is open. What `multimon-ng` and its kind decode POCSAG, FLEX and other data from |
-| `voice.air` | Digital voice channels: P25 (Phase 1 and 2), DMR, NXDN, EDACS ProVoice | `.jsonl` | Each voice frame as it came off the air: error-corrected, **not** decrypted (encrypted voice stays encrypted, whether or not the recorder has its key), with what it was sent as (`voice_mode`), its place in the superframe, its bit errors and the encryption (`algid`, `keyid`, `mi`) it is under, as far as the air has said |
+| `voice.air` | Digital voice channels: P25 (Phase 1 and 2), DMR, NXDN, EDACS ProVoice | `.jsonl` | Each voice frame as it came off the air: error-corrected, **not** decrypted (encrypted voice stays encrypted, whether or not the recorder has its key), with its place in the superframe, its bit errors and the encryption (`algid`, `keyid`, `mi`) it is under, as far as the air has said |
+| `voice.frames` | Digital voice channels | `.sdr` + `.jsonl` | Each voice frame the vocoder was given: after error correction and, where the recorder has the key, decryption, with its bit errors and what the vocoder made of it. To hear a transmission through another vocoder (`trunk-pro tool revoice`), or in MimoSDR: the `.sdr` is its call file ([sdr-stream](https://github.com/MimoCAD/sdr-stream)), written for P25 and DMR (NXDN and ProVoice, which the format doesn't cover, have the `.jsonl` alone) |
 | `voice.errors` | Digital voice channels | `.jsonl` | No data, only figures: for each frame vocoded, the bit errors corrected and what the vocoder made of it (`voice`, `repeat`, `muted`, …) |
 
 Each **transmission** on a channel is a stream with files of its own, since a channel is only
@@ -131,14 +130,17 @@ each line after it is one item of it that something is known about, `at` its pla
 (a sample of the `.wav`, a frame, or a note of a tap with no data):
 
 ```json
-{"tap":"voice.air","stream":41,"system":0,"system_id":3,"short_name":"dcfd","freq_hz":854612500.0,"slot":0,"call_id":912,"talkgroup":101,"time":1795600000.2,"data":{"kind":"frames","codec":"imbe","frames":[]},"items":36}
-{"at":0,"bits":"a3f0…","voice_mode":"p25","n":0,"errs":1,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
-{"at":1,"bits":"7c21…","voice_mode":"p25","n":1,"errs":0,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
+{"tap":"voice.air","stream":41,"system":0,"system_id":3,"short_name":"dcfd","freq_hz":854612500.0,"slot":0,"call_id":912,"talkgroup":101,"unit":7001,"voice_mode":"p25","time":1795600000.2,"data":{"kind":"frames","codec":"imbe","frames":[]},"items":36}
+{"at":0,"bits":"a3f0…","n":0,"errs":1,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
+{"at":1,"bits":"7c21…","n":1,"errs":0,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
 ```
 
-`call_id` and `talkgroup` are the call on the channel when the stream began, left out when there
-was none yet. A frame's `bits` are as in a call's `.frames.jsonl`: hex, first bit first, the last
-byte padded with zeros. The line and note fields are those of the plugin topic:
+`call_id`, `talkgroup` and `unit` are the call on the channel and who is talking, as soon as the
+stream knew them, left out when it never did; `voice_mode` is what the voice was sent as. A
+frame's `bits` are hex, first bit first, the last byte padded with zeros. A line of `voice.frames`
+is a whole vocoder frame (`codec`, `bits`, `errs`, `e0`, `erased`, `kind`), which is what
+`trunk-pro tool revoice` reads; its first line says `"decrypted":true` when the recorder decrypted
+the voice with your keys. The line and note fields are those of the plugin topic:
 [Plugin events](../developer/plugins/events.md#tapid).
 
 Taps apply at the next **Start**. They aren't a call's files: no plugin uploads them, the archive

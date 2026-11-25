@@ -7350,10 +7350,6 @@
         "maxRecorders": {
           "type": "number"
         },
-        "captureFrames": {
-          "type": "boolean",
-          "description": "Save each digital call's vocoder frames (<call>.sdr; NXDN <call>.frames.jsonl) for diagnosis."
-        },
         "taps": {
           "type": "array",
           "items": {
@@ -7420,7 +7416,6 @@
         "callLog",
         "callTimeoutS",
         "captureDir",
-        "captureFrames",
         "conversationMode",
         "digitalLevelDb",
         "dropDuplicateCalls",
@@ -11861,7 +11856,7 @@
         "kind"
       ],
       "additionalProperties": false,
-      "description": "One vocoder frame (20 ms) as the recorder decoded it: the `voice` plugin topic's, and a line of a call's `.frames.jsonl`."
+      "description": "One vocoder frame (20 ms) as the recorder decoded it: the `voice` plugin topic's, and a line of the `voice.frames` signal tap's sidecar."
     }
   }
 }

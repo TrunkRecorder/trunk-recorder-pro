@@ -3640,14 +3640,8 @@ export function Setup() {
               />
             </Group>
             {can("service") && (
-              <Group title="Startup and diagnostics">
+              <Group title="Startup">
                 <Toggle label="Record when the app starts" checked={c.server.autoStart} onChange={(v) => updateConfig((x) => void (x.server.autoStart = v))} />
-                <Toggle
-                  label="Save vocoder frames"
-                  hint="<call>.sdr, for diagnostics and MimoSDR"
-                  checked={c.recording.captureFrames}
-                  onChange={(v) => updateConfig((x) => void (x.recording.captureFrames = v))}
-                />
               </Group>
             )}
           </section>

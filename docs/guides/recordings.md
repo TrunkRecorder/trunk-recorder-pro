@@ -85,7 +85,6 @@ of the recordings folder) are listed in [File names](../configuration/recording.
 | `<name>.wav` | 8 kHz mono 16-bit PCM. Written unless nothing keeps or needs it (see [The archive](#the-archive-whats-kept-and-whats-deleted)) |
 | `<name>.json` | The [call JSON](#the-call-json) |
 | `<name>.m4a` | With **Keep .m4a**, or when an upload plugin wants M4A (then deleted once the plugins are done, unless kept) |
-| `<name>.sdr` | With **Save vocoder frames**, for digital calls (NXDN: `<name>.frames.jsonl`) |
 
 ## The call JSON
 
@@ -236,7 +235,6 @@ Also:
 - **An M4A made only for a plugin** (with **Keep .m4a** off) is deleted once the plugins are done.
 - **A call's audio is never all lost** when some of it is to be kept: if the M4A is to be kept and
   none could be made, the WAV stays in its place.
-- **The frames file** (`.sdr`) stays when either kind of audio is kept.
 - **Nothing that won't be kept is written** when no plugin takes calls. With plugins, the files
   they need are written (to the RAM spool, if it's on) and deleted once they're done.
 
@@ -348,13 +346,11 @@ A call that isn't kept logs `Call not saved - no audio, or shorter than the mini
   **Fixed-point** (the default) is Pavel Yazev's decoder, Trunk Recorder's `softVocoder: false`, and
   usually sounds most natural. **Enhanced** is Trunk Recorder's floating-point synthesis. **mbelib**
   behaves exactly like mbelib.
-- **Save vocoder frames** (`captureFrames`, off): also saves each digital call's raw vocoder frames
-  as `<name>.sdr`, MimoSDR's call file ([sdr-stream](https://github.com/MimoCAD/sdr-stream)):
-  the call's identity and the voice still coded, about a tenth the size of the WAV. MimoSDR's
-  tools read it, and `trunk-pro tool revoice` turns it back into a WAV with a different vocoder, so
-  you can compare them on the same call. NXDN, which the format doesn't cover, is saved as
-  `<name>.frames.jsonl`. See the [command line](../command-line.md).
 - **Signal taps** (`taps`, none; Setup → Recording → Advanced): data from part-way through a
   channel's receiver, a file for each transmission with a `.jsonl` beside it: the FM discriminator
-  (for pager and data decoders), digital voice frames as they came off the air, each frame's errors. See
-  [`taps`](../configuration/recording.md#taps).
+  (for pager and data decoders), digital voice frames as they came off the air, each frame's errors.
+  The **Voice frames as vocoded** tap (`voice.frames`) saves each digital transmission's voice
+  still coded, about a tenth the size of the WAV, as an `.sdr` (MimoSDR's call file,
+  [sdr-stream](https://github.com/MimoCAD/sdr-stream)) and a `.jsonl`: MimoSDR's tools read it, and
+  `trunk-pro tool revoice` turns it back into a WAV with a different vocoder, so you can compare
+  them on the same transmission. See [`taps`](../configuration/recording.md#taps).
