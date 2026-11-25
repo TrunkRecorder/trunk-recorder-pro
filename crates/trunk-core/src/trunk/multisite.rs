@@ -88,36 +88,73 @@ impl Span {
 
     /// Takes in all of `o` (give or take [`TWIN_WINDOW_S`] at either end).
     pub fn holds(self, o: Span) -> bool {
-        o.start_s >= self.start_s - TWIN_WINDOW_S && o.end_s <= self.end_s + TWIN_WINDOW_S
+        self.holds_within(o, TWIN_WINDOW_S)
+    }
+
+    /// Takes in all of `o`, give or take `slack_s` at either end.
+    pub fn holds_within(self, o: Span, slack_s: f64) -> bool {
+        o.start_s >= self.start_s - slack_s && o.end_s <= self.end_s + slack_s
     }
 }
+
+/// Copies of the same audio, on a system's sites, start and end within
+/// this of each other (they're decoded off one clock).
+pub const AUDIO_SLACK_S: f64 = super::record::TRANSMISSION_GAP_S;
 
 /// A copy saved, as the others are weighed against it.
 pub struct Kept {
     pub call: Call,
     clean_s: f64,
     heard: Span,
+    audio: bool,
     talkers: Vec<u32>,
 }
 
 impl Kept {
     pub fn of(h: &Held) -> Kept {
-        Kept { call: h.call.clone(), clean_s: h.clean_s(), heard: h.heard(), talkers: h.talkers() }
+        Kept { call: h.call.clone(), clean_s: h.clean_s(), heard: h.heard(), audio: h.audio.is_some(), talkers: h.talkers() }
     }
 
-    /// `h` is a duplicate of this: another site's copy of the same audio
-    /// ([`Held::heard`]), the same talkers in it (those known on both),
+    /// `h` is a duplicate of this: another site's copy of the same
+    /// talkgroup's same audio ([`Held::heard`], within [`AUDIO_SLACK_S`]),
+    /// the same talkers in it (those known on both, [`Held::talkers`]),
     /// decoded no better (but for [`PREFERRED_SHARE`], as [`pick`] has it).
     /// A copy of what this missed (a transmission it didn't have, a talker it
     /// didn't hear, a part it lost to a fade) isn't. How long each site's
     /// control channel went on mentioning the channel afterwards, and whom
-    /// it named then, is no part of it.
+    /// it named then, is no part of it; nor which call each was grouped in
+    /// (saved copies of other calls are weighed too: [`Recent`]).
     pub fn holds(&self, h: &Held) -> bool {
+        let (a, b) = (&self.call, &h.call);
+        let slack = if self.audio && h.audio.is_some() { AUDIO_SLACK_S } else { TWIN_WINDOW_S };
         let theirs = h.talkers();
-        self.call.site != h.call.site
-            && self.heard.holds(h.heard())
+        a.site != b.site
+            && (a.system, a.talkgroup, a.unit_to_unit) == (b.system, b.talkgroup, b.unit_to_unit)
+            && self.heard.holds_within(h.heard(), slack)
             && (self.talkers.is_empty() || theirs.iter().all(|t| self.talkers.contains(t)))
             && self.clean_s >= h.clean_s() * PREFERRED_SHARE
+    }
+}
+
+/// The copies saved lately, of every call: a copy grouped with another
+/// call than its own (sites whose calls begin and end out of step) is still
+/// found to be a duplicate of one saved ([`Kept::holds`]).
+#[derive(Default)]
+pub struct Recent {
+    kept: Vec<Kept>,
+}
+
+impl Recent {
+    /// The one saved that holds `h`, if any (those whose audio ended long
+    /// before `h`'s began are forgotten).
+    pub fn holding(&mut self, h: &Held) -> Option<&Kept> {
+        let start_s = h.heard().start_s;
+        self.kept.retain(|k| k.heard.end_s > start_s - 2.0 * TWIN_WINDOW_S);
+        self.kept.iter().find(|k| k.holds(h))
+    }
+
+    pub fn push(&mut self, k: Kept) {
+        self.kept.push(k);
     }
 }
 
@@ -129,7 +166,7 @@ pub struct Held {
     /// Where it was recorded.
     pub on: super::record::RecordedOn,
     /// When its audio was heard, from the first to the last (none: it has none).
-    audio: Option<Span>,
+    pub(crate) audio: Option<Span>,
 }
 
 impl Held {
@@ -145,12 +182,25 @@ impl Held {
         self.audio.unwrap_or_else(|| Span::of(&self.call))
     }
 
-    /// Its talkers known, those heard by the time its audio ended (the
-    /// control channel may name the next talker on the channel before this
-    /// call is over).
+    /// Its talkers, those with a transmission's worth of its audio
+    /// ([`super::record::TRANSMISSION_GAP_S`], from where each is placed in
+    /// it to the next): not one the control channel named as the audio
+    /// ended (the next talker's grant), nor one that only keyed up before
+    /// another took over. Not yet placed in its audio (or none): every one named.
     pub fn talkers(&self) -> Vec<u32> {
-        let end_s = self.heard().end_s + super::record::TRANSMISSION_GAP_S;
-        self.call.sources.iter().filter(|s| s.src != 0 && s.time_s <= end_s).map(|s| s.src).collect()
+        let named: Vec<&super::calls::CallSource> = self.call.sources.iter().filter(|s| s.src != 0).collect();
+        let len = self.rec.audio.len();
+        if len == 0 || named.iter().any(|s| s.audio_pos.is_none()) {
+            return named.iter().map(|s| s.src).collect();
+        }
+        let min = (super::record::TRANSMISSION_GAP_S * crate::mbe::SAMPLE_RATE as f64) as usize;
+        let at = |i: usize| named.get(i).and_then(|s| s.audio_pos).unwrap_or(len).min(len);
+        let mut out: Vec<u32> = (0..named.len()).filter(|&i| at(i + 1).saturating_sub(at(i)) >= min).map(|i| named[i].src).collect();
+        if out.is_empty() {
+            // (All too short to tell: the one with the most of it.)
+            out.extend((0..named.len()).max_by_key(|&i| at(i + 1).saturating_sub(at(i))).map(|i| named[i].src));
+        }
+        out
     }
 
     /// Leave out what the saved call won't have ([`Recorded::trim`]).
@@ -266,7 +316,9 @@ impl MultiSite {
     /// Copy `c` began: a call of its own, or (`link`: a multi-site call may
     /// be saved once) another site's copy of one begun with it. What that tells.
     pub fn start(&mut self, c: &Call, link: bool) -> Option<Event> {
-        let of = self.convs.values().filter(|v| link && v.takes(c)).map(|v| v.id).min();
+        // (The one begun nearest it: copies of the transmission after another begin together too.)
+        let near = |v: &Conversation| (v.members[0].call.start_s - c.start_s).abs();
+        let of = self.convs.values().filter(|v| link && v.takes(c)).min_by(|a, b| near(a).total_cmp(&near(b)).then(a.id.cmp(&b.id))).map(|v| v.id);
         let Some(id) = of else {
             self.of.insert(c.id, c.id);
             let v = Conversation::new(c);
@@ -413,6 +465,23 @@ mod tests {
         }
         begin(&mut m, tg(5, 1, 101, 10.0));
         assert_eq!(m.twins(5), [(1, 0)], "another talkgroup, or granted too long before, isn't a copy");
+    }
+
+    /// A copy that two calls going on could take joins the one begun nearest
+    /// it, not the older (#231: the transmission after another begins at
+    /// every site while the last one's copies are still going).
+    #[test]
+    fn a_copy_joins_the_call_begun_nearest_it() {
+        let mut m = MultiSite::default();
+        begin(&mut m, call(1, 0, 0.0));
+        begin(&mut m, call(2, 1, 0.1));
+        // The next transmission, on site 0 and 1 again (their last copies still going): a call of its own.
+        begin(&mut m, call(3, 0, 2.0));
+        begin(&mut m, call(4, 1, 2.05));
+        // Site 2's copy of it, which the first call (no copy from site 2 yet) could take too.
+        begin(&mut m, call(5, 2, 2.1));
+        assert_eq!(m.call_of(5), 3, "the second call's");
+        assert_eq!(m.call_of(4), 3);
     }
 
     /// One copy from each site: a talkgroup's next transmission on a site

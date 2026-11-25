@@ -28,9 +28,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   - **Duplicates judged by audio.** A transmission heard on several sites was sometimes saved twice under one
     `transmission_id`. A copy was a duplicate only while the kept copy's time took in its own, and that time ran to the
     last control-channel mention. A site whose copy waited out the timeout, or heard the next talker's grant, so
-    stretched its copy past the kept one. Copies are now compared by when their audio was heard, and by the talkers in
-    it.
-  - **`end_reason`.** Each call's record, trunked or conventional, says why it ended: `terminator`, `squelch`,
+    stretched its copy past the kept one. Copies are now compared by when their audio was heard (within half a second),
+    and by the talkers in it: only those with half a second of its audio, not the next talker's grant as it ends nor a
+    key-up before another radio took over.
+  - **Duplicates found across calls.** Sites whose calls begin out of step (one missed a transmission, or its grants
+    come early) could have a copy grouped with the transmission before, so the same audio was saved under two calls
+    and two ids. A copy is now also weighed against the copies saved lately of the same talkgroup, and joins the call
+    begun nearest it.
+  - **One `transmission_id` per transmission.** Copies of one call took their id's radio from their own first talker,
+    so two saved copies could differ. They now all name the best copy's.
+  - **`end_reason`** (SDK 0.16.1, additive). Each call's record, trunked or conventional, says why it ended: `terminator`, `squelch`,
     `next_transmission`, `timeout`, `too_long`, `reassigned` or `stopped`. So does the log's **Concluding Recorded Call** line (`Ended: …`).
 
 - **Setup: radios that can't be told apart, or another source's, say so, every kind alike** (#235, thanks

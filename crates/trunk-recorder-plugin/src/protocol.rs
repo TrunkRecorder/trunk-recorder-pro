@@ -499,8 +499,10 @@ pub struct CallRecord {
     pub call_num: u64,
     /// The same on every copy of one transmission (a system's sites, each
     /// recording it): `<system>-<talkgroup>-<radio>-<start ms>`, the radio
-    /// the first known to talk (0: none), the start the first copy's. With
-    /// conversation mode on, a call's first transmission names it.
+    /// the first heard talking on the best copy, with half a second of its
+    /// audio (not one that only keyed up; 0: none known), the start the
+    /// first copy's. With conversation mode on, a call's first transmission
+    /// names it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub transmission_id: String,
     /// Why it ended: `terminator` (its voice channel's, conversation mode

@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "trunk-recorder-plugin"
-version = "0.16.0"
+version = "0.16.1"
 dependencies = [
  "schemars 1.2.2",
  "serde",

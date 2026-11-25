@@ -34,7 +34,7 @@ use num_complex::Complex32;
 use super::calls::{Call, CallConfig, CallEvent, CallId, CallIds, CallManager, Policy, Reason, RecorderHost};
 use super::conventional::{ConvChannel, ConvConfig, ConvMode, ConvOut, Conventional};
 use super::message::{AdjacentSite, Message, MessageType, Neighbours};
-use super::multisite::{Held, Kept, LiveKey, MultiSite};
+use super::multisite::{Held, Kept, LiveKey, MultiSite, Recent};
 use super::record::{save_call, RecordedOn, SaveContext};
 use super::recorded::Recorded;
 use super::inband::InBandSpec;
@@ -1725,6 +1725,8 @@ struct Core {
     conv_out: Vec<ConvOut>,
     /// Copies of one call on several sites.
     multisite: MultiSite,
+    /// The copies saved lately, a copy of another call weighed against them too.
+    recent: Recent,
     /// (system, ALGID, key ID) of keys found to decrypt to noise, told once.
     wrong_keys: BTreeSet<(u16, u8, u16)>,
     now_s: f64,
@@ -1851,6 +1853,7 @@ impl Core {
             call_ids: ids,
             conv_out: Vec::new(),
             multisite: MultiSite::default(),
+            recent: Recent::default(),
             wrong_keys: BTreeSet::new(),
             now_s: 0.0,
             events,
@@ -2183,7 +2186,7 @@ impl Core {
                         if tune_ref {
                             self.radio.score_call(on.source, &call, rec.freq_error_hz());
                         }
-                        self.write_call(Held::new(call.clone(), rec, on), None, None, &[]);
+                        self.write_call(Held::new(call.clone(), rec, on), None, None, None, &[]);
                     }
                     let (_, told) = self.multisite.conclude(&call, None, |_| false);
                     self.events.push(Event::CopyEnd(call));
@@ -2495,31 +2498,39 @@ impl Core {
         // (Asked before its last copy ends, which forgets the conversation.)
         let call_num = self.multisite.call_of(call.id);
         let (copies, told) = self.multisite.conclude(call, held, prefers);
-        // Best first, each saved unless one saved holds it (Kept::holds); those are its duplicates.
-        // (None kept: each was reported not saved.) The copies share the first's start, in their transmission_id.
+        // Best first, each saved unless one saved holds it (Kept::holds), of this call or another lately
+        // (Recent: sites whose calls begin out of step group a copy with the wrong one); those are duplicates.
+        // (None kept: each was reported not saved.) The copies share the first's start and the best's first
+        // talker, in their transmission_id.
         let first_s = copies.iter().map(|h| h.call.start_s).fold(f64::INFINITY, f64::min);
+        let first_talker = copies.first().and_then(|h| h.talkers().first().copied());
         // The sites it was recorded on: each saved call of it says them all.
         let sites: Vec<u16> = copies.iter().filter_map(|h| h.call.site).collect();
         let mut kept: Vec<Kept> = Vec::new();
         for h in copies {
-            match kept.iter().find(|k| k.holds(&h)) {
-                Some(k) => self.events.push(Event::Duplicate { call: h.call, kept: k.call.clone() }),
+            let dup = kept.iter().find(|k| k.holds(&h)).or_else(|| self.recent.holding(&h)).map(|k| k.call.clone());
+            match dup {
+                Some(kept) => self.events.push(Event::Duplicate { call: h.call, kept }),
                 None => {
                     let k = Kept::of(&h);
-                    if self.write_call(h, Some(first_s), Some(call_num), &sites) {
+                    if self.write_call(h, Some(first_s), Some(call_num), first_talker, &sites) {
                         kept.push(k);
                     }
                 }
             }
+        }
+        for k in kept {
+            self.recent.push(k);
         }
         told
     }
 
     /// A finished call's record and audio, as [`Event::Concluded`]; false
     /// when not kept (silent, or shorter than its system's minimum).
-    /// `first_s`: when the first of its copies began, `call_num`: its call's id (multi-site);
+    /// `first_s`: when the first of its copies began, `call_num`: its call's id, `first_talker`: the one its
+    /// transmission_id names (multi-site);
     /// `sites`: the sites its copies were recorded on (its own among them).
-    fn write_call(&mut self, h: Held, first_s: Option<f64>, call_num: Option<CallId>, sites: &[u16]) -> bool {
+    fn write_call(&mut self, h: Held, first_s: Option<f64>, call_num: Option<CallId>, first_talker: Option<u32>, sites: &[u16]) -> bool {
         let (site, system) = (h.call.site, h.call.system);
         let Some(sys) = self.systems.get(system as usize) else { return false };
         let trunk = site.and_then(|s| self.trunks.get(s as usize));
@@ -2554,6 +2565,7 @@ impl Core {
                 signals: &sys.cfg.signals,
                 first_s,
                 call_num,
+                first_talker,
             },
         );
         match saved {
@@ -3484,6 +3496,88 @@ mod tests {
             assert_eq!(saved[0].call.site, Some(if west_better { 1 } else { 0 }), "the better copy");
             assert_eq!(ev.iter().filter(|x| matches!(x, Event::Duplicate { .. })).count(), 1);
         }
+    }
+
+    /// #231 (VoltTech21's 195327 / 195328): one site's control channel names
+    /// the next talker as the audio ends, before its call is over: no talker
+    /// of this transmission, and the copy is still a duplicate.
+    #[test]
+    fn the_next_talker_named_as_the_audio_ends_is_no_talker_of_it() {
+        let mut e = east_west(false);
+        let (east, west) = (851_500_000, 851_600_000);
+        say(&mut e, 0, MessageType::Grant, 0.0, east, 7);
+        say(&mut e, 1, MessageType::Grant, 0.0, west, 7);
+        for t in [0.5, 0.7, 0.9, 1.1] {
+            heard(&mut e, 0, east, t, Some(3));
+            heard(&mut e, 1, west, t, Some(0));
+        }
+        say(&mut e, 0, MessageType::Update, 1.15, east, 9);
+        for i in [0, 1] {
+            tick(&mut e, i, 20.0);
+            e.emit_call_events();
+        }
+        let ev = e.drain_events();
+        let saved = concluded(&ev);
+        assert_eq!(saved.iter().map(|k| k.call.site).collect::<Vec<_>>(), [Some(1)], "west's, east's a duplicate though it named 9");
+    }
+
+    /// #231 (195776 / 195777): west missed the first transmission, so its copy
+    /// of the second, begun while east's copy of the first was still going,
+    /// was taken for a copy of the first; east's copy of the second began a
+    /// call of its own. Each transmission is still saved once: a copy is
+    /// weighed against those saved lately of every call, not its own alone.
+    /// And copies of one call share a transmission_id though one heard a key-up
+    /// by another radio first (196680 / 196681).
+    #[test]
+    fn a_copy_grouped_with_the_wrong_call_is_still_a_duplicate() {
+        let mut e = east_west(false);
+        let (east, west) = (851_500_000, 851_600_000);
+        say(&mut e, 0, MessageType::Grant, 0.0, east, 7);
+        for t in [0.5, 0.7, 0.9, 1.1] {
+            heard(&mut e, 0, east, t, Some(0));
+        }
+        // The second transmission: west's grant, east's channel carrying on.
+        say(&mut e, 1, MessageType::Grant, 2.6, west, 9);
+        say(&mut e, 0, MessageType::Update, 2.6, east, 9);
+        for t in [2.8, 3.0, 3.2, 3.4] {
+            heard(&mut e, 0, east, t, Some(0));
+            heard(&mut e, 1, west, t + 0.02, Some(0));
+        }
+        for i in [0, 1] {
+            tick(&mut e, i, 20.0);
+            e.emit_call_events();
+        }
+        let ev = e.drain_events();
+        let saved = concluded(&ev);
+        let talkers = |k: &Concluded| k.call.sources.iter().map(|s| s.src).collect::<Vec<_>>();
+        assert_eq!(saved.iter().map(|k| talkers(k)).collect::<Vec<_>>(), [vec![7], vec![9]], "{:?}", saved.iter().map(|k| (&k.record.transmission_id, k.call.site)).collect::<Vec<_>>());
+        assert_eq!(ev.iter().filter(|x| matches!(x, Event::Duplicate { .. })).count(), 1);
+    }
+
+    /// #231 (196680 / 196681): one site heard a radio key up for a fifth of a
+    /// second before another took over, the other only the second radio: one
+    /// transmission, saved once, its id naming the radio that talked.
+    #[test]
+    fn a_key_up_before_another_talker_is_no_talker_of_its_own() {
+        let mut e = east_west(false);
+        let (east, west) = (851_500_000, 851_600_000);
+        say(&mut e, 0, MessageType::Grant, 0.4, east, 4);
+        say(&mut e, 1, MessageType::Grant, 0.4, west, 6);
+        for t in [0.5, 0.7, 0.9, 1.1, 1.3] {
+            if t == 0.7 {
+                say(&mut e, 0, MessageType::Update, 0.65, east, 6);
+            }
+            heard(&mut e, 0, east, t, Some(0));
+            heard(&mut e, 1, west, t, Some(2));
+        }
+        for i in [0, 1] {
+            tick(&mut e, i, 20.0);
+            e.emit_call_events();
+        }
+        let ev = e.drain_events();
+        let saved = concluded(&ev);
+        assert_eq!(saved.len(), 1, "{:?}", saved.iter().map(|k| (&k.record.transmission_id, k.call.site)).collect::<Vec<_>>());
+        assert!(saved[0].record.transmission_id.contains("-101-6-"), "{}", saved[0].record.transmission_id);
     }
 
     /// #240: conversation mode off, a transmission ends on its voice

@@ -103,6 +103,9 @@ Fields worth knowing:
   is saved too (better a duplicate than a transmission lost), and copies of one transmission share
   **`transmission_id`**. A system with `conversationMode` off makes each transmission a call of its
   own.
+- **`end_reason`** says why it ended: `terminator` (its voice channel's, with conversations off),
+  `squelch` (analog, with conversations off), `next_transmission`, `timeout`, `too_long`,
+  `reassigned` or `stopped`; empty when not said (a recorder before it). (Since SDK 0.16.1.)
 
 Only recorded calls conclude. Calls the recorder didn't record (encrypted, no free recorder, an
 unknown talkgroup when those aren't recorded) have no files.
