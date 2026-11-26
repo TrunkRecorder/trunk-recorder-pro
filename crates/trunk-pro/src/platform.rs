@@ -550,7 +550,7 @@ mod tests {
             ("coretemp Package id 0", 45.0),
             ("acpitz temp1", f32::NAN),
         ];
-        assert_eq!(hottest(r), Some(51.900001525878906));
+        assert_eq!(hottest(r), Some(51.9f32 as f64));
         // A real overheat still shows.
         assert_eq!(hottest([("coretemp Package id 0", 98.0), ("nct6791 AUXTIN1", 110.0)]), Some(98.0));
         assert_eq!(hottest([("nct6791 AUXTIN1", 110.0)]), None);

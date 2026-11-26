@@ -8,7 +8,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **"Running hot" no longer comes from an unconnected motherboard sensor.** The computer's temperature is the hottest
   sensor's, and a motherboard monitoring chip's spare thermistor inputs (a Nuvoton nct67xx chip's AUXTIN0–3) count
   among them. On many boards nothing is wired to some of them, and they read whatever the open input gives: 110 °C on
-  an ASRock X299 board whose CPU was at 45 °C, so the dashboard warned "Running hot: 111 °C" all the time. Those inputs
+  an ASRock X299 board whose CPU was at 45 °C, so the dashboard warned "Running hot" all the time. Those inputs
   are left out now; the CPU, drives, GPU and the chip's SYSTIN / CPUTIN still count, so a real overheat still shows.
 - **Weak P25 CQPSK simulcast keeps more of its voice** (#228, thanks @samborcia). 0.5.1's fix for a carrier
   estimate a quarter turn out followed the carrier across that edge only while it was steady, and at 5 to 7 dB over
