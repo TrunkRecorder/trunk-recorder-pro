@@ -16,10 +16,10 @@ void sameKinds;
 export const kindLabel = (type: System["type"] | undefined) => SYSTEM_KINDS[type ?? "p25"].label;
 import { readUnitNamesFile } from "./units.ts";
 import { fromNow } from "./origins.ts";
-import { defaultConfig, folderProblem, parseChannelCsv, radioPicks, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth, hzOf, type RadioPick } from "./rules.ts";
+import { defaultConfig, defaultTalkgroups, folderProblem, parseChannelCsv, radioPicks, rateFor, readConfig, receivers, sourceLabels, sourceNames, sourceRates, usableHalfWidth, hzOf, type RadioPick } from "./rules.ts";
 
 // The recorder's rules, as it applies them (rules.ts):
-export { receivers, sourceInputs, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceAdvice, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
+export { receivers, sourceInputs, sourceLabels, sourceNames, bandplanProblem, channelsToCsv, defaultConfig, defaultTalkgroups, DEFAULT_GUARD_HZ, nameProblem, parseChannelCsv, placeSources, rateFor, rateOk, readConfig, resolvedCenters, sourceAdvice, sourceRates, startProblem, usableHalfWidth } from "./rules.ts";
 export type { Advice, AdviceScore, Heard, RadioPick, Unpickable } from "./rules.ts";
 
 /** A new RTL-SDR's gain, dB (higher overloads its front end near strong transmitters). */
@@ -74,6 +74,11 @@ export function newFile(): Source {
   return { type: "file", path: "", centerHz: 0, rateHz: 2_400_000, realtime: true, format: "cu8", ppm: 0 };
 }
 
+/** An internet stream (its rate is its audio's: the recorder's 8 kHz). */
+export function newStream(url = ""): Source {
+  return { type: "stream", url, centerHz: 0, rateHz: 8000, ppm: 0 };
+}
+
 export type Os = "windows" | "macos" | "linux";
 
 /** A driver library a kind of radio needs (desktop app), and how to install it. */
@@ -116,6 +121,8 @@ export interface SourceKind {
   covers?: string;
   /** It powers an LNA through the antenna cable when `biasTee` is on (switched as the radio opens): the switch's hint. */
   biasT?: string;
+  /** It gives audio, demodulated already (a stream, fetched by the desktop app): no band, gain or crystal; its rows have no frequency. */
+  audio?: boolean;
 }
 
 export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
@@ -203,6 +210,7 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     covers: "SDRplay, LimeSDR, PlutoSDR…",
   },
   file: { label: "Capture file", fresh: newFile, get rates() { return sourceRates("file"); } },
+  stream: { label: "Internet stream", fresh: newStream, rates: [8000], audio: true },
 };
 
 /** The kinds of source with a driver (installed, or built in) and so the desktop app: the recorder reports each in `radios`. */
@@ -213,9 +221,9 @@ export const DRIVER_KINDS = (Object.keys(SOURCE_KINDS) as Source["type"][]).filt
 /** A source that needs a driver, and so the desktop app. */
 export const needsDriver = (x: Source): x is Extract<Source, { type: DriverKind }> => kindNeedsDriver(x.type);
 /** A kind only the desktop app has: a driver's, or a radio on the network's. */
-export const kindDesktopOnly = (k: Source["type"]): boolean => kindNeedsDriver(k) || !!SOURCE_KINDS[k].network;
+export const kindDesktopOnly = (k: Source["type"]): boolean => kindNeedsDriver(k) || !!SOURCE_KINDS[k].network || !!SOURCE_KINDS[k].audio;
 /** A source only the desktop app opens: a driver's radio, or one on the network (the browser can't open a socket). */
-export const desktopOnly = (x: Source): boolean => needsDriver(x) || onNetwork(x);
+export const desktopOnly = (x: Source): boolean => needsDriver(x) || onNetwork(x) || !!SOURCE_KINDS[x.type].audio;
 /** Why the browser can't open source `x` ("SpyServer needs the desktop app."), or null when it can. */
 export const desktopOnlyWhy = (x: Source): string | null => (!desktopOnly(x) ? null : `${onNetwork(x) && x.type === "rtlsdr" ? "An RTL-SDR on the network" : SOURCE_KINDS[x.type].label} needs the desktop app.`);
 /** A source with a bias-T the recorder switches. */
@@ -735,24 +743,10 @@ export function defaultTalkgroup(freqHz: number): number {
   return Math.round(freqHz / 1000);
 }
 
-const sameFreq = (a: number, b: number) => Math.abs(a - b) < 1;
-
-/**
- * What each channel files a call under when neither it nor the air names a
- * talkgroup: by its place among the rows on its frequency — the frequency in
- * kHz, then that with a digit (154325, 1543251 …). The recorder's
- * default_talkgroups.
- */
-export function defaultTalkgroups(channels: Channel[]): number[] {
-  return channels.map((c, i) => {
-    const k = channels.slice(0, i).filter((o) => sameFreq(o.freqHz, c.freqHz)).length;
-    return k === 0 ? defaultTalkgroup(c.freqHz) : defaultTalkgroup(c.freqHz) * 10 + k;
-  });
-}
-
 /** A talkgroup for another row on `freqHz`: the first of 1543251, 1543252 … no row uses. */
 export function nextTalkgroup(channels: Channel[], freqHz: number): number {
-  const used = new Set(channels.map((c, i) => c.talkgroup ?? defaultTalkgroups(channels)[i]));
+  const dflt = defaultTalkgroups(channels);
+  const used = new Set(channels.map((c, i) => c.talkgroup ?? dflt[i]));
   let k = 1;
   while (used.has(defaultTalkgroup(freqHz) * 10 + k)) k++;
   return defaultTalkgroup(freqHz) * 10 + k;
@@ -799,6 +793,11 @@ export function parseFreqList(text: string): number[] {
 
 export function formatMhz(hz: number, digits = 5): string {
   return (hz / 1e6).toFixed(digits);
+}
+
+/** Where a call or a conventional channel is, as a list shows it: its frequency in MHz, or "stream" (a stream's has none). */
+export function placeText(hz: number, digits = 5): string {
+  return hz > 0 ? formatMhz(hz, digits) : "stream";
 }
 
 /** A gain in dB to a tenth, for display (an RTL-SDR step is an f32: 33.799999…). */

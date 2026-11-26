@@ -30,7 +30,7 @@ use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use crate::config::{AirspyGain, AirspyGains, Config, SampleFormat, Source, SourceKind};
 use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, uhd};
+use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, stream, uhd};
 use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
@@ -865,6 +865,7 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
                 sdr::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, ctl)
             }
             SourceKind::File { path, realtime, format } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
+            SourceKind::Stream { url } => sdr::run_with(i, stream::StreamConfig { url }, tx, stop, ctl),
         }
     })
 }
@@ -991,6 +992,7 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
                 Block::U8(b) => feeder.push(b, dropped, at_ms(at)),
                 Block::Iq(b) => feeder.push_iq(b, dropped, at_ms(at)),
                 Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
+                Block::Audio { samples, channels } => feeder.push_audio(samples, *channels, dropped, at_ms(at)),
             }
             air.fed(block.len() as u64 + dropped);
         }
@@ -1303,6 +1305,9 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
     f.record.clock_off = ctx.clock.off();
     // (The record written once, as the .json file has it.)
     let json = f.record.to_json();
+    // Tags on its audio: the WAV's here, the .m4a's as it's made.
+    let tags = trunk_app::tags::Tags::of(&f.record, local_offset(f.record.start_time));
+    tags.onto_wav(&mut f.wav);
     let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
     // Each file through the folder it goes to, which says why when one can't
@@ -1352,7 +1357,7 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
     let mut m4a = None;
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
         // (Its folder not made: the folder said why; "" here.)
-        let made = m4a_folder.prepare(&m4a_at).map_err(|_| String::new()).and_then(|_| e.m4a(&f.wav, &m4a_at, *kbps));
+        let made = m4a_folder.prepare(&m4a_at).map_err(|_| String::new()).and_then(|_| e.m4a(&f.wav, &m4a_at, *kbps, &tags));
         match made {
             Ok(()) => m4a = Some(m4a_at),
             Err(err) => {

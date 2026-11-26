@@ -146,6 +146,23 @@ pub fn config_problem(json: &str) -> Option<String> {
 
 /// A frequency as written ([`trunk_app::channels::hz_of`]): Hz, from MHz under 10 000, else as
 /// given; none when not above 0.
+/// What each conventional row (a JSON list) files a call under when neither it nor the air names
+/// a talkgroup ([`trunk_app::config::default_talkgroups`]), as JSON.
+#[wasm_bindgen(js_name = defaultTalkgroups)]
+pub fn default_talkgroups(channels_json: &str) -> String {
+    let channels: Vec<trunk_app::config::Channel> = serde_json::from_str(channels_json).unwrap_or_default();
+    serde_json::to_string(&trunk_app::config::default_talkgroups(&channels)).unwrap_or_default()
+}
+
+/// Whether two conventional rows (JSON) are one channel ([`trunk_app::config::Channel::shares`]).
+#[wasm_bindgen(js_name = channelsShare)]
+pub fn channels_share(a_json: &str, b_json: &str) -> bool {
+    match (serde_json::from_str::<trunk_app::config::Channel>(a_json), serde_json::from_str::<trunk_app::config::Channel>(b_json)) {
+        (Ok(a), Ok(b)) => a.shares(&b),
+        _ => false,
+    }
+}
+
 #[wasm_bindgen(js_name = hzOf)]
 pub fn hz_of(v: f64) -> Option<f64> {
     trunk_app::channels::hz_of(v)

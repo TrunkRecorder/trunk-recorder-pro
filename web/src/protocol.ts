@@ -76,6 +76,13 @@ export type Source = (
    */
   | { type: "soapy"; args: string; agc: boolean; gainDb: number | null; gains: Record<string, number>; antenna: string; settings: string }
   | { type: "file"; path: string; realtime: boolean; format?: SampleFormat }
+  /**
+   * An internet audio stream (desktop app): the HTTP or HTTPS address of an MP3 or WAV feed, someone else's receiver
+   * demodulated already. No band and no gain: its conventional rows are the ones with no frequency, each recording its
+   * left channel, its right or both (`Channel.stereo`). `url` may carry a login (`https://user:password@host/feed`),
+   * sent and never shown (a listen-only page isn't sent it). Its `rateHz` is its audio's, 8000.
+   */
+  | { type: "stream"; url: string }
 ) & {
   /** Its centre, Hz; 0 = placed over the channels it's for. */
   centerHz: number;
@@ -165,6 +172,7 @@ export interface Radios {
  * frequency in kHz. `squelchDb` defaults to the section's.
  */
 export interface Channel {
+  /** Hz; 0: a stream's row, received on a stream source (`receiveOn` names it), filed under its `talkgroup` (needed: no frequency to file under). */
   freqHz: number;
   mode: "fm" | "am" | "p25" | "dmr" | "nxdn48" | "nxdn96" | "auto";
   name: string;
@@ -186,7 +194,12 @@ export interface Channel {
   receiveOn?: string[];
   /** Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off. */
   autoTune?: boolean;
+  /** A stream's row: which of its audio channels it records; absent: both, mixed. */
+  stereo?: Stereo;
 }
+
+/** Which of a stream's channels a row records. */
+export type Stereo = "mix" | "left" | "right";
 
 /** How a conventional system's analog channels are demodulated; each left out is the default. */
 export interface Demod {

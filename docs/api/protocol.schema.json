@@ -1146,7 +1146,8 @@
       "type": "object",
       "properties": {
         "freqHz": {
-          "type": "number"
+          "type": "number",
+          "description": "Hz; 0: a stream's row, received on a stream source (`receiveOn` names it), filed under its `talkgroup` (needed: no frequency to file under)."
         },
         "mode": {
           "type": "string",
@@ -1207,6 +1208,10 @@
         "autoTune": {
           "type": "boolean",
           "description": "Digital rows: its calls' carrier offsets score its source's AutoTune (a repeater output to trust, not radios on simplex). Absent: off."
+        },
+        "stereo": {
+          "$ref": "#/definitions/Stereo",
+          "description": "A stream's row: which of its audio channels it records; absent: both, mixed."
         }
       },
       "required": [
@@ -8755,6 +8760,47 @@
             "realtime",
             "type"
           ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "centerHz": {
+              "type": "number",
+              "description": "Its centre, Hz; 0 = placed over the channels it's for."
+            },
+            "rateHz": {
+              "type": "number"
+            },
+            "ppm": {
+              "type": "number",
+              "description": "Its frequency error, ppm (a capture's: 0)."
+            },
+            "autoTune": {
+              "type": "boolean"
+            },
+            "guardHz": {
+              "type": "number"
+            },
+            "name": {
+              "type": "string",
+              "description": "A name for it, shown beside its number (\"Source 2 (Whip)\"; \"Whip\", \"Multicoupler\"); absent: none. It only names it: changing it takes effect while recording, and a system's `receiveOn` keeps naming the radio by its label."
+            },
+            "type": {
+              "type": "string",
+              "const": "stream"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "centerHz",
+            "ppm",
+            "rateHz",
+            "type",
+            "url"
+          ]
         }
       ],
       "description": "A radio, or a capture to replay (`type`), its own keys beside the ones every source has: `centerHz`, `rateHz`, `ppm`, and `autoTune`: correct its channels for the frequency error measured on the control channels (Trunk Recorder's autoTune); the error is measured and shown either way. And `guardHz`: left unused at each edge of its band, where the anti-alias filter rolls off (default 75 000; Setup can measure it — `profileSource`). And `name`: what to call it beside its number."
@@ -8862,6 +8908,15 @@
         "settings"
       ],
       "additionalProperties": false
+    },
+    "Stereo": {
+      "type": "string",
+      "enum": [
+        "mix",
+        "left",
+        "right"
+      ],
+      "description": "Which of a stream's channels a row records."
     },
     "StorageSettings": {
       "type": "object",

@@ -332,7 +332,7 @@ mod tests {
             let iq = modulate(&packet_dibits(damaged), fs, freq - center, 0.3, &mut ph);
             for (trunked, wrong_code) in [(false, false), (true, false), (false, true), (true, true)] {
                 let mut cfg = EngineConfig {
-                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
                     ..Default::default()
                 };
                 if trunked {
@@ -372,7 +372,7 @@ mod tests {
             let iq = modulate(&gps_dibits(&tx(), fid), fs, freq - center, 0.3, &mut ph);
             for trunked in [false, true] {
                 let mut cfg = EngineConfig {
-                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                    sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
                     ..Default::default()
                 };
                 if trunked {
@@ -455,7 +455,7 @@ mod tests {
     fn an_auto_channel_settles_on_dmr() {
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             conventional: vec![ConvChannel::new(freq, ConvMode::Auto)],
             ..Default::default()
         };
@@ -474,7 +474,7 @@ mod tests {
         let (fs, center, freq) = (1_200_000.0, 460_000_000.0, 460_050_000.0);
         let iq = wideband(fs, freq - center);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
             ..Default::default()
         };
@@ -501,7 +501,7 @@ mod tests {
             ..ConvChannel::new(freq, ConvMode::Dmr)
         };
         let calls = |rows: Vec<ConvChannel>| {
-            let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }], conventional: rows, ..Default::default() };
+            let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }], conventional: rows, ..Default::default() };
             run(cfg, &iq).into_iter().map(|k| (k.call.talkgroup, k.call.talkgroup_ota, k.call.talkgroup_info.map(|t| t.alpha_tag))).collect::<Vec<_>>()
         };
         // The most specific row that fits wins; no number of its own: the air's.
@@ -515,7 +515,7 @@ mod tests {
         // Nothing fits, no row without a code: not recorded, reported once.
         let rows = vec![row("CC3", Some(1), "A"), row("CC5 TS1", Some(2), "B"), row("CC5 TG 999", Some(3), "C")];
         assert!(calls(rows.clone()).is_empty());
-        let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }], conventional: rows, ..Default::default() };
+        let cfg = EngineConfig { sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }], conventional: rows, ..Default::default() };
         let e = Engine::new(cfg).unwrap();
         for c in iq.chunks(8192) {
             e.push_iq(0, c);
@@ -534,7 +534,7 @@ mod tests {
         let t = Tx { mobile: true, slot: 0, ..tx() };
         let iq = wideband_of(&t, fs, freq - center);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
             ..Default::default()
         };
@@ -556,7 +556,7 @@ mod tests {
             let t = Tx { mobile, slot: if mobile { 0 } else { 1 }, ..tx() };
             let iq: Vec<Complex32> = wideband_of(&t, fs, center - freq).iter().map(|v| v.conj()).collect();
             let cfg = EngineConfig {
-                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
                 conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
                 ..Default::default()
             };
@@ -576,7 +576,7 @@ mod tests {
         for t in [tx(), Tx { mobile: true, slot: 0, ..tx() }] {
             let iq = wideband_of(&t, fs, freq - center + 600.0);
             let cfg = EngineConfig {
-                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
                 conventional: vec![ConvChannel::new(freq, ConvMode::Dmr)],
                 ..Default::default()
             };
@@ -594,7 +594,7 @@ mod tests {
         let t = Tx { superframes: 1, idle_before: 420, idle_after: 10, csbks: vec![[0x19, 0, 0, 0, 0, 0, 0, 0, 0, 0]], ..tx() };
         let iq = wideband_of(&t, fs, freq - center + 600.0);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             systems: vec![SystemConfig::trunked("cap", vec![SiteConfig { control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }])],
             ..Default::default()
         };
@@ -627,7 +627,7 @@ mod tests {
         let (fs, center, freq) = (240_000.0, 460_000_000.0, 460_050_000.0);
         let iq = wideband(fs, freq - center);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             systems: vec![SystemConfig::trunked("cap", vec![SiteConfig { control_channels: vec![freq], protocol: crate::trunk::Protocol::Dmr(Default::default()), ..Default::default() }])],
             ..Default::default()
         };
@@ -659,7 +659,7 @@ mod tests {
             for (sum, sample) in iq.iter_mut().zip(channel) { *sum += sample; }
         }
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             systems: vec![SystemConfig::trunked("xpt", vec![SiteConfig {
                 control_channels: vec![frequencies[0] as f64],
                 protocol: crate::trunk::Protocol::Dmr(DmrConfig { channels: vec![frequencies[1] as f64], lcn_table: BTreeMap::from([(1, frequencies[0]), (2, frequencies[1])]), ..Default::default() }),

@@ -422,6 +422,19 @@ export function folderProblem(path: string): string | null {
   return rules().folderProblem(path) ?? null;
 }
 
+/**
+ * What each channel files a call under when neither it nor the air names a talkgroup: by its place among the rows
+ * sharing its channel — the frequency in kHz, then that with a digit (154325, 1543251 …). config::default_talkgroups.
+ */
+export function defaultTalkgroups(channels: Channel[]): number[] {
+  return JSON.parse(rules().defaultTalkgroups(JSON.stringify(channels))) as number[];
+}
+
+/** Whether two conventional rows are one channel: on one frequency, or a stream's same side on the same sources (Channel::shares). Rows that are share its mode, bandwidth and sources. */
+export function sameChannel(a: Channel, b: Channel): boolean {
+  return rules().channelsShare(JSON.stringify(a), JSON.stringify(b));
+}
+
 /** A frequency as written (a field, a list, an imported config): Hz, from MHz under 10 000, else as given; undefined when not above 0. channels::hz_of. */
 export function hzOf(v: number): number | undefined {
   return rules().hzOf(v) ?? undefined;
