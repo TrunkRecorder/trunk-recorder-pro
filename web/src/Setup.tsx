@@ -156,6 +156,8 @@ export function showTodo(target: string, tries = 0): void {
     return void setTimeout(() => showTodo(target, tries), 60);
   }
   if (el instanceof HTMLDetailsElement) el.open = true;
+  // (Or in a folded section of one: a site's plugin settings, say.)
+  for (let d = el?.parentElement?.closest("details"); d; d = d.parentElement?.closest("details")) d.open = true;
   el?.scrollIntoView({ behavior: "smooth", block: "center" });
   el?.classList.remove("flash");
   void el?.offsetWidth;

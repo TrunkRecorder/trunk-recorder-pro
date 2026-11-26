@@ -8,7 +8,7 @@ import { isRecording, can, clearCountsReset, closeGuide, dismissError, mayEdit, 
 import { clockAt } from "./fmt.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
-import { PluginPage, PluginsPage, usePluginPages } from "./Plugins.tsx";
+import { HeldChanges, PluginPage, PluginsPage, usePluginPages } from "./Plugins.tsx";
 import { Setup } from "./Setup.tsx";
 import { SignedInAs } from "./Passkeys.tsx";
 import { Light } from "./charts.tsx";
@@ -268,6 +268,7 @@ export function App() {
         <main>
           <Page view={s.view} />
         </main>
+        <HeldChanges />
       </div>
     </div>
   );

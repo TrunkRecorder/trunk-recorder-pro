@@ -109,3 +109,48 @@ test("A system with sites: each is turned on and off, and sets again what the pl
   assert.doesNotMatch(card, /sp-up-east-site7-apiKey/);
   assert.doesNotMatch(card, /<summary>south/);
 });
+
+test("Setup → Plugins: each plugin is a card that folds, its switch beside the head, with Expand all for several", () => {
+  const c = uploaderSetup();
+  c.plugins!.other = { enabled: false };
+  transport.onMessage({ type: "config", config: c, version: 2 });
+  transport.onMessage({ type: "plugins", encoderFound: null, plugins: [plugin("up", {}), plugin("other", {})] });
+  const panel = html(<PluginSetupPanel />);
+  assert.match(panel, />Expand all</);
+  // Two cards, folded (only a list of one starts open), each found again by its import to-do id.
+  assert.equal((panel.match(/class="set-card-toggle" aria-expanded="false"/g) ?? []).length, 2, panel);
+  assert.match(panel, /id="need-plugin-up" data-card="plug:up"/);
+  // The On/Off switch is in the card's actions, not inside the head's toggle button.
+  const toggles = panel.match(/<button type="button" class="set-card-toggle"[\s\S]*?<\/button>/g) ?? [];
+  assert.equal(toggles.length, 2);
+  assert.ok(toggles.every((t) => !t.includes('class="switch')), toggles.join("\n"));
+  assert.equal((panel.match(/class="row set-card-actions"><label class="switch/g) ?? []).length, 2, panel);
+});
+
+test("Held plugin changes: the pill counts them, and Apply all saves them in one config save", async () => {
+  const sent: { type: string; config?: Config }[] = [];
+  transport.send = (m) => void sent.push(m as { type: string; config?: Config });
+  uploaderSetup();
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] });
+  transport.onMessage({ type: "state", phase: "running", error: null, ended: false, restartNeeded: false });
+  const { HeldChanges, applyHeldChanges, holdPluginChange } = await import("./Plugins.tsx");
+  const { setPluginSettings, setSystemPluginSettings } = await import("./controller.ts");
+  assert.equal(html(<HeldChanges />), "", "nothing held, no pill");
+  holdPluginChange("settings:up", { values: { server: "https://b", apiKey: "k" }, save: (v) => setPluginSettings("up", v), name: "Up", plugin: "up", target: "plugin-up-held" });
+  holdPluginChange("copy:east:up:0", { values: { label: "E" }, save: (v) => setSystemPluginSettings(0, "up", v, 0), name: "Up", plugin: "up", target: "sysplug-east-up-0-held" });
+  const pill = html(<HeldChanges />);
+  assert.match(pill, /<b>2<\/b> plugin changes not applied/);
+  assert.match(pill, />Apply all</);
+  // The plugin's folded card says so too.
+  assert.match(html(<PluginSetupPanel />), /chip warn">not applied</);
+  const before = sent.filter((m) => m.type === "setConfig").length;
+  applyHeldChanges();
+  assert.equal(html(<HeldChanges />), "", "applied: no pill");
+  await new Promise((r) => setTimeout(r, 400));
+  const saves = sent.filter((m) => m.type === "setConfig").slice(before);
+  assert.equal(saves.length, 1, "one save, so the plugins restart once");
+  const saved = saves[0].config!;
+  assert.equal(saved.plugins!.up.settings!.server, "https://b");
+  assert.equal(saved.systems[0].shortName, "east");
+  assert.deepEqual(saved.systems[0].plugins?.up, { label: "E" });
+});

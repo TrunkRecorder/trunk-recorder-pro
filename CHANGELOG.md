@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Setup → Plugins folds each plugin into a card** (#263, thanks @jschmall), like the Systems,
+  Conventional and Radios tabs: a chevron, **Expand all** / **Collapse all**, open only when there's
+  one. The folded head keeps the **On/Off** switch and the plugin's state, and says **not applied**
+  when it has changes waiting.
+- **Plugin changes waiting for Apply can't be missed.** While recording, a change that would
+  restart a plugin is held behind an **Apply** bar at the end of its form, easy to scroll past on a
+  long card (the field shows the new value, nothing is saved, and Stop/Start doesn't apply it). A
+  pill now floats at the bottom of every page while any are held: *2 plugin changes not applied*,
+  **Show** (each in turn: its tab, its card or site section opened) and **Apply all**, which saves
+  them in one config save, so the plugins restart once rather than once per Apply.
+
 ## [0.5.2] — 2026-11-26
 
 - **Reset counts** (#262). The totals since Start (a radio's dropped samples and errors, calls, a plugin's sent, skipped,
