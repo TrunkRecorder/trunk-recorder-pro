@@ -28,10 +28,11 @@ every other interface's ([Serving your interface](#serving-your-interface)):
 | `GET /api/protocol.ts` | Every message, as TypeScript types with comments: **the definition** |
 | `GET /api/schema` | The same as JSON Schema (draft-07): `definitions.FromRecorder` / `definitions.ToRecorder` |
 | `GET /api/version` | `{"app": "trunk-pro", "version": "…", "api": 1}` (`api`: the interface API version). Always open, signed in or not |
-| `GET /api/session` | `{ auth, access, user, proxy, passkeys, passkeyOrigin, ownPasskeys }`: whether signing in is on, what this request may do, whether (and where) passkeys work, and the user's own passkeys ([Signing in](#signing-in)) |
+| `GET /api/session` | `{ auth, access, user, proxy, passkeys, passkeyOrigin, ownPasskeys, appSignIn }`: whether signing in is on, what this request may do, whether (and where) passkeys work, the user's own passkeys, and whether an app signs in by way of the browser here ([Signing in](#signing-in)) |
 | `POST /api/login`, `POST /api/logout` | Sign a browser in with an access token (a session cookie; answers `{ access, user }`), and out (`{"all": true}`: everywhere) |
 | `POST /api/passkey/login/…`, `/api/passkey/register/…` | Sign a browser in with a passkey, and add one ([Passkeys](#passkeys)) |
 | `GET /signin` | The sign-in page, on every port, whether or not a page needs it |
+| `GET /app/sign-in`, `POST /api/app/approve`, `POST /api/app/session` | Sign an app on the user's computer in by way of the browser ([Apps](#apps)) |
 | `WS /api/ws` | The connection: JSON messages both ways, plus binary live audio |
 | `GET /calls/<path>.wav` / `.json` | A recorded call's audio and details |
 
@@ -454,8 +455,8 @@ through such a proxy signs in at the proxy; a token works there as ever.
 proxy's.
 
 **What you get** is the lower of the port's access and the user's role.
-`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "proxy": true | false, "passkeys": true | false, "passkeyOrigin": "https://radio.example.com", "ownPasskeys": [{ "id": "…", "name": "Laptop", "created": 1767225600 }] }`
-for the request it's asked with (`proxy`: the proxy in front signed it in; `passkeys`: whether they work on this port, the built-in interface's, for the host it asked at; `passkeyOrigin`, from any port: the one origin they work at, left out where there's none; a page at another origin links there; `ownPasskeys`: the user's own passkeys, never their keys, left out when there are none or it isn't signed in as a user), and `hello` carries `access` and `user`.
+`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "proxy": true | false, "passkeys": true | false, "passkeyOrigin": "https://radio.example.com", "ownPasskeys": [{ "id": "…", "name": "Laptop", "created": 1767225600 }], "appSignIn": true | false }`
+for the request it's asked with (`proxy`: the proxy in front signed it in; `passkeys`: whether they work on this port, the built-in interface's, for the host it asked at; `passkeyOrigin`, from any port: the one origin they work at, left out where there's none; a page at another origin links there; `ownPasskeys`: the user's own passkeys, never their keys, left out when there are none or it isn't signed in as a user; `appSignIn`: an app signs in by way of the browser here, the built-in interface's port with signing in on, see [Apps](#apps)), and `hello` carries `access` and `user`.
 `POST /api/login` answers `{ "access": "listen" | "control", "user": "kiosk" }`
 (the user's role and name, whatever the port; signing in on or off) with the
 cookie, or 401. When the owner changes access (a user removed, a role or an
@@ -517,6 +518,54 @@ minutes for its finish, and signs in once (a sign-in's `id` is the waiting
 state itself, signed by the recorder: nothing's kept for it until it
 finishes). A session signed in with a passkey ends when the passkey is
 removed from the config.
+
+### Apps
+
+An app on the user's own computer or phone (Trunk Monitor) signs in by way
+of the browser, so it's never handed the user's token and needs no passkey
+of its own: the user signs in on the recorder's page, as they always do,
+and allows the app there. `GET /api/session` says whether a recorder does
+this (`appSignIn`: the built-in interface's port, signing in on).
+
+1. The app makes a secret, the **verifier** (32 random bytes as base64url
+   will do), and opens `/app/sign-in?challenge=<challenge>&name=<name>` on
+   the built-in interface's port in the browser (on a Mac or iPhone, a web
+   authentication session for the `trunkmonitor` scheme). `challenge`: the
+   SHA-256 of the verifier, base64url, no padding (43 characters); `name`:
+   what the page and the log call the app ("Trunk Monitor on Luke's Mac").
+2. The user signs in if they aren't, and the page asks whether to allow the
+   app, naming it, them and their role. **Allow** sends the browser to
+   `trunkmonitor://signin?code=<code>`; **Cancel** to
+   `trunkmonitor://signin?error=denied`.
+3. The app posts `{ "code": "…", "verifier": "…", "name": "…" }` to
+   `POST /api/app/session`, within two minutes, and is answered
+   `{ "access": "listen" | "control", "user": "luke", "cookie": "trp_1a2b3c4d=…", "until": 1769817600 }`,
+   or 401 (not a code for that verifier, too old, or the user's token or
+   passkey gone since).
+4. It sends `Cookie: <cookie>` with every request, the WebSocket's too.
+
+What the app holds is a session like a browser's: good until `until` (Unix
+seconds, 30 days on; then the app signs in again), and ended by what ends
+the browser's: the user removed or [signed out everywhere](#signing-in),
+their token made again, the passkey they signed in with removed. Then its
+connection closes and its requests answer 401. The log names each app as
+it's signed in (`User luke: app "Trunk Monitor on Luke's Mac" signed in
+(with a passkey "Laptop")`).
+
+The code is nothing without the verifier, so another program that sees the
+`trunkmonitor:` link gets nothing for it, and the recorder keeps nothing
+until the app asks. The page that allows is the recorder's own, on the
+built-in interface's port: `POST /api/app/approve` answers 403 from an
+interface's port or another origin, and the page isn't shown in a frame.
+The return link is always `trunkmonitor://signin`: an app can't have the
+code sent anywhere else.
+
+**Behind a proxy that signs people in** there's no credential of the
+recorder's to make a session of (the page says so): the app sends a
+user's access token, and whatever the proxy wants of a program besides
+(Cloudflare Access: a service token's `CF-Access-Client-Id` and
+`CF-Access-Client-Secret` headers, which let it through and sign nobody
+in).
 
 ### curl
 

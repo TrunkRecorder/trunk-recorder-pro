@@ -80,7 +80,16 @@ built-in interface's port only; POST /api/passkey/login/… and
 /register/…, same origin only; 403 on an interface's port), passkeyOrigin
 (the one origin passkeys work at, from any port: link to its /signin),
 ownPasskeys ([{ id, name, created }]: the user's own passkeys, never their keys;
-absent when none) }.
+absent when none), appSignIn (an app signs in by way of the browser here) }.
+An app on the user's computer (not a page): make a random verifier, open
+/app/sign-in?challenge=<base64url SHA-256 of it>&name=<app name> on the
+built-in port in the browser; the user signs in and allows it; the browser
+goes to trunkmonitor://signin?code=<code> (or ?error=denied); POST
+/api/app/session {code, verifier, name} within two minutes →
+{ access, user, cookie, until }: send Cookie: <cookie> with every request
+(the WebSocket's too) until `until` (Unix s, 30 days), then sign in again.
+It ends as a browser's session does. Behind a proxy's sign-in: an access
+token, with the proxy's own headers for programs (a service token's).
 POST /api/logout {"all": true} (built-in port): every browser session of the
 user ends (another user's with "user": name, control only); tokens don't.
 Without access: 401 (a browser page: the sign-in page). Access is the lower

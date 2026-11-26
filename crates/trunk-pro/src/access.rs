@@ -20,7 +20,8 @@
 //! signs in with their access token, whose secret comes as `Authorization:
 //! Bearer` or `?token=` (programs), or by way of the session cookie
 //! `/api/login` sets (browsers: [`Sessions`]), or one of their passkeys
-//! signing in sets ([`passkey`]); without one it gets
+//! signing in sets ([`passkey`]), or the same session an app was handed by
+//! way of the browser ([`app`]); without one it gets
 //! `server.auth.anonymous` (none: it must sign in first). A secret is 32
 //! random bytes; the config keeps only its SHA-256.
 //!
@@ -44,6 +45,7 @@ use crate::config::ApiAccess;
 use crate::runtime::Ctx;
 use crate::toolkit::{hex, percent_decode, percent_encode, sha256_hex, unhex};
 
+pub mod app;
 pub mod cli;
 pub mod cloudflare;
 pub mod passkey;
@@ -162,6 +164,8 @@ impl Who {
 pub enum Logged<'a> {
     /// `user` signed in `how`: a browser's session made (`/api/login`, a passkey's sign-in).
     SignedIn { user: &'a str, how: String },
+    /// `user`, signed in `how`, let app `app` sign in as them ([`app`]).
+    AppSignedIn { user: &'a str, app: &'a str, how: String },
     /// A sign-in refused, of `what` (debug: anyone may try, again and again).
     Refused { what: &'a str },
     /// Passkey `passkey` added to `user`'s, by them signed in `how`.
@@ -175,6 +179,7 @@ impl std::fmt::Display for Logged<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Logged::SignedIn { user, how } => write!(f, "User {user}: {how}"),
+            Logged::AppSignedIn { user, app, how } => write!(f, "User {user}: app \"{app}\" signed in ({how})"),
             Logged::Refused { what } => write!(f, "Signing in: refused {what}"),
             Logged::PasskeyAdded { user, passkey, how } => write!(f, "User {user}: passkey \"{passkey}\" added ({how})"),
             Logged::PasskeyRemoved { user, passkey, by, how } => write!(f, "User {user}: passkey \"{passkey}\" removed{} ({how})", by.map(|b| format!(" by {b}")).unwrap_or_default()),
@@ -458,6 +463,14 @@ impl Sessions {
     /// ([`Sessions::issue`]); `secure` when it came over https.
     pub fn set_cookie(&self, user: &str, credential: &str, secure: bool) -> String {
         format!("{}={}; Path=/; Max-Age={SESSION_S}; HttpOnly; SameSite=Lax{}", self.cookie, self.issue(user, credential), if secure { "; Secure" } else { "" })
+    }
+
+    /// A session as a program keeps it (an app signed in by way of the
+    /// browser, [`app`]): the `Cookie` it sends with its requests, and when
+    /// the session ends (Unix s).
+    pub fn cookie_for(&self, user: &str, credential: &str) -> (String, u64) {
+        let until = crate::clock::unix_s() as u64 + SESSION_S;
+        (format!("{}={}", self.cookie, self.issue_until(user, credential, until)), until)
     }
 
     /// The `Set-Cookie` signing a browser out (of this recorder alone).

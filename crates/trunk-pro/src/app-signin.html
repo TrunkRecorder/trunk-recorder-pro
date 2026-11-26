@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Sign in an app</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --text: #1b1f24; --muted: #5d6670; --line: #d4d9df; --accent: #2563eb; --bad: #b42318; color-scheme: light dark; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1216; --card: #181c22; --text: #e6e9ed; --muted: #9aa4ae; --line: #2c333c; --accent: #6b9bff; --bad: #ff8a80; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { width: 100%; max-width: 340px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 24px; display: grid; gap: 12px; }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .sub { margin: 0; color: var(--muted); font-size: 13px; }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  dt { color: var(--muted); font-size: 13px; }
+  dd { margin: 0; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  button { padding: 9px; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
+  button.quiet { color: var(--text); background: transparent; border: 1px solid var(--line); }
+  button:disabled { opacity: .6; cursor: default; }
+  .error { margin: 0; min-height: 1.4em; color: var(--bad); font-size: 13px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Trunk Recorder Pro</h1>
+  <p class="sub">Sign in an app</p>
+  <dl>
+    <dt>App</dt><dd id="app"></dd>
+    <dt>User</dt><dd id="user">…</dd>
+    <dt>Access</dt><dd id="access">…</dd>
+  </dl>
+  <div class="row">
+    <button id="no" type="button" class="quiet">Cancel</button>
+    <button id="yes" type="button" disabled>Allow</button>
+  </div>
+  <p class="error" id="e" role="alert"></p>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const q = new URLSearchParams(location.search);
+  // The app's link: the recorder's answer names it with the code; cancelled, this says so.
+  const back = "trunkmonitor://signin";
+  // What a role is called on the Access page.
+  const role = (a) => (a === "control" ? "Admin" : a === "listen" ? "View" : "None");
+  // The name is the app's own word for itself: shown as text, never as markup.
+  $("app").textContent = (q.get("name") || "").trim().slice(0, 64) || "An app";
+  $("no").addEventListener("click", () => location.replace(back + "?error=denied"));
+  $("yes").addEventListener("click", async () => {
+    $("yes").disabled = true;
+    $("e").textContent = "";
+    try {
+      const r = await fetch("/api/app/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challenge: q.get("challenge") || "" }) });
+      if (r.ok) return location.replace((await r.json()).to);
+      $("e").textContent = (await r.text()).trim() || "Failed: " + r.status;
+    } catch {
+      $("e").textContent = "No answer";
+    }
+    $("yes").disabled = false;
+  });
+  fetch("/api/session", { cache: "no-store" })
+    .then((r) => r.json())
+    .then((s) => {
+      $("user").textContent = s.user || "—";
+      $("access").textContent = role(s.access);
+      if (!s.auth) $("e").textContent = "Sign-in is off: the app needs none";
+      else if (!s.appSignIn) $("e").textContent = "Open this on the recorder's own page";
+      else if (s.proxy) $("e").textContent = "Signed in by the proxy: use an access token in the app";
+      else $("yes").disabled = false;
+    })
+    .catch(() => ($("e").textContent = "No answer"));
+</script>
+</body>
+</html>

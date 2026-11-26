@@ -1,7 +1,7 @@
 # Remote access and signing in
 
 This page covers reaching the recorder from another computer, turning signing in on (users, View
-and Admin, passkeys), HTTPS, and putting it behind a proxy or Cloudflare Tunnel. Every key is
+and Admin, passkeys), HTTPS, and reaching it from anywhere with Tailscale, a proxy or Cloudflare Tunnel. Every key is
 listed in [Server, log and monitor](../configuration/server-and-log.md); the wire level (routes,
 tokens, 401s) is in the [API docs](../api/README.md#signing-in).
 
@@ -52,7 +52,8 @@ address, not the recorder's.
 
 Never open the port to the internet. On plain HTTP a token typed on another computer crosses the
 network in the clear. On your own network or a VPN that's fine; otherwise turn on
-[HTTPS](#https), or put a reverse proxy that adds it in front. From outside, use a VPN, the SSH
+[HTTPS](#https), or put a reverse proxy that adds it in front. From outside, use a VPN
+([Tailscale](#tailscale) is one that needs no port opened), the SSH
 tunnel below, or [Cloudflare Tunnel](#cloudflare-tunnel-and-access), with signing in on.
 
 A safer way, from a machine that can SSH to the recorder, is an SSH tunnel. Nothing on the
@@ -170,6 +171,32 @@ passkey. For a token that may have been seen, make it again (remove the user and
 remove the token); for a device that's gone, remove its passkey (every user's are listed in
 **Access**, by name and the day each was added).
 
+### Apps
+
+An app on your computer (Trunk Monitor, for the Mac) signs in by way of the browser: it opens the
+recorder's page, you sign in there as you always do (your token, a passkey) and click **Allow**,
+and the app is signed in as you, with your role. It never sees your token. It holds a session like
+a browser's: 30 days, then it asks again; **Sign out everywhere** ends it too, and so does making
+your token again or removing the passkey you signed in with. The log names each app as it's signed
+in (`User luke: app "Trunk Monitor on Luke's Mac" signed in (with a passkey "Laptop")`).
+
+Only the dashboard's own page allows an app (never an interface's), and the page says which app,
+which user and what access before you click. An app you didn't just open asking to be allowed:
+**Cancel**.
+
+Away from the recorder's network, the app needs an address that goes with it: the recorder's
+[Tailscale](#tailscale) address or name, with Tailscale connected on the device, or a
+[Cloudflare Tunnel](#cloudflare-tunnel-and-access)'s name. Either works at home too.
+
+Behind a [proxy that signs people in](#behind-a-proxy-that-signs-people-in) the proxy's word
+covers the app as it does a browser, when the app's requests come through it as you (`tailscale
+serve` on your own device). Behind [Cloudflare Access](#cloudflare-tunnel-and-access) they don't:
+Access signs people in on a web page. Give the app a user's access token, and a service token to
+get through Access: create one in Zero Trust → **Access controls** → **Service credentials**, add
+a policy with the action **Service Auth** that includes it to the application, and give the app
+its client ID and secret (`CF-Access-Client-Id`, `CF-Access-Client-Secret`). A service token signs
+nobody in by itself.
+
 ### In the log
 
 Each sign-in that starts a browser's session, with how (`User luke: signed in with
@@ -242,6 +269,37 @@ On the recorder's computer, `trunk-pro access off`, then restart the recorder.
 Open Setup, add a new Admin, and turn **Sign-in** back on. (`--config file.json` for a config
 somewhere else.) Other sign-in problems are in
 [Troubleshooting](../troubleshooting.md#signed-out-or-locked-out).
+
+## Tailscale
+
+[Tailscale](https://tailscale.com/) puts the recorder's computer and your own devices on one
+private network (a tailnet) wherever they are, with no port opened and nothing on the internet.
+Install it on the recorder's computer and on each device, signed in to the same account. The
+recorder then has a second address (`100.x.y.z`, and with MagicDNS a name, `radiobox`) that
+answers from any of them, at home and away. Either of these puts the recorder on it:
+
+- **Listen on every address.** Start with `--bind 0.0.0.0` (or `server.bind`) and open
+  `http://radiobox:8080`. Tailscale encrypts what crosses it, so plain HTTP is fine there; the
+  port answers on your own network too.
+- **Tailscale Serve.** Leave `bind` at `127.0.0.1`, so nothing but Tailscale reaches the port, and
+  have Tailscale serve it over HTTPS with a certificate of its own:
+
+  ```bash
+  tailscale serve --bg 8080
+  ```
+
+  ```json
+  "server": { "bind": "127.0.0.1", "port": 8080, "hostname": "radiobox.tail1234.ts.net" }
+  ```
+
+  Then open `https://radiobox.tail1234.ts.net`. Without `hostname` the recorder refuses the
+  requests ("this server only answers to localhost"). [Passkeys](#passkeys) work at that name, and
+  Serve says who's asking, so the recorder can
+  [take its word](#behind-a-proxy-that-signs-people-in) and nobody signs in twice.
+
+Everyone on the tailnet who can reach the computer reaches the port: turn [signing in](#signing-in)
+on unless the tailnet is yours alone. On a phone, turn on Tailscale's **VPN On Demand** so the
+recorder is there without opening Tailscale first.
 
 ## HTTPS
 

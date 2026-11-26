@@ -28,7 +28,9 @@
 //! say-so of a proxy in front, from its addresses, or Cloudflare Access's signed token) gets the sign-in page (or a 401). GET /signin is that page; POST /api/login and
 //! /api/logout set and clear the cookie a browser signs in with, as do
 //! /api/passkey/login/… with a passkey (/api/passkey/register/… adds one,
-//! [`crate::access::passkey`]); GET /api/session says who this request is, and may do.
+//! [`crate::access::passkey`]); GET /app/sign-in, POST /api/app/approve and
+//! /api/app/session sign an app in by way of the browser ([`crate::access::app`]);
+//! GET /api/session says who this request is, and may do.
 
 use trunk_app::protocol::{body, Body, Command, StatsQuery, StoreKind, ToClient};
 use std::path::{Component, Path, PathBuf};
@@ -65,9 +67,12 @@ const PROTOCOL: &str = include_str!("../../../web/src/protocol.ts");
 /// for (or at /signin, asked for).
 const SIGN_IN: &str = include_str!("signin.html");
 
+/// Where a user signed in allows an app to sign in as them (/app/sign-in).
+const APP_SIGN_IN: &str = include_str!("app-signin.html");
+
 /// What a request that must sign in may still ask for: who's running (a
 /// second launch asks), signing in, and (see [`open`]) the API's docs.
-const OPEN: &[&str] = &["/api/version", "/api/login", "/api/logout", "/api/session", "/api/passkey/login/start", "/api/passkey/login/finish", "/signin"];
+const OPEN: &[&str] = &["/api/version", "/api/login", "/api/logout", "/api/session", "/api/passkey/login/start", "/api/passkey/login/finish", "/api/app/session", "/signin"];
 
 /// Whether a request for `path` needs no access: [`OPEN`], and the API's
 /// static files (the docs, schema, types, client.js, examples: nothing of
@@ -145,6 +150,9 @@ fn api(r: Router<Arc<Ctx>>) -> Router<Arc<Ctx>> {
         .route("/api/passkey/register/finish", post(passkey_add_finish))
         .route("/api/passkey/login/start", post(passkey_sign_in_start))
         .route("/api/passkey/login/finish", post(passkey_sign_in_finish))
+        .route("/api/app/approve", post(app_approve))
+        .route("/api/app/session", post(app_session))
+        .route("/app/sign-in", get(app_sign_in))
         .route("/signin", get(|| async { sign_in_page(StatusCode::OK) }))
         .route("/api/docs", get(|| async { api_file("README.md") }))
         .route("/api/schema", get(|| async { api_file("protocol.schema.json") }))
@@ -522,6 +530,65 @@ async fn passkey_sign_in_finish(State(ctx): State<Arc<Ctx>>, Extension(caller): 
     signed_in_as(&ctx, &headers, &signed.user, role, &access::passkey_credential(&signed.id))
 }
 
+/// `GET /app/sign-in?challenge=…&name=…`: the page an app opens in the
+/// browser to be signed in ([`access::app`]): whoever's signed in allows it
+/// there. Not signed in (anonymous access lets the request this far): the
+/// sign-in page first, which comes back here. Never in another page's frame,
+/// and on the built-in interface's port alone, as allowing is.
+async fn app_sign_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>) -> Response {
+    if !matches!(caller.door, Door::Builtin) {
+        return (StatusCode::FORBIDDEN, "Apps are signed in on the recorder's own page.\n").into_response();
+    }
+    if ctx.config.lock().unwrap().server.auth.enabled && caller.who.user().is_none() {
+        return sign_in_page(StatusCode::UNAUTHORIZED);
+    }
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store"), (header::X_FRAME_OPTIONS, "DENY")], APP_SIGN_IN).into_response()
+}
+
+/// `POST /api/app/approve`: `{challenge}`, from the page at /app/sign-in: the
+/// user signed in allows the app that made the challenge. `{to}`: where the
+/// browser goes next, the app's link with the code ([`access::app::approve`]).
+/// On the built-in interface's port, from its own pages (as passkeys are:
+/// an interface's page could otherwise allow itself, as whoever's signed in).
+async fn app_approve(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap, body: String) -> Response {
+    let h = |n| headers.get(n).and_then(|v| v.to_str().ok());
+    if !matches!(caller.door, Door::Builtin) || admit(false, h(header::HOST), h(header::ORIGIN), &[]).is_err() {
+        return (StatusCode::FORBIDDEN, "Apps are signed in on the recorder's own page.\n").into_response();
+    }
+    if !ctx.config.lock().unwrap().server.auth.enabled {
+        return (StatusCode::BAD_REQUEST, "Signing in is off: an app needs none.\n").into_response();
+    }
+    if caller.access(&ctx).is_none() || caller.who.user().is_none() {
+        return (StatusCode::UNAUTHORIZED, "Sign in first.\n").into_response();
+    }
+    let v = serde_json::from_str::<Value>(&body).unwrap_or_default();
+    match access::app::approve(&ctx.sessions, &caller.who, v["challenge"].as_str().unwrap_or(""), crate::clock::unix_s() as u64) {
+        Ok(code) => axum::Json(json!({ "to": format!("{}?code={}", access::app::RETURN, crate::toolkit::percent_encode(&code)) })).into_response(),
+        Err(e) => (StatusCode::FORBIDDEN, format!("{e}\n")).into_response(),
+    }
+}
+
+/// `POST /api/app/session`: `{code, verifier, name}`, from the app: the code
+/// its link was opened with, the secret whose hash was its challenge, and
+/// what to call it in the log. `{access, user, cookie, until}`: who it's
+/// signed in as (as `/api/login` says), the `Cookie` to send with every
+/// request, the WebSocket's too, and when that session ends (Unix s; the app
+/// signs in again). Open: it signs in. 401: not a code for that verifier
+/// (or used after its two minutes).
+async fn app_session(State(ctx): State<Arc<Ctx>>, body: String) -> Response {
+    let v = serde_json::from_str::<Value>(&body).unwrap_or_default();
+    let field = |k: &str| v[k].as_str().unwrap_or("");
+    let auth = ctx.config.lock().unwrap().server.auth.clone();
+    let Some((user, credential, role)) = access::app::redeem(&ctx.sessions, &auth, field("code"), field("verifier"), crate::clock::unix_s() as u64) else {
+        log::debug!("{}", access::Logged::Refused { what: "an app's code" });
+        return (StatusCode::UNAUTHORIZED, "Not a code for this app (or too old): sign in again from the app.\n").into_response();
+    };
+    let (cookie, until) = ctx.sessions.cookie_for(&user, &credential);
+    let how = Who::User { name: user.clone(), credential, until: None }.how(&auth);
+    log::info!("{}", access::Logged::AppSignedIn { user: &user, app: &access::app::name(field("name")), how });
+    axum::Json(json!({ "access": role, "user": user, "cookie": cookie, "until": until })).into_response()
+}
+
 /// `POST /api/logout`: this recorder's cookie, expired (other recorders' on
 /// the same host name are theirs). `{"all": true}`: signed out everywhere
 /// too, every browser's session of the user's signed in until now
@@ -583,7 +650,9 @@ async fn logout(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller
 /// interface's port, on a host they work on) and the one origin they work
 /// at (`passkeyOrigin`, from any port: a page elsewhere links there), and
 /// the user's own passkeys (`ownPasskeys`: `{id, name, created}` each, never
-/// their keys; left out when none, or not signed in as a user).
+/// their keys; left out when none, or not signed in as a user), and whether
+/// an app is signed in by way of the browser here (`appSignIn`: signing in
+/// on, the built-in interface's port; its page is /app/sign-in).
 async fn signed_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>, headers: HeaderMap) -> Response {
     let access = caller.access(&ctx);
     let (enabled, own) = {
@@ -595,7 +664,7 @@ async fn signed_in(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Cal
     let proxy = matches!(caller.who, Who::Proxy { .. });
     let rp = passkey_rp(&ctx, &headers);
     let builtin = matches!(caller.door, Door::Builtin);
-    let mut answer = json!({ "auth": enabled, "access": access, "user": caller.who.user(), "proxy": proxy, "passkeys": builtin && rp.is_some() });
+    let mut answer = json!({ "auth": enabled, "access": access, "user": caller.who.user(), "proxy": proxy, "passkeys": builtin && rp.is_some(), "appSignIn": builtin && enabled && !proxy });
     if let Some(rp) = rp {
         answer["passkeyOrigin"] = rp.origin().into();
     }
@@ -2028,6 +2097,78 @@ mod tests {
         (ctx, luke, kiosk)
     }
 
+    /// An app is signed in by way of the browser: the page for whoever's
+    /// signed in, their say-so on the recorder's own port alone, and a
+    /// session for the app that made the challenge, good where a browser's is.
+    #[tokio::test]
+    async fn an_app_signs_in_by_way_of_the_browser() {
+        use base64::Engine;
+        use sha2::Digest;
+        let dir = crate::db::TestDir::new("app-signin-http");
+        let (ctx, luke, kiosk) = signed_in_ctx(&dir, "app-signin-http");
+        let addr = super::test_server(&ctx, super::Door::Builtin).await;
+        let json = |s: &str| serde_json::from_str::<serde_json::Value>(s).unwrap();
+        let page = [("accept", "text/html")];
+        // The page: signing in first, then who allows.
+        let (code, _, body) = http(addr, "GET", "/app/sign-in?challenge=x&name=Trunk%20Monitor", &page, None).await;
+        assert!(code == 401 && body.contains("/api/login"), "not signed in: the sign-in page, in its place");
+        let (_, h, _) = http(addr, "POST", "/api/login", &[], Some(&kiosk)).await;
+        let cookie = h["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
+        let (code, h, body) = http(addr, "GET", "/app/sign-in?challenge=x&name=Trunk%20Monitor", &[("accept", "text/html"), ("cookie", &cookie)], None).await;
+        assert!(code == 200 && body.contains("/api/app/approve") && h["x-frame-options"] == "DENY", "{code}");
+        // Allowed: by the user signed in, from the recorder's own page.
+        let verifier = "the app's own secret, 43 characters or more";
+        let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sha2::Sha256::digest(verifier.as_bytes()));
+        let ask = format!(r#"{{"challenge":"{challenge}"}}"#);
+        assert_eq!(http(addr, "POST", "/api/app/approve", &[], Some(&ask)).await.0, 401, "nobody signed in");
+        assert_eq!(http(addr, "POST", "/api/app/approve", &[("cookie", &cookie), ("sec-fetch-site", "same-site")], Some(&ask)).await.0, 401, "another port's page: its cookie doesn't count");
+        assert_eq!(http(addr, "POST", "/api/app/approve", &[("cookie", &cookie)], Some(r#"{"challenge":"x"}"#)).await.0, 403, "no challenge");
+        let (code, _, to) = http(addr, "POST", "/api/app/approve", &[("cookie", &cookie)], Some(&ask)).await;
+        let to = json(&to)["to"].as_str().unwrap().to_string();
+        let code_of = |to: &str| percent_decode(to.strip_prefix("trunkmonitor://signin?code=").unwrap()).unwrap();
+        assert_eq!(code, 200, "{to}");
+        // The app: the code and its verifier for a session, as the user is now.
+        let redeem = |code: String, verifier: &'static str| async move {
+            let body = serde_json::json!({ "code": code, "verifier": verifier, "name": "Trunk Monitor\non Mac" }).to_string();
+            http(addr, "POST", "/api/app/session", &[], Some(&body)).await
+        };
+        assert_eq!(redeem(code_of(&to), "another app's").await.0, 401, "the code alone is nothing");
+        assert_eq!(redeem("nope".into(), verifier).await.0, 401);
+        let (code, _, got) = redeem(code_of(&to), verifier).await;
+        let got = json(&got);
+        assert_eq!((code, &got["user"], &got["access"]), (200, &serde_json::json!("kiosk"), &serde_json::json!("listen")), "{got}");
+        assert!(got["until"].as_u64().unwrap() > crate::clock::unix_s() as u64 + 29 * 86400);
+        let session = got["cookie"].as_str().unwrap().to_string();
+        assert!(!got.to_string().contains(&kiosk), "never their token");
+        assert_eq!(http(addr, "GET", "/api/v1/calls", &[("cookie", &session)], None).await.0, 200);
+        assert_eq!(http(addr, "GET", "/api/v1/export/calls", &[("cookie", &session)], None).await.0, 403, "a View user's");
+        assert_eq!(json(&http(addr, "GET", "/api/session", &[("cookie", &session)], None).await.2)["user"], "kiosk");
+        // Ended as a browser's is: signed out everywhere, or their token made again.
+        ctx.sessions.sign_out(&ctx.config.lock().unwrap().server.auth.clone(), "kiosk").unwrap();
+        assert_eq!(http(addr, "GET", "/api/v1/calls", &[("cookie", &session)], None).await.0, 401, "signed out everywhere");
+        // A token sent says who as well: a program allows an app of its own.
+        let (code, _, to) = http(addr, "POST", "/api/app/approve", &[("authorization", &format!("Bearer {luke}"))], Some(&ask)).await;
+        assert_eq!(code, 200);
+        let (_, _, got) = redeem(code_of(&json(&to)["to"].as_str().unwrap().to_string()), verifier).await;
+        let session = json(&got)["cookie"].as_str().unwrap().to_string();
+        assert_eq!(http(addr, "GET", "/api/v1/export/calls", &[("cookie", &session)], None).await.0, 200, "luke's: control");
+        ctx.config.lock().unwrap().server.auth.users.get_mut("luke").unwrap().token = None;
+        assert_eq!(http(addr, "GET", "/api/v1/calls", &[("cookie", &session)], None).await.0, 401, "the token it was signed in with is gone");
+        // An interface's page allows nobody (its session is good on every port); another origin's neither.
+        ctx.config.lock().unwrap().server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, ..Default::default() });
+        let (_tx, stop) = tokio::sync::watch::channel(false);
+        let wall = super::test_server(&ctx, super::Door::Interface { id: "wall".into(), stop }).await;
+        let kiosk_token = format!("Bearer {kiosk}");
+        assert_eq!(http(wall, "POST", "/api/app/approve", &[("authorization", &kiosk_token)], Some(&ask)).await.0, 403, "an interface's port");
+        assert_eq!(json(&http(wall, "GET", "/api/session", &[], None).await.2)["appSignIn"], false);
+        assert_eq!(http(addr, "POST", "/api/app/approve", &[("authorization", &kiosk_token), ("origin", "https://evil.example")], Some(&ask)).await.0, 403, "another origin's page");
+        // Signing in off: nothing to allow.
+        ctx.config.lock().unwrap().server.auth.enabled = false;
+        assert_eq!(http(addr, "POST", "/api/app/approve", &[], Some(&ask)).await.0, 400);
+        assert_eq!(json(&http(addr, "GET", "/api/session", &[], None).await.2)["appSignIn"], false);
+        assert_eq!(http(addr, "GET", "/app/sign-in", &page, None).await.0, 200, "the page says so");
+    }
+
     /// With signing in on, a request without a token gets nothing but the
     /// version, signing in, who it is and the API's static files (a browser
     /// asking for a page, the sign-in page); one with a token gets what its
@@ -2067,7 +2208,7 @@ mod tests {
         assert_eq!(get("/signin", bearer(&luke)).await.0, 200, "signed in too");
         assert_eq!(get("/api/version", vec![]).await.0, 200, "a second launch still finds it");
         let (code, _, who) = get("/api/session", vec![]).await;
-        assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "proxy": false, "passkeys": false })));
+        assert_eq!((code, serde_json::from_str::<serde_json::Value>(&who).unwrap()), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "proxy": false, "passkeys": false, "appSignIn": true })));
         // A token: what its user's role allows.
         assert_eq!(get("/api/v1/calls", bearer(&luke)).await.0, 200);
         assert_eq!(get("/calls/x.wav", bearer(&luke)).await.0, 404, "no such file, but let in");
@@ -2098,7 +2239,7 @@ mod tests {
             h.extend(extra);
             async move { serde_json::from_str::<serde_json::Value>(&get("/api/session", h).await.2).unwrap() }
         };
-        assert_eq!(session(vec![]).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "proxy": false, "passkeys": false }), "127.0.0.1: no passkeys");
+        assert_eq!(session(vec![]).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "proxy": false, "passkeys": false, "appSignIn": true }), "127.0.0.1: no passkeys");
         assert_eq!(session(vec![("sec-fetch-site", "same-origin".into())]).await["access"], "control");
         // The user's own passkeys, by name and when added: never another's, never a key.
         {
@@ -2424,7 +2565,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&http(addr, "GET", "/api/session", &h, None).await.2).unwrap()
         };
         let as_ = |name: &str| vec![("remote-user", name.to_string())];
-        assert_eq!(session(as_("luke@example.com")).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "proxy": true, "passkeys": false }), "mapped");
+        assert_eq!(session(as_("luke@example.com")).await, serde_json::json!({ "auth": true, "access": "control", "user": "luke", "proxy": true, "passkeys": false, "appSignIn": false }), "mapped");
         assert_eq!((session(as_("kiosk")).await["user"].clone(), session(as_("kiosk")).await["access"].clone()), ("kiosk".into(), "listen".into()), "the same name");
         assert_eq!(http(addr, "GET", "/api/v1/export/calls", &[("remote-user", "luke@example.com")], None).await.0, 200, "control's, let in");
         let mut both = as_("luke@example.com");
@@ -2507,7 +2648,7 @@ mod tests {
         assert!(code == 403 && why.contains("only answers to localhost"), "no server.hostname: refused ({code} {why})");
         ctx.config.lock().unwrap().server.hostname = "radio.example.com".into();
         let (code, _, who) = call("GET", "/api/session", tunnel(vec![]), None).await;
-        assert_eq!((code, json(&who)), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "proxy": false, "passkeys": true, "passkeyOrigin": "https://radio.example.com" })), "named: let in, passkeys there");
+        assert_eq!((code, json(&who)), (200, serde_json::json!({ "auth": true, "access": null, "user": null, "proxy": false, "passkeys": true, "passkeyOrigin": "https://radio.example.com", "appSignIn": true })), "named: let in, passkeys there");
         let (code, h, _) = call("POST", "/api/login", tunnel(vec![]), Some(luke.clone())).await;
         assert!(code == 200 && h["set-cookie"].to_str().unwrap().ends_with("; Secure"), "{code} {h:?}");
         // Passkeys over the tunnel: added and signed in with, from https://radio.example.com (no port).
@@ -2972,6 +3113,9 @@ mod tests {
             ("/api/passkey/login/start", "POST", "/api/passkey/login/start", Some(""), None, ALL("200"), Some(ALL("403"))),
             ("/api/passkey/login/finish", "POST", "/api/passkey/login/finish", Some("{}"), None, ALL("401"), Some(ALL("403"))),
             ("/signin", "GET", "/signin", None, None, ALL("200"), Some(ALL("200"))),
+            ("/app/sign-in", "GET", "/app/sign-in", None, None, ["200", "g", "401", "200", "200"], Some(["403", "g", "403", "403", "403"])),
+            ("/api/app/approve", "POST", "/api/app/approve", Some(r#"{"challenge":"47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU"}"#), None, ["400", "g", "401", "200", "200"], Some(["403", "g", "403", "403", "403"])),
+            ("/api/app/session", "POST", "/api/app/session", Some("{}"), None, ALL("401"), Some(ALL("401"))),
             ("/api/docs", "GET", "/api/docs", None, None, ALL("200"), Some(ALL("200"))),
             ("/api/schema", "GET", "/api/schema", None, None, ALL("200"), Some(ALL("200"))),
             ("/api/protocol.ts", "GET", "/api/protocol.ts", None, None, ALL("200"), Some(ALL("200"))),

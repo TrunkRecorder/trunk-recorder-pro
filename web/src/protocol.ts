@@ -750,6 +750,8 @@ export interface Session {
   passkeyOrigin?: string;
   /** The signed-in user's own passkeys; absent when none, or not signed in as a user. */
   ownPasskeys?: OwnPasskey[];
+  /** An app signs in by way of the browser here (/app/sign-in): the built-in interface's port, signing in on. */
+  appSignIn?: boolean;
 }
 
 /** An access token: its secret's SHA-256 (hex). The secret itself is never kept. */
