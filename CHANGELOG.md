@@ -5,6 +5,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A call's WAV and M4A are tagged** (#196, thanks @Xer0n). Title (the talkgroup's alpha tag or number), artist
+  (the system), date and genre (the talkgroup's group), as players show them, with a comment and fields for scripts:
+  `TALKGROUP`, `UNITS` (the radio IDs that talked; absent when none was identified), `FREQUENCY`, `EMERGENCY`,
+  `ENCRYPTED`. The WAV has an ID3v2.4 tag; the M4A has iTunes tags, the same whichever encoder made it.
+  [Recordings](docs/guides/recordings.md#tags-in-the-audio-files) has the list and a Python example.
+- **SmartNet's emergency button is reported** (#253). A site's emergency alarm acknowledgement and an emergency
+  PTT come out as `emergency_alarm` unit events, as P25's emergency alarms do. Emergency calls were already flagged.
 - **"Running hot" no longer comes from an unconnected motherboard sensor.** The computer's temperature is the hottest
   sensor's, and a motherboard monitoring chip's spare thermistor inputs (a Nuvoton nct67xx chip's AUXTIN0–3) count
   among them. On many boards nothing is wired to some of them, and they read whatever the open input gives: 110 °C on
