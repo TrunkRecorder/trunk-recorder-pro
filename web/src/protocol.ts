@@ -734,6 +734,20 @@ export interface AuthPasskey {
 /** A passkey of the signed-in user's, as the session lists it: never its key. */
 export type OwnPasskey = Pick<AuthPasskey, "id" | "name" | "created">;
 
+/** An app signed in by way of the browser (/app/sign-in), as the session and GET /api/apps list it: never its token. */
+export interface SignedInApp {
+  id: string;
+  /** What it called itself. */
+  name: string;
+  /** Whose say-so it has: it does no more than they may. */
+  user: string;
+  /** What it may do now. */
+  access: ApiAccess;
+  /** When it signed in, and when that ends, Unix s. */
+  created: number;
+  until: number;
+}
+
 /** GET /api/session: how the recorder sees this request. */
 export interface Session {
   /** Signing in is on. */
@@ -752,6 +766,10 @@ export interface Session {
   ownPasskeys?: OwnPasskey[];
   /** An app signs in by way of the browser here (/app/sign-in): the built-in interface's port, signing in on. */
   appSignIn?: boolean;
+  /** The apps signed in so: the user's own; every user's for an Admin on the built-in interface's port. Absent when none. */
+  apps?: SignedInApp[];
+  /** Asked with an app's token: which app. */
+  app?: { id: string; name: string; until: number };
 }
 
 /** An access token: its secret's SHA-256 (hex). The secret itself is never kept. */

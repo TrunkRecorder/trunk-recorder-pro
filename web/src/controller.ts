@@ -11,6 +11,7 @@ import { configReplaced } from "./rules.ts";
 import type {
   ApiAccess,
   OwnPasskey,
+  SignedInApp,
   Session,
   MonitorEvent,
   PlatformInfo,
@@ -152,6 +153,8 @@ export interface AppState {
   proxied: boolean;
   /** The signed-in user's own passkeys (GET /api/session), any role; null: the session couldn't say. */
   ownPasskeys: OwnPasskey[] | null;
+  /** The apps signed in by way of the browser (GET /api/session): the user's own, every user's for an Admin. */
+  apps: SignedInApp[];
   surveySpectrum: Spectrum | null;
   /** The licenses looked up for the survey's signals ("Identify surveyed sites"); null: none asked for since it started. */
   surveyLicenses: LicenseLookup | null;
@@ -259,6 +262,7 @@ let state: AppState = {
   passkeys: false,
   proxied: false,
   ownPasskeys: null,
+  apps: [],
   surveySpectrum: null,
   surveyLicenses: null,
   surveyFor: null,
@@ -779,7 +783,7 @@ export function createToken(name: string, access: ApiAccess): Promise<TokenCreat
   return ask<TokenCreated>({ type: "createToken", id: nextId++, name, access });
 }
 
-export type { OwnPasskey, Session };
+export type { OwnPasskey, Session, SignedInApp };
 
 /** How the recorder sees this browser (GET /api/session); null: it couldn't say (the browser build has no server). */
 export async function fetchSession(): Promise<Session | null> {
@@ -798,7 +802,19 @@ export const passkeysHere = (x: Pick<Session, "passkeys" | "passkeyOrigin">, ori
 /** The session asked again, into the state: signing in, passkeys here, the proxy, the user's own passkeys. */
 export async function refreshSession(): Promise<void> {
   const x = await fetchSession();
-  if (x) set({ signingIn: x.auth, passkeys: passkeysHere(x), proxied: !!x.proxy, ownPasskeys: x.ownPasskeys ?? [] });
+  if (x) set({ signingIn: x.auth, passkeys: passkeysHere(x), proxied: !!x.proxy, ownPasskeys: x.ownPasskeys ?? [], apps: x.apps ?? [] });
+}
+
+/** Sign app `id` out for good (POST /api/app/revoke), the session asked again; a problem to show, or null. */
+export async function removeApp(id: string): Promise<string | null> {
+  try {
+    const r = await fetch("/api/app/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id }), cache: "no-store" });
+    if (!r.ok) return (await r.text()).trim() || `Failed: ${r.status}`;
+  } catch {
+    return "No answer";
+  }
+  await refreshSession();
+  return null;
 }
 
 /** Who signed in (POST /api/login's answer): the user's role and name. */

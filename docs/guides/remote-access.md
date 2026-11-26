@@ -173,29 +173,39 @@ remove the token); for a device that's gone, remove its passkey (every user's ar
 
 ### Apps
 
-An app on your computer (Trunk Monitor, for the Mac) signs in by way of the browser: it opens the
-recorder's page, you sign in there as you always do (your token, a passkey) and click **Allow**,
-and the app is signed in as you, with your role. It never sees your token. It holds a session like
-a browser's: 30 days, then it asks again; **Sign out everywhere** ends it too, and so does making
-your token again or removing the passkey you signed in with. The log names each app as it's signed
-in (`User luke: app "Trunk Monitor on Luke's Mac" signed in (with a passkey "Laptop")`).
+An app (Trunk Monitor, for the Mac, iPhone and iPad) signs in by way of the browser: it opens the
+recorder's page, you sign in there as you always do (your token, a passkey, the proxy in front)
+and click **Allow**, and the app is signed in as you. It never sees your token: it gets one of its
+own, for 30 days, then it asks again.
 
-Only the dashboard's own page allows an app (never an interface's), and the page says which app,
-which user and what access before you click. An app you didn't just open asking to be allowed:
-**Cancel**.
+The page says which app, which user, what it may do and where it returns before you click. An
+Admin chooses there whether the app gets **Admin** or only **View**; an app that only watches
+asks for View. An app you didn't just open asking to be allowed: **Cancel**. Only the dashboard's
+own page allows an app (never an interface's).
 
-Away from the recorder's network, the app needs an address that goes with it: the recorder's
+**Seeing and removing them.** Each app you've allowed is listed under the key in the top bar, and
+every user's in Setup → **Access**: click one to remove it, and it's signed out at once.
+**Sign out everywhere** removes all of yours, and so does making your token again or removing the
+passkey you allowed them with. An app's token is less than you: it can't allow another app, add a
+passkey, make a token, or change who signs in. The log names each app as it's signed in and
+removed (`User luke: app "Trunk Monitor on Luke's Mac" signed in, View (allowed by them, with a
+passkey "Laptop")`).
+
+**The recorder on one computer, you on another.** That's the ordinary case, and nothing changes:
+give the app the address you'd open the dashboard at. Passkeys work at one address
+([Passkeys](#passkeys)); opened at another, the sign-in page's passkey link takes you there and
+brings the app's request along. Over plain HTTP the page says **Unencrypted**: fine on your own
+network, not across the internet. Away from the recorder's network, give the app the recorder's
 [Tailscale](#tailscale) address or name, with Tailscale connected on the device, or a
 [Cloudflare Tunnel](#cloudflare-tunnel-and-access)'s name. Either works at home too.
 
-Behind a [proxy that signs people in](#behind-a-proxy-that-signs-people-in) the proxy's word
-covers the app as it does a browser, when the app's requests come through it as you (`tailscale
-serve` on your own device). Behind [Cloudflare Access](#cloudflare-tunnel-and-access) they don't:
-Access signs people in on a web page. Give the app a user's access token, and a service token to
-get through Access: create one in Zero Trust → **Access controls** → **Service credentials**, add
-a policy with the action **Service Auth** that includes it to the application, and give the app
-its client ID and secret (`CF-Access-Client-Id`, `CF-Access-Client-Secret`). A service token signs
-nobody in by itself.
+Behind a [proxy that signs people in](#behind-a-proxy-that-signs-people-in) you allow the app the
+same way, signed in by the proxy. The app's own requests still have to get through the proxy.
+`tailscale serve` passes them. [Cloudflare Access](#cloudflare-tunnel-and-access) signs people in
+on a web page, so a program needs a service token to get through: create one in Zero Trust →
+**Access controls** → **Service credentials**, add a policy with the action **Service Auth** that
+includes it to the application, and give the app its client ID and secret (`CF-Access-Client-Id`,
+`CF-Access-Client-Secret`). A service token signs nobody in by itself.
 
 ### In the log
 

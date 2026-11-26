@@ -20,6 +20,11 @@
   button { padding: 9px; font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: 6px; cursor: pointer; }
   button.quiet { color: var(--text); background: transparent; border: 1px solid var(--line); }
   button:disabled { opacity: .6; cursor: default; }
+  select { font: inherit; font-weight: 600; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 2px 4px; }
+  .warn { color: var(--bad); }
+  .code { display: grid; gap: 8px; }
+  .code code { display: block; padding: 10px; border: 1px solid var(--line); border-radius: 6px; font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; overflow-wrap: anywhere; user-select: all; }
+  .done { margin: 0; font-weight: 600; text-align: center; }
   .error { margin: 0; min-height: 1.4em; color: var(--bad); font-size: 13px; }
   [hidden] { display: none !important; }
 </style>
@@ -29,47 +34,96 @@
   <h1>Trunk Recorder Pro</h1>
   <p class="sub">Sign in an app</p>
   <dl>
-    <dt>App</dt><dd id="app"></dd>
+    <dt>App</dt><dd id="app">…</dd>
     <dt>User</dt><dd id="user">…</dd>
-    <dt>Access</dt><dd id="access">…</dd>
+    <dt>Access</dt><dd><span id="access">…</span><select id="pick" hidden aria-label="Access"><option value="listen">View</option><option value="control">Admin</option></select></dd>
+    <dt>Returns to</dt><dd id="returns">…</dd>
+    <dt id="plain-t" hidden>Connection</dt><dd id="plain" class="warn" hidden>Unencrypted</dd>
   </dl>
-  <div class="row">
+  <div class="row" id="ask">
     <button id="no" type="button" class="quiet">Cancel</button>
     <button id="yes" type="button" disabled>Allow</button>
   </div>
+  <div class="code" id="paste" hidden>
+    <code id="code"></code>
+    <button id="copy" type="button">Copy code</button>
+  </div>
+  <p class="done" id="done" hidden></p>
   <p class="error" id="e" role="alert"></p>
 </main>
 <script>
   const $ = (id) => document.getElementById(id);
-  const q = new URLSearchParams(location.search);
-  // The app's link: the recorder's answer names it with the code; cancelled, this says so.
-  const back = "trunkmonitor://signin";
+  // What the app asked is this page's own query: the recorder reads it, here and when it's allowed.
+  const request = location.search.slice(1);
   // What a role is called on the Access page.
   const role = (a) => (a === "control" ? "Admin" : a === "listen" ? "View" : "None");
-  // The name is the app's own word for itself: shown as text, never as markup.
-  $("app").textContent = (q.get("name") || "").trim().slice(0, 64) || "An app";
-  $("no").addEventListener("click", () => location.replace(back + "?error=denied"));
+  // Where the code goes: an app on this device, another site's page (its host), or shown here to copy.
+  const returns = (a) => (a.returns === "device" ? "This device" : a.returns === "web" ? a.host : "Copy a code");
+  // Whether this page crosses the network unencrypted: plain HTTP, from a host that isn't this computer.
+  const unencrypted = (loc) => loc.protocol === "http:" && !/^(localhost|.*\.localhost|127(\.\d+){3}|\[::1\])$/.test(loc.hostname);
+  // Said in place of the buttons: allowed, or not.
+  const done = (text) => {
+    $("ask").hidden = true;
+    $("done").textContent = text;
+    $("done").hidden = false;
+  };
+  let cancel = null;
+  $("no").addEventListener("click", () => {
+    done("Cancelled");
+    if (cancel) location.replace(cancel);
+  });
   $("yes").addEventListener("click", async () => {
     $("yes").disabled = true;
     $("e").textContent = "";
     try {
-      const r = await fetch("/api/app/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challenge: q.get("challenge") || "" }) });
-      if (r.ok) return location.replace((await r.json()).to);
+      const access = $("pick").hidden ? undefined : $("pick").value;
+      const r = await fetch("/api/app/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request, access }) });
+      if (r.ok) {
+        const a = await r.json();
+        $("pick").disabled = true;
+        if (a.to) {
+          // (The app's link opens the app; this page stays behind it.)
+          done("Allowed · Return to the app");
+          return location.replace(a.to);
+        }
+        done("Allowed · Paste in the app");
+        $("code").textContent = a.code;
+        $("paste").hidden = false;
+        return;
+      }
       $("e").textContent = (await r.text()).trim() || "Failed: " + r.status;
     } catch {
       $("e").textContent = "No answer";
     }
     $("yes").disabled = false;
   });
-  fetch("/api/session", { cache: "no-store" })
-    .then((r) => r.json())
-    .then((s) => {
-      $("user").textContent = s.user || "—";
-      $("access").textContent = role(s.access);
-      if (!s.auth) $("e").textContent = "Sign-in is off: the app needs none";
-      else if (!s.appSignIn) $("e").textContent = "Open this on the recorder's own page";
-      else if (s.proxy) $("e").textContent = "Signed in by the proxy: use an access token in the app";
-      else $("yes").disabled = false;
+  $("copy").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("code").textContent);
+      $("copy").textContent = "Copied";
+    } catch {
+      // (Plain HTTP has no clipboard: the code selects whole on a click.)
+      getSelection().selectAllChildren($("code"));
+    }
+  });
+  if (unencrypted(location)) $("plain-t").hidden = $("plain").hidden = false;
+  fetch("/api/app/ask?" + request, { cache: "no-store" })
+    .then(async (r) => {
+      if (!r.ok) return ($("e").textContent = (await r.text()).trim() || "Failed: " + r.status);
+      const a = await r.json();
+      // The name is the app's own word for itself: shown as text, never as markup.
+      $("app").textContent = a.app;
+      $("user").textContent = a.user;
+      $("access").textContent = role(a.access);
+      $("returns").textContent = returns(a);
+      // An Admin the app asked everything of may allow it less.
+      if (a.access === "control") {
+        $("pick").value = a.access;
+        $("pick").hidden = false;
+        $("access").hidden = true;
+      }
+      cancel = a.cancel || null;
+      $("yes").disabled = false;
     })
     .catch(() => ($("e").textContent = "No answer"));
 </script>

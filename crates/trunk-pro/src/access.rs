@@ -20,8 +20,8 @@
 //! signs in with their access token, whose secret comes as `Authorization:
 //! Bearer` or `?token=` (programs), or by way of the session cookie
 //! `/api/login` sets (browsers: [`Sessions`]), or one of their passkeys
-//! signing in sets ([`passkey`]), or the same session an app was handed by
-//! way of the browser ([`app`]); without one it gets
+//! signing in sets ([`passkey`]); an app they allowed in the browser sends a
+//! token of its own, the same two ways ([`app`]); without one it gets
 //! `server.auth.anonymous` (none: it must sign in first). A secret is 32
 //! random bytes; the config keeps only its SHA-256.
 //!
@@ -36,6 +36,7 @@ use std::net::IpAddr;
 use std::path::Path;
 
 use axum::http::{header, HeaderMap};
+use base64::Engine;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 use trunk_app::config::{Auth, AuthCloudflare, AuthToken, AuthUser};
@@ -76,6 +77,10 @@ pub enum Who {
     /// Cloudflare's token, which named them `asserted`: recorder user `user`
     /// (the user it's mapped to), or by its own name, with `proxy.other`'s access.
     Proxy { asserted: String, user: String, via: Via },
+    /// App `name` (`id`, as [`state::State`] keeps it), which `user` let sign
+    /// in as them ([`app`]) `until` then: its token sent. It does what the
+    /// user may and it was allowed, and never changes who signs in.
+    App { user: String, id: String, name: String, until: u64 },
 }
 
 /// How the proxy in front said who.
@@ -116,6 +121,8 @@ impl Who {
                 })?;
                 auth.proxied(asserted).filter(|(u, _)| u == user).map(|(_, a)| a)
             }
+            // (Removed, or what its user allowed it with gone: nothing.)
+            Who::App { id, .. } => sessions.state.app(id).and_then(|a| app::live(auth, sessions, &a, crate::clock::unix_s() as u64)),
         }
     }
 
@@ -125,6 +132,7 @@ impl Who {
         match self {
             Who::User { until, .. } => *until,
             Who::Proxy { via: Via::Cloudflare { until, .. }, .. } => Some(*until),
+            Who::App { until, .. } => Some(*until),
             _ => None,
         }
     }
@@ -133,14 +141,21 @@ impl Who {
     pub fn user(&self) -> Option<&str> {
         match self {
             Who::Anonymous => None,
-            Who::User { name, .. } | Who::Proxy { user: name, .. } => Some(name),
+            Who::User { name, .. } | Who::Proxy { user: name, .. } | Who::App { user: name, .. } => Some(name),
         }
+    }
+
+    /// Whether it's a person: a user signed in themselves, or by the proxy
+    /// in front. What only they do (allow an app, add a passkey, sign
+    /// themselves out everywhere, change who signs in) an app's token doesn't.
+    pub fn person(&self) -> bool {
+        matches!(self, Who::User { .. } | Who::Proxy { .. })
     }
 
     /// How it signed in, in words for the log ([`Logged`]): "signed in with
     /// their access token", "… with passkey "iPhone"" (its name as `auth` has
-    /// it), "… by the proxy", "… by Cloudflare Access", or "not signed in".
-    /// Never the credential itself.
+    /// it), "… by the proxy", "… by Cloudflare Access", "as app "Trunk
+    /// Monitor"", or "not signed in". Never the credential itself.
     pub fn how(&self, auth: &Auth) -> String {
         match self {
             Who::Anonymous => "not signed in".into(),
@@ -153,6 +168,7 @@ impl Who {
             },
             Who::Proxy { via: Via::Header(_), .. } => "signed in by the proxy".into(),
             Who::Proxy { via: Via::Cloudflare { .. }, .. } => "signed in by Cloudflare Access".into(),
+            Who::App { name, .. } => format!("as app \"{name}\""),
         }
     }
 }
@@ -164,8 +180,10 @@ impl Who {
 pub enum Logged<'a> {
     /// `user` signed in `how`: a browser's session made (`/api/login`, a passkey's sign-in).
     SignedIn { user: &'a str, how: String },
-    /// `user`, signed in `how`, let app `app` sign in as them ([`app`]).
-    AppSignedIn { user: &'a str, app: &'a str, how: String },
+    /// `user`, signed in `how`, let app `app` sign in as them with `access` ([`app`]).
+    AppSignedIn { user: &'a str, app: &'a str, access: ApiAccess, how: String },
+    /// App `app` of `user`'s removed, `by` another user (None: by them, or the app itself).
+    AppRemoved { user: &'a str, app: &'a str, by: Option<&'a str> },
     /// A sign-in refused, of `what` (debug: anyone may try, again and again).
     Refused { what: &'a str },
     /// Passkey `passkey` added to `user`'s, by them signed in `how`.
@@ -179,11 +197,20 @@ impl std::fmt::Display for Logged<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Logged::SignedIn { user, how } => write!(f, "User {user}: {how}"),
-            Logged::AppSignedIn { user, app, how } => write!(f, "User {user}: app \"{app}\" signed in ({how})"),
+            Logged::AppSignedIn { user, app, access, how } => write!(f, "User {user}: app \"{app}\" signed in, {} (allowed by them, {how})", role(*access)),
+            Logged::AppRemoved { user, app, by } => write!(f, "User {user}: app \"{app}\" removed{}", by.map(|b| format!(" by {b}")).unwrap_or_default()),
             Logged::Refused { what } => write!(f, "Signing in: refused {what}"),
             Logged::PasskeyAdded { user, passkey, how } => write!(f, "User {user}: passkey \"{passkey}\" added ({how})"),
             Logged::PasskeyRemoved { user, passkey, by, how } => write!(f, "User {user}: passkey \"{passkey}\" removed{} ({how})", by.map(|b| format!(" by {b}")).unwrap_or_default()),
         }
+    }
+}
+
+/// What a role is called on the Access page.
+pub fn role(access: ApiAccess) -> &'static str {
+    match access {
+        ApiAccess::Listen => "View",
+        ApiAccess::Control => "Admin",
     }
 }
 
@@ -242,7 +269,8 @@ pub fn holds(u: &AuthUser, credential: &str) -> bool {
 }
 
 /// Who a request from `peer` is: the first valid secret of its
-/// `Authorization: Bearer` and its `token=` query parameter, else
+/// `Authorization: Bearer` and its `token=` query parameter (a user's access
+/// token, or an app's: [`app::signs_in`]), else
 /// (`cookie_ok`) a valid session in this recorder's cookie whose user still
 /// has its credential, else (`cookie_ok` too) who the proxy in front says
 /// ([`proxied`]; Cloudflare's token checked with `keys`). Signing in off, or none valid: anonymous.
@@ -256,7 +284,7 @@ pub fn identify(auth: &Auth, sessions: &Sessions, keys: &cloudflare::Keys, heade
         scheme.eq_ignore_ascii_case("bearer").then(|| secret.trim_start().to_string())
     });
     let param = query.into_iter().flat_map(|q| q.split('&')).filter_map(|kv| kv.strip_prefix("token=").map(str::to_string));
-    let secret = bearer.chain(param).find_map(|s| signs_in(auth, &s));
+    let secret = bearer.chain(param).find_map(|s| signs_in(auth, &s).or_else(|| app::signs_in(sessions, &s)));
     // (A session's user removed, or their token made again since: nobody.)
     let session = || if cookie_ok { sessions.of(headers).filter(|w| w.grants(auth, sessions).is_some()) } else { None };
     // (A browser sends the proxy its cookie from another site's page too: the header counts where the cookie would.)
@@ -447,10 +475,37 @@ impl Sessions {
     }
 
     fn purpose_mac(&self, purpose: &str, body: &str) -> Hmac<Sha256> {
-        let key = self.mac(&format!("trunk-pro key for: {purpose}")).finalize().into_bytes();
-        let mut m = Hmac::<Sha256>::new_from_slice(&key).expect("HMAC takes a key of any length");
+        let mut m = Hmac::<Sha256>::new_from_slice(&self.purpose_key(purpose)).expect("HMAC takes a key of any length");
         m.update(body.as_bytes());
         m
+    }
+
+    /// A key made from this one for `purpose` alone.
+    fn purpose_key(&self, purpose: &str) -> [u8; 32] {
+        self.mac(&format!("trunk-pro key for: {purpose}")).finalize().into_bytes().into()
+    }
+
+    fn cipher(&self, purpose: &str) -> ring::aead::LessSafeKey {
+        ring::aead::LessSafeKey::new(ring::aead::UnboundKey::new(&ring::aead::CHACHA20_POLY1305, &self.purpose_key(purpose)).expect("a 32-byte key"))
+    }
+
+    /// `body` locked for `purpose` (an app's code, [`app`]): unreadable and
+    /// unchangeable without this recorder's key, in characters a URL takes
+    /// as they are (base64url of a nonce made for it, then the ciphertext).
+    pub fn lock(&self, purpose: &str, body: &[u8]) -> String {
+        let mut nonce = [0u8; ring::aead::NONCE_LEN];
+        getrandom::fill(&mut nonce).expect("No random numbers to lock with");
+        let mut out = body.to_vec();
+        self.cipher(purpose).seal_in_place_append_tag(ring::aead::Nonce::assume_unique_for_key(nonce), ring::aead::Aad::empty(), &mut out).expect("a body far under the cipher's limit");
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([&nonce[..], &out].concat())
+    }
+
+    /// The body of `value`, if it's one [`Sessions::lock`] locked for `purpose`.
+    pub fn unlock(&self, purpose: &str, value: &str) -> Option<Vec<u8>> {
+        let mut raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(value).ok()?;
+        let mut rest = raw.split_off(ring::aead::NONCE_LEN.min(raw.len()));
+        let nonce = ring::aead::Nonce::try_assume_unique_for_key(&raw).ok()?;
+        self.cipher(purpose).open_in_place(nonce, ring::aead::Aad::empty(), &mut rest).ok().map(|plain| plain.to_vec())
     }
 
     /// Who a request's cookie of this recorder's says (the first valid, if it carries several).
@@ -463,14 +518,6 @@ impl Sessions {
     /// ([`Sessions::issue`]); `secure` when it came over https.
     pub fn set_cookie(&self, user: &str, credential: &str, secure: bool) -> String {
         format!("{}={}; Path=/; Max-Age={SESSION_S}; HttpOnly; SameSite=Lax{}", self.cookie, self.issue(user, credential), if secure { "; Secure" } else { "" })
-    }
-
-    /// A session as a program keeps it (an app signed in by way of the
-    /// browser, [`app`]): the `Cookie` it sends with its requests, and when
-    /// the session ends (Unix s).
-    pub fn cookie_for(&self, user: &str, credential: &str) -> (String, u64) {
-        let until = crate::clock::unix_s() as u64 + SESSION_S;
-        (format!("{}={}", self.cookie, self.issue_until(user, credential, until)), until)
     }
 
     /// The `Set-Cookie` signing a browser out (of this recorder alone).
@@ -506,6 +553,7 @@ pub fn refusal(ctx: &Ctx, caller: &Caller, ty: &str) -> String {
     };
     match caller.who.user() {
         _ if port_listens => format!("This interface may only listen, so it can't send \"{ty}\". Give it control access on the recorder's Interfaces page if it should."),
+        Some(name) if matches!(caller.who, Who::App { .. }) && ctx.config.lock().unwrap().server.auth.users.get(name).is_none_or(|u| u.access == ApiAccess::Control) => format!("This app was allowed to view only, so it can't send \"{ty}\". Sign it in again as Admin if it should."),
         Some(name) => format!("The user \"{name}\" may only listen, so they can't send \"{ty}\". Give them control access if they should."),
         None => format!("Not signed in, this page may only listen, so it can't send \"{ty}\". Sign in as a user with control access."),
     }

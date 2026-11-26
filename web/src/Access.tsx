@@ -18,7 +18,7 @@ import { Info } from "./charts.tsx";
 import { textList } from "./fieldText.ts";
 import { CopyButton, DraftInput, Field, TextInput } from "./inputs.tsx";
 import { Group, Section, Switch } from "./SetupLayout.tsx";
-import { AddPasskey, day, PasskeyChip } from "./Passkeys.tsx";
+import { AddPasskey, AppChip, day, PasskeyChip } from "./Passkeys.tsx";
 import { Connections, onThisComputer } from "./Reach.tsx";
 import type { ApiAccess, AuthProxy, AuthSetup, AuthUser, Config } from "./protocol.ts";
 
@@ -243,6 +243,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
   const saved = useSelect((x) => ({ status: x.saveStatus, error: x.saveError }));
   // Who this browser is signed in as, and whether passkeys work where it is.
   const me = useSelect((x) => ({ user: x.user, passkeys: x.passkeys }));
+  const apps = useSelect((x) => x.apps);
   const auth = props.c.server.auth;
   const users = auth?.users ?? {};
   const rows = Object.entries(users).sort(([, a], [, b]) => (a.token?.created ?? 0) - (b.token?.created ?? 0));
@@ -308,7 +309,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
     updateConfig((x) => void delete authOf(x).users![name].token);
   };
   const signOutAll = async (name: string) => {
-    if (!confirm(`Sign ${name} out everywhere? Every browser signed in as them signs in again${me.user === name ? ", this one too" : ""}. Their access token keeps working.`)) return;
+    if (!confirm(`Sign ${name} out everywhere? Every browser and app signed in as them signs in again${me.user === name ? ", this one too" : ""}. Their access token keeps working.`)) return;
     setProblem(await signOutEverywhere(me.user === name ? undefined : name));
   };
   const removePasskey = (name: string, id: string, label: string) => {
@@ -465,6 +466,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                     <th>Role</th>
                     <th>Token</th>
                     <th>Passkeys</th>
+                    {!!apps.length && <th>Apps</th>}
                     <th />
                   </tr>
                 </thead>
@@ -501,6 +503,16 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                           {me.passkeys && me.user === name && <AddPasskey />}
                         </div>
                       </td>
+                      {!!apps.length && (
+                        <td>
+                          <div className="row wrap">
+                            {apps.filter((a) => a.user === name).map((a) => (
+                              <AppChip key={a.id} a={a} />
+                            ))}
+                            {!apps.some((a) => a.user === name) && <span className="small">—</span>}
+                          </div>
+                        </td>
+                      )}
                       <td>
                         <div className="row">
                           {on && (
@@ -508,7 +520,7 @@ export function AccessSection(props: { c: Config; made?: Made }) {
                               type="button"
                               className="btn ghost small"
                               aria-label={`Sign ${name} out everywhere`}
-                              title="Every browser of theirs"
+                              title="Every browser and app of theirs"
                               onClick={() => void signOutAll(name)}
                             >
                               Sign out
