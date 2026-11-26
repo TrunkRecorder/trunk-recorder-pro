@@ -5,6 +5,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Apps sign in by way of the browser** (#255). An app such as Trunk Monitor opens the recorder's own page; you sign
+  in there as you always do (a token, a passkey, the proxy in front) and click **Allow**, and the app gets a token of
+  its own, for 30 days. It never sees yours. The page says which app, who, what it may do (an Admin picks **Admin** or
+  **View**) and where it returns. Each app is listed under the key in the top bar and in Setup → **Access**, and
+  removed with a click; **Sign out everywhere** removes them too. An app can't allow other apps, add passkeys, make
+  tokens or change who signs in.
+  - For developers it's OAuth 2.0's authorization code flow with PKCE, with nothing to register: an app returns by a
+    scheme of its own (`com.example.app:/signin`), a loopback address, a site listed in `server.allowedOrigins`, or
+    has the user copy the code. `GET /.well-known/oauth-authorization-server` names the endpoints;
+    [API → Apps](docs/api/README.md#apps).
+  - It works with the recorder on another computer: the sign-in page's passkey link goes to the address passkeys work
+    at and keeps the app's request, and over plain HTTP the page says **Unencrypted**.
+
 - **Internet audio streams** (#111, thanks @steve-horvath). A scanner feed on the internet (an MP3 or WAV address,
   Broadcastify's and the like) can be recorded as a conventional channel: Setup's **Add a stream**, in a conventional
   system's channel table, adds the stream as a source and a row recording it. Its calls are made as a frequency's are
