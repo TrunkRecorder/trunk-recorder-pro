@@ -6740,6 +6740,26 @@
         "lastFailure": {
           "type": "string"
         },
+        "skipReasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "calls": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "reason",
+              "calls"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Why calls were skipped (what the plugin said, numbers standing alone as `#`), most first."
+        },
         "log": {
           "type": "array",
           "items": {

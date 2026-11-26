@@ -41,6 +41,10 @@ pub enum Attempt {
     Done { url: String },
     /// Not for this plugin (reported as skipped).
     Skip(String),
+    /// The service answered and didn't take it, as it means to (it has the call already,
+    /// from another recorder hearing the system, or doesn't take that kind): reported as
+    /// skipped, with what it said, and the service counts as answering (its status is up).
+    Declined(String),
     /// Failed for now (the service is down, the network's out): try again later.
     Retry(String),
     /// Failed for now, and the service said how long to wait (`Retry-After`): try again no
@@ -69,13 +73,15 @@ impl Attempt {
 
     /// One call's tries, one for each place it went (an upload to several systems or servers),
     /// as one: tried again if any should be (waiting the longest any service asked), else
-    /// failed if any failed, else done if any took it, else skipped.
+    /// failed if any failed, else done if any took it, else declined if any service answered,
+    /// else skipped.
     pub fn together(attempts: impl IntoIterator<Item = Attempt>) -> Attempt {
         let rank = |a: &Attempt| match a {
-            Attempt::Wait(_, w) => (4, *w),
-            Attempt::Retry(_) => (3, Duration::ZERO),
-            Attempt::Fail(_) => (2, Duration::ZERO),
-            Attempt::Done { .. } => (1, Duration::ZERO),
+            Attempt::Wait(_, w) => (5, *w),
+            Attempt::Retry(_) => (4, Duration::ZERO),
+            Attempt::Fail(_) => (3, Duration::ZERO),
+            Attempt::Done { .. } => (2, Duration::ZERO),
+            Attempt::Declined(_) => (1, Duration::ZERO),
             Attempt::Skip(_) => (0, Duration::ZERO),
         };
         attempts.into_iter().max_by_key(rank).unwrap_or(Attempt::Skip("nowhere to send it".into()))
@@ -433,13 +439,16 @@ fn worker(sh: &Shared, key: &str, host: &Host, work: &Work, o: &QueueOptions) {
             let t = &mut lane.stats;
             t.first_try.get_or_insert_with(unix_now);
             match &r {
-                Attempt::Done { .. } => {
+                // The service answered: it's up, whether it took the call or not.
+                Attempt::Done { .. } | Attempt::Declined(_) => {
                     t.tried = true;
                     t.in_a_row = 0;
                     t.last_ok = Some(unix_now());
                     t.latency_ms = Some(t.latency_ms.map_or(took_ms, |l| l + 0.2 * (took_ms - l)));
-                    let f = &it.call.files;
-                    t.bytes += f.m4a.as_ref().and_then(|m| std::fs::metadata(m).ok()).or_else(|| std::fs::metadata(&f.wav).ok()).map_or(0, |m| m.len());
+                    if matches!(r, Attempt::Done { .. }) {
+                        let f = &it.call.files;
+                        t.bytes += f.m4a.as_ref().and_then(|m| std::fs::metadata(m).ok()).or_else(|| std::fs::metadata(&f.wav).ok()).map_or(0, |m| m.len());
+                    }
                 }
                 Attempt::Retry(_) | Attempt::Wait(..) | Attempt::Fail(_) => {
                     t.tried = true;
@@ -457,7 +466,7 @@ fn worker(sh: &Shared, key: &str, host: &Host, work: &Work, o: &QueueOptions) {
         let wait = if let Attempt::Wait(_, w) = &r { (*w).min(LONGEST_WAIT) } else { Duration::ZERO };
         match r {
             Attempt::Done { url } => host.call_result_took(&it.call.path, Outcome::Ok, "", url, took),
-            Attempt::Skip(m) => host.call_result(&it.call.path, Outcome::Skipped, m, ""),
+            Attempt::Skip(m) | Attempt::Declined(m) => host.call_result(&it.call.path, Outcome::Skipped, m, ""),
             Attempt::Fail(m) => {
                 lane.last_error = m.clone();
                 error = Some(said(&m));
@@ -570,6 +579,8 @@ mod tests {
         assert!(matches!(Attempt::together([Attempt::Fail("x".into()), Attempt::Retry("y".into()), done()]), Attempt::Retry(_)));
         assert!(matches!(Attempt::together([w(30), Attempt::Retry("y".into()), w(90), w(60)]), Attempt::Wait(_, d) if d.as_secs() == 90));
         assert!(matches!(Attempt::together([done(), Attempt::Skip("s".into())]), Attempt::Done { .. }));
+        assert!(matches!(Attempt::together([Attempt::Skip("s".into()), Attempt::Declined("d".into())]), Attempt::Declined(m) if m == "d"));
+        assert!(matches!(Attempt::together([Attempt::Declined("d".into()), done()]), Attempt::Done { .. }));
         assert!(matches!(Attempt::together([]), Attempt::Skip(m) if m == "nowhere to send it"));
     }
 
@@ -627,6 +638,34 @@ mod tests {
         assert_eq!(last.queued, Some(0));
         assert!(last.latency_ms.is_some() && last.last_ok.is_some());
         assert_eq!(last.endpoints[0].name, "Example Calls");
+    }
+
+    /// A call the service turns away as it means to (it has it already) is skipped, with what
+    /// it said, and the service is up; one skipped without asking it leaves it unknown.
+    #[test]
+    fn a_declined_call_is_skipped_and_the_service_is_up() {
+        let state_after = |attempt: Attempt| {
+            let dir = testing::temp_dir("queue");
+            let (host, out) = testing::capture();
+            let opts = QueueOptions { endpoint: Some("Example Calls".into()), ..quick(&dir) };
+            let mut q = CallQueue::start(host, opts, move |_| attempt.clone());
+            let call = testing::call(&dir, "sys1", 5);
+            q.push(call.clone());
+            let t0 = Instant::now();
+            while !q.is_empty() && t0.elapsed() < Duration::from_secs(5) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            q.shutdown(Duration::from_secs(1));
+            let out = out.output();
+            let m = out.metrics();
+            let last = m.last().unwrap();
+            (out.results(), last.endpoints[0].state, last.bytes_sent)
+        };
+        let (results, state, bytes) = state_after(Attempt::Declined("already have it".into()));
+        assert_eq!((results[0].1, results[0].2.as_str()), (Outcome::Skipped, "already have it"));
+        assert_eq!((state, bytes), (EndpointState::Up, Some(0)));
+        let (results, state, _) = state_after(Attempt::Skip("encrypted".into()));
+        assert_eq!((results[0].1, state), (Outcome::Skipped, EndpointState::Unknown));
     }
 
     #[test]

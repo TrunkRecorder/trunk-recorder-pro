@@ -184,7 +184,12 @@ We recommend leaving them on.
   retries and then failures: check the log's last error.
 - **Recording stops with calls still waiting.** They're saved in
   `plugin-data/broadcastify/queue.jsonl` and uploaded when recording starts again.
-- **Broadcastify answers `SKIPPED`.** The call is marked skipped.
+- **Broadcastify answers `SKIPPED`.** The call is marked skipped, and the card's **Why calls
+  were skipped** says why. The usual reason is another node on the same system or site:
+  Broadcastify keeps one copy of each call and answers the other `SKIPPED---ALREADY-RECEIVED-THIS-CALL`.
+  A node can show **Sent 0** and every call skipped this way, with nothing wrong. It's a backup:
+  if the other node stops or its audio is worse, Broadcastify takes this node's copies instead.
+  Keep it running. (With the plugin before 0.2.2, the reason reads as Broadcastify's own words.)
 - **Broadcastify answers `REJECTED`**, or the server refuses the request outright (an HTTP 4xx
   error other than 408 or 429). The call is marked failed and not tried again.
 

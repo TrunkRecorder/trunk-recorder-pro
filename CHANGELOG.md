@@ -5,6 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A plugin's card says why calls were skipped.** A Broadcastify node on a site another node already uploads
+  showed Sent 0, Skipped 466, **Failed 0, none tried yet** and Broadcastify Calls **unknown**: every call was
+  answered `SKIPPED---ALREADY-RECEIVED-THIS-CALL` (it's a backup, and nothing is wrong), but nothing said so
+  (forum thread 505184). The reason a plugin gives for each skip was dropped; the card now counts skips by it,
+  under **Why calls were skipped, this run**, most first, with numbers standing alone (a talkgroup's) as `#` so
+  a talkgroup filter is one reason. **Failed** says **none failed** when calls were tried and skipped.
+  - **To plugins** (SDK 0.17.0): `Attempt::Declined(why)`, for a call the service answered and turned away as
+    it means to (it has it already, or doesn't take that kind). It's reported skipped, with `why`, and the
+    service counts as answering, so its status is **up**, not **unknown**. `Attempt::together` ranks it
+    between done and skipped. The Broadcastify plugin uses it for `SKIPPED` and unit-to-unit answers
+    (0.2.2).
+
 - **Weak P25 CQPSK simulcast keeps more of its voice** (#228, thanks @samborcia). 0.5.1's fix for a carrier
   estimate a quarter turn out followed the carrier across that edge only while it was steady, and at 5 to 7 dB over
   the noise it isn't: on the reported weak dispatch, 610 clean voice frames (of 828). It's now followed whenever frames

@@ -101,7 +101,7 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
               label="Failed"
               value={compact(r.failed)}
               level={r.failed > 0 ? "warn" : undefined}
-              sub={tries ? <Figs inline items={[{ k: "Of tries", v: pct((100 * r.failed) / tries, 1), level: r.failed > 0 ? "warn" : undefined }]} /> : "none tried yet"}
+              sub={tries ? <Figs inline items={[{ k: "Of tries", v: pct((100 * r.failed) / tries, 1), level: r.failed > 0 ? "warn" : undefined }]} /> : r.skipped ? "none failed" : "none tried yet"}
               hint={r.lastFailure || undefined}
             />
             <Stat
@@ -139,6 +139,20 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
             <StackedBars parts={minutes} colors={["var(--good)", "var(--muted-mark)", "var(--critical)"]} labels={["sent", "skipped", "failed"]} h={44} titles={minutes.map((c, i) => `${60 - i} min ago: ${c[0]} sent, ${c[1]} skipped, ${c[2]} failed`)} />
             <span className="muted small">last hour, per minute</span>
           </div>
+          {r.skipReasons && r.skipReasons.length > 0 && (
+            <div className="skip-reasons">
+              <span className="muted small">Why calls were skipped, this run</span>
+              <ul className="line-list">
+                {r.skipReasons.map((x) => (
+                  <li key={x.reason}>
+                    <Fig v={compact(x.calls)} />
+                    <span>{x.reason}</span>
+                    {r.skipped > 0 && <span className="muted small">{pct((100 * x.calls) / r.skipped, 0)}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {m?.endpoints && m.endpoints.length > 0 && (
             <ul className="line-list">
               {m.endpoints.map((e) => (

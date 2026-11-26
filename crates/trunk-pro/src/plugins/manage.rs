@@ -47,6 +47,8 @@ pub struct Runtime {
     pub skipped: u64,
     pub failed: u64,
     pub last_failure: String,
+    /// Why calls were skipped (what the plugin said, its numbers as `#`), most first.
+    pub skip_reasons: Vec<SkipReason>,
     /// Its recent log lines.
     pub log: VecDeque<LogEntry>,
     /// What it last said of its work (queue, timing, services), if it says.
@@ -103,6 +105,7 @@ impl Default for Runtime {
             skipped: 0,
             failed: 0,
             last_failure: String::new(),
+            skip_reasons: Vec::new(),
             log: VecDeque::new(),
             metrics: None,
             last_result: None,
@@ -121,7 +124,41 @@ impl Default for Runtime {
     }
 }
 
+/// A reason calls were skipped, and how many were.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SkipReason {
+    pub reason: String,
+    pub calls: u64,
+}
+
+/// Reasons kept apart; the rest are counted together.
+const SKIP_REASONS: usize = 8;
+const OTHER_REASONS: &str = "other reasons";
+
+/// A skip's reason as counted: numbers standing alone (a talkgroup, a site) are `#`, so a
+/// reason given for many talkgroups is one.
+fn skip_reason(message: &str) -> String {
+    let m = message.trim();
+    if m.is_empty() {
+        return "no reason given".into();
+    }
+    m.split(' ').map(|w| if w.bytes().all(|b| b.is_ascii_digit()) && !w.is_empty() { "#" } else { w }).collect::<Vec<_>>().join(" ")
+}
+
 impl Runtime {
+    fn skip(&mut self, message: &str) {
+        self.skipped += 1;
+        let mut why = skip_reason(message);
+        if !self.skip_reasons.iter().any(|r| r.reason == why) && self.skip_reasons.iter().filter(|r| r.reason != OTHER_REASONS).count() >= SKIP_REASONS {
+            why = OTHER_REASONS.into();
+        }
+        match self.skip_reasons.iter_mut().find(|r| r.reason == why) {
+            Some(r) => r.calls += 1,
+            None => self.skip_reasons.push(SkipReason { reason: why, calls: 1 }),
+        }
+        self.skip_reasons.sort_by_key(|r| std::cmp::Reverse(r.calls));
+    }
+
     fn count(&mut self, outcome: Outcome) {
         let t = crate::clock::unix_s();
         self.last_result = Some(t);
@@ -601,7 +638,7 @@ impl Plugins {
                         r.count(*outcome);
                         match outcome {
                             Outcome::Ok => r.ok += 1,
-                            Outcome::Skipped => r.skipped += 1,
+                            Outcome::Skipped => r.skip(message),
                             Outcome::Failed => {
                                 r.failed += 1;
                                 r.last_failure = tell(&format!("{path}: {message}"));
@@ -767,5 +804,25 @@ mod tests {
         assert_eq!((r.state, r.message.as_str()), ("warning", "copy 2: the other"));
         r.set_notice(1, None, None, "");
         assert_eq!((r.state, r.message.as_str(), r.notices.len()), ("ok", "running", 0));
+    }
+
+    /// Skips are counted by what the plugin said, a talkgroup's number aside, most first; past
+    /// the reasons kept apart, the rest are one.
+    #[test]
+    fn skips_are_counted_by_reason() {
+        let mut r = Runtime::default();
+        for m in ["talkgroup 101 isn't uploaded", "Broadcastify: SKIPPED---ALREADY-RECEIVED-THIS-CALL", "talkgroup 2203 isn't uploaded", "", "Broadcastify: SKIPPED---ALREADY-RECEIVED-THIS-CALL", "Broadcastify: SKIPPED---ALREADY-RECEIVED-THIS-CALL"] {
+            r.skip(m);
+        }
+        let got: Vec<(&str, u64)> = r.skip_reasons.iter().map(|x| (x.reason.as_str(), x.calls)).collect();
+        assert_eq!(got, [("Broadcastify: SKIPPED---ALREADY-RECEIVED-THIS-CALL", 3), ("talkgroup # isn't uploaded", 2), ("no reason given", 1)]);
+        assert_eq!(r.skipped, 6);
+        assert_eq!(skip_reason("Skip-Unit-To-Unit-CT3"), "Skip-Unit-To-Unit-CT3", "a number in a word stays");
+        for i in 0..SKIP_REASONS + 3 {
+            r.skip(&format!("reason {i}x"));
+        }
+        assert_eq!(r.skip_reasons.len(), SKIP_REASONS + 1);
+        assert_eq!(r.skip_reasons.iter().find(|x| x.reason == OTHER_REASONS).map(|x| x.calls), Some(3 + 3));
+        assert_eq!(r.skip_reasons.iter().map(|x| x.calls).sum::<u64>(), r.skipped);
     }
 }

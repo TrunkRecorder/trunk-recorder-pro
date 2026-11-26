@@ -235,6 +235,10 @@ A plugin's log lines (except debug ones) also go to the recorder's log, prefixed
 - **Sent**, **Failed**, **Waiting** (calls queued, and how many are waiting to retry) and
   **Upload time**
 - a bar per minute for the last hour: sent, skipped and failed
+- **Why calls were skipped, this run**: each reason the plugin gave, with how many calls and
+  what share of the skipped. A Broadcastify node whose calls another node already sends shows
+  them all here as "Broadcastify already has this call: another node on the system sent it
+  first, so this node is a backup"
 - the services it talks to, each **up**, **degraded** or **down**, with the last success and
   error. A service counts as down after 3 failures in a row, or 5 minutes without a success
   while calls are waiting

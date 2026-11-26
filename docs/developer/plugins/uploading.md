@@ -202,6 +202,7 @@ Your upload function decides what each outcome means:
 |---|---|---|
 | `Attempt::Done { url }` | It worked. `url` links to the call on the service, if there's one (else `String::new()`) | Reported `ok` |
 | `Attempt::Skip(why)` | Not for this plugin: a system without a key, a talkgroup the service ignores | Reported `skipped` |
+| `Attempt::Declined(why)` | The service answered and turned it away, as it means to: it has the call already (another recorder on the system sent it), or doesn't take that kind | Reported `skipped`; the service counts as answering (**up**) |
 | `Attempt::Retry(why)` | It might work later: no network, a timeout, a 5xx | Retried; `failed` after the last retry |
 | `Attempt::Wait(why, wait)` | The service is busy and said how long to wait (a 429 or 503 with `Retry-After`) | Retried no sooner than `wait` (at most an hour) |
 | `Attempt::Fail(why)` | It won't work: a wrong key, an unknown system, a file it refuses | Reported `failed`, now |
