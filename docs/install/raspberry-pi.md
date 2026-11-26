@@ -9,7 +9,7 @@ and heat, installing Trunk Recorder Pro, and running it headless. Once it's inst
 Trunk Recorder Pro is light enough that a Pi is a good home for it. It has been tested on a
 Raspberry Pi Compute Module 5 (the same processor as a Pi 5) recording a P25 system from one
 RTL-SDR: about 5 % of one core with a call being recorded, each extra call adding under a point,
-and 56 MB of memory ([Performance](../performance.md) has the details).
+and 56 MB of memory ([Performance](../developer/performance.md) has the details).
 
 - **Raspberry Pi 5** is the best choice and the one that has been measured.
 - **Raspberry Pi 4** runs the same build. It is slower and hasn't been benchmarked; watch the
@@ -29,7 +29,7 @@ never throttled.)
 
 Trunk Recorder Pro watches for both: when the Pi's firmware reports under-voltage or heat
 throttling, the dashboard warns "The Pi is throttled (under-voltage or heat)", and the
-**Platform** page shows the temperature with "throttled now" under it.
+**Platform** page shows the temperature with "throttled" under it.
 
 ## Install the OS
 
@@ -71,7 +71,7 @@ If `uname -m` prints `armv7l`, the OS is 32-bit and Trunk Recorder Pro won't run
 
 Download the **`linux-aarch64`** package on the Pi. Replace `<version>` with the latest version from
 the [releases page](https://github.com/TrunkRecorder/trunk-recorder-pro/releases) (for example
-`0.2.0`):
+`0.4.0`):
 
 ```bash
 curl -LO https://github.com/TrunkRecorder/trunk-recorder-pro/releases/download/v<version>/trunk-pro-<version>-linux-aarch64.tar.gz
@@ -115,8 +115,7 @@ trunk-pro --no-open
 ```
 
 Open `http://localhost:8080` in your computer's browser and follow
-[Getting started](../getting-started.md). Before you leave it, turn on **Start recording when the
-app starts** in **Setup → Recording**. Press Ctrl-C on the Pi when you're done; the settings are
+[Getting started](../getting-started.md). Before you leave it, turn on **Record when the app starts** in **Setup → Recording**. Press Ctrl-C on the Pi when you're done; the settings are
 saved.
 
 ## Run it as a service
@@ -147,8 +146,7 @@ card last:
 
 - Keep recordings on a USB SSD or a network share instead: set **Setup → Recording → Recordings
   folder** to a folder on it.
-- If calls are only uploaded (by a plugin) and not kept, turn on **Keep calls waiting to upload in
-  memory** in **Setup → Recording**: calls wait for their upload on a RAM disk instead of the card.
+- If calls are only uploaded (by a plugin) and not kept, turn on **RAM spool** in **Setup → Recording**: calls wait for their upload on a RAM disk instead of the card.
   See [Recordings](../guides/recordings.md).
 - Boot from an SSD (a Pi 5 can boot from NVMe or USB).
 

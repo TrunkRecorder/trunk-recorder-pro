@@ -14,6 +14,7 @@ use crate::ambe::decode_vcw;
 use crate::dsp::Symbol;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::trunk::frames::{Codec, VoiceFrame};
+use crate::trunk::taps::{AirFrame, Tap, TapPiece, TapSet};
 use crate::trunk::voice::TrackerOut;
 
 /// A voice codeword carries 20 ms of speech.
@@ -34,9 +35,14 @@ pub struct NxdnVoice {
     source: Option<u32>,
     group: bool,
     encrypted: bool,
+    /// The transmission's cipher type and key (a Type-D SCCH names no key) and its IV, once heard.
+    cipher: Option<(u8, Option<u8>)>,
+    iv: Option<[u8; 8]>,
     emergency: bool,
     /// Full-rate voice (not decoded).
     efr: bool,
+    /// Voice heard since the transmission's last release.
+    voiced: bool,
     ran: Option<u8>,
     /// Kenwood talker alias segments heard in this transmission.
     aliases: Aliases,
@@ -46,11 +52,11 @@ pub struct NxdnVoice {
     pub messages: Vec<(f64, Message)>,
     /// Keep `messages` (a trunked voice channel, for late entry and other calls' DUPs).
     pub keep_messages: bool,
+    /// The taps on ([`Tap::VoiceAir`] is this decoder's).
+    pub taps: TapSet,
     /// Voice codewords / those not synthesized as sent, over the carrier's life.
     pub vch: u64,
     pub bad_vch: u64,
-    /// Vocode (a monitored-only channel can skip it).
-    pub vocode: bool,
 }
 
 impl NxdnVoice {
@@ -64,17 +70,26 @@ impl NxdnVoice {
             source: None,
             group: true,
             encrypted: false,
+            cipher: None,
+            iv: None,
             emergency: false,
             efr: false,
+            voiced: false,
             ran: None,
             aliases: Aliases::default(),
             alias: None,
             messages: Vec::new(),
             keep_messages: false,
+            taps: TapSet::NONE,
             vch: 0,
             bad_vch: 0,
-            vocode: true,
         }
+    }
+
+    /// With `taps` on.
+    pub fn tapped(mut self, taps: TapSet) -> Self {
+        self.taps = taps;
+        self
     }
 
     /// The group (or, unit to unit, the radio) being talked to, once a VCALL named it.
@@ -115,6 +130,8 @@ impl NxdnVoice {
         let mut msgs: Vec<Message> = Vec::new();
         match lich.body() {
             Body::Voice { superframe, facch, idle } => {
+                // The frame's place in its superframe, where its SACCH says.
+                let mut place = None;
                 if lich.rf() == RfChannel::Composite {
                     // Type-D: the SCCH says who in pieces, one per frame.
                     if let Some(s) = channel::scch(f) {
@@ -125,6 +142,7 @@ impl NxdnVoice {
                         Some(s) => {
                             self.ran = Some(s.sr.ran);
                             if superframe {
+                                place = Some(3 - s.sr.structure);
                                 if let Some(o) = self.sf.push(&s) {
                                     msgs.push(Message::parse(&o, Context::Traffic, false));
                                 }
@@ -148,7 +166,7 @@ impl NxdnVoice {
                     if !facch[h] && !idle {
                         for k in 0..2 {
                             let (d, r) = f.voice_frame(2 * h + k);
-                            self.voice(&d, &r, t + VCH_S * (2 * h + k) as f64, out);
+                            self.voice(&d, &r, place.map(|p| 4 * p + (2 * h + k) as u8), t + VCH_S * (2 * h + k) as f64, out);
                         }
                     }
                 }
@@ -169,6 +187,7 @@ impl NxdnVoice {
         match s.info() {
             1 => {
                 let encrypted = s.cipher() != 0;
+                self.cipher = Some((s.cipher(), None));
                 if encrypted != self.encrypted {
                     self.encrypted = encrypted;
                     out.push(Out { t, out: TrackerOut::Info { source: self.source, flags: Flags { emergency: self.emergency, encrypted, ..Default::default() } } });
@@ -177,8 +196,12 @@ impl NxdnVoice {
             2 | 4 if !special && s.short_id() != 0 => {
                 if s.repeater() == 31 {
                     // The end of a transmission ("go to repeater" 31).
+                    if std::mem::take(&mut self.voiced) {
+                        out.push(Out { t, out: TrackerOut::Ended });
+                    }
                     self.source = None;
                     self.encrypted = false;
+                    self.cipher = None;
                     return;
                 }
                 self.talkgroup = Some(s.id() as u32);
@@ -197,7 +220,9 @@ impl NxdnVoice {
 
     fn message(&mut self, m: Message, t: f64, out: &mut Vec<Out>) {
         match &m {
-            Message::VCall { head, cipher, .. } => {
+            Message::VCallIv { iv } => self.iv = Some(*iv),
+            Message::VCall { head, cipher, key_id } => {
+                self.cipher = Some((*cipher, Some(*key_id)));
                 let tg = (head.destination != 0).then_some(head.destination as u32);
                 let src = (head.source != 0).then_some(head.source as u32);
                 let encrypted = *cipher != 0;
@@ -229,8 +254,13 @@ impl NxdnVoice {
             }
             Message::TxRel { .. } | Message::TxRelEx { .. } | Message::Disc { .. } => {
                 // End of the transmission: what it was doesn't carry over to the next.
+                if std::mem::take(&mut self.voiced) {
+                    out.push(Out { t, out: TrackerOut::Ended });
+                }
                 self.source = None;
                 self.encrypted = false;
+                self.cipher = None;
+                self.iv = None;
                 self.emergency = false;
                 self.efr = false;
                 self.aliases.reset();
@@ -255,12 +285,32 @@ impl NxdnVoice {
         }
     }
 
-    fn voice(&mut self, d: &[u8; 36], r: &[f32; 72], t: f64, out: &mut Vec<Out>) {
+    /// A voice codeword, `n` of its superframe where that's known.
+    fn voice(&mut self, d: &[u8; 36], r: &[f32; 72], n: Option<u8>, t: f64, out: &mut Vec<Out>) {
         self.vch += 1;
-        if self.encrypted || self.efr || !self.vocode {
+        self.voiced = true;
+        // (Full rate is another codeword: neither vocoded nor tapped.)
+        let tapped = self.taps.has(Tap::VoiceAir) && !self.efr;
+        if (self.encrypted || self.efr) && !tapped {
             return;
         }
         let v = decode_vcw(d, Some(r));
+        if tapped {
+            let cipher = self.cipher.filter(|c| c.0 != 0);
+            let note = AirFrame {
+                n,
+                errs: v.errs,
+                encrypted: self.cipher.map(|c| c.0 != 0),
+                algid: cipher.map(|c| c.0),
+                keyid: cipher.and_then(|c| c.1).map(u16::from),
+                mi: self.iv.filter(|_| cipher.is_some()).map(|iv| AirFrame::hex(&iv)),
+                ..Default::default()
+            };
+            out.push(Out { t, out: TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Ambe, &v.bits, &note)) });
+        }
+        if self.encrypted {
+            return;
+        }
         let mut buf = [0f32; FRAME_SAMPLES];
         let kind = self.dec.ambe(&v.bits, v.errs, &mut buf);
         if !matches!(kind, Kind::Voice | Kind::Tone) {
@@ -286,6 +336,10 @@ mod tests {
     use crate::nxdn::Rate;
 
     fn run(tx: &Tx) -> (NxdnVoice, Vec<Out>) {
+        run_tapped(tx, TapSet::NONE)
+    }
+
+    fn run_tapped(tx: &Tx, taps: TapSet) -> (NxdnVoice, Vec<Out>) {
         let mut d = vec![0u8, 1, 2, 3].repeat(200);
         d.extend(dibits(&tx.frames()));
         d.extend(vec![3u8, 2, 1, 0].repeat(400));
@@ -295,7 +349,7 @@ mod tests {
         let mut rx = tx.rate.receiver(fs);
         let mut syms = Vec::new();
         rx.push(&iq, &mut syms);
-        let mut v = NxdnVoice::new(1);
+        let mut v = NxdnVoice { taps, ..NxdnVoice::new(1) };
         let mut out = Vec::new();
         v.push(&syms, 0.0, fs, &mut out);
         (v, out)
@@ -303,6 +357,18 @@ mod tests {
 
     fn tx(rate: Rate, cipher: u8) -> Tx {
         Tx { cipher, ..Tx::new(rate, 3, CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 501, destination: 3100 }, 2, 4) }
+    }
+
+    /// Its TX_REL ends the transmission, once (the synthetic one sends it after the voice).
+    #[test]
+    fn a_release_after_voice_ends_the_transmission() {
+        for rate in [Rate::N48, Rate::N96] {
+            let (_, out) = run(&tx(rate, 0));
+            let ended: Vec<usize> = out.iter().enumerate().filter(|(_, o)| matches!(o.out, TrackerOut::Ended)).map(|(i, _)| i).collect();
+            let last_audio = out.iter().rposition(|o| matches!(o.out, TrackerOut::Audio(..))).unwrap();
+            assert_eq!(ended.len(), 1, "{rate:?}");
+            assert!(ended[0] > last_audio, "after its voice");
+        }
     }
 
     #[test]
@@ -380,6 +446,54 @@ mod tests {
             heard(&mut v, &s, &mut out);
         }
         assert_eq!(aliases(&out).last(), Some(&(2, "BRAVO".to_string(), Some(3100))));
+    }
+
+    /// The air tap has every codeword with its place in the superframe: each one vocoded has
+    /// the same bits just before it, and an encrypted call's come with its cipher and key.
+    #[test]
+    fn the_air_tap_gives_each_frame_clear_or_encrypted() {
+        let air = |out: &[Out]| -> Vec<(Vec<u8>, AirFrame)> {
+            out.iter()
+                .filter_map(|o| match &o.out {
+                    TrackerOut::Tap(p) => {
+                        assert_eq!(p.tap, Tap::VoiceAir);
+                        let crate::trunk::taps::TapData::Frames { codec: Codec::Ambe, frames } = &p.data else { panic!("AMBE frames") };
+                        Some((frames[0].clone(), p.notes[0].get().unwrap()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        for rate in [Rate::N48, Rate::N96] {
+            let (_, out) = run_tapped(&tx(rate, 0), TapSet::of([Tap::VoiceAir]));
+            let a = air(&out);
+            assert_eq!(a.len(), if rate == Rate::N96 { 32 } else { 64 }, "{rate:?}");
+            for (i, o) in out.iter().enumerate() {
+                if let TrackerOut::Audio(_, vf) = &o.out {
+                    let TrackerOut::Tap(p) = &out[i - 1].out else { panic!("its tap piece first") };
+                    assert_eq!(p.data, crate::trunk::taps::TapData::Frames { codec: Codec::Ambe, frames: vec![vf.bits.clone()] });
+                }
+            }
+            assert!(a.iter().all(|(_, f)| f.errs <= 1 && f.encrypted != Some(true) && f.algid.is_none() && f.mi.is_none()), "{rate:?}");
+            assert_eq!(a.last().unwrap().1.encrypted, Some(false), "{rate:?}: once its VCALL has said");
+            let places: Vec<u8> = a.iter().filter_map(|(_, f)| f.n).collect();
+            assert_eq!(places.len(), a.len(), "{rate:?}: every frame's SACCH said where it is");
+            assert!(places.iter().all(|&n| n < 16) && places.windows(2).all(|w| w[1] != w[0]), "{rate:?}: {places:?}");
+            assert_eq!(places[..4], [0, 1, 2, 3], "{rate:?}: {places:?}");
+        }
+        let (_, out) = run_tapped(&tx(Rate::N48, 3), TapSet::of([Tap::VoiceAir]));
+        let a = air(&out);
+        assert_eq!(a.len(), 64, "encrypted voice is tapped, not vocoded");
+        assert!(!out.iter().any(|o| matches!(o.out, TrackerOut::Audio(..))));
+        assert!(a.iter().all(|(_, f)| (f.encrypted, f.algid) == (Some(true), Some(3)) && f.keyid.is_some()));
+        // Its IV, once a VCALL_IV has brought it.
+        let mut v = NxdnVoice { taps: TapSet::of([Tap::VoiceAir]), ..NxdnVoice::new(1) };
+        let mut out = Vec::new();
+        heard(&mut v, &crate::nxdn::layer3::build::vcall(&CallHead { cc_option: 0, call_type: CALL_CONFERENCE, option: 0, source: 501, destination: 3100 }, 3, 5), &mut out);
+        heard(&mut v, &[crate::nxdn::layer3::VCALL_IV, 1, 2, 3, 4, 5, 6, 7, 8], &mut out);
+        v.voice(&[0; 36], &[1.0; 72], Some(7), 0.0, &mut out);
+        let f = &air(&out)[0].1;
+        assert_eq!((f.n, f.algid, f.keyid, f.mi.as_deref()), (Some(7), Some(3), Some(5), Some("0102030405060708")));
     }
 
     #[test]

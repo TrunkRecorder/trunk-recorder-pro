@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 use rusqlite::types::{Value as Lit, ValueRef};
 use rusqlite::{params_from_iter, Connection, OpenFlags, TransactionBehavior};
+use trunk_app::files::{Doing, Problem};
 
 use super::schema;
 use super::sql::{question_marks, Dialect, Exec, Row, V};
@@ -39,7 +40,7 @@ impl SqliteBackend {
     /// moved aside and a fresh one made.
     pub fn open(path: &Path) -> Result<SqliteBackend, String> {
         let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        trunk_app::files::make_dir(dir)?;
         let lock = lock(path)?;
         let conn = match open_sound(path) {
             Ok(c) => c,
@@ -98,6 +99,13 @@ impl Backend for SqliteBackend {
         out
     }
 
+    fn compact(&self) -> Result<(), String> {
+        let conn = self.writer.lock().unwrap_or_else(|e| e.into_inner());
+        conn.execute_batch("vacuum").map_err(|e| format!("vacuum failed: {e}"))?;
+        // (Vacuumed, the whole store went through the WAL: let it go too.)
+        conn.query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(())).map_err(|e| format!("checkpoint failed: {e}"))
+    }
+
     fn checkpoint(&self) {
         if let Err(e) = self.writer.lock().unwrap_or_else(|e| e.into_inner()).query_row("pragma wal_checkpoint(truncate)", [], |_| Ok(())) {
             log::warn!("Call store: checkpoint failed: {e}");
@@ -116,7 +124,7 @@ impl Backend for SqliteBackend {
         let _ = conn.execute_batch("detach database b");
         drop(conn);
         copied.map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &to).map_err(|e| e.to_string())?;
+        trunk_app::files::rename(&tmp, &to)?;
         Ok(Some(to.display().to_string()))
     }
 
@@ -231,7 +239,7 @@ fn open_sound(path: &Path) -> Result<Connection, OpenError> {
 fn lock(path: &Path) -> Result<std::fs::File, String> {
     let mut name = path.as_os_str().to_owned();
     name.push(".lock");
-    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&name).map_err(|e| format!("lock {}: {e}", Path::new(&name).display()))?;
+    let f = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&name).map_err(|e| Problem::of(Doing::Write, Path::new(&name), &e))?;
     match f.try_lock() {
         Ok(()) => Ok(f),
         Err(std::fs::TryLockError::WouldBlock) => Err(format!("another Trunk Recorder Pro is using {}", path.display())),
@@ -269,8 +277,8 @@ fn move_aside(path: &Path, why: &str) -> Result<PathBuf, String> {
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     let undo = |moved: &[(PathBuf, PathBuf)]| {
         for (from, to) in moved.iter().rev() {
-            if let Err(e) = std::fs::rename(to, from) {
-                log::warn!("Call store: could not put {} back: {e}", from.display());
+            if let Err(p) = trunk_app::files::rename(to, from) {
+                log::warn!("Call store: could not put {} back. {p}", from.display());
             }
         }
     };
@@ -280,22 +288,20 @@ fn move_aside(path: &Path, why: &str) -> Result<PathBuf, String> {
             continue;
         }
         let to = with(&aside, suffix);
-        match std::fs::rename(&from, &to) {
+        match trunk_app::files::rename(&from, &to) {
             Ok(()) => moved.push((from, to)),
             Err(_) if suffix == "-shm" => {
-                std::fs::remove_file(&from)
-                    .map_err(|e| format!("move {} aside: {e}", from.display()))
-                    .inspect_err(|_| undo(&moved))?;
+                trunk_app::files::remove_file(&from).inspect_err(|_| undo(&moved))?;
             }
-            Err(e) => {
+            Err(p) => {
                 undo(&moved);
-                return Err(format!("move {} aside: {e}", from.display()));
+                return Err(p.into());
             }
         }
     }
-    if let Err(e) = std::fs::rename(path, &aside) {
+    if let Err(p) = trunk_app::files::rename(path, &aside) {
         undo(&moved);
-        return Err(format!("move {} aside: {e}", path.display()));
+        return Err(p.into());
     }
     Ok(aside)
 }
@@ -322,7 +328,7 @@ mod tests {
         assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
         assert_eq!(store.texts("pragma journal_mode"), ["wal"]);
         let tables = store.texts("select name from sqlite_master where type='table' order by name");
-        assert_eq!(tables, ["call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "series", "stats_hours", "stats_minutes", "systems", "talkgroups", "units"]);
+        assert_eq!(tables, ["call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "series", "stats_hours", "stats_minutes", "systems", "talkgroups", "unit_names", "units"]);
     }
 
     /// A second opener of the same store (another recorder on the same data
@@ -338,6 +344,25 @@ mod tests {
         std::fs::copy(&path, &other).unwrap();
         drop(db);
         assert!(open(&other).is_ok());
+    }
+
+    /// A version 8 store (v0.3.0's) is upgraded in place: its talkgroups
+    /// kept, with no origin, and a table for unit names.
+    #[test]
+    fn a_version_8_store_is_upgraded_in_place() {
+        let dir = TestDir::new("db-v8");
+        let path = dir.join("trunk-pro.sqlite");
+        let store = open(&path).unwrap();
+        store.batch_for_test("insert into systems (id, short_name, kind) values (1, 'a', 'p25');
+            insert into talkgroups (system_id, number, alpha_tag, mode, description, tag, category, priority, preferred_nac, preferred_site, ignore, sort_order, comment, origin, origin_name, origin_at)
+              values (1, 101, 'Fire', 'D', '', '', '', 1, 0, '', 0, 0, '', 'file', 'x.csv', 5);
+            drop table unit_names; alter table talkgroups drop column origin; alter table talkgroups drop column origin_name; alter table talkgroups drop column origin_at;
+            pragma user_version = 8;");
+        drop(store);
+        let store = open(&path).unwrap();
+        assert_eq!((store.scalar("pragma user_version"), aside_count(&dir)), (i64::from(schema::SCHEMA_VERSION), 0), "not set aside");
+        assert_eq!(store.talkgroups(1).unwrap().iter().map(|r| (r.tg.alpha_tag.as_str(), r.origin.is_none())).collect::<Vec<_>>(), [("Fire", true)]);
+        assert!(store.unit_names(1).unwrap().is_empty());
     }
 
     #[test]

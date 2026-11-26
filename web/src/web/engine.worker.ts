@@ -3,16 +3,25 @@
 // server, so the interface is identical. Calls are stored in OPFS.
 
 import { withEdit } from "../talkgroups.ts";
-import init, { calls_page, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
-import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder } from "../protocol.ts";
-import { activeSystems, needsDriver, resolvedCenters, SOURCE_KINDS, trpBase } from "../config.ts";
+import { withUnitName } from "../units.ts";
+import { editedNow, fromNow } from "../origins.ts";
+import { talkgroupsReplace, unitNamesReplace } from "../rules.ts";
+import init, { calls_page, configNeedsRestart, directory_recorder_id, learn_call_sign, link_shared, survey_bands, WebProfiler, WebRtl, WebSession, WebSurvey } from "./pkg/trunk_web.js";
+import type { CallEntry, Config, FromRecorder, HeardCode, Talkgroup, ToRecorder, UnitName } from "../protocol.ts";
+import { activeSystems, desktopOnlyWhy, resolvedCenters, sourceTitle, trpBase } from "../config.ts";
 import { listCalls, readText, saveCall, writeText } from "./opfs.ts";
 
 /** Page → worker: the protocol's commands (those it can't do get an `error`), and its own setup. */
-export type ToWorker = ToRecorder | { type: "init"; config: Config; talkgroups: Record<string, Talkgroup[]> } | { type: "files"; files: (File | null)[] };
+export type ToWorker = ToRecorder | { type: "init"; config: Config; names: KeptNames } | { type: "files"; files: (File | null)[] };
 
-/** Worker → page: a protocol message, or a live audio frame. */
-export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number };
+/** Worker → page: a protocol message, a live audio frame, or the names to keep (stored by the page). */
+export type FromWorker = { msg: FromRecorder } | { audio: ArrayBuffer; tg: number } | { keep: KeptNames };
+
+/** Each system's names, by list and short name, as the page stores them. */
+export interface KeptNames {
+  talkgroups: Record<string, Talkgroup[]>;
+  unitNames: Record<string, UnitName[]>;
+}
 
 const post = (msg: FromRecorder) => postMessage({ msg } satisfies FromWorker);
 /** Unix ms on a monotonic clock (the session's `now_ms`). */
@@ -21,8 +30,27 @@ const wallMs = () => performance.timeOrigin + performance.now();
 let config: Config | null = null;
 /** The config's version (one page edits it: every edit is taken). */
 let configVersion = 1;
-/** Each system's talkgroups, by short name (the page keeps them). */
-let talkgroups: Record<string, Talkgroup[]> = {};
+/** Each system's names, as the desktop recorder keeps them (the page stores them). */
+let names: KeptNames = { talkgroups: {}, unitNames: {} };
+
+/** System `system`'s list `list` is now `rows`: kept, the recording told, the page given them to store. */
+function keepNames<L extends keyof KeptNames>(list: L, system: string, rows: KeptNames[L][string]): void {
+  const next = { ...names[list] } as Record<string, unknown[]>;
+  if (rows.length) next[system] = rows;
+  else delete next[system];
+  names = { ...names, [list]: next };
+  if (list === "talkgroups") session?.set_talkgroups(system, JSON.stringify(rows));
+  else session?.set_unit_names(system, JSON.stringify(rows));
+  postMessage({ keep: names } satisfies FromWorker);
+}
+
+/** The names as the session takes them (trunk_app::config::NameLists): by system. */
+function sessionNames(): Record<string, { talkgroups?: Talkgroup[]; unitNames?: UnitName[] }> {
+  const out: Record<string, { talkgroups?: Talkgroup[]; unitNames?: UnitName[] }> = {};
+  for (const [s, t] of Object.entries(names.talkgroups)) (out[s] ??= {}).talkgroups = t;
+  for (const [s, u] of Object.entries(names.unitNames)) (out[s] ??= {}).unitNames = u;
+  return out;
+}
 let files: (File | null)[] = [];
 let session: WebSession | null = null;
 let rtls: WebRtl[] = [];
@@ -30,7 +58,9 @@ let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
 /** `system`: a short name. */
 let listen: { on: boolean; system: string | null; talkgroup: number | null } = { on: false, system: null, talkgroup: null };
-let phase: FromRecorder & { type: "state" } = { type: "state", phase: "idle", error: null, ended: false };
+let phase: FromRecorder & { type: "state" } = { type: "state", phase: "idle", error: null, ended: false, restartNeeded: false };
+/** The config the recording started with: what an edit is held against (restartCheck). */
+let runConfig: Config | null = null;
 /** What the page watches (applied to each new session). */
 let topics: string[] = [];
 /** The radio registry, saved between runs: one file, `{shortName: registry}`. */
@@ -44,8 +74,19 @@ function callsPage(calls: CallEntry[], q: Omit<Extract<ToRecorder, { type: "call
 }
 
 function setPhase(p: "idle" | "starting" | "running" | "stopping", error: string | null = null, ended = false): void {
-  phase = { type: "state", phase: p, error, ended };
+  if (p === "idle") runConfig = null;
+  // (Starting: the config is the run's.)
+  phase = { type: "state", phase: p, error, ended, restartNeeded: phase.restartNeeded && p !== "idle" && p !== "starting" };
   post(phase);
+}
+
+/** The config changed: whether it waits for the next Start (the recorder's rule, Config::needs_restart), told with the phase when that changes. */
+function restartCheck(): void {
+  const need = !!runConfig && !!config && configNeedsRestart(JSON.stringify(config), JSON.stringify(runConfig));
+  if (need !== phase.restartNeeded) {
+    phase = { ...phase, restartNeeded: need };
+    post(phase);
+  }
 }
 
 async function devices() {
@@ -67,6 +108,7 @@ function deliver(outs: { t: string; json?: string; system?: number; shortName?: 
       if (learned) {
         config = JSON.parse(learned) as Config;
         post({ type: "config", config, version: ++configVersion });
+        restartCheck();
       }
     }
     else if (o.t === "share") void share(o.shortName!, o.json!, o.siteNames!);
@@ -97,7 +139,8 @@ async function profileSource(req: { source: number; centerHz: number }): Promise
   let rtl: WebRtl | null = null;
   try {
     await ready;
-    if (needsDriver(src)) throw new Error(`${SOURCE_KINDS[src.type].label} needs the desktop app.`);
+    const why = desktopOnlyWhy(src);
+    if (why) throw new Error(why);
     if (src.type === "rtlsdr") {
       if (!(req.centerHz > 0)) throw new Error("Choose a frequency to look at.");
       const p = new WebProfiler(req.source, req.centerHz, src.rateHz);
@@ -109,7 +152,7 @@ async function profileSource(req: { source: number; centerHz: number }): Promise
       }
       post(JSON.parse(p.result()) as FromRecorder);
       p.free();
-    } else {
+    } else if (src.type === "file") {
       if (src.format && src.format !== "cu8") throw new Error("The browser version reads rtl_sdr (cu8) captures only.");
       const f = files[req.source];
       if (!f) throw new Error("Choose the capture file again (the browser forgets it on reload).");
@@ -145,7 +188,8 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
     await ready;
     const src = config.sources[req.source];
     if (!src) throw new Error("No such source.");
-    if (needsDriver(src)) throw new Error(`${SOURCE_KINDS[src.type].label} needs the desktop app.`);
+    const why = desktopOnlyWhy(src);
+    if (why) throw new Error(why);
     const s = new WebSurvey(JSON.stringify(config), JSON.stringify(req));
     survey = s;
     surveying = true;
@@ -156,7 +200,7 @@ async function surveyStart(req: { source: number; bands: string[]; findGain: boo
       surveyRtl = rtl;
       s.tuned(first?.tune ?? src.centerHz);
       void pumpSurveyRtl(s, rtl);
-    } else {
+    } else if (src.type === "file") {
       if (src.format && src.format !== "cu8") throw new Error("The browser version reads rtl_sdr (cu8) captures only.");
       const f = files[req.source];
       if (!f) throw new Error("Choose the capture file again (the browser forgets it on reload).");
@@ -214,6 +258,7 @@ async function share(shortName: string, observation: string, siteNames: string):
       if (linked) {
         config = JSON.parse(linked) as Config;
         post({ type: "config", config, version: ++configVersion });
+        restartCheck();
       }
       id = v.system;
       rev = v.rev ?? 0;
@@ -348,6 +393,7 @@ async function start(): Promise<void> {
   try {
     await ready;
     const cfg = config;
+    runConfig = cfg;
     // Each system's band plan from the last run.
     const plans: Record<string, string> = {};
     for (const x of activeSystems(cfg)) {
@@ -355,7 +401,7 @@ async function start(): Promise<void> {
       if (p) plans[x.shortName] = p;
     }
     // The session's clock: Unix ms that never jump (performance.now() from the page's start).
-    session = new WebSession(JSON.stringify(cfg), JSON.stringify(talkgroups), wallMs(), JSON.stringify(plans));
+    session = new WebSession(JSON.stringify(cfg), JSON.stringify(sessionNames()), wallMs(), JSON.stringify(plans));
     session.load_units(JSON.stringify(await savedUnits(cfg)));
     session.load_heard((await readText(heardFile(cfg))) ?? "");
     session.load_sharing((await readText(SHARING_FILE)) ?? "");
@@ -371,16 +417,17 @@ async function start(): Promise<void> {
     rtls = [];
     for (let i = 0; i < cfg.sources.length; i++) {
       const s = cfg.sources[i];
-      if (s.type === "rtlsdr") {
+      const why = desktopOnlyWhy(s);
+      if (why) {
+        throw new Error(`${sourceTitle(cfg, i)}: ${why}`);
+      } else if (s.type === "rtlsdr") {
         const rtl = await WebRtl.open(s.serial, centers[i] ?? s.centerHz, s.rateHz, s.agc ? undefined : s.gainDb, s.ppm);
         rtls.push(rtl);
         void pumpRtl(i, rtl);
-      } else if (needsDriver(s)) {
-        throw new Error(`Source ${i + 1}: ${SOURCE_KINDS[s.type].label} needs the desktop app.`);
-      } else {
-        if (s.format && s.format !== "cu8") throw new Error(`Source ${i + 1}: the browser version reads rtl_sdr (cu8) captures only.`);
+      } else if (s.type === "file") {
+        if (s.format && s.format !== "cu8") throw new Error(`${sourceTitle(cfg, i)}: the browser version reads rtl_sdr (cu8) captures only.`);
         const f = files[i];
-        if (!f) throw new Error(`Source ${i + 1}: choose the capture file again (the browser forgets it on reload).`);
+        if (!f) throw new Error(`${sourceTitle(cfg, i)}: choose the capture file again (the browser forgets it on reload).`);
         void pumpFile(i, f, s.rateHz, s.realtime);
       }
     }
@@ -458,11 +505,12 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
   switch (m.type) {
     case "init":
       config = m.config;
-      talkgroups = m.talkgroups;
+      names = m.names;
       // The greeting, as the desktop app's (crates/trunk-pro server.rs): how things are, then hello.
       post(phase);
       post({ type: "config", config: m.config, version: configVersion });
-      for (const [system, rows] of Object.entries(m.talkgroups)) post({ type: "talkgroups", system, talkgroups: rows });
+      for (const [system, rows] of Object.entries(m.names.talkgroups)) post({ type: "talkgroups", system, talkgroups: rows });
+      for (const [system, rows] of Object.entries(m.names.unitNames)) post({ type: "unitNames", system, unitNames: rows });
       for (const [system, csv] of Object.entries(await savedUnits(m.config))) post({ type: "units", system, csv });
       post({ type: "heard", heard: await savedHeard(m.config) });
       post({ type: "history", ...callsPage(await listCalls(Number.MAX_SAFE_INTEGER), { limit: 300 }) });
@@ -477,12 +525,14 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
         surveyBands: await ready.then(() => JSON.parse(survey_bands())).catch(() => []),
         // The page is the recorder: no program of its own, no drivers but WebUSB's RTL-SDR, no plugins.
         capabilities: [],
+        access: "control",
       });
       break;
     case "setConfig": {
       const before = config;
       config = m.config;
       post({ type: "configSaved", version: ++configVersion });
+      restartCheck();
       // Sharing switched on or off (or what it uses changed, like licenses): at once, as on the desktop.
       for (const x of m.config.systems) {
         const was = before?.systems.find((y) => y.shortName === x.shortName);
@@ -493,23 +543,34 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       }
       break;
     }
+    // Names, set and edited as the desktop recorder sets and edits them (crates/trunk-pro runtime.rs set_names), by the same code.
+    // (A recording takes them at once: an Ignore flag set, a tag fixed.)
     case "setTalkgroups": {
-      // (A recording takes it at once: an Ignore flag set, a tag fixed.)
-      // (A number twice: the later row, in the first's place, as the desktop recorder keeps them.)
-      const rows = [...new Map(m.talkgroups.map((t) => [t.number, t])).values()];
-      if (rows.length) talkgroups[m.system] = rows;
-      else delete talkgroups[m.system];
-      session?.set_talkgroups(m.system, JSON.stringify(rows));
+      await ready;
+      const rows = talkgroupsReplace(names.talkgroups[m.system] ?? [], m.talkgroups, fromNow(m.from));
+      keepNames("talkgroups", m.system, rows);
       post({ type: "talkgroups", system: m.system, talkgroups: rows });
       break;
     }
     case "setTalkgroup": {
-      // One row, edited as the desktop recorder edits it (talkgroups.ts withEdit).
       await ready;
-      const rows = withEdit(talkgroups[m.system] ?? [], m.talkgroup, m.edit);
-      talkgroups[m.system] = rows;
-      session?.set_talkgroups(m.system, JSON.stringify(rows));
-      post({ type: "talkgroupEdited", system: m.system, talkgroup: m.talkgroup, edit: m.edit });
+      const origin = editedNow();
+      keepNames("talkgroups", m.system, withEdit(names.talkgroups[m.system] ?? [], m.talkgroup, m.edit, origin));
+      post({ type: "talkgroupEdited", system: m.system, talkgroup: m.talkgroup, edit: m.edit, origin });
+      break;
+    }
+    case "setUnitNames": {
+      await ready;
+      const rows = unitNamesReplace(names.unitNames[m.system] ?? [], m.unitNames, fromNow(m.from));
+      keepNames("unitNames", m.system, rows);
+      post({ type: "unitNames", system: m.system, unitNames: rows });
+      break;
+    }
+    case "setUnitName": {
+      await ready;
+      const origin = editedNow();
+      keepNames("unitNames", m.system, withUnitName(names.unitNames[m.system] ?? [], m.unit, m.name, origin));
+      post({ type: "unitNameEdited", system: m.system, unit: m.unit, name: m.name, origin });
       break;
     }
     case "subscribe":

@@ -5,6 +5,7 @@
 // worker) asks the trunkrecorder.pro API (POST /api/v1/fcc/identify).
 
 import { useEffect, useRef, useState } from "react";
+import { Fig, Figs, Info } from "./charts.tsx";
 import { fccKey, trpBase } from "./config.ts";
 import { editFcc, findPlaces, identifySurvey, lookupCallSigns, lookupLicenses, lookupLicensesByFreq, mergeLookup, nameCallSigns, useApp, type FccTarget, type LicenseLookup, type Place } from "./controller.ts";
 import { LocationMap } from "./LocationMap.tsx";
@@ -67,12 +68,15 @@ export function WhyLocation(props: { what: string }) {
   return (
     <>
       <p className="small">
-        FCC licenses are tied to where the transmitters are, so to name {props.what} we look up who is licensed on each frequency within a
-        distance of you. For that we need your location.
+        Naming {props.what} needs your rough location{" "}
+        <Info>FCC licenses are tied to where the transmitters are: we look up who is licensed on each frequency within a distance of you.</Info>
       </p>
       <p className="small muted">
-        The frequencies and the location you give are sent to <b>trunkrecorder.pro</b>, which answers from the FCC's license database. Nothing
-        is kept there. If you'd rather not share a location, no lookup is made, and everything works exactly the same without it.
+        Sent to <b>trunkrecorder.pro</b>, not kept · optional{" "}
+        <Info>
+          The frequencies and the location you give are sent to trunkrecorder.pro, which answers from the FCC's license database. Nothing is kept there. Without a
+          location no lookup is made, and everything works exactly the same.
+        </Info>
       </p>
     </>
   );
@@ -142,7 +146,11 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
         <button className="btn primary" onClick={useMine} disabled={locate.state === "locating"}>
           {locate.state === "locating" ? "Finding you…" : "Use my location"}
         </button>
-        {locate.state === "located" && <span className="muted small">{`Located (within ${Math.round(locate.accuracyM)} m)`}</span>}
+        {locate.state === "located" && (
+          <span className="muted small">
+            Located ± <Fig v={Math.round(locate.accuracyM)} u="m" />
+          </span>
+        )}
       </div>
       {locate.state === "failed" && <p className="warn small">{locate.why}</p>}
       <form
@@ -169,10 +177,16 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
       )}
       <LocationMap base={base} at={point ? [point.lat, point.lon] : null} onMove={([lat, lon]) => onChange({ ...w, text: fmt(lat, lon) })} />
       <span className="field-hint">
-        {point ? `Move the map so the circle is roughly where you are: only your general area is needed (${fmt(point.lat, point.lon)}).` : "Move the map so the circle is roughly where you are: only your general area is needed."}
+        Put the circle on your general area
+        {point && (
+          <>
+            {" · "}
+            <Fig v={fmt(point.lat, point.lon)} />
+          </>
+        )}
       </span>
       <label className="field">
-        <span className="field-label">Look for licenses within</span>
+        <span className="field-label">Search radius</span>
         <select value={w.radiusKm} onChange={(e) => onChange({ ...w, radiusKm: Number(e.target.value) })}>
           {RADII_KM.map((r) => (
             <option key={r} value={r}>
@@ -180,7 +194,7 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
             </option>
           ))}
         </select>
-        <span className="field-hint">Wide-area systems can have towers 50 km or more away.</span>
+        <span className="field-hint">Wide-area towers can be 50+ km away</span>
       </label>
     </div>
   );
@@ -244,7 +258,15 @@ export function LookupStatus(props: { l: LicenseLookup | null }) {
   if (l.stage === "running") return <span className="muted small">Looking up licenses…</span>;
   if (l.stage === "error") return <span className="warn small">{l.error}</span>;
   const found = l.results.filter((r) => r.licenses.length).length;
-  return <span className="muted small">{`Licenses found for ${found} of ${l.results.length} frequenc${l.results.length === 1 ? "y" : "ies"} within ${Math.round(l.radiusM / 1000)} km`}</span>;
+  return (
+    <Figs
+      inline
+      items={[
+        { k: "Licensed", v: `${found}/${l.results.length}`, title: `Licenses found for ${found} of ${l.results.length} frequencies` },
+        { k: "Within", v: Math.round(l.radiusM / 1000), u: "km" },
+      ]}
+    />
+  );
 }
 
 /** The survey's button: asks where, then looks up what it found. */
@@ -381,7 +403,7 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
     void lookupCallSigns(unnamed).then((r) => {
       let n = 0;
       if (!r.error) editFcc(props.target, (f) => void (n = nameCallSigns(f, r.results)));
-      setNamed(r.error ?? `Named ${n} of ${unnamed.length}.`);
+      setNamed(r.error ?? `Named ${n}/${unnamed.length}`);
     });
   };
   const go = () => {
@@ -399,7 +421,10 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
       {props.intro}
       {unnamed.length > 0 && (
         <div className="stack">
-          <p className="small">{`${unnamed.length} call sign${unnamed.length === 1 ? "" : "s"} heard on the air ${unnamed.length === 1 ? "has" : "have"} no licensee yet. Looking ${unnamed.length === 1 ? "it" : "them"} up sends only the call sign${unnamed.length === 1 ? "" : "s"} to trunkrecorder.pro, no location.`}</p>
+          <p className="small">
+            <Fig v={unnamed.length} u={unnamed.length === 1 ? "call sign" : "call signs"} /> heard, no licensee yet{" "}
+            <Info>Looking them up sends only the call signs to trunkrecorder.pro, no location.</Info>
+          </p>
           <div className="row">
             <button className="btn" disabled={named === "Looking them up…"} onClick={nameThem}>
               Look up their licensees
@@ -425,12 +450,16 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
             </div>
           </>
         ) : l.stage === "running" ? (
-          <p className="muted">{`Looking up ${signals.length} frequenc${signals.length === 1 ? "y" : "ies"}…`}</p>
+          <p className="muted">
+            Looking up <Fig v={signals.length} u={signals.length === 1 ? "frequency" : "frequencies"} />…
+          </p>
         ) : (
           <>
             {Object.keys(found).length ? (
               <>
-                <p className="small">{`Licensed within ${Math.round(l.radiusM / 1000)} km, the nearest on each frequency (yours, and call signs heard on the air, stay):`}</p>
+                <p className="small">
+                  Nearest licensee within <Fig v={Math.round(l.radiusM / 1000)} u="km" /> <Info>The nearest on each frequency. Yours, and call signs heard on the air, stay.</Info>
+                </p>
                 <ul className="licensees">
                   {Object.entries(found)
                     .sort(([a], [b]) => Number(a) - Number(b))
@@ -446,7 +475,9 @@ export function IdentifyDialog(props: { target: FccTarget; what: string; freqs: 
                 </ul>
               </>
             ) : (
-              <p className="small">{`Nobody is licensed on its frequencies within ${Math.round(l.radiusM / 1000)} km. Try farther, or check its frequencies.`}</p>
+              <p className="small">
+                No licenses within <Fig v={Math.round(l.radiusM / 1000)} u="km" /> · try farther, or check its frequencies
+              </p>
             )}
             <div className="row">
               <button className="btn ghost" onClick={() => setL(null)}>

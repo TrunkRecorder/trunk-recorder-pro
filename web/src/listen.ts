@@ -9,7 +9,7 @@
 import { useRef, useSyncExternalStore } from "react";
 import { callsQuery, onRecorderMessage, setListen, shallowEqual, snapshot, subscribe, transport } from "./controller.ts";
 import { migrateSelection } from "./migrate.ts";
-import type { CallEntry } from "./protocol.ts";
+import { systemOf, type CallEntry } from "./protocol.ts";
 
 /** What to hear, kept in this browser. Talkgroups are `<system>:<talkgroup>`. */
 export interface Selection {
@@ -117,8 +117,7 @@ export function useListen<T>(pick: (s: ListenState) => T): T {
 
 // ── which calls ──────────────────────────────────────────────────────────────
 
-/** A recorded call's system: its record's short_name, else its folder. */
-export const systemOf = (c: CallEntry) => c.record.short_name || c.path.split("/")[0] || "";
+export { systemOf };
 export const tgKey = (system: string, talkgroup: number) => `${system}:${talkgroup}`;
 
 /** Its talkgroup and any patched with it. */

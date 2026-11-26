@@ -41,8 +41,8 @@ pub enum Offer {
 
 /// Where held things go when they're due: the running plugins.
 pub trait Outlet: Send + Sync {
-    /// Give plugin `label` the line `line` (`decrypted`: of a call decrypted with our keys).
-    fn offer(&self, label: &str, line: &Arc<str>, decrypted: bool) -> Offer;
+    /// Give plugin `label` the line `line`, which is `about` that (Gone: it may not have it).
+    fn offer(&self, label: &str, line: &Arc<str>, about: &About) -> Offer;
 }
 
 /// Live things held, at most; beyond this they're dropped (counted as the plugin's queue's are).
@@ -133,7 +133,9 @@ impl Hold {
 
     /// Keep finished calls in `dir`, and take back those kept there by the run before.
     pub fn open(self: &Arc<Self>, dir: &Path) {
-        let _ = std::fs::create_dir_all(dir);
+        if let Err(p) = trunk_app::files::make_dir(dir) {
+            log::warn!("Plugin hold: held calls can't be kept on disk, so they're lost if the recorder restarts. {p}");
+        }
         *self.dir.lock().unwrap() = Some(dir.to_path_buf());
         let mut items = Vec::new();
         for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -218,19 +220,25 @@ impl Hold {
     /// Hold `line` for plugin `label` (`call`: it's that finished call's).
     /// False: too much is held already, and it's dropped.
     pub fn push(self: &Arc<Self>, label: &str, about: &About, line: &Arc<str>, call: Option<&str>) -> bool {
+        if call.is_none() && self.state.lock().unwrap().live >= LIVE_MAX {
+            return false;
+        }
+        self.keep(label, about, line, call);
+        true
+    }
+
+    /// As [`push`](Self::push), but never refused: a call's start or end.
+    pub fn keep(self: &Arc<Self>, label: &str, about: &About, line: &Arc<str>, call: Option<&str>) {
         let mut item = Item { plugin: label.to_string(), about: about.clone(), at_ms: crate::clock::unix_ms(), line: line.clone(), call: call.map(str::to_string), ticket: None, file: None };
         if let Some(rel) = call {
             item.ticket = self.archive.ticket(rel);
             self.archive.hold(rel);
             item.file = self.save(&item);
-        } else if self.state.lock().unwrap().live >= LIVE_MAX {
-            return false;
         }
         let mut st = self.state.lock().unwrap();
         Self::insert(&mut st, item);
         self.start(&mut st);
         self.wake.notify_all();
-        true
     }
 
     /// Write a finished call's item to the hold folder; its file.
@@ -240,7 +248,7 @@ impl Hold {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = dir.join(format!("{}-{n}-{name}.json", item.at_ms));
-        match serde_json::to_vec(item).map_err(|e| e.to_string()).and_then(|b| crate::config::write_atomic(&path, &b).map_err(|e| e.to_string())) {
+        match serde_json::to_vec(item).map_err(|e| e.to_string()).and_then(|b| trunk_app::files::write_atomic(&path, &b).map_err(String::from)) {
             Ok(()) => Some(path),
             Err(e) => {
                 self.note(&item.plugin, Level::Warn, format!("couldn't keep a held call on disk ({e}): it's lost if the recorder restarts first"));
@@ -302,7 +310,7 @@ impl Hold {
                         continue;
                     }
                     To::Nobody | To::Host(None) => Offer::Gone,
-                    To::Host(Some(o)) => o.offer(&item.plugin, &item.line, item.about.decrypted),
+                    To::Host(Some(o)) => o.offer(&item.plugin, &item.line, &item.about),
                 };
                 match offer {
                     Offer::Sent => given.push(item),
@@ -374,8 +382,8 @@ mod tests {
         full: Mutex<bool>,
     }
     impl Outlet for Plugins {
-        fn offer(&self, label: &str, line: &Arc<str>, decrypted: bool) -> Offer {
-            if label == "gone" || (decrypted && label != "trusted") {
+        fn offer(&self, label: &str, line: &Arc<str>, about: &About) -> Offer {
+            if label == "gone" || (about.decrypted && label != "trusted") {
                 return Offer::Gone;
             }
             if *self.full.lock().unwrap() {
@@ -390,7 +398,7 @@ mod tests {
         Delays::of(&serde_json::from_value(v).unwrap())
     }
     fn about(tg: u32) -> About {
-        About { system: "dcfd".into(), talkgroup: Some(tg), decrypted: false }
+        About { system: trunk_app::config::SystemId(1), talkgroup: Some(tg), ..Default::default() }
     }
     fn wait_for(f: impl Fn() -> bool) -> bool {
         let t0 = Instant::now();

@@ -97,7 +97,7 @@ mod tests {
     use crate::db::{Change, Db};
     use std::time::Duration;
     use trunk_app::calls::StoredCall;
-    use trunk_recorder_plugin::{ErrorInterval, SrcEntry, ToneEntry};
+    use trunk_recorder_plugin::{CallRecord, ErrorInterval, SiteRef, SrcEntry, ToneEntry};
 
     /// Each backend with 12 calls: talkgroup 2 (odd i) and 1 (even i),
     /// starts i*1000, except call 6 shares call 5's start 5000 and call 12
@@ -204,11 +204,16 @@ mod tests {
             r.tones = vec![ToneEntry { kind: "ctcss".into(), value: "123.0".into(), pos: 0.0, len: 4.0, src: 9001644, origin: "audio".into(), ..Default::default() }];
             r.signals = vec!["Page".into()];
             r.patched_talkgroups = vec![9181];
+            (r.site, r.site_id) = ("north".into(), 7);
+            r.sites = vec![SiteRef { id: 7, name: "north".into() }, SiteRef { id: 8, name: "south".into() }];
             r.extra.insert("newField".into(), serde_json::json!({ "a": [1, 2] }));
             db.send(Change::Call { row: call_row("ohmarcs/x", &r, true, false, None, 0), live: true });
             db.flush().unwrap();
             let back = db.one("ohmarcs/x").unwrap().unwrap();
-            assert_eq!(serde_json::to_value(&back.record).unwrap(), serde_json::to_value(&r).unwrap(), "{}", db.kind());
+            // (And its system's id, which the store knows it by.)
+            assert!(back.record.system_id != 0);
+            let want = CallRecord { system_id: back.record.system_id, ..r.clone() };
+            assert_eq!(serde_json::to_value(&back.record).unwrap(), serde_json::to_value(&want).unwrap(), "{}", db.kind());
             assert_eq!((back.path.as_str(), back.audio, back.json), ("ohmarcs/x", true, false));
             assert!(db.one("s/99").unwrap().is_none());
             assert!(db.known("ohmarcs/x").unwrap() && !db.known("s/99").unwrap());

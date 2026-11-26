@@ -95,11 +95,11 @@ function pieceProblems(pieces: Piece[]): string[] {
     if (why) out.push(why);
   }
   if (!pieces.length) return out;
-  if (pieces[0].kind === "sep") out.push("It starts with a folder separator, but the path is always inside the recordings folder: leave off the leading /.");
+  if (pieces[0].kind === "sep") out.push("Starts with /: drop it (always inside the recordings folder)");
   const first = pieces[0];
-  if (first.kind === "text" && /^[A-Za-z]:$/.test(first.text)) out.push("A drive (C:) can't start it: the path is always inside the recordings folder.");
-  if (first.kind === "text" && first.text.startsWith("~")) out.push("~ isn't a home folder here: the path is always inside the recordings folder.");
-  if (pieces[pieces.length - 1].kind === "sep") out.push("It ends with a folder separator: the file name goes after the last one.");
+  if (first.kind === "text" && /^[A-Za-z]:$/.test(first.text)) out.push("No drive (C:): always inside the recordings folder");
+  if (first.kind === "text" && first.text.startsWith("~")) out.push("~ isn't home here: always inside the recordings folder");
+  if (pieces[pieces.length - 1].kind === "sep") out.push("Ends with /: the file name goes last");
   // Folder by folder (the last one is the file name, which -call_<number> follows).
   const segments: Piece[][] = [[]];
   for (const p of pieces) {
@@ -108,7 +108,7 @@ function pieceProblems(pieces: Piece[]): string[] {
   }
   segments.forEach((seg, k) => {
     const inner = k > 0 && k < segments.length - 1;
-    if (!seg.length && inner) out.push("Two folder separators in a row make a folder with no name.");
+    if (!seg.length && inner) out.push("Two / in a row: a folder with no name");
     const literal = seg.every((p) => p.kind === "text") ? seg.map((p) => (p as { text: string }).text).join("") : null;
     if (literal !== null) {
       if (literal.trim() === "." || literal.trim() === "..") out.push(`A folder can't be named "${literal.trim()}".`);

@@ -7,14 +7,15 @@
 use super::frames::{Codec, VoiceFrame};
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::p25::alias::{is_alias_lcw, AliasLc, LcAliases};
-use crate::p25::crypt::{imbe_voice, next_mi, prev_mi, KeyCheck, Keyring, Keystream, Phase, SyncCheck, Verdict};
+use crate::p25::crypt::{imbe_voice, next_mi, prev_mi, Keyring, Phase};
 use crate::p25::diversity::{best_es, best_frame, best_hdu, best_imbe, best_lc, Group};
 use crate::p25::frame::{HDU, LDU1, LDU2, TDU, TDULC};
 use crate::p25::gps::LcPositions;
 use crate::p25::lc::{self, Lc, LinkControl};
 use crate::p25::voice::{decode_tdulc, imbe_bits_to_params, imbe_params_to_bits, ldu_codeword_end_bit, EncryptionSync, ALGID_CLEAR};
 use super::calls::Flags;
-use super::voice::{CipherId, Encryption, TrackerOut};
+use super::taps::{AirFrame, Tap, TapPiece, TapSet};
+use super::voice::{Crypt, Encryption, TrackerOut};
 use std::sync::Arc;
 
 /// An LDU's length, s (1728 symbols at 4800 baud).
@@ -28,27 +29,10 @@ fn radio(id: u32) -> Option<u32> {
 pub struct VoiceTracker {
     dec: mbe::Decoder,
     active: bool,
-    voice: Encryption,
-    /// The encryption sync the current superframe's voice is under (the
-    /// HDU's, then each LDU2's for the superframe after it), and the one the
-    /// last LDU2 brought.
-    es: Option<EncryptionSync>,
-    es_next: Option<EncryptionSync>,
-    /// Each LDU2's sync checked against the MI LFSR's prediction.
-    chain: SyncCheck,
-    /// The cipher last reported for this transmission.
-    cipher: Option<CipherId>,
-    /// The system's keys, and the keystream of the superframe `es` is for.
+    /// Its encryption: the syncs the HDU and each LDU2 bring.
+    crypt: Crypt,
+    /// The system's keys.
     keys: Option<Arc<Keyring>>,
-    ks: Option<Keystream>,
-    /// Some voice of this transmission was decrypted: voice that can't be
-    /// now (its sync lost to a fade) is muted, not dropped.
-    decrypting: bool,
-    /// Whether the key decrypts this transmission to voice, and whether
-    /// that was reported; a wrong key's voice isn't decrypted.
-    check: KeyCheck,
-    reported: bool,
-    wrong_key: bool,
     /// The last LDU's DUID and time, to notice LDUs that never arrived.
     last_ldu: Option<(u8, f64)>,
     /// Voice held for an LDU2's sync: encrypted with no sync (joined late,
@@ -71,9 +55,27 @@ pub struct VoiceTracker {
     positions: LcPositions,
     call_frames: u64,
     end_s: f64,
+    /// The taps on: [`Tap::VoiceAir`] is this decoder's.
+    taps: TapSet,
     /// Vocoder frames / repeated or muted, over the channel's life.
     pub frames: u64,
     pub bad_frames: u64,
+}
+
+/// What [`Tap::VoiceAir`] says of a P25 frame as it was sent: frame `n` of its superframe,
+/// under the encryption `crypt` knows of so far.
+pub(super) fn air_frame(n: Option<usize>, errs: u32, e0: u32, erased: bool, crypt: &Crypt) -> AirFrame {
+    let es = crypt.es;
+    AirFrame {
+        n: n.map(|n| n as u8),
+        errs,
+        e0,
+        erased,
+        encrypted: crypt.voice.known(),
+        algid: es.map(|es| es.algid),
+        keyid: es.map(|es| es.keyid),
+        mi: es.map(|es| AirFrame::hex(&es.mi)),
+    }
 }
 
 impl VoiceTracker {
@@ -82,17 +84,8 @@ impl VoiceTracker {
         VoiceTracker {
             dec: mbe::Decoder::new(rng, vocoder),
             active: false,
-            voice: Encryption::Unknown,
-            es: None,
-            es_next: None,
-            chain: SyncCheck::default(),
-            cipher: None,
+            crypt: Crypt::new(Phase::One),
             keys,
-            ks: None,
-            decrypting: false,
-            check: KeyCheck::default(),
-            reported: false,
-            wrong_key: false,
             last_ldu: None,
             held: Vec::new(),
             tgid: None,
@@ -104,9 +97,16 @@ impl VoiceTracker {
             positions: LcPositions::default(),
             call_frames: 0,
             end_s: 0.0,
+            taps: TapSet::NONE,
             frames: 0,
             bad_frames: 0,
         }
+    }
+
+    /// With these taps on.
+    pub fn tapped(mut self, taps: TapSet) -> Self {
+        self.taps = taps;
+        self
     }
 
     /// The talkgroup link control named for the current transmission.
@@ -123,7 +123,7 @@ impl VoiceTracker {
     pub fn set_granted(&mut self, tg: Option<u32>) {
         if self.granted != tg {
             self.granted = tg;
-            let es = self.es;
+            let es = self.crypt.es;
             self.set_es(es);
         }
     }
@@ -131,7 +131,7 @@ impl VoiceTracker {
     /// The encryption sync the current superframe's voice is under (None:
     /// clear, or not known yet).
     pub fn encryption_sync(&self) -> Option<EncryptionSync> {
-        self.es
+        self.crypt.es
     }
 
     /// A frame group at time `t` (s, sample clock).
@@ -157,7 +157,7 @@ impl VoiceTracker {
                 if self.lost_ldu2(best.nid.duid, t) {
                     // Its sync is gone with it: wait for the next good one.
                     // Voice held for it can't be decrypted now.
-                    self.es_next = None;
+                    self.crypt.es_next = None;
                     self.set_es(None);
                     self.release_held(out);
                 }
@@ -167,13 +167,13 @@ impl VoiceTracker {
                         self.link_control(lc, t, out);
                     }
                 } else {
-                    self.es_next = self.chain.next(self.es, best_es(g));
-                    if let Some(es) = self.es_next {
+                    self.crypt.es_next = self.crypt.chain.next(self.crypt.es, best_es(g));
+                    if let Some(es) = self.crypt.es_next {
                         self.set_voice(Encryption::from_sync(&es), out);
                         if es.algid != ALGID_CLEAR {
                             self.report_cipher(&es, out);
                             // No sync for this superframe: the LDU2's, run back.
-                            if self.es.is_none() {
+                            if self.crypt.es.is_none() {
                                 self.set_es(Some(EncryptionSync { mi: prev_mi(&es.mi), ..es }));
                             }
                         }
@@ -225,6 +225,9 @@ impl VoiceTracker {
                 // Voice still waiting for a sync that won't come.
                 self.release_held(out);
                 self.end(out);
+                if self.active {
+                    out.push(TrackerOut::Ended);
+                }
                 self.active = false;
                 self.set_es(None);
                 self.last_ldu = None;
@@ -240,7 +243,7 @@ impl VoiceTracker {
         let mut lc = lc;
         let mut clear = true;
         if lc.protected {
-            match self.ks.as_ref().filter(|_| !self.wrong_key) {
+            match self.crypt.keystream() {
                 Some(ks) => {
                     let mut w = lc.raw;
                     ks.apply_lc(&mut w);
@@ -257,7 +260,7 @@ impl VoiceTracker {
             Lc::SourceIdExtension { id, .. } => {
                 if let (None, Some(id)) = (self.talker, radio(id)) {
                     self.talker = Some(id);
-                    out.push(TrackerOut::Info { source: Some(id), flags: Flags { encrypted: self.voice.encrypted(), ..Default::default() } });
+                    out.push(TrackerOut::Info { source: Some(id), flags: Flags { encrypted: self.crypt.voice.encrypted(), ..Default::default() } });
                 }
             }
             _ => self.other_lc(&lc, out),
@@ -268,6 +271,10 @@ impl VoiceTracker {
     fn voice_user(&mut self, lc: &LinkControl, clear: bool, t: f64, out: &mut Vec<TrackerOut>) {
         let group = lc.group().filter(|&g| g != 0);
         let patch = matches!(lc.msg, Lc::PatchVoiceUser { .. });
+        // (First, so the call it isn't for ends before its talker is taken.)
+        if let Some(o) = group.filter(|_| clear).and_then(|g| super::voice::reassigned(self.granted, g)) {
+            out.push(o);
+        }
         if let (Some(cur), Some(g)) = (self.tgid, group) {
             // Another group mid-transmission: a new one, its HDU lost. (Not
             // a patch's supergroup word between its member's: one call.)
@@ -291,7 +298,7 @@ impl VoiceTracker {
             self.hint(out);
         }
         // (Encrypted as the voice is: a sync overrules the word's protected bit.)
-        let flags = Flags { encrypted: self.voice.encrypted(), ..opts.into() };
+        let flags = Flags { encrypted: self.crypt.voice.encrypted(), ..opts.into() };
         out.push(TrackerOut::Info { source, flags });
     }
 
@@ -313,34 +320,22 @@ impl VoiceTracker {
 
     /// Link control says the voice is encrypted: until a sync says.
     fn hint(&mut self, out: &mut Vec<TrackerOut>) {
-        let v = self.voice.hinted();
-        self.set_voice(v, out);
+        out.extend(self.crypt.hint(self.active));
     }
 
     fn set_voice(&mut self, v: Encryption, out: &mut Vec<TrackerOut>) {
-        let was = self.voice.encrypted();
-        self.voice = v;
-        if self.active && v.encrypted() && !was {
-            out.push(TrackerOut::Info { source: None, flags: Flags { encrypted: true, ..Default::default() } });
-        }
+        out.extend(self.crypt.set_voice(v, self.active));
     }
 
     fn start(&mut self, t: f64, tgid: Option<u32>) {
         self.dec.reset();
         self.active = true;
-        self.voice = Encryption::Unknown;
         self.tgid = tgid;
         self.patch_word = false;
         self.target = None;
         self.talker = None;
+        self.crypt.reset();
         self.set_es(None);
-        self.es_next = None;
-        self.chain.reset();
-        self.cipher = None;
-        self.decrypting = false;
-        self.check = KeyCheck::default();
-        self.reported = false;
-        self.wrong_key = false;
         self.last_ldu = None;
         self.held.clear();
         self.end_s = t;
@@ -349,19 +344,16 @@ impl VoiceTracker {
 
     /// The transmission is over: its key's verdict, if none came yet.
     fn end(&mut self, out: &mut Vec<TrackerOut>) {
-        if self.decrypting && !self.reported && self.check.at_end() == Verdict::Right {
-            self.reported = true;
-            out.push(TrackerOut::Decrypted);
-        }
+        out.extend(self.crypt.end());
     }
 
     /// An LDU2's voice is done: the next superframe is under the sync it
     /// brought. Lost to errors, the MI it would have said follows from the
     /// last one (the MI LFSR).
     fn next_superframe(&mut self) {
-        let es = match self.es_next.take() {
+        let es = match self.crypt.es_next.take() {
             Some(es) => Some(es).filter(|es| es.algid != ALGID_CLEAR),
-            None => self.es.map(|es| EncryptionSync { mi: next_mi(&es.mi), ..es }),
+            None => self.crypt.es.map(|es| EncryptionSync { mi: next_mi(&es.mi), ..es }),
         };
         self.set_es(es);
     }
@@ -371,18 +363,14 @@ impl VoiceTracker {
     /// no keys: not).
     pub fn set_keys(&mut self, keys: Option<Arc<Keyring>>) {
         self.keys = keys.filter(|k| !k.is_empty());
-        let es = self.es;
+        let es = self.crypt.es;
         self.set_es(es);
     }
 
     /// The voice from now on is under `es`: its keystream, when the system
     /// has the key (by talkgroup: link control's, or the grant's).
     fn set_es(&mut self, es: Option<EncryptionSync>) {
-        self.es = es;
-        self.ks = match (&self.keys, &es) {
-            (Some(keys), Some(es)) => keys.keystream(es, self.tgid.or(self.granted), Phase::One),
-            _ => None,
-        };
+        self.crypt.set_es(es, &self.keys, self.tgid.or(self.granted));
     }
 
     /// Whether an LDU2 went missing since the last LDU (an LDU1 after an
@@ -397,11 +385,7 @@ impl VoiceTracker {
     }
 
     fn report_cipher(&mut self, es: &EncryptionSync, out: &mut Vec<TrackerOut>) {
-        let c = CipherId { algid: es.algid, keyid: es.keyid };
-        if self.active && self.cipher != Some(c) {
-            self.cipher = Some(c);
-            out.push(TrackerOut::Cipher(c));
-        }
+        out.extend(self.crypt.report_cipher(es, self.active));
     }
 
     fn touch(&mut self, t: f64, out: &mut Vec<TrackerOut>) {
@@ -431,8 +415,12 @@ impl VoiceTracker {
     fn voice_frame(&mut self, ldu: usize, k: usize, u: [u32; 8], e0: u32, errs: u32, erased: bool, out: &mut Vec<TrackerOut>) {
         self.frames += 1;
         self.call_frames += 1;
-        let unsure = self.voice == Encryption::Unknown;
-        let waiting = self.voice.encrypted() && self.ks.is_none() && self.keys.is_some();
+        if self.taps.has(Tap::VoiceAir) {
+            let note = air_frame(Some(ldu * 9 + k), errs, e0, erased, &self.crypt);
+            out.push(TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Imbe, &imbe_params_to_bits(&u), &note)));
+        }
+        let unsure = self.crypt.voice == Encryption::Unknown;
+        let waiting = self.crypt.voice.encrypted() && self.crypt.keystream().is_none() && self.keys.is_some();
         if ldu == 0 && (unsure || waiting) {
             self.held.push((ldu, k, u, e0, errs, erased));
             return;
@@ -443,16 +431,17 @@ impl VoiceTracker {
     #[allow(clippy::too_many_arguments)]
     fn vocode(&mut self, ldu: usize, k: usize, u: [u32; 8], e0: u32, errs: u32, mut erased: bool, out: &mut Vec<TrackerOut>) {
         let mut bits = imbe_params_to_bits(&u);
-        if self.voice.encrypted() {
-            match self.ks.as_ref().filter(|_| !self.wrong_key) {
+        if self.crypt.voice.encrypted() {
+            match self.crypt.keystream() {
                 Some(ks) => {
                     ks.apply_p1(ldu, k, &mut bits);
-                    self.decrypting = true;
-                    if !self.key_check(imbe_voice(&imbe_bits_to_params(&bits)), out) {
+                    let (play, told) = self.crypt.decrypted(Some(imbe_voice(&imbe_bits_to_params(&bits))));
+                    out.extend(told);
+                    if !play {
                         return;
                     }
                 }
-                None if self.decrypting => {
+                None if self.crypt.decrypting => {
                     erased = true;
                     bits = [0; 88];
                 }
@@ -468,32 +457,13 @@ impl VoiceTracker {
         let frame = VoiceFrame { codec: Codec::Imbe, bits: bits.to_vec(), e0, errs, erased, kind, tone: None };
         out.push(TrackerOut::Audio(buf.to_vec(), frame));
     }
-
-    /// One decrypted frame for the key check. Its verdict reported once;
-    /// false: the key is wrong, and this transmission isn't decrypted.
-    fn key_check(&mut self, voice: bool, out: &mut Vec<TrackerOut>) -> bool {
-        match self.check.frame(voice) {
-            Verdict::Right if !self.reported => {
-                self.reported = true;
-                out.push(TrackerOut::Decrypted);
-            }
-            Verdict::Wrong => {
-                (self.wrong_key, self.decrypting) = (true, false);
-                if let Some(c) = self.cipher {
-                    out.push(TrackerOut::WrongKey(c));
-                }
-                return false;
-            }
-            _ => {}
-        }
-        true
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::p25::crypt::ALGID_ADP;
+    use crate::p25::crypt::{Keystream, ALGID_ADP};
+    use super::super::voice::CipherId;
 
     fn tracker(keys: Option<Keyring>) -> VoiceTracker {
         VoiceTracker::new(mbe::lcg(1), mbe::Profile::Enhanced, keys.map(Arc::new))
@@ -545,7 +515,7 @@ mod tests {
 
     fn begin(t: &mut VoiceTracker, es: EncryptionSync) {
         t.start(0.0, Some(100));
-        t.voice = Encryption::Encrypted(es.algid);
+        t.crypt.voice = Encryption::Encrypted(es.algid);
         t.set_es(Some(es));
     }
 
@@ -601,7 +571,7 @@ mod tests {
         wrong.add(ALGID_ADP, Some(0x1B50), vec![9, 9, 9, 9, 9], vec![]).unwrap();
         let mut t = tracker(Some(wrong));
         begin(&mut t, es);
-        t.cipher = Some(CipherId { algid: ALGID_ADP, keyid: 0x1B50 });
+        assert!(t.crypt.report_cipher(&es, true).is_some());
         let mut out = superframe(&mut t, &ks, &clear_voice());
         out.extend(superframe(&mut t, &ks, &clear_voice()));
         assert!(out.iter().any(|o| matches!(o, TrackerOut::WrongKey(CipherId { keyid: 0x1B50, .. }))));
@@ -617,12 +587,12 @@ mod tests {
         let mut out = Vec::new();
         t.start(0.0, None);
         t.hint(&mut out);
-        assert!(t.voice.encrypted());
+        assert!(t.crypt.voice.encrypted());
         t.set_voice(Encryption::from_sync(&EncryptionSync { algid: ALGID_CLEAR, keyid: 0, mi: [0; 9] }), &mut out);
-        assert_eq!(t.voice, Encryption::Clear);
+        assert_eq!(t.crypt.voice, Encryption::Clear);
         // From then on a hint changes nothing.
         t.hint(&mut out);
-        assert_eq!(t.voice, Encryption::Clear);
+        assert_eq!(t.crypt.voice, Encryption::Clear);
     }
 
     /// An LDU2 sync off the LFSR's chain (AAAD-B §3) is doubted: the
@@ -633,13 +603,13 @@ mod tests {
         let mut t = tracker(None);
         begin(&mut t, es);
         let next = EncryptionSync { mi: next_mi(&es.mi), ..es };
-        assert_eq!(t.chain.next(t.es, Some(next)), Some(next));
+        assert_eq!(t.crypt.chain.next(t.crypt.es, Some(next)), Some(next));
         let odd = EncryptionSync { mi: [9, 9, 9, 9, 9, 9, 9, 9, 0], ..es };
-        assert_eq!(t.chain.next(t.es, Some(odd)), Some(next), "the prediction");
+        assert_eq!(t.crypt.chain.next(t.crypt.es, Some(odd)), Some(next), "the prediction");
         // The next superframe's runs on from the odd one: it was right.
         t.set_es(Some(next));
         let after = EncryptionSync { mi: next_mi(&odd.mi), ..es };
-        assert_eq!(t.chain.next(t.es, Some(after)), Some(after));
+        assert_eq!(t.crypt.chain.next(t.crypt.es, Some(after)), Some(after));
     }
 
     /// Protected link control is read with the key (AAAD-B Table 5-2): the talker.
@@ -666,6 +636,25 @@ mod tests {
         assert_eq!(t.talker, None);
         t.link_control(lc::parse(&[0x49, 0, 0xbe, 0xe0, 0x03, 0xa9, 0x01, 0x02, 0x03]), 0.0, &mut out);
         assert_eq!(t.talker, Some(0x010203));
+    }
+
+    /// Link control naming another group than the channel's grant says so
+    /// before its talker (the site gave the channel away, by a grant not
+    /// heard), as Phase 2's MAC_PTT does; its own group says nothing.
+    #[test]
+    fn link_control_for_another_group_is_told_first() {
+        let heard = |granted: u32| {
+            let mut t = tracker(None);
+            t.set_granted(Some(granted));
+            t.start(0.0, None);
+            let mut out = Vec::new();
+            // Group voice user: group 100, talker 0x010203.
+            t.link_control(lc::parse(&[0x00, 0x00, 0x00, 0x00, 0x00, 100, 0x01, 0x02, 0x03]), 0.0, &mut out);
+            out
+        };
+        assert!(!heard(100).iter().any(|o| matches!(o, TrackerOut::Talkgroup(_))));
+        let o = heard(401);
+        assert_eq!(o.first(), Some(&TrackerOut::Talkgroup(100)), "{o:?}");
     }
 
     /// Motorola's LC_MOT_BSI on a voice channel: its call sign, once heard; an empty one is none.

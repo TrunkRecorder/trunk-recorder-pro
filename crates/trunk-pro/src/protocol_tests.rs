@@ -199,7 +199,7 @@ fn a_late_radio_keeps_to_the_wall_clock() {
     assert!((radio - 3500.0).abs() < 100.0, "the call starts {radio} ms in");
     // A capture played as fast as it can be keeps its own time.
     let mut replay = conventional_config();
-    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ }];
+    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ, name: String::new() }];
     let file = start_of(replay);
     assert!((file - 500.0).abs() < 100.0, "the replayed call starts {file} ms in");
 }
@@ -225,6 +225,98 @@ fn a_busy_engine_does_not_make_the_radio_look_late() {
     assert!((start - 500.0).abs() < 100.0, "the call starts {start} ms in");
 }
 
+/// What one transmission (0.5–2.5 s in) came to, with the host's wall clock
+/// reading `correction(t)` ms more than the recording's clock at `t` s.
+struct WallRun {
+    record: trunk_recorder_plugin::CallRecord,
+    /// The live call's start, as plugins were told it (Unix s).
+    told_start: f64,
+    /// What the log said.
+    logs: Vec<String>,
+    /// What each `correct_wall_clock` answered.
+    moved: Vec<bool>,
+}
+
+fn wall_run(cfg: Config, correction: impl Fn(f64) -> f64) -> WallRun {
+    let epoch = 1.75e12;
+    let mut s = Session::new(cfg, &Default::default(), epoch, &|_| None, |_| 0).unwrap();
+    s.plugin_topics.calls = true;
+    let (mut out, mut files, mut told, mut logs, mut moved) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut take = |out: &mut Vec<Output>| {
+        for o in out.drain(..) {
+            match o {
+                Output::File { record, .. } => files.push(record),
+                Output::Plugin(trunk_recorder_plugin::HostMessage::CallStart(c)) => told.push(c.start_time),
+                Output::Log(trunk_app::log::Record { body: trunk_app::log::Body::Text(t), .. }) => logs.push(t),
+                _ => {}
+            }
+        }
+    };
+    s.poll(epoch, &mut out);
+    air(2_400_000.0, 4.5, |iq, t| {
+        s.push_iq(0, iq, 0, epoch + t * 1000.0);
+        moved.push(s.correct_wall_clock(correction(t)));
+        s.poll(epoch + t * 1000.0, &mut out);
+        take(&mut out);
+    });
+    s.finish(&mut out);
+    take(&mut out);
+    assert_eq!(files.len(), 1, "one call");
+    WallRun { record: files.remove(0), told_start: *told.first().expect("its start told"), logs, moved }
+}
+
+/// The recording's clock never jumps, and on macOS runs at the crystal's rate
+/// rather than the corrected one, so after a day it can be seconds off the
+/// wall clock. Call times follow the wall clock all the same — no Stop and
+/// Start — however it moves meanwhile: a call's length, and what plugins were
+/// told of it while it was up, are as they'd be had it not moved.
+#[test]
+fn call_times_follow_the_wall_clock_not_the_recordings() {
+    let plain = wall_run(conventional_config(), |_| 0.0);
+    let length = |r: &trunk_recorder_plugin::CallRecord| r.stop_time_ms - r.start_time_ms;
+    let told_less_record = |w: &WallRun| w.told_start * 1000.0 - w.record.start_time_ms as f64;
+    // A day of a crystal 50 ppm slow (4.3 s), still drifting — sped up, 20 ms a second, to move during the call.
+    let drift = wall_run(conventional_config(), |t| 4320.0 + 20.0 * t);
+    let shift = (drift.record.start_time_ms - plain.record.start_time_ms) as f64;
+    assert!((shift - (4320.0 + 20.0 * 0.5)).abs() < 25.0, "by the wall clock at the call's start: moved {shift} ms");
+    assert_eq!(length(&drift.record), length(&plain.record), "its length as on the air");
+    assert!((told_less_record(&drift) - told_less_record(&plain)).abs() < 1.0, "told as recorded");
+    assert!(drift.logs.iter().any(|l| l.contains("The wall clock moved +4.320 s")), "the first correction is a step: {:?}", drift.logs);
+    assert_eq!(drift.logs.iter().filter(|l| l.contains("The wall clock moved")).count(), 1, "drift isn't logged, ms by ms");
+    assert!(drift.moved.iter().filter(|m| **m).count() > 10, "followed while recording");
+    // Stepped 10 s ahead (or slept) mid-call, then 3 s back: that call is whole, by the clock it began under.
+    let step = wall_run(conventional_config(), |t| if t >= 2.0 { 7000.0 } else if t >= 1.5 { 10_000.0 } else { 0.0 });
+    assert_eq!((step.record.start_time_ms, step.record.stop_time_ms), (plain.record.start_time_ms, plain.record.stop_time_ms));
+    assert_eq!(step.record.src_list.iter().map(|x| x.time).collect::<Vec<_>>(), plain.record.src_list.iter().map(|x| x.time).collect::<Vec<_>>());
+    assert!((told_less_record(&step) - told_less_record(&plain)).abs() < 1.0);
+    assert!(step.logs.iter().any(|l| l.contains("+10.000 s")) && step.logs.iter().any(|l| l.contains("-3.000 s")), "{:?}", step.logs);
+}
+
+/// A capture played as fast as it can be has no wall clock to keep to: its
+/// calls keep the capture's own time, whatever the host's clock does.
+#[test]
+fn a_fast_replay_ignores_the_wall_clock() {
+    let mut replay = conventional_config();
+    replay.sources = vec![trunk_app::config::Source { kind: crate::config::SourceKind::File { path: "x.cu8".into(), realtime: false, format: None }, center_hz: 155_000_000.0, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: trunk_app::config::DEFAULT_GUARD_HZ, name: String::new() }];
+    let plain = wall_run(replay.clone(), |_| 0.0);
+    let moved = wall_run(replay, |_| 10_000.0);
+    assert_eq!(moved.record.start_time_ms, plain.record.start_time_ms);
+    assert!(moved.moved.iter().all(|m| !m));
+}
+
+#[test]
+fn a_wall_clock_correction_that_isnt_one_is_ignored() {
+    let mut s = Session::new(conventional_config(), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+    for nonsense in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, 0.4, -0.4] {
+        assert!(!s.correct_wall_clock(nonsense), "{nonsense}");
+    }
+    assert!(s.correct_wall_clock(5.0));
+    assert!(!s.correct_wall_clock(5.5), "within a ms of the last");
+    let mut out = Vec::new();
+    s.poll(1.75e12, &mut out);
+    assert!(!out.iter().any(|o| matches!(o, Output::Log(trunk_app::log::Record { body: trunk_app::log::Body::Text(t), .. }) if t.contains("wall clock moved"))), "5 ms is drift, not a step");
+}
+
 /// AutoTune starts from the last run's score, moved by the ppm set since,
 /// and the file isn't rewritten until something is measured.
 #[test]
@@ -240,6 +332,24 @@ fn autotune_starts_from_the_saved_score() {
     let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
     let src = &status["sources"][0];
     assert_eq!((src["tunePpm"].as_f64(), src["tuneSeeded"].as_bool()), (Some(4.0), Some(true)), "{src}");
+    // The settings it runs with; no ppm to set until something is measured.
+    assert_eq!((src["settings"]["ppm"].as_f64(), src["settings"]["autoTune"].as_bool()), (Some(2.0), Some(true)), "{src}");
+    assert!(src["ppmApply"].is_null(), "{src}");
+}
+
+/// A source the config's channels don't need, and no call has used, says so.
+#[test]
+fn a_source_nothing_needs_is_unused() {
+    let mut cfg = conventional_config();
+    let spare: trunk_app::config::Source = serde_json::from_value(json!({ "type": "rtlsdr", "serial": "2", "centerHz": 460000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 })).unwrap();
+    cfg.sources.push(spare);
+    let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+    let (mut out, mut msgs) = (Vec::new(), Vec::new());
+    s.poll(1.75e12, &mut out);
+    texts(&mut out, &mut msgs);
+    let status = msgs.iter().find(|m| m["type"] == "status").expect("a status");
+    let unused: Vec<_> = status["sources"].as_array().unwrap().iter().map(|x| x["unused"].as_bool()).collect();
+    assert_eq!(unused, [Some(false), Some(true)], "{status}");
 }
 
 /// Without subscriptions, the costly messages aren't made.
@@ -304,7 +414,7 @@ fn a_spare_radio_is_one_no_source_names() {
     let ctx = ctx(cfg.clone(), &dir);
     let req = Request::from_json(&json!({ "source": 0, "radio": { "type": "rtlsdr", "serial": "1", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 } }));
     let e = ctx.begin_survey(cfg, req).unwrap_err();
-    assert!(e.contains("is source 1 of the recorder"), "{e}");
+    assert!(e.contains("is Source 1 of the recorder"), "{e}");
     let rtl = |serial: &str| -> trunk_app::config::Source { serde_json::from_value(json!({ "type": "rtlsdr", "serial": serial, "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "ppm": 0 })).unwrap() };
     assert!(rtl("1").may_be(&rtl("1")) && rtl("").may_be(&rtl("2")) && !rtl("1").may_be(&rtl("2")));
 }
@@ -327,16 +437,20 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         config_path: dir.join("config.json"),
         config: Mutex::new(cfg),
         config_version: std::sync::atomic::AtomicU64::new(1),
-        talkgroups: Mutex::new(Default::default()),
+        names: Mutex::new(Default::default()),
         hub: hub.clone(),
         lifecycle: Mutex::new(crate::runtime::Lifecycle::default()),
-        phase: Mutex::new(crate::runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
+        phase: Mutex::new(crate::runtime::PhaseInfo::default()),
+        run: Mutex::new(None),
         recent: Mutex::new(Default::default()),
         db,
         quit: tokio::sync::Notify::new(),
+        interfaces_due: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
+        tune: Default::default(),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
+        bind_flag: false,
         interfaces: crate::interfaces::Interfaces::new(None, 8080),
         shared,
         series: series.clone(),
@@ -346,15 +460,17 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         engine: Mutex::new(None),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        folders: Default::default(),
+        taps: Default::default(),
         clock: Default::default(),
         unlocked: Default::default(),
+        iq: Default::default(),
+        // (Its state kept beside the config, as the recorder's is.)
+        sessions: crate::access::Sessions::fresh_in(dir),
+        passkeys: Default::default(),
+        cloudflare: Default::default(),
+        tls: Default::default(),
     });
-    // The stats thread makes its folder as it starts: wait for that, so a
-    // test that removes `dir` when done does not see it made again after.
-    let t = std::time::Instant::now();
-    while !dir.join("stats").exists() && t.elapsed() < std::time::Duration::from_secs(1) {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
     ctx
 }
 
@@ -410,6 +526,8 @@ fn the_servers_messages() {
             { "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0, "autoTune": true },
             { "type": "usrp", "args": "", "centerHz": 0, "rateHz": 8000000, "gainDb": 30, "agc": false, "antenna": "RX2", "ppm": 0 },
             { "type": "airspy", "serial": "", "centerHz": 0, "rateHz": 10000000, "gainMode": "linearity", "gainStep": 12, "lnaStep": 0, "mixerStep": 0, "vgaStep": 0, "agc": false, "biasTee": false, "ppm": 0 },
+            { "type": "rtlsdr", "serial": "", "address": "raspberrypi.local", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "agc": false, "biasTee": false, "ppm": 0 },
+            { "type": "spyserver", "address": "192.168.1.20:5555", "centerHz": 0, "rateHz": 2500000, "iqFormat": "cs16", "gain": 14, "digitalGainDb": 12, "ppm": 0 },
             { "type": "soapy", "args": "driver=hackrf", "centerHz": 0, "rateHz": 8000000, "agc": false, "gainDb": null, "gains": { "LNA": 16 }, "antenna": "", "settings": "", "ppm": 0 },
             { "type": "file", "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true, "format": "cu8" }
         ],
@@ -422,9 +540,13 @@ fn the_servers_messages() {
     .unwrap();
     cfg.sources.extend(more.sources);
     cfg.systems = more.systems;
+    cfg.assign_system_ids();
+    let p25 = cfg.id_of("p25").unwrap();
     cfg.server.allowed_origins = vec!["http://localhost:3000".into()];
     cfg.server.interfaces.insert("wall".into(), trunk_app::config::Interface { port: 8081, path: "ui/wall".into(), ..Default::default() });
     cfg.server.interfaces.insert("trunkamp".into(), trunk_app::config::Interface { port: 8082, access: trunk_app::config::ApiAccess::Control, ..Default::default() });
+    let secret = crate::access::add_user(&mut cfg.server.auth, "luke", trunk_app::config::ApiAccess::Control).unwrap();
+    cfg.server.auth.anonymous = Some(trunk_app::config::ApiAccess::Listen);
 
     let ctx = ctx(cfg.clone(), &dir);
     // Something in the registry and the history to ask about.
@@ -438,10 +560,10 @@ fn the_servers_messages() {
             sources: vec![trunk_core::trunk::CallSource { src: 7, ..Default::default() }, trunk_core::trunk::CallSource { src: 8, time_s: 2.0, ..Default::default() }],
             ..Default::default()
         };
-        r.call_start("p25", &c, now - 10);
-        r.call_end("p25", &c, now - 6);
-        r.message("p25", &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
-        r.concluded("p25", &serde_json::from_value(json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] })).unwrap(), now);
+        r.call_start(p25, &c, now - 10);
+        r.call_end(p25, &c, now - 6);
+        r.message(p25, &trunk_core::trunk::Message { kind: trunk_core::trunk::MessageType::Affiliation, source: 7, talkgroup: 101, ..Default::default() }, now);
+        r.concluded(p25, &serde_json::from_value(json!({ "freq": 851_012_500u64, "snr": 18.5, "errorList": [{ "frames": 50, "error_count": 2, "bad_frames": 0 }] })).unwrap(), now);
     }
     ctx.series.lock().unwrap().insert(&trunk_app::stats::Rollup { t: now / 60 * 60, values: [("sys/p25/cc/good".to_string(), [30.0, 28.0, 33.0])].into() });
     ctx.event(trunk_app::stats::MonitorEvent::ControlLost { system: "p25".into(), site: Some("south".into()), freq_hz: Some(851_012_500) });
@@ -451,11 +573,15 @@ fn the_servers_messages() {
     agg.begin(now as f64);
     let p = platform.sample(&mut agg, true);
     *ctx.host_last.lock().unwrap() = Some(crate::monitor::message(now as f64, &agg, p));
-    ctx.talkgroups.lock().unwrap().insert("p25".into(), trunk_core::trunk::parse_rows("101,Fire Dispatch\n"));
+    let unit_names = trunk_core::trunk::read_unit_names("7,Engine 7\n").unit_names;
+    *ctx.names.lock().unwrap() = [(p25, trunk_app::config::SystemNames { talkgroups: trunk_core::trunk::parse_rows("101,Fire Dispatch\n"), unit_names })].into();
+    // (The name book knows the systems as the server sets it from the config.)
+    ctx.shared.names.lock().unwrap().set_config(&cfg, &Default::default());
     // The greeting: hello last, after how things are now; less of it for listen access.
     let heard = |control| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let msgs = rt.block_on(crate::server::greeting(&ctx, control));
+        let access = if control { trunk_app::config::ApiAccess::Control } else { trunk_app::config::ApiAccess::Listen };
+        let msgs = rt.block_on(crate::server::greeting(&ctx, access, control.then(|| "luke".to_string())));
         msgs.iter().filter_map(|m| crate::server::text_for(&crate::runtime::Out::of(m), control)).map(|t| serde_json::from_str::<Value>(&t).unwrap()).collect::<Vec<Value>>()
     };
     let (greeting, listening) = (heard(true), heard(false));
@@ -475,8 +601,12 @@ fn the_servers_messages() {
     assert!(matches!(crate::runtime::Out::of(&host), crate::runtime::Out::Text(_)), "host is sent to some connections only");
     assert!(listening.iter().find(|m| m["type"] == "host").unwrap()["t"].is_number());
     assert!(greeting.last().unwrap()["configPath"].is_string() && listening.last().unwrap().get("configPath").is_none());
+    assert_eq!((&greeting.last().unwrap()["access"], &greeting.last().unwrap()["user"], &listening.last().unwrap()["access"]), (&json!("control"), &json!("luke"), &json!("listen")));
+    assert!(listening.last().unwrap().get("user").is_none());
     let config = |g: &[Value]| g.iter().find(|m| m["type"] == "config").unwrap()["config"].clone();
-    assert_eq!(config(&listening), crate::access::redact_config(config(&greeting)));
+    let sent = |c: Value| serde_json::to_value(crate::access::view::listen_config(&serde_json::from_value(c).unwrap())).unwrap();
+    assert_eq!(config(&listening), sent(config(&greeting)));
+    assert_ne!(config(&listening), config(&greeting), "and not the whole of it");
     let q = serde_json::from_value(json!({ "id": 1, "series": ["sys/p25/*"], "range": "1h" })).unwrap();
     let mut queries = vec![crate::server::stats_query(&ctx, &q).to_value()];
     assert!(queries[0]["series"]["sys/p25/cc/good"]["v"].is_array(), "{}", queries[0]);
@@ -495,7 +625,7 @@ fn the_servers_messages() {
     // The call store answers `callsQuery`: a call indexed, then asked for by talkgroup.
     let mut record = crate::db::row::tests::record(9179, now * 1000);
     record.short_name = "p25".into();
-    crate::runtime::index_call(&ctx, "p25/2026/10/26/9179-1", &record, true, true);
+    crate::runtime::index_call(&ctx, None, "p25/2026/10/26/9179-1", &record, true, true);
     ctx.db.flush().unwrap();
     let Ok(Command::CallsQuery { id, query }) = Command::parse(r#"{"type":"callsQuery","id":3,"talkgroup":9179}"#) else { panic!("callsQuery") };
     let calls = crate::runtime::calls_query(&ctx, id, &query).to_value();
@@ -504,9 +634,9 @@ fn the_servers_messages() {
     assert_eq!(queries[2]["rows"][0]["alphaTag"], "", "no talkgroup file for p25 here");
     assert_eq!(queries[4]["talkers"].as_array().map(Vec::len), Some(2));
     // Named from the name book the server keeps (talkgroup files and the config; aliases as saved).
-    let files: trunk_app::config::TalkgroupLists = [("p25".to_string(), trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))].into();
+    let files = trunk_app::config::talkgroup_lists([(p25, trunk_core::trunk::parse_rows("Decimal,Hex,Alpha Tag,Mode,Description,Tag,Category\n101,65,FD Dispatch,D,Dispatch,Fire Dispatch,Fire\n"))]);
     ctx.shared.names.lock().unwrap().set_config(&cfg, &files);
-    ctx.shared.names.lock().unwrap().set_units("p25", "7,Engine 7\n");
+    ctx.shared.names.lock().unwrap().set_units(p25, "7,Engine 7\n");
     let named = |q: Value| crate::server::radio_query(&ctx, &body(q)).to_value().to_string();
     assert!(named(json!({ "id": 10, "what": "talkgroups", "system": "p25", "hours": 24 })).contains("FD Dispatch"));
     assert!(named(json!({ "id": 11, "what": "units", "system": "p25" })).contains("Engine 7"));
@@ -515,9 +645,11 @@ fn the_servers_messages() {
         ToClient::Config { config: Box::default(), version: 1 },
         ToClient::ConfigSaved { version: 3, error: None },
         ToClient::ConfigSaved { version: 3, error: Some("changed elsewhere".into()) },
-        crate::runtime::PhaseInfo { phase: "running", error: Some("x".into()), ended: false }.message(),
+        crate::runtime::PhaseInfo { phase: trunk_app::protocol::Phase::Running, error: Some("x".into()), ended: false, restart_needed: true }.message(),
         crate::server::devices(),
-        ToClient::Radios { radios: crate::radio::radios_json(false) },
+        ToClient::Radios { radios: crate::radio::radios_json(false, &[], false) },
+        // Radios on the network: one that said what it is when opened, one not asked yet, one that can't be.
+        ToClient::Radios { radios: crate::radio::radios_json(false, &network_sources(), true) },
         ctx.plugins.list(&cfg),
         crate::plugins::manage::store_message(&crate::plugins::store::built_in()),
         ctx.interfaces.list(&cfg, &ctx.config_path),
@@ -529,11 +661,15 @@ fn the_servers_messages() {
         crate::server::tr_config(&dir.display().to_string()),
         crate::server::tr_config(&dir.join("nothing.json").display().to_string()),
         ToClient::Quit,
+        ToClient::TokenCreated { id: 4, name: "luke".into(), secret: Some(secret), error: None },
+        ToClient::TokenCreated { id: 5, name: "luke".into(), secret: None, error: Some("There's a user named \"luke\" already.".into()) },
         ToClient::LicenseResult { id: 1, results: vec![json!({ "freqHz": 857_987_500, "historical": false, "licenses": [{ "callSign": "WPXT459", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "freqHz": 857_987_500, "emission": "8K10F1E", "distanceM": 1374, "bearingDeg": 115, "bearingCardinal": "ESE", "city": "WASHINGTON", "state": "DC", "status": "A", "locationKind": "fixed" }] })], error: None },
         ToClient::CallSignResult { id: 3, results: vec![json!({ "callSign": "KNJA391", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "status": "A", "city": "WASHINGTON", "state": "DC" })], error: None },
         ToClient::LicenseResult { id: 2, results: vec![], error: Some("Couldn't reach https://trunkrecorder.pro".into()) },
         ToClient::Subscribed { topics: vec!["spectrum:0".into(), "log".into()] },
-        ToClient::TalkgroupEdited { system: "dcfd".into(), talkgroup: 101, edit: trunk_app::protocol::TalkgroupEdit { ignore: Some(true), alpha_tag: Some("FD Disp".into()), ..Default::default() } },
+        ToClient::TalkgroupEdited { system: "dcfd".into(), talkgroup: 101, edit: trunk_app::protocol::TalkgroupEdit { ignore: Some(true), alpha_tag: Some("FD Disp".into()), ..Default::default() }, origin: trunk_core::trunk::Origin::edited(1_762_500_000) },
+        ToClient::UnitNames { system: "dcfd".into(), unit_names: trunk_core::trunk::replace_rows(&[], trunk_core::trunk::read_unit_names("1234,Engine 12\n/^7(\\d{3})$/,Medic $1\n").unit_names, Some(&trunk_core::trunk::Origin { name: "units.csv".into(), at: 1_762_500_000, ..Default::default() })) },
+        ToClient::UnitNameEdited { system: "dcfd".into(), unit: 1234, name: "Bus 14".into(), origin: trunk_core::trunk::Origin::edited(1_762_500_000) },
         // What the recorder itself logs (logging::to_browsers).
         ToClient::Log { lines: vec![json!({ "timeS": 0, "time": 1_750_000_000.5, "level": "warning", "kind": "error", "text": "No RAM spool" })] },
     ];
@@ -566,7 +702,7 @@ fn messages_to_the_recorder() {
         json!({ "type": "listDir", "path": "" }),
         json!({ "type": "surveyStart", "source": 0, "bands": ["800"], "findGain": true }),
         json!({
-            "type": "surveyStart", "source": 0, "radio": { "type": "rtlsdr", "serial": "2", "centerHz": 0, "rateHz": 2_400_000, "gainDb": 30, "agc": false, "ppm": 0 }, "bands": ["uhf"], "findGain": false,
+            "type": "surveyStart", "source": 0, "radio": { "type": "rtlsdr", "serial": "2", "centerHz": 0, "rateHz": 2_400_000, "gainDb": 30, "agc": false, "biasTee": false, "ppm": 0 }, "bands": ["uhf"], "findGain": false,
             "lookFor": { "freqsHz": [], "sites": [{ "label": "1 Walker Tower", "freqsHz": [451_175_000], "expect": { "rfss": 1, "site": 1, "nac": 0x212 } }, { "label": "2", "freqsHz": [452_175_000], "expect": {}, "colorCode": 3 }], "type": "dmr", "listenS": 60 },
         }),
         json!({ "type": "profileSource", "source": 0, "centerHz": 460_000_000 }),
@@ -586,9 +722,13 @@ fn messages_to_the_recorder() {
         json!({ "type": "licenseQuery", "id": 1, "lat": 38.9, "lon": -77.03, "radiusM": 50_000, "signals": [{ "freqHz": 857_987_500 }, { "freqHz": 489_087_500, "widthHz": 12_500 }] }),
         json!({ "type": "store", "kind": "interface" }),
         json!({ "type": "removeInterface", "id": "trunkamp" }),
-        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "comment": "# dispatch", "extra": [["Zone", "North"]] }] }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "comment": "# dispatch", "extra": [["Zone", "North"]] }], "from": { "kind": "radioReference" } }),
+        json!({ "type": "setTalkgroups", "system": "dcfd", "talkgroups": [{ "number": 101, "mode": "D", "alphaTag": "FD Disp", "description": "", "tag": "", "category": "", "priority": 1, "preferredNac": 0, "preferredSite": "", "ignore": false, "origin": { "kind": "file", "name": "dcfd.csv", "at": 1_762_500_000 } }] }),
+        json!({ "type": "setUnitNames", "system": "dcfd", "unitNames": [{ "unit": "1234", "name": "Engine 12" }, { "unit": "/^7(\\d{3})$/", "name": "Medic $1" }], "from": { "kind": "file", "name": "units.csv" } }),
+        json!({ "type": "setUnitName", "system": "dcfd", "unit": 1234, "name": "Bus 14" }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 101, "edit": { "ignore": true } }),
         json!({ "type": "setTalkgroup", "system": "dcfd", "talkgroup": 102, "edit": { "alphaTag": "FIRE4A", "description": "", "tag": "Fire Tac", "category": "Fire" } }),
+        json!({ "type": "createToken", "id": 6, "name": "kiosk", "access": "listen" }),
     ];
     check_all("ToRecorder", &msgs);
     // And the recorder reads each as the docs give it.
@@ -632,4 +772,113 @@ fn a_key_container_is_unlocked_and_locked_from_the_interface() {
     moved.keys.get_mut("county").unwrap().file = "elsewhere.ekc".into();
     crate::unlock::config_changed(&c, &moved);
     assert!(c.unlocked.lock().unwrap().is_empty());
+}
+
+/// An interface listening with `voice` is sent the `voice` plugin topic's
+/// chunk as it is, in a message protocol.ts declares.
+#[test]
+fn live_voice_is_the_plugin_topics_chunk() {
+    use trunk_recorder_plugin::{Codec, FrameKind, HostMessage, VoiceFrame};
+    let frame = |codec: Codec, kind| VoiceFrame { codec, bits: (0..codec.bits()).map(|i| (i % 3 == 0) as u8).collect(), e0: 1, errs: 2, erased: false, kind, tone: None };
+    let audio = trunk_core::trunk::LiveAudio { call_id: 7, system: 0, talkgroup: 101, unit: 1234, samples: vec![0.0; 160], frames: vec![frame(Codec::Imbe, FrameKind::Voice), frame(Codec::Imbe, FrameKind::Repeat)], decrypted: false };
+    let chunk = trunk_app::session::voice_chunk(1, "dcfd", "E1", &audio).unwrap();
+    let msg = ToClient::Voice { chunk: chunk.clone() }.to_value();
+    check("FromRecorder", &msg).unwrap();
+    let mut plugin = serde_json::to_value(HostMessage::Voice(chunk)).unwrap();
+    plugin.as_object_mut().unwrap().remove("type");
+    assert_eq!(msg["chunk"], plugin);
+    assert_eq!(msg["chunk"]["frames"][1]["kind"], "repeat");
+    let tone = trunk_core::trunk::LiveAudio { frames: vec![VoiceFrame { tone: Some((5, 20)), ..frame(Codec::Ambe, FrameKind::Tone) }], ..audio.clone() };
+    check("FromRecorder", &ToClient::Voice { chunk: trunk_app::session::voice_chunk(1, "dcfd", "", &tone).unwrap() }.to_value()).unwrap();
+    assert!(trunk_app::session::voice_chunk(1, "dcfd", "", &trunk_core::trunk::LiveAudio { frames: vec![], ..audio }).is_none(), "analog: none");
+}
+
+/// Sources on the network for a list of radios: a SpyServer remembered as opened, an `rtl_tcp` nothing answers at.
+fn network_sources() -> Vec<trunk_app::config::Source> {
+    crate::radio::remember(&crate::radio::spyserver::key("spy.test"), crate::radio::Caps { model: "Airspy R2 / Mini".into(), rates: crate::radio::Rates::List(vec![2_500_000, 1_250_000]), gains: (0..=21).map(f64::from).collect() });
+    let src = |kind: serde_json::Value| -> trunk_app::config::Source { serde_json::from_value(kind).unwrap() };
+    vec![
+        src(json!({ "type": "spyserver", "address": "spy.test", "centerHz": 0, "rateHz": 2500000 })),
+        src(json!({ "type": "rtlsdr", "address": "127.0.0.1:1", "centerHz": 0, "rateHz": 2400000 })),
+    ]
+}
+
+/// An interface subscribed to `unit` is sent the `unit` plugin topic's event
+/// as it is, in a message protocol.ts declares (with and without the fields
+/// that are left out when empty).
+#[test]
+fn a_unit_event_is_the_plugin_topics() {
+    use trunk_recorder_plugin::{HostMessage, UnitEvent};
+    let full = UnitEvent { system: 0, system_id: 3, short_name: "dcfd".into(), site: "north".into(), site_id: 7, kind: "affiliation".into(), unit: 1234, tag: "E1".into(), talkgroup: Some(101), alpha_tag: "Fire Dispatch".into(), emergency: false, time: 1.75e9 };
+    let bare = UnitEvent { site: String::new(), site_id: 0, kind: "registration".into(), tag: String::new(), talkgroup: None, alpha_tag: String::new(), ..full.clone() };
+    for e in [full, bare] {
+        let msg = ToClient::UnitEvent { event: e.clone() }.to_value();
+        check("FromRecorder", &msg).unwrap();
+        let mut plugin = serde_json::to_value(HostMessage::Unit(e)).unwrap();
+        plugin.as_object_mut().unwrap().remove("type");
+        assert_eq!(msg["event"], plugin);
+    }
+}
+
+/// Every series' running totals: a conventional channel's one transmission (0.5–2.5 s in,
+/// with its code) as its series count it, and as a plugin's node health report has it.
+#[test]
+fn totals_make_a_node_health_report() {
+    use trunk_recorder_plugin::health::{report, Recorder, Select};
+    let epoch = 1.75e12;
+    let mut s = Session::new(conventional_config(), &Default::default(), epoch, &|_| None, |_| 0).unwrap();
+    s.plugin_topics.totals = true;
+    let (mut out, mut health) = (Vec::new(), Vec::new());
+    let mut take = |out: &mut Vec<Output>| {
+        health.extend(out.drain(..).filter_map(|o| if let Output::Plugin(trunk_recorder_plugin::HostMessage::Totals(h)) = o { Some(h) } else { None }));
+    };
+    air(2_400_000.0, 4.5, |iq, t| {
+        s.push_iq(0, iq, 0, epoch + t * 1000.0);
+        s.poll(epoch + t * 1000.0, &mut out);
+        take(&mut out);
+    });
+    s.poll(epoch + 15_000.0, &mut out);
+    take(&mut out);
+    assert_eq!(health.len(), 2, "at once, then 10 s on");
+    let h = health.pop().unwrap();
+    assert_eq!(h.since * 1000.0, health[0].since * 1000.0);
+    assert!(h.sites.is_empty());
+    // The channel's own series: one transmission taken, and the time it was open.
+    let ch = &h.channels[0];
+    assert_eq!((ch.key.as_str(), ch.source), ("sys/conv/ch/155200000", 0));
+    let count = |k: &str| h.get(&format!("{}/{k}", ch.key)).map(|t| t.count());
+    assert_eq!((count("calls/started"), count("calls/recorded")), (Some(1), Some(1)));
+    let r = report(None, &h, &Select::system("conv"), json!({ "systemId": 1 }), Recorder::new("trunk-recorder-pro", "test"), 0).expect("its channel");
+    let c = &r.channels[0];
+    assert_eq!((c.hz, c.mode.as_str(), c.name.as_str()), (155_200_000, "fm", "Fire"));
+    assert_eq!((c.opens, c.calls, c.opened_by_other), (1, 1, Some(0)));
+    assert_eq!(c.access.as_deref(), Some("CTCSS 151.4"), "the code it records by");
+    assert!((1.0..=3.0).contains(&c.open_s), "open {} s", c.open_s);
+    assert!(c.heard_s >= 3.0, "heard {} s", c.heard_s);
+    let (signal, noise, snr) = (c.signal_db.unwrap(), c.noise_db.unwrap(), c.snr_db.unwrap());
+    assert!(signal > noise + 10.0 && snr > 10.0, "signal {signal} noise {noise} snr {snr}");
+    assert_eq!(r.radios.len(), 1);
+    assert_eq!((r.radios[0].kind.as_str(), r.radios[0].dropped_s), ("rtlsdr", 0.0));
+    assert!(c.voice.is_empty(), "analog: no frames");
+}
+
+/// The node health spec's example reports (docs/api/node-health/), each as a recorder of its kind
+/// sends it, read into the SDK's report types and written back: unchanged, so the types hold every
+/// field the spec has, and leave out what a recorder leaves out.
+#[test]
+fn node_health_examples_read_and_write_back_unchanged() {
+    let examples = [
+        ("p25-trunked.json", include_str!("../../../docs/api/node-health/p25-trunked.json")),
+        ("dmr-capacity-plus-two-receivers.json", include_str!("../../../docs/api/node-health/dmr-capacity-plus-two-receivers.json")),
+        ("conventional-relative-levels.json", include_str!("../../../docs/api/node-health/conventional-relative-levels.json")),
+    ];
+    let listed = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/api/node-health")).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "json")).count();
+    assert_eq!(listed, examples.len(), "every example is checked here");
+    let spec = include_str!("../../../docs/api/node-health.md");
+    for (name, text) in examples {
+        assert!(spec.contains(&format!("(node-health/{name})")), "{name} is listed in the spec");
+        let sent: Value = serde_json::from_str(text).unwrap();
+        let report: trunk_recorder_plugin::health::Report = serde_json::from_value(sent.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(serde_json::to_value(&report).unwrap(), sent, "{name} comes back as it was");
+    }
 }

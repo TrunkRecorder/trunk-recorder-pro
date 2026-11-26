@@ -4,7 +4,9 @@
 //! publishes what happens to the browser interface through the [`Hub`].
 
 use crate::kept;
-use trunk_core::trunk::TalkgroupRow;
+use trunk_app::config::{edit_names, NameLists, SystemNames};
+use trunk_app::protocol::TalkgroupEdit;
+use trunk_core::trunk::{edit_rows, edit_unit_names, replace_rows, NameRow, Origin, SystemId, TalkgroupRow, UnitNameRow};
 use trunk_app::saving::Kind;
 use std::collections::VecDeque;
 use std::fs;
@@ -25,9 +27,10 @@ use trunk_app::{Feeder, Output, Session};
 
 use crate::db::Change;
 use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
-use crate::config::{AirspyGain, Config, SampleFormat, Source, SourceKind};
+use crate::config::{AirspyGain, AirspyGains, Config, SampleFormat, Source, SourceKind};
+use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, uhd};
+use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, uhd};
 use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
@@ -41,8 +44,10 @@ pub enum Out {
     /// Only for browsers that subscribed to `topic` (see [`trunk_app::stats::Topics`]).
     Topic { topic: String, text: String },
     /// Live audio (binary frame) for talkgroup `tg` of the system with short
-    /// name `short_name` (the frame carries the system's number this run).
-    Audio { short_name: String, tg: u32, frame: Vec<u8> },
+    /// name `short_name` (the frame carries the system's number this run);
+    /// `voice`: its vocoder frames as a `voice` message, sent just before it
+    /// to connections listening with `voice` (none: no one is, or analog).
+    Audio { short_name: String, tg: u32, frame: Vec<u8>, voice: Option<String> },
     /// The recorder is quitting: every connection is told, then closed.
     Quit,
 }
@@ -52,10 +57,9 @@ impl Out {
     pub fn of(m: &ToClient) -> Out {
         match m {
             ToClient::Quit => Out::Quit,
-            ToClient::Config { .. } => {
-                let mut listen = m.to_value();
-                listen["config"] = crate::access::redact_config(listen["config"].take());
-                Out::Config { full: m.to_json(), listen: listen.to_string() }
+            ToClient::Config { config, version } => {
+                let listen = ToClient::Config { config: Box::new(crate::access::view::listen_config(config)), version: *version };
+                Out::Config { full: m.to_json(), listen: listen.to_json() }
             }
             _ if m.audience() == Audience::Control => Out::Control(m.to_json()),
             _ => Out::Text(m.to_json()),
@@ -73,15 +77,16 @@ pub fn publish(hub: &Hub, m: ToClient) {
 
 #[derive(Clone, Debug, Default)]
 pub struct PhaseInfo {
-    /// "idle" | "starting" | "running" | "stopping"
-    pub phase: &'static str,
+    pub phase: Phase,
     pub error: Option<String>,
     pub ended: bool,
+    /// The config waits for the next Start ([`Ctx::restart_check`]).
+    pub restart_needed: bool,
 }
 
 impl PhaseInfo {
     pub fn message(&self) -> ToClient {
-        ToClient::State { phase: self.phase, error: self.error.clone(), ended: self.ended }
+        ToClient::State { phase: self.phase, error: self.error.clone(), ended: self.ended, restart_needed: self.restart_needed }
     }
 }
 
@@ -91,8 +96,8 @@ pub struct Ctx {
     pub config: Mutex<Config>,
     /// The config's version: one more each time it changes ([`Ctx::config_changed`]).
     pub config_version: AtomicU64,
-    /// Each system's talkgroup file, as kept ([`kept::load_talkgroups`]).
-    pub talkgroups: Mutex<trunk_app::config::TalkgroupLists>,
+    /// Each system's talkgroups and radio names, as kept ([`kept::load_names`]).
+    pub names: Mutex<NameLists>,
     pub hub: Hub,
     /// What the radios are doing ([`Lifecycle`]): changed only through its
     /// methods on `Ctx`, each holding the lock throughout, so two never
@@ -100,6 +105,11 @@ pub struct Ctx {
     pub lifecycle: Mutex<Lifecycle>,
     /// The phase the browsers are told (the engine thread reports it as it goes).
     pub phase: Mutex<PhaseInfo>,
+    /// The config the recording started with, and what its radios took
+    /// since (a gain set live): what an edit is held against
+    /// ([`Config::needs_restart`], [`Ctx::live_sources`]). None when idle.
+    /// (Never held while another lock is taken.)
+    pub run: Mutex<Option<Config>>,
     /// The calls concluded lately (newest first), as sent to the browser:
     /// the live list (`history`, `callFiles`), kept whether or not the call
     /// store is open. The store keeps the record; queries merge the two.
@@ -108,11 +118,15 @@ pub struct Ctx {
     pub db: crate::db::Db,
     /// Signalled by a browser's `quit`.
     pub quit: tokio::sync::Notify,
+    /// The interfaces the config serves changed: the server serves them so ([`crate::interfaces::serve::reconcile`]).
+    pub interfaces_due: tokio::sync::Notify,
     /// The survey's latest snapshot, for browsers that connect meanwhile.
     pub survey_last: Mutex<Option<ToClient>>,
     pub plugins: plugins::manage::Plugins,
     /// The address every interface listens on (`--bind`, else `server.bind`).
     pub bind: std::net::IpAddr,
+    /// `bind` came from `--bind` on the command line: `server.bind` isn't used while it's given.
+    pub bind_flag: bool,
     /// The interfaces besides the built-in one, and their listeners.
     pub interfaces: crate::interfaces::Interfaces,
     /// The radio registry and the event monitor: outlive recordings.
@@ -131,10 +145,26 @@ pub struct Ctx {
     pub host_last: Mutex<Option<ToClient>>,
     /// The RAM spool (`recording.ramSpool`), as last opened.
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
+    /// The folders calls are written to, and how writing to them goes ([`crate::folder`]).
+    pub folders: crate::folder::Folders,
+    /// The signal taps' streams being saved to files.
+    pub taps: crate::taps::TapFiles,
     /// The computer's clock, watched (#61): what calls' `clock_off` and the dashboard go by.
     pub clock: Arc<crate::clock::Clock>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).
     pub unlocked: crate::unlock::Unlocked,
+    /// Recordings of what the radios receive ([`crate::iq_capture`]).
+    pub iq: crate::iq_capture::Captures,
+    /// What browsers' sign-in cookies are signed with ([`crate::access::Sessions`]).
+    pub sessions: crate::access::Sessions,
+    /// Passkey sign-ins and adds started and not yet finished ([`crate::access::passkey`]).
+    pub passkeys: crate::access::passkey::Ceremonies,
+    /// The keys Cloudflare Access's tokens are checked with, as last fetched ([`crate::access::cloudflare`]).
+    pub cloudflare: crate::access::cloudflare::Keys,
+    /// HTTPS, when it's served (`server.tls` as the app started): every port's.
+    pub tls: std::sync::OnceLock<crate::tls::Tls>,
+    /// A radio's gain being tuned ([`crate::tune`]), and its last report (for browsers that connect).
+    pub tune: crate::tune::Slot,
 }
 
 /// Something for the running session to do: the one way into the engine
@@ -142,23 +172,43 @@ pub struct Ctx {
 pub enum EngineCmd {
     /// A source's error or end, by way of its decoding thread.
     Source(SourceMsg),
-    /// Stream row `stream` couldn't be fetched or decoded (`crate::audio_stream`; it's tried again).
-    StreamError { stream: usize, error: String },
     /// What the connected browsers watch changed.
     Topics(trunk_app::stats::Topics),
     /// A system's talkgroups changed (loaded, pasted, edited in Setup).
-    Talkgroups { short_name: String, rows: Vec<TalkgroupRow> },
+    Talkgroups { system: SystemId, rows: Vec<TalkgroupRow> },
     /// One talkgroup of a system's file changed (an Ignore flag set from the dashboard).
-    Talkgroup { short_name: String, number: u32, row: Option<trunk_core::trunk::Talkgroup> },
+    Talkgroup { system: SystemId, number: u32, row: Option<trunk_core::trunk::Talkgroup> },
+    /// A system's own names for its radios changed (loaded, or one named on its page).
+    UnitNames { system: SystemId, rows: Vec<UnitNameRow> },
     /// A system's keys changed (a key container unlocked or locked): calls in progress take them too.
-    Keys { short_name: String, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
+    Keys { system: SystemId, ring: Option<Arc<trunk_core::p25::crypt::Keyring>> },
     /// A system's config changed: what sharing uses of it, its switch, directory link and licenses ([`trunk_app::share::sync`]).
     ShareSystem(trunk_app::config::System),
     /// How a system's share went.
     Shared { short_name: String, result: Result<Option<trunk_app::share::Linked>, String> },
+    /// Forget system `system`'s (none: every system's) talker aliases and
+    /// radio registry, as `units` and `registry` say (deleted in Setup →
+    /// Data): here, so nothing the session holds of them is saved after.
+    /// Answered with the radios and talkgroups the registry forgot.
+    Forget { system: Option<SystemId>, units: bool, registry: bool, done: mpsc::Sender<(usize, usize)> },
+    /// What a capture of the radios keeps of the session.
+    IqLive { done: mpsc::Sender<crate::iq_capture::Live> },
+    /// The voice channels' tapes that have finished.
+    IqTapes { done: mpsc::Sender<Vec<trunk_core::trunk::tape::VoiceTape>> },
+    /// Tape channels from now on, or stop.
+    IqKeepTapes { on: bool },
+    /// The control channels' latest tapes, and what a capture keeps of the session.
+    IqControl { done: mpsc::Sender<(Vec<trunk_core::trunk::tape::ControlTape>, crate::iq_capture::Live)> },
+    /// The sites running, each with the source its control channel is on (the gain tuner's systems).
+    Sites { done: mpsc::Sender<Vec<trunk_core::trunk::SiteStatus>> },
 }
 
 impl Ctx {
+    /// "https" while HTTPS is served, else "http": the URLs of its ports.
+    pub fn scheme(&self) -> &'static str {
+        if self.tls.get().is_some() { "https" } else { "http" }
+    }
+
     /// What the connected browsers watch.
     pub fn topics(&self) -> trunk_app::stats::Topics {
         trunk_app::stats::Topics::new(self.topics.lock().unwrap().keys().cloned())
@@ -204,35 +254,57 @@ impl Ctx {
     /// the changes in order): a new version, told to every browser. Returns it.
     pub fn config_changed(&self, c: &Config) -> u64 {
         self.db.set_systems(c);
-        let files = self.talkgroups.lock().unwrap().clone();
-        self.shared.names.lock().unwrap().set_config(c, &files);
+        let names = self.names.lock().unwrap().clone();
+        self.shared.set_config(c, &names);
         let version = self.config_version.fetch_add(1, Ordering::SeqCst) + 1;
         publish(&self.hub, ToClient::Config { config: Box::new(c.clone()), version });
+        self.restart_check(c);
         version
     }
 
-    pub fn set_phase(&self, phase: &'static str, error: Option<String>, ended: bool) {
-        let p = PhaseInfo { phase, error, ended };
-        publish(&self.hub, p.message());
-        *self.phase.lock().unwrap() = p;
+    /// Whether the config as it is now (`now`) waits for the next Start:
+    /// told the browsers, with the phase, when that changes.
+    pub fn restart_check(&self, now: &Config) {
+        let need = self.run.lock().unwrap().as_ref().is_some_and(|run| now.needs_restart(run));
+        let mut p = self.phase.lock().unwrap();
+        if p.restart_needed != need {
+            p.restart_needed = need;
+            publish(&self.hub, p.message());
+        }
     }
 
-    /// Start recording with `cfg`, in place of whatever the radios were
+    pub fn set_phase(&self, phase: Phase, error: Option<String>, ended: bool) {
+        // A gain being tuned stops with the recording (the radio is closed: nothing to put back).
+        if phase != Phase::Running {
+            self.tune.recording_ended();
+        }
+        if phase == Phase::Idle {
+            *self.run.lock().unwrap() = None;
+        }
+        let mut p = self.phase.lock().unwrap();
+        // (Starting: the config is the run's.)
+        let restart_needed = p.restart_needed && !matches!(phase, Phase::Idle | Phase::Starting);
+        *p = PhaseInfo { phase, error, ended, restart_needed };
+        publish(&self.hub, p.message());
+    }
+
+    /// Start recording with the config, in place of whatever the radios were
     /// doing (nothing once quitting). The engine thread reports the phase.
     /// A survey goes on only on a spare radio the new config doesn't use.
-    pub fn begin_recording(self: &Arc<Self>, cfg: Config) -> Result<(), String> {
+    pub fn begin_recording(self: &Arc<Self>) -> Result<(), String> {
         let mut l = self.lifecycle.lock().unwrap();
         if l.quitting {
             return Ok(());
         }
         if let Some(r) = l.recording.take() {
-            log::info!("Replacing the current recording session");
             r.stop();
         }
+        // (Taken once the run before has stopped: an edit made meanwhile is the one run.)
+        let cfg = self.config.lock().unwrap().clone();
         if l.survey.as_ref().is_some_and(|s| s.uses_any(&cfg.sources)) {
             self.end_survey(&mut l);
         }
-        self.set_phase("starting", None, false);
+        self.set_phase(Phase::Starting, None, false);
         match start(self.clone(), cfg) {
             Ok(r) => {
                 l.recording = Some(r);
@@ -240,7 +312,7 @@ impl Ctx {
                 Ok(())
             }
             Err(e) => {
-                self.set_phase("idle", Some(e.clone()), false);
+                self.set_phase(Phase::Idle, Some(e.clone()), false);
                 Err(e)
             }
         }
@@ -258,7 +330,7 @@ impl Ctx {
         match &req.radio {
             Some(r) => {
                 if let Some(i) = cfg.sources.iter().position(|s| s.may_be(r)) {
-                    return Err(format!("{} is source {} of the recorder: scan with that source, or pick a radio no source uses.", r.label(), i + 1));
+                    return Err(format!("{} is {} of the recorder: scan with that source, or pick a radio no source uses.", r.label(), cfg.sources[i].title(i)));
                 }
             }
             None => self.free_radios(&mut l, "the scan")?,
@@ -300,9 +372,7 @@ impl Ctx {
     /// Stop recording, if it is (a survey on a spare radio goes on).
     pub fn stop_recording(&self) {
         if let Some(r) = self.lifecycle.lock().unwrap().recording.take() {
-            log::info!("Recording stop requested");
             r.stop();
-            log::info!("Recording stopped");
         }
     }
 
@@ -357,27 +427,28 @@ pub struct Runner {
 
 /// The gain to set on a source running with `old` now that it is `new`:
 /// when the gain is all that changed and the radio takes it while running.
-/// The gain in dB always; AGC on or off only on an RTL-SDR or an Airspy (the
-/// others take that at the next start).
+/// The gain in dB always; AGC on or off only on an RTL-SDR, an Airspy or a
+/// HydraSDR (an RTL-SDR on USB or behind `rtl_tcp`; the others take that at the next start).
 pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
-    // `old` with `new`'s gain: equal to `new` when only the gain differs.
-    let mut o = old.clone();
+    // `old` with `new`'s gain: equal to `new` when only the gain differs (a name aside).
+    let (mut o, new) = (old.radio(), &new.radio());
     let gain = match (&mut o.kind, &new.kind) {
         (SourceKind::Rtlsdr { gain_db, agc, .. }, SourceKind::Rtlsdr { gain_db: g, agc: a, .. }) => {
             (*gain_db, *agc) = (*g, *a);
             if *a { Gain::Agc } else { Gain::Db(*g as f32) }
         }
-        (
-            SourceKind::Airspy { gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, .. },
-            SourceKind::Airspy { gain_mode: m, gain_step: g, lna_step: l, mixer_step: x, vga_step: v, agc: a, .. },
-        ) => {
-            (*gain_mode, *gain_step, *lna_step, *mixer_step, *vga_step, *agc) = (*m, *g, *l, *x, *v, *a);
-            airspy_gain(*m, *g, *l, *x, *v, *a)
+        (SourceKind::Airspy { gains, .. }, SourceKind::Airspy { gains: g, .. }) | (SourceKind::Hydrasdr { gains, .. }, SourceKind::Hydrasdr { gains: g, .. }) => {
+            *gains = *g;
+            airspy_gain(*g)
         }
         (SourceKind::Usrp { gain_db, agc: false, .. }, SourceKind::Usrp { gain_db: g, agc: false, .. })
         | (SourceKind::Bladerf { gain_db, agc: false, .. }, SourceKind::Bladerf { gain_db: g, agc: false, .. }) => {
             *gain_db = *g;
             Gain::Db(*g as f32)
+        }
+        (SourceKind::Spyserver { gain, .. }, SourceKind::Spyserver { gain: g, .. }) => {
+            *gain = *g;
+            Gain::Step(*g)
         }
         (SourceKind::Hackrf { lna_db, vga_db, amp, .. }, SourceKind::Hackrf { lna_db: l, vga_db: v, amp: a, .. }) => {
             (*lna_db, *vga_db, *amp) = (*l, *v, *a);
@@ -392,26 +463,63 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
     (o == *new).then_some(gain)
 }
 
-impl Runner {
-    /// Source `i`'s settings went from `old` to `new` in Setup: its gain is
-    /// applied at once when that's all that changed and the radio can take it
-    /// live ([`live_gain`]): that gain, or None when the change waits for the next start.
-    pub fn live_source(&self, i: usize, old: &Source, new: &Source) -> Option<Gain> {
-        let (c, g) = (self.controls.get(i)?, live_gain(old, new)?);
-        *c.gain.lock().unwrap() = Some(g);
-        Some(g)
-    }
-
-    /// The sources went from `old` to `new` in Setup: each changed one, by its
-    /// place, with the gain it took at once ([`Runner::live_source`]) or None.
-    /// Sources added, removed or moved wait for the next start (all of them).
-    pub fn live_sources(&self, old: &[Source], new: &[Source]) -> Vec<(usize, Option<Gain>)> {
-        if old.len() != new.len() {
+impl Ctx {
+    /// Setup's sources went from `old` to `now` while recording: each this
+    /// edit changed, by its place in `now`, with the gain its radio took at
+    /// once or None when the change waits for the next Start. A radio is
+    /// matched to the run's by its label ([`Config::same_radio`]), wherever
+    /// either list has it, and is held against what it runs with: a gain it
+    /// can take live ([`live_gain`]) is set, and the run then has it.
+    pub fn live_sources(&self, old: &Config, now: &Config) -> Vec<(usize, Option<Gain>)> {
+        // (No radio changed: nothing to take, and no lock taken. The engine thread edits the config
+        // too, a call sign heard, and Stop waits for it with the lifecycle held.)
+        if (0..now.sources.len()).all(|i| now.same_radio(i, &old.sources).is_some_and(|j| old.sources[j].radio() == now.sources[i].radio())) {
             return vec![];
         }
-        old.iter().zip(new).enumerate().filter(|(_, (o, n))| o != n).map(|(i, (o, n))| (i, self.live_source(i, o, n))).collect()
+        let l = self.lifecycle.lock().unwrap();
+        let Some(r) = l.recording.as_ref().filter(|r| !r.finished()) else { return vec![] };
+        let mut run = self.run.lock().unwrap();
+        let Some(run) = run.as_mut() else { return vec![] };
+        let mut out = Vec::new();
+        for (i, s) in now.sources.iter().enumerate() {
+            if now.same_radio(i, &old.sources).is_some_and(|j| old.sources[j].radio() == s.radio()) {
+                continue;
+            }
+            let Some(k) = now.same_radio(i, &run.sources) else {
+                out.push((i, None));
+                continue;
+            };
+            // (The run has it already: a gain the tuner kept.)
+            if run.sources[k].radio() == s.radio() {
+                continue;
+            }
+            let gain = live_gain(&run.sources[k], s).zip(r.controls.get(k)).map(|(g, c)| {
+                *c.gain.lock().unwrap() = Some(g);
+                run.sources[k] = s.clone();
+                g
+            });
+            out.push((i, gain));
+        }
+        out
     }
+}
 
+impl Ctx {
+    /// Put `src` (the run's source `k`, its gain changed) on the air as a
+    /// trial: the radio takes it now, and nothing is saved or told — the run
+    /// still has what it had ([`Ctx::run`]), which is what it goes back to.
+    pub fn trial_gain(&self, k: usize, src: &Source) -> Result<Gain, String> {
+        let l = self.lifecycle.lock().unwrap();
+        let Some(r) = l.recording.as_ref().filter(|r| !r.finished()) else { return Err("recording stopped".into()) };
+        let run = self.run.lock().unwrap();
+        let now = run.as_ref().and_then(|c| c.sources.get(k)).ok_or("the radio isn't recording")?;
+        let gain = live_gain(now, src).ok_or("this radio takes that gain only at the next start")?;
+        *r.controls.get(k).ok_or("the radio isn't recording")?.gain.lock().unwrap() = Some(gain);
+        Ok(gain)
+    }
+}
+
+impl Runner {
     /// The engine has stopped by itself (every capture file ended).
     pub fn finished(&self) -> bool {
         self.threads.last().is_some_and(|t| t.is_finished())
@@ -445,6 +553,9 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     if let Some(p) = cfg.problem() {
         return Err(p);
     }
+    // What edits from here are held against ([`Ctx::restart_check`], [`Ctx::live_sources`]): the config
+    // as it is, even with something left out of the run (Session::new, #216).
+    *ctx.run.lock().unwrap() = Some(cfg.clone());
     // Encryption keys: a file that can't be read, or a bad key in it, stops the start.
     let keys = cfg.load_keys(&ctx.config_path, &|name| crate::unlock::held(&ctx, &cfg, name))?;
     warn_readable_keys(&ctx, &cfg);
@@ -453,8 +564,8 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // `now_ms` is the one plus the other (wall time that never jumps).
     let epoch_ms = crate::clock::unix_ms() as f64;
     let epoch_at = Instant::now();
-    let talkgroups = ctx.talkgroups.lock().unwrap().clone();
-    let mut session = Session::new(cfg.clone(), &talkgroups, epoch_ms, &|name| kept::read(&ctx.db, Kind::Bandplan, name), local_offset)?;
+    let names = ctx.names.lock().unwrap().clone();
+    let mut session = Session::new(cfg.clone(), &names, epoch_ms, &|name| kept::read(&ctx.db, Kind::Bandplan, name), local_offset)?;
     session.attach(ctx.shared.clone());
     if cfg.systems.iter().any(|s| s.share) {
         session.set_recorder(&crate::directory::recorder_id());
@@ -476,15 +587,15 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         }
         let n = ring.keys().len();
         log::info!("Key source {}: {n} encryption key{} loaded, for {}", k.name, if n == 1 { "" } else { "s" }, k.systems.join(", "));
-        for s in &k.systems {
-            session.set_keys(s, Some(ring.clone()));
+        for id in k.systems.iter().filter_map(|s| cfg.id_of(s)) {
+            session.set_keys(id, Some(ring.clone()));
         }
     }
-    session.load_units(&|name| kept::read_units(&ctx.db, name));
+    session.load_units(&|id| kept::read_units(&ctx.db, id));
     session.load_heard(&kept::read(&ctx.db, Kind::Heard, "").unwrap_or_default());
     session.load_sharing(&kept::read(&ctx.db, Kind::Sharing, "").unwrap_or_default());
     session.load_tune(&kept::read(&ctx.db, Kind::Tune, "").unwrap_or_default());
-    ctx.plugins.start(&cfg, plugin_calls(&ctx));
+    ctx.plugins.start(&cfg, plugin_calls(&ctx), plugin_saves(&ctx));
     let stop = Arc::new(AtomicBool::new(false));
     // Each source's samples queue for its own decoding thread ([`feed_source`]).
     let mut queues = Vec::new();
@@ -514,16 +625,6 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     // The engine's commands: open before its thread is, so none sent meanwhile is lost.
     let ctl = mpsc::channel::<EngineCmd>();
     *ctx.engine.lock().unwrap() = Some(ctl.0.clone());
-    // Each stream row's audio, pushed into the engine from a thread of its own (as a source's samples are).
-    for (k, row) in cfg.streams().into_iter().enumerate() {
-        match crate::audio_stream::spawn(row.clone(), k, session.stream_feeder(k), ctl.0.clone(), stop.clone(), (epoch_ms, epoch_at)) {
-            Ok(t) => threads.push(t),
-            Err(e) => {
-                *ctx.engine.lock().unwrap() = None;
-                return Err(undo(threads, e));
-            }
-        }
-    }
     let spawned = std::thread::Builder::new().name("engine".into()).spawn(move || engine_thread(ctx2, cfg, session, queues, stop2, (epoch_ms, epoch_at), ctl));
     match spawned {
         Ok(t) => threads.push(t),
@@ -551,69 +652,152 @@ fn warn_readable_keys(ctx: &Ctx, cfg: &Config) {
     let _ = (ctx, cfg);
 }
 
-/// System `system`'s talkgroups are now `rows` (none: it has none): kept,
-/// told to every browser, and taken by the recording at once; written in
-/// the background ([`kept::write_talkgroups`]). A talkgroup in two rows:
-/// the later one, where the first was.
-pub fn set_talkgroups(ctx: &Ctx, system: &str, rows: Vec<TalkgroupRow>) -> Result<(), String> {
-    if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
-        return Err(format!("bad short name {system:?}"));
+/// A list of each system's names ([`SystemNames`]), as the recorder keeps
+/// it, tells the recording, and tells the interfaces.
+pub trait NameList: NameRow + Sized {
+    fn of(n: &mut SystemNames) -> &mut Vec<Self>;
+    /// Keep system `system`'s, in place of what's kept.
+    fn keep(db: &crate::db::Db, system: SystemId, rows: Vec<Self>);
+    /// System `system`'s as kept.
+    fn stored(db: &crate::db::Db, system: SystemId) -> Result<Vec<Self>, String>;
+    fn engine(system: SystemId, rows: Vec<Self>) -> EngineCmd;
+    fn told(system: String, rows: Vec<Self>) -> ToClient;
+}
+
+impl NameList for TalkgroupRow {
+    fn of(n: &mut SystemNames) -> &mut Vec<Self> {
+        &mut n.talkgroups
     }
-    let mut at = std::collections::HashMap::new();
-    let mut once: Vec<TalkgroupRow> = Vec::with_capacity(rows.len());
-    for r in rows {
-        match at.get(&r.tg.number) {
-            Some(&i) => once[i] = r,
-            None => {
-                at.insert(r.tg.number, once.len());
-                once.push(r);
-            }
-        }
+    fn keep(db: &crate::db::Db, system: SystemId, rows: Vec<Self>) {
+        kept::write_talkgroups(db, system, rows);
     }
-    let rows = once;
+    fn stored(db: &crate::db::Db, system: SystemId) -> Result<Vec<Self>, String> {
+        db.talkgroups(system)
+    }
+    fn engine(system: SystemId, rows: Vec<Self>) -> EngineCmd {
+        EngineCmd::Talkgroups { system, rows }
+    }
+    fn told(system: String, talkgroups: Vec<Self>) -> ToClient {
+        ToClient::Talkgroups { system, talkgroups }
+    }
+}
+
+impl NameList for UnitNameRow {
+    fn of(n: &mut SystemNames) -> &mut Vec<Self> {
+        &mut n.unit_names
+    }
+    fn keep(db: &crate::db::Db, system: SystemId, rows: Vec<Self>) {
+        kept::write_unit_names(db, system, rows);
+    }
+    fn stored(db: &crate::db::Db, system: SystemId) -> Result<Vec<Self>, String> {
+        db.unit_names(system)
+    }
+    fn engine(system: SystemId, rows: Vec<Self>) -> EngineCmd {
+        EngineCmd::UnitNames { system, rows }
+    }
+    fn told(system: String, unit_names: Vec<Self>) -> ToClient {
+        ToClient::UnitNames { system, unit_names }
+    }
+}
+
+/// The system named `short_name` in the config now: how a name the
+/// interface gives is resolved. Err: no system has it.
+pub fn system_named(ctx: &Ctx, short_name: &str) -> Result<SystemId, String> {
+    ctx.config.lock().unwrap().id_of(short_name).ok_or_else(|| format!("no system is named {short_name:?}"))
+}
+
+/// System `system`'s short name in the config now ("": gone from it).
+pub fn short_name(ctx: &Ctx, system: SystemId) -> String {
+    ctx.config.lock().unwrap().system_ids().find(|(id, _)| *id == system).map_or_else(String::new, |(_, n)| n.to_string())
+}
+
+/// The names the dashboard answers with follow the names kept (the config
+/// first, then the names: as config_changed takes them).
+fn names_changed(ctx: &Ctx) {
+    let (cfg, names) = (ctx.config.lock().unwrap().clone(), ctx.names.lock().unwrap().clone());
+    ctx.shared.set_config(&cfg, &names);
+}
+
+/// The unix second now: an origin's time.
+fn origin_now() -> i64 {
+    crate::clock::unix_s() as i64
+}
+
+/// System `system`'s talkgroups or radio names are now `rows` (none: it
+/// has none): kept, told to every browser, and taken by the recording at
+/// once; written in the background. `from`: where they came from, the
+/// origin of the rows that change ([`replace_rows`]; none: as they come).
+pub fn set_names<R: NameList>(ctx: &Ctx, system: SystemId, rows: Vec<R>, from: Option<Origin>) -> Result<(), String> {
+    let from = from.map(|f| f.at(origin_now()));
     // (Handed to the writer with the lock held: two browsers' edits are written in the order they're kept.)
-    {
-        let mut lists = ctx.talkgroups.lock().unwrap();
-        if rows.is_empty() {
-            lists.remove(system);
-        } else {
-            lists.insert(system.to_string(), rows.clone());
-        }
-        kept::write_talkgroups(&ctx.db, system, rows.clone());
-    }
-    ctx.tell_engine(EngineCmd::Talkgroups { short_name: system.to_string(), rows: rows.clone() });
-    // (The config first, then the names: as config_changed takes them.)
-    let (cfg, lists) = (ctx.config.lock().unwrap().clone(), ctx.talkgroups.lock().unwrap().clone());
-    ctx.shared.names.lock().unwrap().set_config(&cfg, &lists);
-    publish(&ctx.hub, ToClient::Talkgroups { system: system.to_string(), talkgroups: rows });
+    let rows = edit_names(&mut ctx.names.lock().unwrap(), system, |n| {
+        let list = R::of(n);
+        *list = replace_rows(list, rows, from.as_ref());
+        R::keep(&ctx.db, system, list.clone());
+        list.clone()
+    });
+    ctx.tell_engine(R::engine(system, rows.clone()));
+    names_changed(ctx);
+    publish(&ctx.hub, R::told(short_name(ctx, system), rows));
     Ok(())
 }
 
-/// One talkgroup of system `system`'s file edited: only the cells `edit`
+/// One talkgroup of system `system`'s edited by hand: only the cells `edit`
 /// sets change. Kept, taken by the recording and told to every browser at
-/// once (the row alone, not the file); written in the background.
-pub fn set_talkgroup(ctx: &Ctx, system: &str, number: u32, edit: trunk_app::protocol::TalkgroupEdit) -> Result<(), String> {
-    if system.trim().is_empty() || system.contains(['/', '\\']) || system.starts_with('.') {
-        return Err(format!("bad short name {system:?}"));
-    }
-    let row = {
-        // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
-        let mut lists = ctx.talkgroups.lock().unwrap();
-        let rows = lists.entry(system.to_string()).or_default();
-        let edited = trunk_core::trunk::edit_rows(rows, number, &edit.cells());
+/// once (the row alone, not the list); written in the background.
+pub fn set_talkgroup(ctx: &Ctx, system: SystemId, number: u32, edit: TalkgroupEdit) -> Result<(), String> {
+    let origin = Origin::edited(origin_now());
+    // (Edited and handed to the writer with the lock held: edits are written in the order they're kept.)
+    let row = edit_names(&mut ctx.names.lock().unwrap(), system, |n| {
+        let rows = &mut n.talkgroups;
+        let edited = edit_rows(rows, number, &edit.cells(), &origin);
         let order = rows.iter().position(|r| r.tg.number == number).unwrap_or(rows.len());
         if let Some(r) = &edited {
             kept::write_talkgroup(&ctx.db, system, r.clone(), order);
         }
-        if rows.is_empty() {
-            lists.remove(system);
-        }
         edited.map(|r| r.tg)
-    };
+    });
     ctx.shared.names.lock().unwrap().set_talkgroup(system, number, row.clone());
-    ctx.tell_engine(EngineCmd::Talkgroup { short_name: system.to_string(), number, row });
-    publish(&ctx.hub, ToClient::TalkgroupEdited { system: system.to_string(), talkgroup: number, edit });
+    ctx.tell_engine(EngineCmd::Talkgroup { system, number, row });
+    publish(&ctx.hub, ToClient::TalkgroupEdited { system: short_name(ctx, system), talkgroup: number, edit, origin });
     Ok(())
+}
+
+/// Radio `unit` of system `system` named `name` by hand (blank: its own name
+/// taken out): kept, taken by the recording and told to every browser at
+/// once (the name alone); written in the background.
+pub fn set_unit_name(ctx: &Ctx, system: SystemId, unit: u32, name: String) -> Result<(), String> {
+    let origin = Origin::edited(origin_now());
+    let rows = edit_names(&mut ctx.names.lock().unwrap(), system, |n| {
+        edit_unit_names(&mut n.unit_names, unit, &name, &origin);
+        kept::write_unit_names(&ctx.db, system, n.unit_names.clone());
+        n.unit_names.clone()
+    });
+    ctx.tell_engine(EngineCmd::UnitNames { system, rows });
+    names_changed(ctx);
+    publish(&ctx.hub, ToClient::UnitNameEdited { system: short_name(ctx, system), unit, name, origin });
+    Ok(())
+}
+
+/// Forget system `system`'s (none: every system's) talker aliases and radio
+/// registry, as `units` and `registry` say, from what the recorder holds:
+/// the recording's session first, if one is running, so it saves nothing of
+/// them after ([`EngineCmd::Forget`]). The radios and talkgroups the
+/// registry forgot.
+pub fn forget(ctx: &Ctx, system: Option<SystemId>, units: bool, registry: bool) -> (usize, usize) {
+    let (done, answer) = mpsc::channel();
+    let told = ctx.engine.lock().unwrap().as_ref().is_some_and(|tx| tx.send(EngineCmd::Forget { system, units, registry, done }).is_ok());
+    let by_session = if told { answer.recv_timeout(Duration::from_secs(10)).unwrap_or_default() } else { (0, 0) };
+    // (Between runs, or the run ended meanwhile: what outlives it.)
+    if units {
+        let cfg = ctx.config.lock().unwrap().clone();
+        let mut book = ctx.shared.names.lock().unwrap();
+        for (id, _) in cfg.system_ids().filter(|(id, _)| system.is_none_or(|s| s == *id)) {
+            book.set_units(id, "");
+        }
+    }
+    let gone = if registry { ctx.shared.radio.lock().unwrap().forget(system) } else { (0, 0) };
+    (by_session.0 + gone.0, by_session.1 + gone.1)
 }
 
 /// Hand what's due to be kept between runs ([`Session::due`]: it says when
@@ -623,22 +807,22 @@ fn save_due(ctx: &Ctx, session: &mut Session, now_ms: f64, all: bool) {
     for saved in session.due(now_ms, all) {
         let (kind, key) = (saved.kind(), saved.key().to_string());
         match saved {
-            Saved::Units { system, csv } => kept::write_units(&ctx.db, &system, &csv),
-            Saved::Registry { system, changes } => kept::write_registry(&ctx.db, &system, changes),
+            Saved::Units { system, csv } => kept::write_units(&ctx.db, system, &csv),
+            Saved::Registry { system, changes } => kept::write_registry(&ctx.db, system, changes),
             Saved::Sharing(text) | Saved::Bandplan { plan: text, .. } | Saved::Heard(text) | Saved::Tune(text) => kept::write(&ctx.db, kind, &key, text),
         }
     }
 }
 
 /// The names the radio registry answers with, as saved: each system's
-/// talkgroups (`cfg` with its talkgroup files) and talker aliases. A
-/// recording keeps them current from then on.
-pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &trunk_app::config::TalkgroupLists, db: &crate::db::Db) {
+/// talkgroups (`cfg` with its talkgroup files) and talker aliases; and the
+/// registry's caps. A recording keeps them current from then on.
+pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, names: &NameLists, db: &crate::db::Db) {
+    shared.set_config(cfg, names);
     let mut book = shared.names.lock().unwrap();
-    book.set_config(cfg, talkgroups);
-    for n in cfg.systems.iter().map(|s| &s.short_name).chain(cfg.conventional.iter().map(|c| &c.short_name)) {
-        if let Some(csv) = kept::read_units(db, n) {
-            book.set_units(n, &csv);
+    for (id, _) in cfg.system_ids() {
+        if let Some(csv) = kept::read_units(db, id) {
+            book.set_units(id, &csv);
         }
     }
 }
@@ -651,10 +835,12 @@ pub fn load_names(shared: &trunk_app::stats::Shared, cfg: &Config, talkgroups: &
 pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<sdr::Control>>, name: &str) -> std::io::Result<JoinHandle<()>> {
     let src = src.clone();
     std::thread::Builder::new().name(name.to_string()).spawn(move || {
+        // (A radio on the network by its server, `host:port`: Source::server.)
+        let server = src.server();
         let Source { kind, rate_hz, ppm, .. } = src;
         match kind {
-            SourceKind::Rtlsdr { serial, gain_db, agc, buf_len, buffers } => {
-                sdr::run_with(i, rtl::RtlConfig { serial, center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers }, tx, stop, ctl)
+            SourceKind::Rtlsdr { serial, gain_db, agc, bias_tee, buf_len, buffers, .. } => {
+                sdr::run_with(i, rtl::RtlConfig { serial, server: server.clone(), center_hz: center as u64, rate_hz: rate_hz as u32, gain_db: (!agc).then_some(gain_db as f32), ppm, buf_len, buffers, bias_tee }, tx, stop, ctl)
             }
             SourceKind::Usrp { args, gain_db, agc, antenna, wire_format } => {
                 sdr::run_with(i, uhd::UsrpConfig { args, center_hz: center, rate_hz, gain_db, agc, antenna, ppm, wire_format }, tx, stop, ctl)
@@ -662,9 +848,14 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
             SourceKind::Hackrf { serial, lna_db, vga_db, amp, bias_tee } => {
                 sdr::run_with(i, hackrf::HackrfConfig { serial, center_hz: center, rate_hz, gain: hackrf_gain(lna_db, vga_db, amp), bias_tee, ppm }, tx, stop, ctl)
             }
-            SourceKind::Airspy { serial, gain_mode, gain_step, lna_step, mixer_step, vga_step, agc, bias_tee, packing } => {
-                let gain = airspy_gain(gain_mode, gain_step, lna_step, mixer_step, vga_step, agc);
-                sdr::run_with(i, airspy::AirspyConfig { serial, center_hz: center, rate_hz, gain, bias_tee, packing, ppm }, tx, stop, ctl)
+            SourceKind::Spyserver { iq_format, gain, digital_gain_db, .. } => {
+                sdr::run_with(i, spyserver::SpyserverConfig { server: server.clone().unwrap_or_default(), center_hz: center, rate_hz, format: iq_format, gain, digital_gain_db }, tx, stop, ctl)
+            }
+            SourceKind::Airspy { serial, gains, bias_tee, packing } => {
+                sdr::run_with(i, airspy::AirspyConfig { lib: airspy::Lib::Airspy, serial, center_hz: center, rate_hz, gain: airspy_gain(gains), bias_tee, packing, rf_port: 0, ppm }, tx, stop, ctl)
+            }
+            SourceKind::Hydrasdr { serial, gains, bias_tee, packing, rf_port } => {
+                sdr::run_with(i, airspy::AirspyConfig { lib: airspy::Lib::Hydrasdr, serial, center_hz: center, rate_hz, gain: airspy_gain(gains), bias_tee, packing, rf_port, ppm }, tx, stop, ctl)
             }
             SourceKind::Bladerf { serial, bandwidth_hz, gain_db, agc, bias_tee } => {
                 sdr::run_with(i, bladerf::BladerfConfig { serial, center_hz: center, rate_hz, bandwidth_hz, gain_db, agc, bias_tee, ppm }, tx, stop, ctl)
@@ -732,14 +923,13 @@ fn read_full(f: &mut fs::File, buf: &mut [u8]) -> usize {
     n
 }
 
-/// An Airspy's gain settings, as its driver takes them.
-/// An Airspy source's gain: a step of one of libairspy's tables, or its stages (its AGC running the LNA and mixer).
-pub fn airspy_gain(mode: AirspyGain, gain: u8, lna: u8, mixer: u8, vga: u8, agc: bool) -> Gain {
-    match mode {
-        AirspyGain::Manual if agc => Gain::Stages(Stages::default().agc().with(Stage::Vga, vga as f32)),
-        AirspyGain::Manual => Gain::Stages(Stages::default().with(Stage::Lna, lna as f32).with(Stage::Mixer, mixer as f32).with(Stage::Vga, vga as f32)),
-        AirspyGain::Sensitivity => Gain::Preset(Preset::Sensitivity, gain),
-        AirspyGain::Linearity => Gain::Preset(Preset::Linearity, gain),
+/// An Airspy (or HydraSDR) source's gain: a step of one of libairspy's tables, or its stages (its AGC running the LNA and mixer).
+pub fn airspy_gain(g: AirspyGains) -> Gain {
+    match g.gain_mode {
+        AirspyGain::Manual if g.agc => Gain::Stages(Stages::default().agc().with(Stage::Vga, g.vga_step as f32)),
+        AirspyGain::Manual => Gain::Stages(Stages::default().with(Stage::Lna, g.lna_step as f32).with(Stage::Mixer, g.mixer_step as f32).with(Stage::Vga, g.vga_step as f32)),
+        AirspyGain::Sensitivity => Gain::Preset(Preset::Sensitivity, g.gain_step),
+        AirspyGain::Linearity => Gain::Preset(Preset::Linearity, g.gain_step),
     }
 }
 
@@ -756,9 +946,10 @@ pub(crate) fn local_offset(t: i64) -> i32 {
 /// off, the one the app made emptied into the recordings folder and removed.
 /// One that can't be made leaves calls going to the recordings folder.
 fn open_spool(ctx: &Ctx, cfg: &Config) {
-    let (want, capture) = (&cfg.recording.ram_spool, Path::new(&cfg.recording.capture_dir));
+    let want = &cfg.recording.ram_spool;
+    ctx.folders.recordings.follow(Path::new(&cfg.recording.capture_dir));
     if !want.enabled || !want.dir.is_empty() {
-        crate::spool::retire(&crate::paths::data_dir(), capture);
+        crate::spool::retire(&crate::paths::data_dir(), &ctx.folders.recordings);
     }
     let spool = if want.enabled {
         match crate::spool::Spool::open(want, &crate::paths::data_dir()) {
@@ -771,6 +962,7 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
     } else {
         None
     };
+    ctx.folders.spool.follow(spool.as_ref().map_or(Path::new(""), |s| s.dir.as_path()));
     *ctx.spool.lock().unwrap() = spool;
 }
 
@@ -779,7 +971,12 @@ fn open_spool(ctx: &Ctx, cfg: &Config) {
 /// On stop, what the source had already sent is decoded first (up to the
 /// queue's 256 blocks: about 2.5 s of 10 ms USRP / Soapy blocks, about 14 s
 /// of RTL-SDR's at 2.4 MSPS): calls in progress keep it.
-fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air) {
+fn iq_live(session: &Session) -> crate::iq_capture::Live {
+    let (status, bandplans) = session.status_and_bandplans();
+    crate::iq_capture::Live { status, bandplans, sources: session.source_counts() }
+}
+
+fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<EngineCmd>, stop: Arc<AtomicBool>, epoch: (f64, Instant), air: Air, tap: Arc<crate::iq_capture::Tap>) {
     let now_ms = || epoch.0 + epoch.1.elapsed().as_secs_f64() * 1000.0;
     // An instant on the same clock (when a driver handed samples over).
     let at_ms = |at: Instant| epoch.0 + at.saturating_duration_since(epoch.1).as_secs_f64() * 1000.0;
@@ -789,6 +986,7 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
         SourceMsg::Samples { source, block, dropped, at } => {
             debug_assert_eq!(source, feeder.source());
             air.keep_up(&stop);
+            tap.samples(&block, dropped, at);
             match &block {
                 Block::U8(b) => feeder.push(b, dropped, at_ms(at)),
                 Block::Iq(b) => feeder.push_iq(b, dropped, at_ms(at)),
@@ -797,7 +995,10 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
             air.fed(block.len() as u64 + dropped);
         }
         // A change the radio halted for: quiet, not loss (recording ignores the retune itself).
-        SourceMsg::Tuned { gap, .. } => feeder.quiet(gap),
+        SourceMsg::Tuned { center_hz, gap } => {
+            tap.tuned(center_hz, gap);
+            feeder.quiet(gap);
+        }
         m => {
             let _ = ctl.send(EngineCmd::Source(m));
         }
@@ -858,18 +1059,31 @@ impl Air {
     }
 }
 
+/// The wall clock now less `recording_ms`, the recording's clock now, ms:
+/// what the session corrects the times it gives out by
+/// ([`Session::correct_wall_clock`]). The recording's clock never jumps and,
+/// on macOS, runs at the crystal's rate; the wall clock is the one its time
+/// service keeps right.
+fn wall_less(recording_ms: f64) -> f64 {
+    crate::clock::unix_s() * 1000.0 - recording_ms
+}
+
 /// `queues`: each source's samples. `epoch`: the wall clock (Unix ms) at an
 /// instant, for the session's clock. `ctl`: everything for this thread — the
 /// sources' errors and ends (by way of their decoding threads), and the
 /// browsers' and the server's changes ([`Ctx::engine`] holds its sender).
 fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<mpsc::Receiver<SourceMsg>>, stop: Arc<AtomicBool>, epoch: (f64, Instant), ctl: (mpsc::Sender<EngineCmd>, mpsc::Receiver<EngineCmd>)) {
-    ctx.set_phase("running", None, false);
+    // (Running, with what the config left out said: set to receive on a source that isn't one.)
+    ctx.set_phase(Phase::Running, session.left_out(), false);
     // Calls are stamped by this clock: the clock's health watches it against the wall clock.
     ctx.clock.recording(Some(epoch));
     let mut radio_at = Instant::now();
     let (ctl_tx, rx) = ctl;
     session.set_topics(ctx.topics());
     let at_ms: Arc<Vec<AtomicU64>> = Arc::new(cfg.sources.iter().map(|_| AtomicU64::new(0)).collect());
+    let taps = ctx.iq.session_began(&cfg);
+    ctx.iq.set_rules(crate::iq_rules::spawn(ctx.clone(), &cfg));
+    session.want_facts = ctx.iq.has_rules();
     let feeders: Vec<JoinHandle<()>> = queues
         .into_iter()
         .enumerate()
@@ -881,15 +1095,18 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 at_ms[i].store(u64::MAX, Ordering::Relaxed);
             }
             let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz, samples: Default::default(), paced };
-            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air)).expect("thread")
+            let tap = taps[i].clone();
+            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air, tap)).expect("thread")
         })
         .collect();
     drop(ctl_tx);
     let dir = PathBuf::from(&cfg.recording.capture_dir);
-    // Each system's file rules, by a call's `system` (trunked or conventional).
+    // Each system's file rules, by a call's `system` (trunked or conventional), and its id as this
+    // run's config has it: what the store files its calls under, a rename meanwhile or not.
     let rules = {
         let (each, all) = (cfg.recordings().iter().map(FileRules::of).collect::<Vec<_>>(), FileRules::of(&cfg.recording));
-        move |system: u16| each.get(system as usize).copied().unwrap_or(all)
+        let ids: Vec<SystemId> = cfg.call_systems().iter().map(|s| s.id).collect();
+        move |system: u16| (each.get(system as usize).copied().unwrap_or(all), ids.get(system as usize).copied())
     };
     let spool = ctx.spool.lock().unwrap().clone();
     let encoder = plugins::Encoder::find(cfg.recording.m4a.encoder).map(|e| (e, cfg.recording.m4a.bitrate_kbps.clamp(8, 320)));
@@ -937,7 +1154,8 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         while let Some(c) = next {
             match c {
                 EngineCmd::Source(SourceMsg::Error { source, error }) => session.source_error(source, &error),
-                EngineCmd::StreamError { stream, error } => session.stream_error(stream, &error),
+                // (The one place a radio's gain set is weighed against the gain asked for.)
+                EngineCmd::Source(SourceMsg::Gain { source, asked, set }) => session.source_gain(source, &asked.to_string(), (!asked.same(&set)).then(|| set.to_string())),
                 EngineCmd::Source(SourceMsg::End { source }) => {
                     if session.source_ended(source) {
                         // (Not "ended" when the user stopped it: the file thread ends on stop too.)
@@ -946,16 +1164,21 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 }
                 EngineCmd::Source(_) => {}
                 EngineCmd::Topics(t) => session.set_topics(t),
-                EngineCmd::Talkgroups { short_name, rows } => {
-                    if session.set_talkgroups(&short_name, &rows) {
-                        log::info!("[{short_name}] Talkgroups updated");
+                EngineCmd::Talkgroups { system, rows } => {
+                    if session.set_talkgroups(system, &rows) {
+                        log::info!("[{}] Talkgroups updated", session.short_name(system));
                     }
                 }
-                EngineCmd::Talkgroup { short_name, number, row } => {
-                    session.set_talkgroup(&short_name, number, row);
+                EngineCmd::Talkgroup { system, number, row } => {
+                    session.set_talkgroup(system, number, row);
                 }
-                EngineCmd::Keys { short_name, ring } => {
-                    session.set_keys(&short_name, ring);
+                EngineCmd::UnitNames { system, rows } => {
+                    if session.set_unit_names(system, &rows) {
+                        log::info!("[{}] Radio names updated", session.short_name(system));
+                    }
+                }
+                EngineCmd::Keys { system, ring } => {
+                    session.set_keys(system, ring);
                 }
                 EngineCmd::ShareSystem(sys) => {
                     if sys.share {
@@ -964,6 +1187,26 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     session.set_share(&sys);
                 }
                 EngineCmd::Shared { short_name, result } => session.share_done(&short_name, now_ms(), result),
+                EngineCmd::Forget { system, units, registry, done } => {
+                    if units {
+                        session.forget_units(system);
+                    }
+                    let gone = if registry { ctx.shared.radio.lock().unwrap().forget(system) } else { (0, 0) };
+                    let _ = done.send(gone);
+                }
+                EngineCmd::IqLive { done } => {
+                    let _ = done.send(iq_live(&session));
+                }
+                EngineCmd::IqTapes { done } => {
+                    let _ = done.send(session.take_voice_tapes());
+                }
+                EngineCmd::IqControl { done } => {
+                    let _ = done.send((session.control_tapes(), iq_live(&session)));
+                }
+                EngineCmd::IqKeepTapes { on } => session.keep_tapes(on),
+                EngineCmd::Sites { done } => {
+                    let _ = done.send(session.sites());
+                }
             }
             next = rx.try_recv().ok();
         }
@@ -973,7 +1216,8 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         // (The plugins can be swapped meanwhile: their settings changed. This iteration's, held by no lock.)
         let plugins = ctx.plugins.host();
         session.plugin_topics = plugins.as_ref().map_or(Default::default(), |p| p.topics);
-        session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.audio);
+        session.want_audio = ctx.hub.receiver_count() > 0 || plugins.as_ref().is_some_and(|p| p.live);
+        session.correct_wall_clock(wall_less(now_ms()));
         session.poll(now_ms(), &mut out);
         deliver(&ctx, &mut out, plugins.as_deref(), &rules, &fin);
         drop(plugins);
@@ -982,18 +1226,18 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
         if radio_at.elapsed() >= Duration::from_secs(5) {
             radio_at = Instant::now();
             ctx.clock.set_radio(session.radio_clocks());
+            session.clock_sync = ctx.clock.sync_kind().map(str::to_string);
         }
     }
     *ctx.engine.lock().unwrap() = None;
-    if ended_all {
-        log::info!("Recording stopped because all finite sources ended");
-    }
-    ctx.set_phase("stopping", None, false);
+    ctx.set_phase(Phase::Stopping, None, false);
     // The decoding threads finish what their sources had already sent
     // ([`feed_source`]); once the sources are gone (stopped, or files at their end).
     for f in feeders {
         let _ = f.join();
     }
+    ctx.iq.session_ended();
+    session.correct_wall_clock(wall_less(now_ms()));
     session.poll(now_ms(), &mut out);
     session.finish(&mut out);
     deliver(&ctx, &mut out, ctx.plugins.host().as_deref(), &rules, &fin);
@@ -1010,16 +1254,17 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     }
     ctx.clock.recording(None);
     stop.store(true, Ordering::Relaxed);
-    ctx.set_phase("idle", None, ended_all);
+    ctx.set_phase(Phase::Idle, None, ended_all);
 }
 
 /// A concluded call, for [`finish_calls`] to store.
 struct Finish {
     rel: String,
     system: u16,
+    /// Its system's id (none: not one of the run's config).
+    system_id: Option<SystemId>,
     wav: Vec<u8>,
     record: trunk_recorder_plugin::CallRecord,
-    frames: Option<trunk_core::trunk::Capture>,
     rules: FileRules,
     /// Some of it was decrypted with our keys: only plugins with `shareDecrypted` take it.
     decrypted: bool,
@@ -1050,7 +1295,7 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
     let host = ctx.plugins.host();
     let r = f.rules;
-    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.decrypted));
+    let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.system, &f.record, f.decrypted));
     let p = plugins::plan(r, to_plugins, encoder.is_some());
     let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
     let base = dir.join(&f.rel);
@@ -1060,31 +1305,64 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
     let json = f.record.to_json();
     let need = json.len() + f.wav.len() / 4 + if p.write_wav && !keep_wav { f.wav.len() } else { 0 };
     let spooled = spool.filter(|s| p.spool && s.room_for(need as u64)).map(|s| s.dir.join(&f.rel));
-    let at = |kept: bool, ext: &str| PathBuf::from(format!("{}.{ext}", if kept { &base } else { spooled.as_ref().unwrap_or(&base) }.display()));
-    let (wav_at, json_at, frames_at, m4a_at) = (at(keep_wav, "wav"), at(keep_json, "json"), at(keep_audio, f.frames.as_ref().map_or("sdr", |c| c.ext)), at(keep_m4a, "m4a"));
-    for d in [&wav_at, &json_at, &m4a_at].into_iter().filter_map(|p| p.parent()) {
-        let _ = fs::create_dir_all(d);
-    }
-    let ok = (!p.write_wav || fs::write(&wav_at, &f.wav).is_ok())
-        && (!p.write_json || fs::write(&json_at, &json).is_ok())
-        && f.frames.as_ref().filter(|_| p.write_frames).is_none_or(|c| fs::write(&frames_at, &c.bytes).is_ok());
-    if !ok {
-        log::warn!("Couldn't write {}", base.display());
+    // Each file through the folder it goes to, which says why when one can't
+    // be written (crate::folder); what the spool can't take goes to the
+    // recordings folder (the archive looks in both).
+    let folders = &ctx.folders;
+    let mut spool_ok = spooled.is_some();
+    let at = |b: &Path, ext: &str| PathBuf::from(format!("{}.{ext}", b.display()));
+    let mut put = |kept: bool, ext: &str, bytes: &[u8]| -> Option<PathBuf> {
+        if let Some(s) = spooled.as_ref().filter(|_| !kept && spool_ok) {
+            let p = at(s, ext);
+            if folders.spool.write(&p, bytes).is_ok() {
+                return Some(p);
+            }
+            spool_ok = false;
+        }
+        let p = at(&base, ext);
+        folders.recordings.write(&p, bytes).ok().map(|_| p)
+    };
+    // (The first that fails ends it: the folder says why, once, and counts it.)
+    let written = 'w: {
+        let wav = match p.write_wav.then(|| put(keep_wav, "wav", &f.wav)) {
+            Some(None) => break 'w None,
+            w => w.flatten(),
+        };
+        let json = match p.write_json.then(|| put(keep_json, "json", json.as_bytes())) {
+            Some(None) => break 'w None,
+            j => j.flatten(),
+        };
+        Some((wav, json))
+    };
+    let Some((wav_at, json_at)) = written else {
+        log::debug!("Call {} not saved", f.rel);
         return;
-    }
+    };
+    // Where the rest goes (made later, or not at all): the folder, and the path.
+    let place = |kept: bool, ext: &str| match spooled.as_ref().filter(|_| !kept && spool_ok) {
+        Some(s) => (&folders.spool, at(s, ext)),
+        None => (&folders.recordings, at(&base, ext)),
+    };
+    let (wav_at, json_at) = (wav_at.unwrap_or_else(|| place(keep_wav, "wav").1), json_at.unwrap_or_else(|| place(keep_json, "json").1));
+    let (m4a_folder, m4a_at) = place(keep_m4a, "m4a");
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
-    let call = index_call(ctx, &f.rel, &f.record, keep_audio, keep_json);
+    let call = index_call(ctx, f.system_id, &f.rel, &f.record, keep_audio, keep_json);
     publish(&ctx.hub, ToClient::Concluded { entry: serde_json::to_value(&call).unwrap_or_default() });
     let mut wav_written = p.write_wav;
     let mut m4a = None;
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
-        match e.m4a(&f.wav, &m4a_at, *kbps) {
+        // (Its folder not made: the folder said why; "" here.)
+        let made = m4a_folder.prepare(&m4a_at).map_err(|_| String::new()).and_then(|_| e.m4a(&f.wav, &m4a_at, *kbps));
+        match made {
             Ok(()) => m4a = Some(m4a_at),
             Err(err) => {
-                m4a_failed(&f.rel, &err);
+                if !err.is_empty() {
+                    m4a_failed(&f.rel, &err);
+                }
                 // The call's audio is then the WAV.
                 if !wav_written {
-                    wav_written = fs::write(&wav_at, &f.wav).is_ok();
+                    let (folder, wav_at) = place(keep_wav, "wav");
+                    wav_written = folder.write(&wav_at, &f.wav).is_ok();
                 }
             }
         }
@@ -1128,24 +1406,37 @@ fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, sit
 }
 
 /// Forward everything to the browsers and plugins; calls go to be stored.
-fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> FileRules, finish: &dyn Fn(Finish)) {
+fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> (FileRules, Option<SystemId>), finish: &dyn Fn(Finish)) {
     for o in out.drain(..) {
         match o {
+            Output::Fact { on, facts } => ctx.iq.fact(crate::iq_rules::Fact { on, facts }),
             Output::Message(m) => {
                 if matches!(m, ToClient::Heard { .. }) {
                     *ctx.heard_last.lock().unwrap() = Some(m.clone());
                 }
+                if let ToClient::Stats { t, values } = &m {
+                    ctx.tune.stats(*t, values);
+                }
                 publish(&ctx.hub, m)
             }
-            Output::Audio { short_name, tg, frame, decrypted, .. } => {
+            Output::Audio { short_name, audio, voice, voice_listened } => {
                 if let Some(p) = plugins {
-                    p.audio_frame(&frame, decrypted);
+                    p.live(&short_name, &audio, voice.as_ref());
                 }
-                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg, frame }));
+                let voice = voice.filter(|_| voice_listened).map(|chunk| ToClient::Voice { chunk }.to_json());
+                let _ = ctx.hub.send(Arc::new(Out::Audio { short_name, tg: audio.talkgroup, frame: trunk_app::session::audio_frame(&audio), voice }));
             }
             Output::Plugin(m) => {
                 if let Some(p) = plugins {
                     p.event(&m);
+                }
+            }
+            Output::Tap { chunk, save } => {
+                if let Some(p) = plugins {
+                    p.tap(&chunk);
+                }
+                if let Some(rel) = save {
+                    ctx.taps.take(&ctx.folders.recordings, rel, chunk);
                 }
             }
             Output::Log(r) => crate::logging::record(&r),
@@ -1169,21 +1460,27 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                 let ctx = ctx.clone();
                 let _ = std::thread::Builder::new().name("share".into()).spawn(move || share(&ctx, short_name, observation, site_names));
             }
-            Output::File { rel, system, wav, record, frames, decrypted } => finish(Finish { rel, system, wav, record, frames, rules: rules(system), decrypted }),
+            Output::File { rel, system, wav, record, decrypted } => {
+                ctx.iq.fact(crate::iq_rules::Fact { on: "call.end", facts: crate::iq_rules::call_facts(&record) });
+                let (rules, system_id) = rules(system);
+                finish(Finish { rel, system, system_id, wav, record, rules, decrypted })
+            }
         }
     }
 }
 
-/// A finished call: put at the front of the live list and handed to the
-/// store (`audio` and `json` say what of it is kept so far). Gives the call.
-pub fn index_call(ctx: &Ctx, rel: &str, record: &trunk_recorder_plugin::CallRecord, audio: bool, json: bool) -> StoredCall {
+/// A finished call of system `system` (none: the one its record names now):
+/// put at the front of the live list and handed to the store (`audio` and
+/// `json` say what of it is kept so far). Gives the call.
+pub fn index_call(ctx: &Ctx, system: Option<SystemId>, rel: &str, record: &trunk_recorder_plugin::CallRecord, audio: bool, json: bool) -> StoredCall {
     let call = StoredCall { path: rel.replace('\\', "/"), record: record.clone(), audio, json };
     {
         let mut r = ctx.recent.lock().unwrap();
         r.push_front(call.clone());
         r.truncate(RECENT_KEPT);
     }
-    let row = crate::db::row::call_row(rel, record, audio, json, ctx.db.recorder(), crate::clock::unix_ms() as i64);
+    let mut row = crate::db::row::call_row(rel, record, audio, json, ctx.db.recorder(), crate::clock::unix_ms() as i64);
+    row.system_id = system.map_or(0, i64::from);
     ctx.db.send(Change::Call { row, live: true });
     call
 }
@@ -1315,6 +1612,30 @@ fn plugin_calls(ctx: &Arc<Ctx>) -> crate::plugins::Calls {
     })
 }
 
+/// What saves a plugin's `settings.save`: into its settings in the config, as an edit of the
+/// application's own ([`crate::server::edit_config`]): saved, sent to every browser, and to the
+/// plugin as its new settings.
+fn plugin_saves(ctx: &Arc<Ctx>) -> crate::plugins::Saves {
+    let ctx = Arc::downgrade(ctx);
+    Arc::new(move |id, given| {
+        let ctx = ctx.upgrade().ok_or("TRP is stopping")?;
+        let mut keys: Vec<String> = Vec::new();
+        let mut there = false;
+        crate::server::edit_config(&ctx, |cfg| {
+            let Some(p) = cfg.plugins.get_mut(id) else { return };
+            there = true;
+            keys = crate::plugins::merge_settings(&mut p.settings, given);
+        })?;
+        if !there {
+            return Err(format!("the config has no plugin \"{id}\""));
+        }
+        if !keys.is_empty() {
+            crate::logging::plugin_note(id, trunk_app::log::Level::Info, &format!("saved its settings: {}", keys.join(", ")));
+        }
+        Ok(())
+    })
+}
+
 /// `callsQuery`: [`calls`].
 pub fn calls_query(ctx: &Ctx, id: Value, q: &CallsQuery) -> ToClient {
     ToClient::CallsResult { id, page: calls(ctx, q) }
@@ -1338,11 +1659,61 @@ mod live_tests {
         serde_json::from_value(v).unwrap()
     }
 
+    /// A recorder recording `run` (no radios open: their controls to look at).
+    fn recording(run: &Config, name: &str) -> (Arc<Ctx>, Vec<Arc<Control>>, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-live-{name}-{}", std::process::id()));
+        let ctx = crate::protocol_tests::ctx(run.clone(), &dir);
+        *ctx.run.lock().unwrap() = Some(run.clone());
+        ctx.phase.lock().unwrap().phase = Phase::Running;
+        let controls: Vec<Arc<Control>> = run.sources.iter().map(|_| Arc::default()).collect();
+        ctx.lifecycle.lock().unwrap().recording = Some(Runner { stop: Arc::default(), threads: Vec::new(), controls: controls.clone() });
+        (ctx, controls, dir)
+    }
+
+    /// While recording, a gain edit reaches the radio it names, wherever
+    /// Setup has moved it since Start, and the run then has it: no restart.
+    /// What waits for the next Start says so, edit after edit.
+    #[test]
+    fn live_edits_go_to_the_radio_they_name() {
+        let rtl = |serial: &str, gain: f64| src("rtlsdr", json!({ "serial": serial, "centerHz": 851000000, "rateHz": 2400000, "gainDb": gain }));
+        let run = Config { sources: vec![rtl("1", 30.0), rtl("2", 30.0)], ..Default::default() };
+        let (ctx, controls, dir) = recording(&run, "rtl");
+        let needs = |c: &Config| {
+            ctx.restart_check(c);
+            ctx.phase.lock().unwrap().restart_needed
+        };
+        // SN 2's gain, in the same edit as a name: applied to SN 2.
+        let named = Config { sources: vec![rtl("1", 30.0), Source { name: "Roof".into(), ..rtl("2", 20.0) }], ..Default::default() };
+        assert_eq!(ctx.live_sources(&run, &named), [(1, Some(Gain::Db(20.0)))]);
+        assert_eq!((*controls[0].gain.lock().unwrap(), *controls[1].gain.lock().unwrap()), (None, Some(Gain::Db(20.0))));
+        assert!(!needs(&named), "taken live: nothing waits");
+        // Moved in Setup (that waits for the next Start), then SN 2's gain again: still SN 2's radio.
+        let moved = Config { sources: vec![named.sources[1].clone(), rtl("1", 30.0)], ..Default::default() };
+        assert!(needs(&moved));
+        let lower = Config { sources: vec![Source { name: "Roof".into(), ..rtl("2", 10.0) }, rtl("1", 30.0)], ..Default::default() };
+        assert_eq!(ctx.live_sources(&moved, &lower), [(0, Some(Gain::Db(10.0)))]);
+        assert_eq!(*controls[1].gain.lock().unwrap(), Some(Gain::Db(10.0)), "the run's SN 2");
+        assert!(*controls[0].gain.lock().unwrap() != Some(Gain::Db(10.0)));
+        // Idle: nothing is held against the config.
+        ctx.set_phase(Phase::Idle, None, false);
+        assert!(!needs(&lower) && ctx.run.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An Airspy's stages set by hand.
+    fn manual(lna_step: u8, mixer_step: u8, vga_step: u8, agc: bool) -> Gain {
+        airspy_gain(AirspyGains { gain_mode: AirspyGain::Manual, lna_step, mixer_step, vga_step, agc, ..Default::default() })
+    }
+
     #[test]
     fn a_gain_change_goes_live_when_the_radio_can_take_it() {
         let rtl = |gain: f64, agc: bool| src("rtlsdr", json!({ "serial": "1000", "centerHz": 453e6, "rateHz": 2.4e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
         assert_eq!(live_gain(&rtl(33.8, false), &rtl(22.9, false)), Some(Gain::Db(22.9)));
         assert_eq!(live_gain(&rtl(33.8, false), &rtl(33.8, true)), Some(Gain::Agc), "an RTL-SDR's AGC, live");
+        let named = trunk_app::config::Source { name: "Whip".into(), ..rtl(22.9, false) };
+        assert_eq!(live_gain(&rtl(33.8, false), &named), Some(Gain::Db(22.9)), "named in the same edit: still live");
+        let spy = |gain: u32| src("spyserver", json!({ "address": "pi:5555", "centerHz": 154e6, "rateHz": 2.5e6, "gain": gain }));
+        assert_eq!(live_gain(&spy(14), &spy(9)), Some(Gain::Step(9)), "a SpyServer's gain step, live");
         let usrp = |gain: f64, agc: bool| src("usrp", json!({ "args": "", "antenna": "", "centerHz": 853e6, "rateHz": 8e6, "gainDb": gain, "agc": agc, "ppm": 0 }));
         assert_eq!(live_gain(&usrp(40.0, false), &usrp(30.0, false)), Some(Gain::Db(30.0)));
         assert_eq!(live_gain(&usrp(40.0, false), &usrp(40.0, true)), None, "USRP AGC waits for the start");
@@ -1350,12 +1721,15 @@ mod live_tests {
         assert_eq!(live_gain(&blade(30.0, false), &blade(42.0, false)), Some(Gain::Db(42.0)), "a bladeRF's gain, live");
         assert_eq!(live_gain(&blade(30.0, false), &blade(30.0, true)), None, "bladeRF AGC waits for the start");
         let air = |lna: u8| src("airspy", json!({ "serial": "", "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
-        assert_eq!(live_gain(&air(10), &air(12)), Some(airspy_gain(AirspyGain::Manual, 0, 12, 10, 10, false)), "an Airspy's LNA, live");
+        assert_eq!(live_gain(&air(10), &air(12)), Some(manual(12, 10, 10, false)), "an Airspy's LNA, live");
+        let hydra = |agc: bool| src("hydrasdr", json!({ "serial": "", "centerHz": 852e6, "rateHz": 5e6, "gainMode": "manual", "agc": agc, "vgaStep": 7 }));
+        assert_eq!(live_gain(&hydra(false), &hydra(true)), Some(manual(0, 0, 7, true)), "a HydraSDR's AGC, live");
+        assert_eq!(live_gain(&air(10), &hydra(false)), None, "an Airspy and a HydraSDR are other radios");
         let hackrf = |lna: u16, amp: bool| src("hackrf", json!({ "serial": "", "centerHz": 852e6, "rateHz": 8e6, "lnaDb": lna, "vgaDb": 20, "amp": amp }));
         let g = live_gain(&hackrf(16, false), &hackrf(24, true));
         assert_eq!(g, Some(Gain::Stages(hackrf_gain(24, 20, true))), "a HackRF's stages, live");
         assert_eq!(g.unwrap().to_string(), "AMP on · LNA 24 · VGA 20");
-        assert_eq!(airspy_gain(AirspyGain::Manual, 0, 0, 0, 7, true).to_string(), "AGC · VGA 7");
+        assert_eq!(manual(0, 0, 7, true).to_string(), "AGC · VGA 7");
     }
 
     #[test]
@@ -1372,27 +1746,32 @@ mod live_tests {
     fn several_airspys_each_take_their_own_gain() {
         let air = |serial: &str, lna: u8| src("airspy", json!({ "serial": serial, "centerHz": 852e6, "rateHz": 6e6, "gainMode": "manual", "lnaStep": lna, "ppm": 0 }));
         let lin = |serial: &str, step: u8| src("airspy", json!({ "serial": serial, "centerHz": 852e6, "rateHz": 6e6, "gainMode": "linearity", "gainStep": step, "ppm": 0 }));
-        let r = Runner { stop: Arc::default(), threads: vec![], controls: (0..3).map(|_| Arc::default()).collect() };
-        let pending = |i: usize| *r.controls[i].gain.lock().unwrap();
-        let old = [air("A1", 10), air("B2", 10), air("C3", 10)];
+        let cfg = |sources: Vec<Source>| Config { sources, ..Default::default() };
+        let old = cfg(vec![air("A1", 10), air("B2", 10), air("C3", 10)]);
+        let (ctx, controls, dir) = recording(&old, "airspy");
+        let pending = |i: usize| *controls[i].gain.lock().unwrap();
         // The second's LNA: only it.
-        let one = r.live_sources(&old, &[air("A1", 10), air("B2", 14), air("C3", 10)]);
-        assert_eq!(one, vec![(1, Some(airspy_gain(AirspyGain::Manual, 0, 14, 10, 10, false)))]);
+        let one = ctx.live_sources(&old, &cfg(vec![air("A1", 10), air("B2", 14), air("C3", 10)]));
+        assert_eq!(one, vec![(1, Some(manual(14, 10, 10, false)))]);
         assert_eq!((pending(0), pending(2)), (None, None), "the others are left alone");
-        r.controls[1].take();
-        // Two in one save, one of them to another mode: each its own.
-        let two = r.live_sources(&old, &[lin("A1", 18), air("B2", 10), air("C3", 6)]);
-        assert_eq!(two.len(), 2);
+        controls[1].take();
+        // Three in one save, one of them to another mode: each its own (B2 back to 10 from the 14 it took).
+        let now = cfg(vec![lin("A1", 18), air("B2", 10), air("C3", 6)]);
+        let two = ctx.live_sources(&cfg(vec![air("A1", 10), air("B2", 14), air("C3", 10)]), &now);
+        assert_eq!(two.len(), 3);
         assert_eq!(pending(0), Some(Gain::Preset(Preset::Linearity, 18)));
-        assert_eq!(pending(1), None);
-        assert_eq!(pending(2), Some(airspy_gain(AirspyGain::Manual, 0, 6, 10, 10, false)));
-        (r.controls[0].take(), r.controls[2].take());
-        // Two swapped in Setup: another radio in each place, not a gain change.
-        assert_eq!(r.live_sources(&old, &[air("B2", 10), air("A1", 10), air("C3", 10)]), vec![(0, None), (1, None)]);
+        assert_eq!(pending(1), Some(manual(10, 10, 10, false)));
+        assert_eq!(pending(2), Some(manual(6, 10, 10, false)));
+        (controls[0].take(), controls[1].take(), controls[2].take());
+        // Two swapped in Setup: the same radios, nothing to set (the swap waits for the start).
+        let swapped = cfg(vec![air("B2", 10), lin("A1", 18), air("C3", 6)]);
+        assert!(ctx.live_sources(&now, &swapped).is_empty());
         assert!((0..3).all(|i| pending(i).is_none()));
-        // One added: everything waits for the start.
-        assert!(r.live_sources(&old, &[air("A1", 12), air("B2", 10), air("C3", 10), air("D4", 10)]).is_empty());
-        assert!(pending(0).is_none());
+        // One added: it waits for the start; a gain beside it is still set at once.
+        let added = cfg(vec![air("B2", 10), lin("A1", 12), air("C3", 6), air("D4", 10)]);
+        assert_eq!(ctx.live_sources(&swapped, &added), vec![(1, Some(Gain::Preset(Preset::Linearity, 12))), (3, None)]);
+        assert_eq!(pending(0), Some(Gain::Preset(Preset::Linearity, 12)), "A1, wherever Setup has it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -1440,7 +1819,7 @@ mod finish_tests {
         assert_eq!(names, ["ohmarcs-butler"]);
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
         let rel = "ohmarcs/2026/10/26/9179-1700000000_851350000";
-        let entry = index_call(&ctx, rel, &r, true, true);
+        let entry = index_call(&ctx, None, rel, &r, true, true);
         ctx.db.flush().unwrap();
         let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert_eq!(entries.len(), 1);
@@ -1459,6 +1838,43 @@ mod finish_tests {
 }
 
 #[cfg(test)]
+mod names_tests {
+    use super::*;
+    use trunk_core::trunk::{read_unit_names, OriginKind};
+
+    /// A list loaded and a row edited: kept with where each row came from
+    /// (the recorder's time), in the store and in the names the dashboard
+    /// answers with; a radio named by hand names it at once, ahead of a pattern.
+    #[test]
+    fn names_are_kept_with_their_origins_and_name_at_once() {
+        let dir = crate::db::TestDir::new("names");
+        let ctx = test_ctx(&dir.join("capture"));
+        // (A system being recorded: the dashboard names its radios.)
+        ctx.config.lock().unwrap().systems[0].sites[0].control_channels_hz = vec![851_012_500.0];
+        let oh = system_named(&ctx, "ohmarcs").unwrap();
+        let before = origin_now();
+        set_names(&ctx, oh, trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n101,Fire\n102,EMS\n"), Some(Origin { kind: OriginKind::RadioReference, ..Default::default() })).unwrap();
+        let at = |n: usize| ctx.names.lock().unwrap()[&oh].talkgroups[n].origin.clone().unwrap();
+        assert!(at(0).kind == OriginKind::RadioReference && at(0).at >= before, "the recorder's time: {:?}", at(0));
+        set_talkgroup(&ctx, oh, 102, TalkgroupEdit { alpha_tag: Some("EMS 2".into()), ..Default::default() }).unwrap();
+        assert_eq!((at(0).kind, at(1).kind), (OriginKind::RadioReference, OriginKind::Edited));
+        assert_eq!(ctx.shared.names.lock().unwrap().tg(oh, 102).map(|t| t.alpha_tag), Some("EMS 2".into()));
+        set_names(&ctx, oh, read_unit_names("/^7(\\d{3})$/,Medic $1\n").unit_names, Some(Origin { name: "units.csv".into(), ..Default::default() })).unwrap();
+        assert_eq!(ctx.shared.names.lock().unwrap().unit(oh, 7042).as_deref(), Some("Medic 042"));
+        let mut told = ctx.hub.subscribe();
+        set_unit_name(&ctx, oh, 7042, "Bus 14".into()).unwrap();
+        assert!(told.try_recv().is_ok(), "unitNameEdited, to every browser");
+        assert_eq!(ctx.shared.names.lock().unwrap().unit(oh, 7042).as_deref(), Some("Bus 14"), "named at once, ahead of the pattern");
+        ctx.db.flush().unwrap();
+        let cfg = ctx.config.lock().unwrap().clone();
+        assert_eq!(kept::load_names(&ctx.db, &cfg), *ctx.names.lock().unwrap(), "kept as held");
+        set_unit_name(&ctx, oh, 7042, String::new()).unwrap();
+        assert_eq!(ctx.shared.names.lock().unwrap().unit(oh, 7042).as_deref(), Some("Medic 042"), "its own taken out: the pattern's again");
+        assert!(system_named(&ctx, "../x").is_err(), "a name no system has");
+    }
+}
+
+#[cfg(test)]
 mod live_list_tests {
     use super::*;
 
@@ -1473,7 +1889,7 @@ mod live_list_tests {
         assert!(ctx.db.is_disabled());
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
         let rel = "ohmarcs/2026/10/26/9179-1700000000_851350000";
-        let entry = index_call(&ctx, rel, &r, true, true);
+        let entry = index_call(&ctx, None, rel, &r, true, true);
         let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert_eq!(entries, [entry]);
         let mut heard = ctx.hub.subscribe();
@@ -1495,7 +1911,7 @@ mod pending_tests {
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
         ctx.db.send(crate::db::Change::Meta { key: "warm".into(), value: "1".into() });
         ctx.db.flush().unwrap();
-        let entry = index_call(&ctx, "ohmarcs/pending", &r, true, true);
+        let entry = index_call(&ctx, None, "ohmarcs/pending", &r, true, true);
         let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0], entry);
@@ -1510,9 +1926,9 @@ mod pending_tests {
         let ctx = test_ctx_with_batch(&dir, std::time::Duration::from_secs(60));
         let old = crate::db::row::tests::record(1, 1000);
         let new = crate::db::row::tests::record(1, 2000);
-        index_call(&ctx, "ohmarcs/old", &old, true, true);
+        index_call(&ctx, None, "ohmarcs/old", &old, true, true);
         ctx.db.flush().unwrap();
-        index_call(&ctx, "ohmarcs/new", &new, true, true);
+        index_call(&ctx, None, "ohmarcs/new", &new, true, true);
         let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         let paths: Vec<_> = entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, ["ohmarcs/new", "ohmarcs/old"]);
@@ -1529,7 +1945,7 @@ mod calls_query_tests {
         let ctx = test_ctx(&dir);
         let mut r = crate::db::row::tests::record(1, 1000);
         r.short_name = "ohmarcs-butler".into();
-        index_call(&ctx, "ohmarcs-butler/x", &r, true, true);
+        index_call(&ctx, None, "ohmarcs-butler/x", &r, true, true);
         ctx.db.flush().unwrap();
         let q = CallsQuery { system: Some("ohmarcs".into()), ..Default::default() };
         assert_eq!(calls(&ctx, &q).entries.len(), 1);
@@ -1541,7 +1957,7 @@ mod calls_query_tests {
         let ctx = test_ctx(&dir);
         for i in 0..501 {
             let r = crate::db::row::tests::record(1, 1000 + i);
-            index_call(&ctx, &format!("ohmarcs/{i}"), &r, true, true);
+            index_call(&ctx, None, &format!("ohmarcs/{i}"), &r, true, true);
         }
         ctx.db.flush().unwrap();
         let page = calls(&ctx, &CallsQuery { limit: Some(9999), ..Default::default() });
@@ -1552,6 +1968,31 @@ mod calls_query_tests {
         assert_eq!((id, page.entries.len()), (serde_json::json!(3), 100));
     }
 
+    /// A system renamed while it records: the run's calls still file under
+    /// its id (the run goes by the name it had at Start), and its names stay
+    /// its own under the new name; the old name is nobody's.
+    #[test]
+    fn a_rename_while_recording_keeps_the_systems_calls_and_names() {
+        let dir = crate::db::TestDir::new("cq-rename");
+        let ctx = crate::protocol_tests::ctx_with(test_config(&dir), &dir, |_| crate::db::Db::for_test_with_batch("cq-rename", Duration::from_millis(10)).0);
+        let id = system_named(&ctx, "ohmarcs").unwrap();
+        set_names(&ctx, id, trunk_core::trunk::parse_rows("Decimal,Alpha Tag\n101,Fire\n"), None).unwrap();
+        let mut cfg = ctx.config.lock().unwrap().clone();
+        cfg.systems[0].short_name = "renamed".into();
+        *ctx.config.lock().unwrap() = cfg.clone();
+        ctx.config_changed(&cfg);
+        // (Its record still says the name the run began with.)
+        let r = crate::db::row::tests::record(7, 1000);
+        assert_eq!(r.short_name, "ohmarcs");
+        index_call(&ctx, Some(id), "ohmarcs/a", &r, true, true);
+        index_call(&ctx, None, "ohmarcs/b", &r, true, true);
+        ctx.db.flush().unwrap();
+        assert_eq!(ctx.db.count(&format!("select count(*) from calls where system_id = {id}")), 1, "filed under its id; one by the old name alone is nobody's");
+        assert_eq!(system_named(&ctx, "renamed"), Ok(id));
+        assert!(system_named(&ctx, "ohmarcs").is_err());
+        assert_eq!(ctx.names.lock().unwrap()[&id].talkgroups.len(), 1, "its names went with it");
+    }
+
     /// Without the radio or talkgroup index, a radio's or talkgroup's list
     /// is its recent calls, and says so; with them, the store's.
     #[test]
@@ -1560,7 +2001,7 @@ mod calls_query_tests {
         let storage = trunk_app::config::StorageSettings { radio_index: false, talkgroup_index: false, ..Default::default() };
         let ctx = crate::protocol_tests::ctx_with(test_config(&dir), &dir, |_| crate::db::Db::from_settings(&storage, &dir));
         let r = crate::db::row::tests::record(7, 1000);
-        index_call(&ctx, "ohmarcs/a", &r, true, true);
+        index_call(&ctx, None, "ohmarcs/a", &r, true, true);
         ctx.db.flush().unwrap();
         let by_tg = calls(&ctx, &CallsQuery { talkgroup: Some(7), ..Default::default() });
         assert!(by_tg.error.as_deref().is_some_and(|e| e.contains("by talkgroup")), "{:?}", by_tg.error);
@@ -1590,12 +2031,44 @@ mod calls_query_tests {
         let ToClient::History { entries, .. } = history(&ctx) else { panic!() };
         assert!(entries.is_empty());
         let r = crate::db::row::tests::record(1, 1000);
-        index_call(&ctx, "ohmarcs/x", &r, true, true);
+        index_call(&ctx, None, "ohmarcs/x", &r, true, true);
         call_files(&ctx, "ohmarcs/x", false, true);
         ctx.db.flush().unwrap();
         // (The live list answers: the calls since the recorder started.)
         let page = calls(&ctx, &CallsQuery::default());
         assert_eq!((page.entries.len(), page.next), (1, None));
         assert!(page.error.is_some_and(|e| e.contains("only the recent calls")), "and says why it's only those");
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    /// A call the recordings folder can't take: the folder says why, counts
+    /// its file, and the call isn't listed as saved; once the folder takes
+    /// files again, the next call is saved and listed.
+    #[test]
+    fn a_call_the_recordings_folder_cant_take_is_counted_and_not_listed() {
+        let root = std::env::temp_dir().join(format!("trunk-pro-finish-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("calls");
+        let ctx = test_ctx(&dir);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&dir, b"in the way").unwrap();
+        ctx.folders.recordings.set_path(&dir);
+        let rules = FileRules { archive_wav: true, archive_m4a: false, call_log: true, archive_files_on_failure: true };
+        let call = |n: u32| Finish { rel: format!("ohmarcs/2026/11/22/{n}-1"), system: 0, system_id: None, wav: b"RIFF".to_vec(), record: Default::default(), rules, decrypted: false };
+        finish_one(&ctx, &dir, None, call(1), None);
+        let r = ctx.folders.report();
+        assert_eq!((r[0]["ok"].as_bool(), r[0]["why"].as_str(), r[0]["lost"].as_u64()), (Some(false), Some("Not a folder"), Some(1)));
+        assert!(ctx.recent.lock().unwrap().is_empty(), "not listed as a call kept");
+        fs::remove_file(&dir).unwrap();
+        finish_one(&ctx, &dir, None, call(2), None);
+        assert_eq!(ctx.folders.report()[0]["ok"], true);
+        assert!(dir.join("ohmarcs/2026/11/22/2-1.wav").exists() && dir.join("ohmarcs/2026/11/22/2-1.json").exists());
+        assert_eq!(ctx.recent.lock().unwrap().len(), 1);
+        let _ = fs::remove_dir_all(&root);
     }
 }

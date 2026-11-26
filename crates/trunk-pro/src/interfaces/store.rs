@@ -237,7 +237,7 @@ fn install_from(l: &Listing, data: &[u8], progress: &dyn Fn(&'static str)) -> Re
     }
     // The screenshots the store showed are the ones it has.
     let same = l.screenshots.len() == m.screenshots.len()
-        && l.screenshots.iter().enumerate().all(|(n, s)| m.screenshot(&root, n).and_then(|(f, _)| std::fs::read(f).ok()).is_some_and(|d| crate::store::sha256_hex(&d) == s.sha256));
+        && l.screenshots.iter().enumerate().all(|(n, s)| m.screenshot(&root, n).and_then(|(f, _)| std::fs::read(f).ok()).is_some_and(|d| crate::toolkit::sha256_hex(&d) == s.sha256));
     if !same {
         return Err(format!("The download of {}'s screenshots aren't the ones listed: not installed", l.name));
     }
@@ -266,7 +266,7 @@ mod tests {
         let manifest = br#"{ "id": "trunkamp", "name": "Trunkamp", "version": "1.0.0", "api": 1, "access": "listen", "screenshots": [{ "path": "shots/main.png", "caption": "Playing" }] }"#;
         let data = zip_of(&[("trunkamp-1.0.0/interface.json", manifest), ("trunkamp-1.0.0/index.html", b"<h1>hi"), ("trunkamp-1.0.0/skin/a.css", b"b{}"), ("trunkamp-1.0.0/shots/main.png", b"png")]);
         assert_eq!(manifest_in_zip(&data).unwrap().id, "trunkamp");
-        let shot = ListedScreenshot { sha256: crate::store::sha256_hex(b"png"), ..Default::default() };
+        let shot = ListedScreenshot { sha256: crate::toolkit::sha256_hex(b"png"), ..Default::default() };
         let l = Listing { id: "trunkamp".into(), name: "Trunkamp".into(), version: "1.0.0".into(), api: 1, tier: "community".into(), asset: Asset { url: "x.zip".into(), sha256: String::new() }, screenshots: vec![shot], ..Default::default() };
         let dest = interfaces_dir().join("trunkamp");
         // (paths::init keeps the first folder it's given: this test's, or another's.)
@@ -283,7 +283,7 @@ mod tests {
         assert!(dest.join("index.html").is_file());
         // Another screenshot than listed: refused.
         let mut other = l.clone();
-        other.screenshots[0].sha256 = crate::store::sha256_hex(b"gif");
+        other.screenshots[0].sha256 = crate::toolkit::sha256_hex(b"gif");
         assert!(install_from(&other, &data, &|_| {}).unwrap_err().contains("screenshots"));
         // No index.html, or a screenshot missing: refused.
         let bare = zip_of(&[("trunkamp-1.0.0/interface.json", manifest)]);

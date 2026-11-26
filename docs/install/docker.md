@@ -10,10 +10,10 @@ This page covers running Trunk Recorder Pro in a Docker container on a Linux hos
 - **Not Docker Desktop on macOS or Windows.** Containers there run inside a virtual machine that
   can't see your USB devices, so the recorder would find no dongles. Use the [macOS](macos.md) or
   [Windows](windows.md) app instead.
-- **RTL-SDRs only.** The image contains `trunk-pro` and a small FFmpeg for optional M4A encoding,
-  but no UHD, libairspy or SoapySDR, so USRP, Airspy and SoapySDR sources (and older RTL-SDRs
-  that need SoapySDR) don't work in it. Use the [Linux](linux.md) package for those. Internet
-  streams are fetched and decoded natively and don't need FFmpeg's network support.
+- **RTL-SDRs, HackRF Ones, Airspy R2 / Mini and HydraSDR RFOnes only.** The image contains `trunk-pro` (with its own drivers for these) and a small
+  `ffmpeg`, nothing else: no UHD, libbladeRF or
+  SoapySDR, so USRP, bladeRF and SoapySDR sources (and older RTL-SDRs that need SoapySDR)
+  don't work in it. Use the [Linux](linux.md) package for those, or ask for one in an issue.
 - **Nothing else may hold the dongles.** Stop any SDR program on the host that has them open. The
   kernel's DVB TV driver is not a problem: Trunk Recorder Pro detaches it itself.
 
@@ -69,7 +69,7 @@ What each part does:
 | `image` | The Docker Hub image. `build: .` lets `docker compose up -d --build` build it from a checkout of the repository instead. |
 | `restart: unless-stopped` | Starts it again after a crash or a reboot of the host, unless you stopped it yourself. |
 | `ports: "8080:8080"` | The interface, on port 8080 of every address of the host. |
-| `./data:/data` | Everything the recorder keeps: settings, band plans, plugins and recordings, in `./data` next to the compose file. |
+| `./data:/data` | Everything the recorder keeps: settings, the store, plugins and recordings, in `./data` next to the compose file. |
 | `/dev/bus/usb:/dev/bus/usb` | The host's USB devices, including ones plugged in after the container starts. |
 | `device_cgroup_rules: "c 189:* rmw"` | Permission to open USB devices (character devices with major number 189). Together with the line above, this lets the container use any dongle without `privileged: true`. |
 | `/etc/localtime` | The host's time zone, so call times and file names are local time. |
@@ -77,7 +77,7 @@ What each part does:
 ### Start recording on its own
 
 The container starts the recorder, but recording waits for **Start** until you either turn on
-**Start recording when the app starts** in **Setup → Recording** (recommended: set it once and
+**Record when the app starts** in **Setup → Recording** (recommended: set it once and
 every restart resumes recording), or uncomment the `command:` line in the compose file:
 
 ```yaml
@@ -91,31 +91,53 @@ host:
 
 | What | Host | Container |
 |---|---|---|
-| Settings (`config.json`), band plans, plugins, statistics | `./data/config/trunk-pro/` | `/data/config/trunk-pro/` |
+| Settings (`config.json`), the store (`trunk-pro.sqlite`), plugins | `./data/config/trunk-pro/` | `/data/config/trunk-pro/` |
 | Recordings | `./data/TrunkRecorderPro/` | `/data/TrunkRecorderPro/` |
 
 The container runs as root, so the files in `./data` belong to root on the host. Use `sudo` to
 edit or remove them.
 
 If you change the **Recordings folder** in the settings, keep it under `/data` (for example
-`/data/recordings`), or mount another host folder into the container and point it there.
+`/data/recordings`), or mount another host folder into the container and point it there. Give
+the full path: a relative one such as `recordings` won't start.
 Anything written elsewhere in the container is lost when the container is replaced.
 
 ## Security
 
-> **The interface has no login.** Anyone who can reach port 8080 can change the settings, install
-> plugins and stop the recorder. Only publish the port on a network you trust.
+Signing in is off until you turn it on: until then, anyone who can reach port 8080 can change the
+settings, install plugins and stop the recorder. Turn it on in Setup → **Access**,
+or from the host:
 
-To keep the interface to the host itself, publish it on localhost only:
-
-```yaml
-    ports:
-      - "127.0.0.1:8080:8080"
+```bash
+docker compose exec trunk-pro trunk-pro access add me   # an Admin user; prints their token's secret once
+docker compose exec trunk-pro trunk-pro access on
+docker compose restart
 ```
 
-and reach it from elsewhere through an SSH tunnel (`ssh -L 8080:localhost:8080 you@host`, then
-`http://localhost:8080`). To use another port on the host, change only the left-hand number:
-`"8081:8080"`.
+To keep the interface to the host itself, publish it on localhost only (`"127.0.0.1:8080:8080"`
+under `ports:`) and reach it through an SSH tunnel or a `cloudflared` service beside it. To use
+another port on the host, change only the left-hand number: `"8081:8080"`. Signing in, tunnels
+and proxies are in [Remote access and signing in](../guides/remote-access.md).
+
+### HTTPS
+
+To serve HTTPS ([HTTPS](../guides/remote-access.md#https)), mount the certificate and
+key into the container read-only, and point `server.tls` in `config.json` at them as the container
+sees them:
+
+```yaml
+    volumes:
+      - ./data:/data
+      - /etc/letsencrypt:/etc/letsencrypt:ro    # or the folder tailscale cert or mkcert wrote to
+```
+
+```json
+"server": { "tls": { "cert": "/etc/letsencrypt/live/radio.example.com/fullchain.pem", "key": "/etc/letsencrypt/live/radio.example.com/privkey.pem" } }
+```
+
+Mount the folder, not the two files: Let's Encrypt's `live/` files are links into `archive/`, and
+a renewal replaces them; with the folder mounted, the recorder picks the new pair up within a minute
+without a restart. Then `docker compose restart` and open `https://<host>:8080`.
 
 ## Everyday commands
 

@@ -37,21 +37,69 @@ use super::{Chunk, Detector, Found, Tap};
 use crate::dsp::filters::lowpass;
 use crate::dsp::fm::AUDIO_RATE;
 
-/// The CTCSS tones, tenths of a hertz.
-pub const CTCSS: [u16; 51] = [
-    670, 693, 719, 744, 770, 797, 825, 854, 885, 915, 948, 974, 1000, 1035, 1072, 1109, 1148, 1188, 1230, 1273, 1318, 1365, 1413, 1462, 1500, 1514,
-    1567, 1598, 1622, 1655, 1679, 1713, 1738, 1773, 1799, 1835, 1862, 1899, 1928, 1966, 1995, 2035, 2065, 2107, 2181, 2257, 2291, 2336, 2418,
-    2503, 2541,
+/// The CTCSS tones, tenths of a hertz: the 38 every radio has (EIA), and
+/// the 13 more that some do.
+pub const CTCSS: [u16; 51] = merged(CTCSS_EIA, CTCSS_MORE);
+
+/// The 38 CTCSS tones of the EIA standard, in order: the tones every radio
+/// has, and FRS/GMRS privacy codes 1–38 on every brand.
+pub const CTCSS_EIA: [u16; 38] = [
+    670, 719, 744, 770, 797, 825, 854, 885, 915, 948, 974, 1000, 1035, 1072, 1109, 1148, 1188, 1230, 1273, 1318, 1365, 1413, 1462, 1514, 1567,
+    1622, 1679, 1738, 1799, 1862, 1928, 2035, 2107, 2181, 2257, 2336, 2418, 2503,
 ];
 
-/// The DCS codes (the 83 of Motorola's DPL plus scanners' extended set),
-/// their octal digits read as a decimal number (D023 → 23).
-pub const DCS: [u16; 112] = [
-    6, 7, 15, 17, 21, 23, 25, 26, 27, 31, 32, 36, 43, 47, 50, 51, 53, 54, 65, 71, 72, 73, 74, 114, 115, 116, 122, 125, 131, 132, 134, 143, 145, 152,
-    155, 156, 162, 165, 172, 174, 205, 212, 223, 225, 226, 232, 243, 244, 245, 246, 251, 252, 255, 261, 263, 265, 266, 271, 274, 306, 311, 315,
-    325, 331, 332, 343, 346, 351, 356, 364, 365, 371, 411, 412, 413, 423, 431, 432, 445, 446, 452, 454, 455, 462, 464, 465, 466, 503, 506, 516,
-    523, 526, 532, 546, 565, 606, 612, 624, 627, 631, 632, 654, 662, 664, 703, 712, 723, 731, 732, 734, 743, 754,
+const CTCSS_MORE: [u16; 13] = [693, 1500, 1598, 1655, 1713, 1773, 1835, 1899, 1966, 1995, 2065, 2291, 2541];
+
+/// The DCS codes, their octal digits read as a decimal number (D023 → 23):
+/// Motorola's 83 (DPL) and scanners' extended set.
+pub const DCS: [u16; 112] = merged(DPL, DCS_MORE);
+
+/// Motorola's 83 DCS codes (DPL), in order: Motorola's FRS/GMRS privacy
+/// codes 39–121 (other brands number them differently).
+pub const DPL: [u16; 83] = [
+    23, 25, 26, 31, 32, 43, 47, 51, 54, 65, 71, 72, 73, 74, 114, 115, 116, 125, 131, 132, 134, 143, 152, 155, 156, 162, 165, 172, 174, 205, 223,
+    226, 243, 244, 245, 251, 261, 263, 265, 271, 306, 311, 315, 331, 343, 346, 351, 364, 365, 371, 411, 412, 413, 423, 431, 432, 445, 464, 465,
+    466, 503, 506, 516, 532, 546, 565, 606, 612, 624, 627, 631, 632, 654, 662, 664, 703, 712, 723, 731, 732, 734, 743, 754,
 ];
+
+const DCS_MORE: [u16; 29] = [6, 7, 15, 17, 21, 27, 36, 50, 53, 122, 145, 212, 225, 232, 246, 252, 255, 266, 274, 325, 332, 356, 446, 452, 454, 455, 462, 523, 526];
+
+/// Two ascending lists as one (`N` = `A + B`).
+const fn merged<const A: usize, const B: usize, const N: usize>(a: [u16; A], b: [u16; B]) -> [u16; N] {
+    assert!(A + B == N);
+    let mut out = [0; N];
+    let (mut i, mut j, mut k) = (0, 0, 0);
+    while k < N {
+        if j == B || (i < A && a[i] < b[j]) {
+            out[k] = a[i];
+            i += 1;
+        } else {
+            out[k] = b[j];
+            j += 1;
+        }
+        k += 1;
+    }
+    out
+}
+
+/// An FRS/GMRS privacy code: what those radios number a tone by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrivacyCode {
+    /// 1–38, a CTCSS tone: the same on every brand.
+    Any(u8),
+    /// 39–121, a DCS code: Motorola's number for it.
+    Motorola(u8),
+}
+
+/// Whether `freq_hz` is an FRS/GMRS channel (1–22) or a GMRS repeater's
+/// input: 462.550–462.725 MHz and 467.550–467.725 MHz, every 12.5 kHz.
+pub fn frs_gmrs(freq_hz: f64) -> bool {
+    [462_550_000.0, 467_550_000.0].iter().any(|&lo| {
+        let off = freq_hz - lo;
+        let step = (off / 12_500.0).round();
+        (0.0..=14.0).contains(&step) && (off - step * 12_500.0).abs() <= 1_000.0
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tone {
@@ -115,6 +163,28 @@ impl Tone {
             Err(format!("{hz} Hz isn't a standard CTCSS tone — {}?", Tone::Ctcss(nearest)))
         } else {
             Err(bad())
+        }
+    }
+
+    /// As it's shown: `151.4 Hz`, `D023N`.
+    pub fn label(self) -> String {
+        match self {
+            Tone::Ctcss(_) => format!("{self} Hz"),
+            Tone::Dcs(..) => self.to_string(),
+        }
+    }
+
+    /// What an FRS/GMRS radio calls it on `freq_hz`: none off those
+    /// channels, or for a tone they don't have. A DCS code by another name
+    /// (D047I is D023N) is the code it is.
+    pub fn privacy_code(self, freq_hz: f64) -> Option<PrivacyCode> {
+        if !frs_gmrs(freq_hz) {
+            return None;
+        }
+        let n = |i: usize, base: usize| (i + base + 1) as u8;
+        match self {
+            Tone::Ctcss(t) => CTCSS_EIA.iter().position(|&x| x == t).map(|i| PrivacyCode::Any(n(i, 0))),
+            Tone::Dcs(..) => DPL.iter().position(|&c| Tone::Dcs(c, false).matches(self)).map(|i| PrivacyCode::Motorola(n(i, CTCSS_EIA.len()))),
         }
     }
 
@@ -411,6 +481,28 @@ impl ToneDetector {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// FRS/GMRS privacy codes: Motorola Talkabout's numbers (1–38 the EIA
+    /// tones, 39–121 DPL), on those channels only. (Cases from PR #205, by devicenull.)
+    #[test]
+    fn privacy_codes_on_frs_gmrs() {
+        let gmrs = 462_562_500.0;
+        let code = |t: &str| Tone::parse(t).unwrap().unwrap().privacy_code(gmrs);
+        assert_eq!([code("67.0"), code("151.4 Hz"), code("250.3")], [Some(PrivacyCode::Any(1)), Some(PrivacyCode::Any(24)), Some(PrivacyCode::Any(38))]);
+        assert_eq!([code("D023N"), code("D754N")], [Some(PrivacyCode::Motorola(39)), Some(PrivacyCode::Motorola(121))]);
+        assert_eq!(code("D047I"), Some(PrivacyCode::Motorola(39)), "an alias of D023N");
+        assert_eq!([code("69.3"), code("D036N")], [None, None], "not on GMRS radios");
+        assert_eq!(Tone::Ctcss(1514).privacy_code(154_430_000.0), None, "off FRS/GMRS");
+        // Channels 1, 15, 7, 22, a repeater input; not between them or past the band.
+        for f in [462_562_500.0, 462_550_000.0, 462_712_500.0, 462_725_000.0, 467_675_000.0, 462_563_000.0] {
+            assert!(frs_gmrs(f), "{f}");
+        }
+        for f in [462_537_500.0, 462_556_250.0, 462_737_500.0, 467_000_000.0, 154_430_000.0] {
+            assert!(!frs_gmrs(f), "{f}");
+        }
+        assert_eq!((Tone::Ctcss(1514).label(), Tone::Dcs(23, false).label()), ("151.4 Hz".to_string(), "D023N".to_string()));
+        assert!(CTCSS.windows(2).all(|w| w[0] < w[1]) && DCS.windows(2).all(|w| w[0] < w[1]), "the merged tables stay in order");
+    }
     use crate::dsp::fm::Nbfm;
     use std::f64::consts::PI;
 

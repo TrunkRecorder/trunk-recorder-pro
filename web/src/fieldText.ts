@@ -1,6 +1,7 @@
 // What a setup input shows for a value, and the value it reads back from
 // what was typed. Pure, so `npm test` covers them; DraftInput (inputs.tsx)
 // pairs one with an <input>.
+import { hzOf } from "./rules.ts";
 import { formatGain, formatMhz, parseFreqList } from "./config.ts";
 
 export interface TextCodec<T> {
@@ -88,8 +89,8 @@ export const lcnTable: TextCodec<Record<string, number>> = {
     for (const part of text.split(/[,;\s]+/)) {
       const m = /^(\d+)=(\d+(?:\.\d+)?)$/.exec(part.trim());
       if (m) {
-        const v = Number(m[2]);
-        t[m[1]] = v < 1e5 ? Math.round(v * 1e6) : v;
+        const hz = hzOf(Number(m[2]));
+        if (hz !== undefined) t[m[1]] = hz;
       }
     }
     return t;

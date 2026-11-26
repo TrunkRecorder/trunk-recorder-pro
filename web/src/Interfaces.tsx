@@ -2,7 +2,7 @@
 // rather than run the recorder. Each is served on a port of its own, a site
 // of its own to the browser, with the recorder's API beside it and the
 // access the config gives it (docs/interfaces). This page lists them (open,
-// on or off, access, update, remove), sets their ports, installs them from
+// on or off, access, update, remove), sets their ports (and HTTPS's files), installs them from
 // the interface store, adds folders of one's own, and lists the pages
 // elsewhere allowed to use this interface's API. All of it is in the
 // config's `server`, saved as it's changed; the recorder serves the changes
@@ -10,8 +10,10 @@
 
 import { useEffect, useState } from "react";
 import { addInterface, installFromStore, removeInterface, setInterface, updateConfig, useApp } from "./controller.ts";
+import { Info } from "./charts.tsx";
 import { Switch } from "./SetupLayout.tsx";
 import { Author, InstallStage, newer, Screenshots, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
+import { useReach } from "./Reach.tsx";
 import type { ApiAccess, Config, InstallProgress, InterfaceInfo, InterfaceListing } from "./protocol.ts";
 
 /** Where interface `port` is, from this browser. */
@@ -122,7 +124,7 @@ function InterfaceCard(props: { i: InterfaceInfo; listing?: InterfaceListing; in
       <Screenshots name={name} shots={(m?.screenshots ?? []).map((sh, k) => ({ src: `/interfaces/${encodeURIComponent(i.id)}/screenshots/${k}`, caption: sh.caption }))} />
       {on && i.problem && <p className="small bad-text">{i.problem}</p>}
       <p className="small muted plugin-meta">
-        {i.access === "control" ? <span className="warn-text">Control: it can change anything</span> : "Listen: it sees and plays, and changes nothing"}
+        {i.access === "control" ? <span className="warn-text">Control: can change anything</span> : <span title="It sees and plays, and changes nothing">Listen only</span>}
         {m?.access === "control" && i.access === "listen" && " (it asks for control)"}
         {" · "}
         {i.installed ? (
@@ -200,12 +202,10 @@ function AddFolder() {
     >
       <div className="field wide">
         <label className="field-label" htmlFor="add-iface-path">
-          A folder on the recorder's computer with an index.html
+          Folder with an index.html
+          <Info>On the recorder&apos;s computer. Its interface.json, if it has one, names it and says what access it needs. Edits show when its page is reloaded.</Info>
         </label>
         <input id="add-iface-path" className="mono" autoFocus value={path} placeholder="~/scanner-page" onChange={(e) => setPath(e.target.value)} />
-        <span className="field-hint">
-          Its <code>interface.json</code>, if it has one, names it and says what access it needs. Edits show when its page is reloaded.
-        </span>
       </div>
       <div className="row">
         <button className="btn primary" type="submit" disabled={!path.trim()}>
@@ -229,7 +229,8 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
         <h2 id="ports-title">Ports</h2>
       </header>
       <p className="muted small plugins-intro">
-        Each interface is its own site, at this computer's address and its port. A change moves it at once; open pages reconnect at the new port.
+        One site per port; changes move it at once
+        <Info>Each interface is its own site, at this computer&apos;s address and its port. Open pages reconnect at the new port.</Info>
       </p>
       <div className="iface-ports" role="table">
         <div className="iface-ports-row" role="row">
@@ -240,7 +241,7 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
             <PortInput id="" value={c.server.port} c={c} list={list} label="This interface's port" onSave={(p) => updateConfig((x) => void (x.server.port = p))} />
           </span>
           <span role="cell" className="small muted">
-            {c.server.port !== here && location.port ? `Takes effect when the recorder restarts (now ${here})` : "Changes take effect when the recorder restarts"}
+            {c.server.port !== here && location.port ? `From next restart (now ${here})` : "From next restart"}
           </span>
         </div>
         {list
@@ -270,12 +271,122 @@ function PortsPanel(props: { c: Config; list: InterfaceInfo[] }) {
               </div>
             );
           })}
+        <TlsRow c={c} />
+        {c.server.tls && <HstsRow c={c} />}
+        <HostnameRow c={c} />
       </div>
-      <p className="muted small">
-        Other computers reach them only when the recorder listens on every address (<code>server.bind</code> <code>0.0.0.0</code>, now{" "}
-        <code>{c.server.bind}</code>), and their ports are open in the firewall.
-      </p>
+      <ListeningOn />
     </section>
+  );
+}
+
+/** The address every port listens on this run, and who that lets connect directly. */
+function ListeningOn() {
+  const reach = useReach();
+  if (!reach) return null;
+  const who = reach.now.listen === "thisComputer" ? "this computer only" : reach.now.listen === "every" ? "every address" : "this address only";
+  return (
+    <p className="muted small">
+      Listening on <code>{reach.now.address}</code>, {who}
+      <Info>
+        Other devices connect directly only when the recorder listens on every address (Setup → Access → <strong>Direct connections</strong>: Other devices too), and the ports are open in the firewall. A tunnel or proxy on
+        this computer reaches them either way.
+      </Info>
+    </p>
+  );
+}
+
+/** HTTPS on every port: the certificate's and key's files, saved once both are given (or both cleared). */
+function TlsRow(props: { c: Config }) {
+  const tls = props.c.server.tls;
+  const [cert, setCert] = useState(tls?.cert ?? "");
+  const [key, setKey] = useState(tls?.key ?? "");
+  useEffect(() => {
+    setCert(tls?.cert ?? "");
+    setKey(tls?.key ?? "");
+  }, [tls?.cert, tls?.key]);
+  const half = !cert.trim() !== !key.trim();
+  const save = () => {
+    const [c, k] = [cert.trim(), key.trim()];
+    if (half || (c === (tls?.cert ?? "") && k === (tls?.key ?? ""))) return;
+    updateConfig((x) => void (x.server.tls = c ? { ...x.server.tls, cert: c, key: k } : undefined));
+  };
+  const input = (label: string, value: string, set: (v: string) => void, placeholder: string) => (
+    <input
+      className="mono"
+      aria-label={label}
+      aria-invalid={half && !value.trim()}
+      value={value}
+      placeholder={placeholder}
+      onChange={(e) => set(e.target.value)}
+      onBlur={save}
+      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+    />
+  );
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>HTTPS</strong> <span className="muted small">every port</span>
+        <Info>PEM files on the recorder&apos;s computer: tailscale cert, Let&apos;s Encrypt (fullchain.pem, privkey.pem) or mkcert. Renewals are picked up without a restart.</Info>
+      </span>
+      <span role="cell" className="iface-tls">
+        {input("Certificate", cert, setCert, "cert.pem")}
+        {input("Key", key, setKey, "key.pem")}
+      </span>
+      <span role="cell" className="small muted">
+        {half ? <span className="bad-text">Needs both</span> : !tls ? "Off" : location.protocol === "https:" ? "On" : "From next restart"}
+      </span>
+    </div>
+  );
+}
+
+/** HSTS (server.tls.hsts): browsers told to keep to HTTPS on this host name, every port of it. Off unless set. */
+function HstsRow(props: { c: Config }) {
+  const on = !!props.c.server.tls?.hsts;
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>HSTS</strong> <span className="muted small">a year</span>
+        <Info>
+          Browsers that have been here over HTTPS refuse plain HTTP to this host name for a year, every port of it: other programs&apos; plain HTTP pages on this computer&apos;s name stop opening too. Off
+          leaves a typed http:// address open to a redirect.
+        </Info>
+      </span>
+      <span role="cell">
+        <Switch label={on ? "On" : "Off"} checked={on} onChange={(v) => updateConfig((x) => void (x.server.tls && (v ? (x.server.tls.hsts = true) : delete x.server.tls.hsts)))} />
+      </span>
+      <span role="cell" className="small muted">
+        {on && (location.protocol === "https:" ? "Sent" : "Once HTTPS")}
+      </span>
+    </div>
+  );
+}
+
+/** The name the recorder is reached by over HTTPS (server.hostname, a port after it when a proxy in front serves the dashboard elsewhere): passkeys there, and the URLs it logs. */
+function HostnameRow(props: { c: Config }) {
+  const saved = props.c.server.hostname ?? "";
+  const [name, setName] = useState(saved);
+  useEffect(() => setName(saved), [saved]);
+  const save = () => {
+    const n = name.trim();
+    if (n !== saved) updateConfig((x) => void (x.server.hostname = n || undefined));
+  };
+  return (
+    <div className="iface-ports-row" role="row">
+      <span role="cell">
+        <strong>Host name</strong> <span className="muted small">passkeys</span>
+        <Info>
+          The name the certificate is for (radio.tail1234.ts.net). Passkeys work there over HTTPS, and on localhost; never on an IP address. A port after it (radio.example.com:8443): where a proxy in front serves this
+          page; none, 443 (or this port, served over HTTPS here).
+        </Info>
+      </span>
+      <span role="cell" className="iface-tls">
+        <input className="mono" aria-label="Host name" value={name} placeholder="radio.tail1234.ts.net" onChange={(e) => setName(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()} />
+      </span>
+      <span role="cell" className="small muted">
+        {!saved ? "None" : location.hostname === saved.toLowerCase().replace(/:\d+$/, "").replace(/\.$/, "") ? "This page" : "Set"}
+      </span>
+    </div>
   );
 }
 
@@ -321,7 +432,7 @@ function StoreSection(props: { list: InterfaceInfo[] }) {
   return <StorePanel kind="interface" words={INTERFACE_STORE} card={(l) => <StoreListingCard key={l.id} l={l} installed={props.list.find((i) => i.id === l.id)} install={installs[l.id]} />} />;
 }
 
-/** Pages served elsewhere that may use this interface's API (with control). */
+/** Pages served elsewhere that may use this interface's API (with control; signing in on, an Admin token too). */
 function OriginsPanel(props: { c: Config }) {
   const saved = props.c.server.allowedOrigins ?? [];
   const [origins, setOrigins] = useState(saved.join("\n"));
@@ -333,7 +444,11 @@ function OriginsPanel(props: { c: Config }) {
       </header>
       <div className="field">
         <label className="field-label" htmlFor="ui-origins">
-          Pages allowed to use this interface's API, with control
+          Allowed origins ({props.c.server.auth?.enabled ? "control, with an Admin token" : "with control"})
+          <Info>
+            For a page served by something else, such as a dev server. One origin per line (scheme://host:port). <code>null</code>: a page opened from a file; <code>*</code>: any
+            page — private networks only. An interface the recorder serves needs none of this.
+          </Info>
         </label>
         <textarea
           id="ui-origins"
@@ -352,10 +467,7 @@ function OriginsPanel(props: { c: Config }) {
             )
           }
         />
-        <span className="field-hint">
-          One origin per line (scheme://host:port), for a page served by something else, such as a dev server. <code>null</code>: a page opened from a
-          file; <code>*</code>: any page — private networks only. An interface the recorder serves needs none of this.
-        </span>
+        <span className="field-hint">One per line, scheme://host:port</span>
       </div>
     </section>
   );
@@ -376,7 +488,7 @@ export function InterfacesPage() {
           <AddFolder />
         </header>
         <p className="muted small plugins-intro">
-          Pages for people who listen, apart from this one: a player, a scanner wall. Each runs in the browser and is served on a port of its own.{" "}
+          Pages for listeners: a player, a scanner wall{" "}
           <a href="/api/docs" target="_blank" rel="noreferrer">
             Build your own
           </a>

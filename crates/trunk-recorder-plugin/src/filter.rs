@@ -123,17 +123,17 @@ pub fn check_talkgroup(entry: &str) -> Result<(), String> {
 pub struct Talkgroups {
     /// Talkgroups
     ///
-    /// Which of this system's talkgroups the plugin takes: every one, only some, or all but some.
+    /// Which this plugin takes
     pub talkgroup_mode: TalkgroupMode,
     /// Only these
     ///
-    /// Numbers, ranges like 1000-1099, and patterns like 507* (* stands for any digits, ? for one).
+    /// e.g. 101, 1000-1099, 507* (* any digits, ? one)
     #[serde(deserialize_with = "patterns", skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "sdk", schemars(with = "Vec<String>", extend("x-when" = {"talkgroupMode": "only"}, "x-talkgroups" = true)))]
     pub talkgroup_allow: Vec<String>,
     /// Except these
     ///
-    /// Numbers, ranges and patterns, as above.
+    /// Numbers, ranges or patterns
     #[serde(deserialize_with = "patterns", skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "sdk", schemars(with = "Vec<String>", extend("x-when" = {"talkgroupMode": ["only", "allBut"]}, "x-talkgroups" = true)))]
     pub talkgroup_deny: Vec<String>,

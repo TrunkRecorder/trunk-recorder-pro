@@ -5,10 +5,11 @@
 // each edge — dragged there, or set with the slider — and the channels it
 // would leave out.
 
-import { useEffect, useRef, useState } from "react";
-import { activeSites, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, resolvedCenters, siteNameOf, watchedChannels } from "./config.ts";
-import { profileSource, updateConfig, useApp } from "./controller.ts";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { activeSites, DEFAULT_GUARD_HZ, enabledChannels, formatMhz, kindLabel, resolvedCenters, siteNameOf, watchedChannels } from "./config.ts";
+import { isRecording, profileSource, updateConfig, useApp } from "./controller.ts";
 import { decimal, type TextCodec } from "./fieldText.ts";
+import { Figs, Info } from "./charts.tsx";
 import { DraftInput } from "./inputs.tsx";
 import type { Config, Source, SourceProfile } from "./protocol.ts";
 import { color as heat } from "./Waterfall.tsx";
@@ -25,7 +26,7 @@ function watched(c: Config): { hz: number; label: string }[] {
   for (const { sys, site } of activeSites(c)) {
     const name = siteNameOf(sys, site);
     for (const f of site.controlChannelsHz) out.push({ hz: f, label: `${name} control` });
-    for (const f of watchedChannels(sys, site)) out.push({ hz: f, label: `${name} ${sys.type === "dmr" ? "DMR" : "NXDN"}` });
+    for (const f of watchedChannels(sys, site)) out.push({ hz: f, label: `${name} ${kindLabel(sys.type)}` });
     for (const f of site.voiceChannelsHz) out.push({ hz: f, label: `${name} voice` });
   }
   for (const ch of enabledChannels(c)) out.push({ hz: ch.freqHz, label: ch.name || "conventional" });
@@ -35,70 +36,91 @@ function watched(c: Config): { hz: number; label: string }[] {
 /**
  * Source `i`'s guard band, and measuring it. `fresh`: just added, so the
  * measuring is offered (it's optional); `onFreshDone` once taken up or turned down.
+ * `shows`: what draws the guard band beside it, given the one shown now.
+ *
+ * The guard band shown moves as it's typed or stepped in the field, or
+ * dragged on the roll-off plot, before it's kept (#105): the field keeps it
+ * once left, the plot with Use.
  */
-export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void }) {
+export function GuardBand(props: { c: Config; i: number; fresh?: boolean; onFreshDone?: () => void; shows?: (guardHz: number) => ReactNode }) {
   const { c, i } = props;
   const src = c.sources[i];
   const guard = src.guardHz ?? DEFAULT_GUARD_HZ;
   const [open, setOpen] = useState(false);
+  // Not kept yet: as typed in the field (while it's in use), and as set on the plot.
+  const [typed, setTyped] = useState<number | undefined>();
+  const [picked, setPicked] = useState<number | null>(null);
+  const shown = typed ?? picked ?? guard;
   // Typed in kHz, snapped to the step (shown snapped once left: "7" on the way to 75 stays).
   const khzCodec: TextCodec<number | undefined> = {
     format: (hz) => (hz === undefined ? "" : String(Math.round(hz / 1000))),
     parse: (t) => (decimal.parse(t) === undefined ? undefined : snap(decimal.parse(t)! * 1000, src.rateHz)),
   };
-  const setGuard = (hz: number) =>
+  const setGuard = (hz: number) => {
+    setPicked(null);
     updateConfig((x) => {
       x.sources[i].guardHz = hz;
     });
+  };
   const start = () => {
     setOpen(true);
     props.onFreshDone?.();
   };
+  // A guard band set on the plot and not used goes with it.
+  const close = () => {
+    setOpen(false);
+    setPicked(null);
+  };
 
   return (
-    <div className="field wide">
-      <span className="field-label">Guard band</span>
-      <div className="row">
-        <DraftInput
-          type="number"
-          className="guard-input"
-          min={0}
-          max={src.rateHz / 4 / 1000}
-          step={5}
-          codec={khzCodec}
-          value={guard}
-          onChange={(hz) => hz !== undefined && setGuard(hz)}
-          aria-label="Guard band at each edge, kHz"
-        />
-        <span className="muted">kHz at each edge</span>
-        <span className="spacer" />
-        <button className="btn ghost small" onClick={() => (open ? setOpen(false) : start())}>
-          {open ? "Close" : "Profile roll-off…"}
-        </button>
-      </div>
-      <span className="field-hint">
-        Unused at each edge, where the filter rolls off. Default {khz(DEFAULT_GUARD_HZ)}.
-      </span>
-      {props.fresh && !open && (
-        <div className="banner small">
-          <span>New radio — measure its edge roll-off?</span>
-          <span className="row">
-            <button className="btn small" onClick={start}>
-              Profile roll-off
-            </button>
-            <button className="btn ghost small" onClick={() => props.onFreshDone?.()}>
-              Skip
-            </button>
-          </span>
+    <>
+      <div className="field wide">
+        <span className="field-label">
+          Guard band
+          <Info>Unused at each edge, where the radio&apos;s filter rolls off. Default {khz(DEFAULT_GUARD_HZ)}.</Info>
+        </span>
+        <div className="row">
+          <DraftInput
+            type="number"
+            className="guard-input"
+            min={0}
+            max={src.rateHz / 4 / 1000}
+            step={5}
+            codec={khzCodec}
+            value={picked ?? guard}
+            onChange={(hz) => hz !== undefined && setGuard(hz)}
+            onDraft={(hz) => setTyped(hz)}
+            aria-label="Guard band at each edge, kHz"
+          />
+          <span className="muted">kHz at each edge</span>
+          <span className="spacer" />
+          <button className="btn ghost small" onClick={() => (open ? close() : start())}>
+            {open ? "Close" : "Profile roll-off…"}
+          </button>
         </div>
-      )}
-      {open && <Profiler c={c} i={i} src={src} guard={guard} onApply={setGuard} />}
-    </div>
+        {props.fresh && !open && (
+          <div className="banner small">
+            <span>New radio: measure its roll-off?</span>
+            <span className="row">
+              <button className="btn small" onClick={start}>
+                Profile roll-off
+              </button>
+              <button className="btn ghost small" onClick={() => props.onFreshDone?.()}>
+                Skip
+              </button>
+            </span>
+          </div>
+        )}
+        {open && <Profiler c={c} i={i} src={src} guard={guard} draft={shown} setDraft={setPicked} onApply={setGuard} />}
+      </div>
+      {props.shows?.(shown)}
+    </>
   );
 }
 
-function Profiler(props: { c: Config; i: number; src: Source; guard: number; onApply: (hz: number) => void }) {
-  const { c, i, src, guard } = props;
+/** Measuring the roll-off; `draft`: the guard band shown on it, not kept until Use. */
+function Profiler(props: { c: Config; i: number; src: Source; guard: number; draft: number; setDraft: (hz: number) => void; onApply: (hz: number) => void }) {
+  const { c, i, src, guard, draft, setDraft } = props;
   const s = useApp();
   const center = resolvedCenters(c)[i];
   const [text, setText] = useState(center ? formatMhz(center) : "");
@@ -106,8 +128,7 @@ function Profiler(props: { c: Config; i: number; src: Source; guard: number; onA
   const busy = s.profiling === i;
   const profile = s.profile?.source === i ? s.profile : null;
   const result = profile && "suggestedGuardHz" in profile ? profile : null;
-  const recording = s.phase === "running" || s.phase === "starting";
-  const [draft, setDraft] = useState(guard);
+  const recording = isRecording(s.phase);
   // A new measurement proposes its suggestion.
   useEffect(() => {
     if (result) setDraft(result.suggestedGuardHz);
@@ -127,11 +148,11 @@ function Profiler(props: { c: Config; i: number; src: Source; guard: number; onA
           {result ? "Measure again" : "Measure"}
         </button>
         <span className="muted small">
-          {recording ? "Stop recording first." : busy ? "Listening…" : null}
+          {recording ? "Stop recording first" : busy ? "Listening…" : null}
         </span>
       </div>
       {!result && !busy && !profile && (
-        <p className="muted small">Best on a quiet frequency, antenna connected, gain as you'll record.</p>
+        <p className="muted small">Best: a quiet frequency, antenna on, recording gain</p>
       )}
       {profile && "error" in profile && <p className="bad small">{profile.error}</p>}
       {result && <Measurement c={c} i={i} r={result} draft={draft} setDraft={setDraft} guard={guard} onApply={props.onApply} />}
@@ -237,15 +258,18 @@ function Measurement(props: { c: Config; i: number; r: Measured; draft: number; 
           {draft === guard ? "In use" : `Use ${khz(draft)}`}
         </button>
       </div>
-      <p className="muted small">
-        Noise floor (blue) is 3 dB down <b>{khz(r.lowHz)}</b> / <b>{khz(r.highHz)}</b> from the low / high edge, {r.lowDropDb.toFixed(1)} /{" "}
-        {r.highDropDb.toFixed(1)} dB at the edges. Suggested: the larger plus half a channel.
-      </p>
-      {out.length > 0 && (
-        <p className="warn small">
-          {out.length === 1 ? "A channel" : `${out.length} channels`} in the guard band: {out.map((w) => `${w.label} ${formatMhz(w.hz)}`).join(", ")} MHz.
-        </p>
-      )}
+      <div className="row rolloff-figs">
+        <Figs
+          items={[
+            { k: "−3 dB, low edge", v: Math.round(r.lowHz / 1000), u: "kHz", title: "How far in from the low edge the noise floor (blue) is 3 dB down" },
+            { k: "−3 dB, high edge", v: Math.round(r.highHz / 1000), u: "kHz", title: "How far in from the high edge the noise floor (blue) is 3 dB down" },
+            { k: "Drop at edges", v: `${r.lowDropDb.toFixed(1)} / ${r.highDropDb.toFixed(1)}`, u: "dB" },
+            out.length > 0 && { k: "In the guard band", v: out.length, u: out.length === 1 ? "channel" : "channels", level: "warn", title: `${out.map((w) => `${w.label} ${formatMhz(w.hz)}`).join(", ")} MHz` },
+          ]}
+        />
+        <Info>Noise floor in blue. Suggested: the larger −3 dB distance plus half a channel.</Info>
+      </div>
+      {out.length > 0 && <p className="warn small mono">{out.map((w) => `${w.label} ${formatMhz(w.hz)}`).join(", ")} MHz</p>}
     </>
   );
 }

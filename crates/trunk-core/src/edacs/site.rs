@@ -105,9 +105,22 @@ impl Site {
         self.carriers.iter().map(|c| c.hz as f64).collect()
     }
 
-    /// The control channel's frequency, once found.
+    /// The control channel's frequency, while it is heard: found, and
+    /// nothing lost for [`CC_LOST_S`] (as DMR's and NXDN's hold theirs).
     pub fn control_hz(&self) -> Option<u64> {
+        let now = self.now();
+        self.cc.filter(|&i| now - self.carriers[i].good_at <= CC_LOST_S).map(|i| self.carriers[i].hz)
+    }
+
+    /// The control channel's frequency once found, heard lately or not
+    /// (never a voice channel's).
+    fn found_hz(&self) -> Option<u64> {
         self.cc.map(|i| self.carriers[i].hz)
+    }
+
+    /// The air time its carriers have reached.
+    fn now(&self) -> f64 {
+        self.carriers.iter().map(|c| c.t).fold(f64::NEG_INFINITY, f64::max)
     }
 
     pub fn counts(&self) -> (u64, u64) {
@@ -187,10 +200,10 @@ impl Site {
 
     /// Assignments old enough to judge: which carriers keyed for each.
     fn judge(&mut self) {
-        let now = self.carriers.iter().map(|c| c.t).fold(f64::NEG_INFINITY, f64::max);
+        let now = self.now();
         let (ready, wait): (Vec<_>, Vec<_>) = self.pending.iter().partition(|&&(_, t)| now - t > JUDGE_AFTER_S);
         self.pending = wait;
-        let cc = self.control_hz();
+        let cc = self.found_hz();
         for (lcn, t) in ready {
             // Not the control channel, nor a frequency already learned as another LCN.
             let keyed: Vec<u64> = self
@@ -320,5 +333,13 @@ mod tests {
         assert_eq!(grants.first(), Some(&857_075_000), "the first: the list's");
         assert_eq!(grants.last(), Some(&857_050_000), "the last: the air's");
         assert_eq!(site.map_to_string(), "3=857050000\n");
+        // Then nothing on the air: past CC_LOST_S the control channel is lost, as DMR's and NXDN's are.
+        let quiet = vec![Complex32::default(); 1500];
+        for _ in 0..40 {
+            for k in 0..heads.len() {
+                site.push(k, &quiet, 0.0, 30_000.0, &mut out);
+            }
+        }
+        assert_eq!(site.control_hz(), None, "nothing heard for 2 s");
     }
 }

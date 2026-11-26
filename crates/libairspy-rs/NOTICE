@@ -1,0 +1,69 @@
+(Trunk Recorder Pro's copy: only the libairspy crate of the repository this
+notice describes is here, in crates/libairspy-rs, with the changes its
+README.md lists. airspy-tools, and so its GPL-2.0 terms, are not included;
+the paths below are the original repository's.
+
+HydraSDR RFOne support — its USB ids, serial string, and the requests that
+differ from an Airspy's (the 64-bit frequency, the bias-T, the RF port, the
+order the receiver starts in) — is transcribed from libhydrasdr, of
+https://github.com/hydrasdr/hydrasdr-host (hydrasdr_rfone.c,
+hydrasdr_commands.h, hydrasdr.c):
+
+  Copyright (C) 2013-2026, Benjamin Vernoux <bvernoux@hydrasdr.com>
+  Released under the MIT License (hydrasdr.c: BSD-3-Clause, with the
+  libairspy authors below).
+
+None of libhydrasdr's IQ converters, decimators or filters are included.)
+
+libairspy-rs
+============
+
+This repository is a Rust port of airspyone_host, the C host support for
+Airspy software-defined radio receivers:
+https://github.com/airspy/airspyone_host
+
+Two components are ported, and each keeps its upstream license:
+
+libairspy (crates/libairspy, package `libairspy-rs`) — BSD-3-Clause
+AND MIT: the driver core matches upstream libairspy's BSD-3-Clause,
+and the IQ conversion module derives from the MIT-licensed converter
+revision (see below). Core attribution:
+
+  Copyright (c) 2013, Michael Ossmann <mike@ossmann.com>
+  Copyright (c) 2012, Jared Boone <jared@sharebrained.com>
+  Copyright (c) 2014, Youssef Touil <youssef@airspy.com>
+  Copyright (c) 2014, Benjamin Vernoux <bvernoux@airspy.com>
+  Copyright (c) 2015, Ian Gilmour <ian@sdrsharp.com>
+
+airspy-tools (crates/airspy-tools) — GPL-2.0-or-later, matching the
+upstream airspy-tools utilities (based on the HackRF project):
+
+  Copyright 2012 Jared Boone <jared@sharebrained.com>
+  Copyright 2014-2015 Benjamin Vernoux <bvernoux@airspy.com>
+
+The USB vendor requests, register sequences, filter kernels, and magic
+constants in this repository are transcribed directly from the upstream
+C source; each crate is a derivative of the corresponding upstream
+component and is distributed under that component's license.
+
+IQ converters (crates/libairspy conversion module, and the golden test
+vectors under test-data/) — derived from the MIT-licensed revision of
+iqconverter_float.[ch] / iqconverter_int16.[ch] at airspyone_host
+commit bd15be38e91ebaa3e0bebb1e320255bde4ccf059:
+
+  Copyright (C) 2014, Youssef Touil <youssef@airspy.com>
+  Released under the MIT License.
+
+Upstream "Copyright Update" commits on June 10, 2025 relicensed those
+files under restrictive "Airspy ecosystem" terms; this project
+deliberately ports from, and generates reference vectors with, the
+last all-MIT revision only (whose code is identical apart from a
+FreeBSD build flag). The MIT license text accompanies the ported
+module.
+
+  Copyright (C) 2026 Jason Herald <jason.herald@gmail.com>
+  and contributors to the libairspy-rs project
+  https://github.com/jasonherald/libairspy-rs
+
+See crates/libairspy/LICENSE and crates/airspy-tools/LICENSE for the
+full license texts.

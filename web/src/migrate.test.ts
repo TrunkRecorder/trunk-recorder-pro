@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { siteNameOf } from "./config.ts";
-import { migrateSelection, migrateTalkgroups } from "./migrate.ts";
+import { migrateSelection, migrateTalkgroups, migrateUnitNames } from "./migrate.ts";
 import { readConfig } from "./rules.ts";
 
 test("an older config is read as the recorder reads it: systems joined by a site group or a site lock become one", () => {
@@ -45,6 +45,13 @@ test("migrateTalkgroups: what an older version kept, read in as rows", () => {
   const kept = { d: "Decimal,Alpha Tag\n7,Tac\n", e: [{ ...migrateTalkgroups({}, { x: "9,n" }).x[0] }] };
   assert.deepEqual(numbers(migrateTalkgroups({}, kept)), { d: [7], e: [9] }, "a file's text kept before; rows as they are");
   assert.deepEqual(migrateTalkgroups({}, {}), {});
+});
+
+test("migrateUnitNames: an older config's unit names, read in as rows from the config; those kept since win", () => {
+  const old = { systems: [{ shortName: "a", sites: [{ controlChannelsHz: [1] }], unitNames: { csv: "1234,Engine 12\n", mode: "ota" } }], conventional: [{ shortName: "c", unitNames: { csv: "5,Car 5\n" } }] };
+  const m = migrateUnitNames(old, { c: [{ unit: "9", name: "Kept" }] });
+  assert.deepEqual([m.a.map((r) => [r.unit, r.name, r.origin?.kind]), m.c], [[["1234", "Engine 12", "file"]], [{ unit: "9", name: "Kept" }]]);
+  assert.deepEqual(migrateUnitNames({}, {}), {});
 });
 
 test("a conventional channel's tone becomes its code, slot and talkgroup; P25 rows sharing a frequency keep their number", () => {

@@ -23,12 +23,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use trunk_app::files::{self, Problem};
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::runtime::{publish, Hub};
+use crate::toolkit::sha256_hex;
 
 /// What an archive may unpack to, in all.
 const MAX_UNPACKED: u64 = 1 << 30;
@@ -171,8 +173,8 @@ impl Registry {
             self.parse(&text).map(|i| (text, i))
         }) {
             Ok((text, index)) => {
-                let _ = std::fs::create_dir_all(crate::paths::data_dir());
-                let _ = crate::config::write_atomic(&self.cache_path(), text);
+                // (Only a cache: the list is fetched again next time.)
+                let _ = files::make_dir(&crate::paths::data_dir()).and_then(|_| files::write_atomic(&self.cache_path(), text));
                 return Catalog { index, source: "registry", fetched: Some(crate::clock::unix_s()), problem: None };
             }
             Err(e) => e,
@@ -275,10 +277,6 @@ pub fn download(url: &str, sha256: &str, limit: u64, what: &str) -> Result<Vec<u
     Ok(data)
 }
 
-pub fn sha256_hex(b: &[u8]) -> String {
-    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
-}
-
 /// Is version `a` newer than `b`? Semver: a prerelease is older than its release.
 pub fn newer(a: &str, b: &str) -> bool {
     /// (major, minor, patch) and the prerelease.
@@ -348,18 +346,7 @@ impl Release {
     pub fn of(repository: &str, tag: Option<&str>, made_with: &str) -> Result<Release, String> {
         let (owner, repo, url_tag) = parse_github(repository)?;
         let tag = tag.map(str::trim).filter(|t| !t.is_empty()).map(String::from).or(url_tag);
-        let api = match &tag {
-            Some(t) => format!("https://api.github.com/repos/{owner}/{repo}/releases/tags/{t}"),
-            None => format!("https://api.github.com/repos/{owner}/{repo}/releases/latest"),
-        };
-        let rel: Value = serde_json::from_slice(&get(&api, 4 << 20, Duration::from_secs(20)).map_err(|e| {
-            if e.contains("404") {
-                format!("{owner}/{repo} has no {} release", tag.as_deref().unwrap_or("published"))
-            } else {
-                e
-            }
-        })?)
-        .map_err(|e| format!("GitHub's answer isn't readable ({e})"))?;
+        let rel = release_json(&owner, &repo, tag.as_deref())?;
         let tag = rel["tag_name"].as_str().unwrap_or_default().to_string();
         let files: BTreeMap<String, String> = rel["assets"]
             .as_array()
@@ -392,6 +379,26 @@ impl Release {
     }
 }
 
+/// GitHub's description of release `tag` (or the latest) of `owner/repo`.
+fn release_json(owner: &str, repo: &str, tag: Option<&str>) -> Result<Value, String> {
+    let api = match tag {
+        Some(t) => format!("https://api.github.com/repos/{owner}/{repo}/releases/tags/{t}"),
+        None => format!("https://api.github.com/repos/{owner}/{repo}/releases/latest"),
+    };
+    let body = get(&api, 4 << 20, Duration::from_secs(20)).map_err(|e| if e.contains("404") { format!("{owner}/{repo} has no {} release", tag.unwrap_or("published")) } else { e })?;
+    serde_json::from_slice(&body).map_err(|e| format!("GitHub's answer isn't readable ({e})"))
+}
+
+/// The latest release of `repository`: its tag and its page.
+pub fn latest_release(repository: &str) -> Result<(String, String), String> {
+    let (owner, repo, _) = parse_github(repository)?;
+    let rel = release_json(&owner, &repo, None)?;
+    match (rel["tag_name"].as_str(), rel["html_url"].as_str()) {
+        (Some(tag), Some(url)) => Ok((tag.to_string(), url.to_string())),
+        _ => Err(format!("{owner}/{repo}'s latest release has no tag")),
+    }
+}
+
 fn parse_sums(text: &str) -> BTreeMap<String, String> {
     text.lines()
         .filter_map(|l| {
@@ -409,11 +416,13 @@ fn parse_sums(text: &str) -> BTreeMap<String, String> {
 /// loose): returns the staging folder (removed when dropped) and that folder.
 pub fn stage(dest: &Path, data: &[u8], zip: bool) -> Result<(Staging, PathBuf), String> {
     let dir = dest.parent().ok_or("nowhere to install")?;
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Why it matters which folder: it's beside the config, wherever that is.
+    let cant = |p: Problem| format!("Can't install into {}. Plugins and interfaces go beside the config file, so the user Trunk Recorder Pro runs as has to be able to write there. {p}", dir.display());
+    files::make_dir(dir).map_err(cant)?;
     let name = dest.file_name().unwrap_or_default().to_string_lossy();
     let staging = Staging(dir.join(format!(".installing-{name}-{}", unique())));
-    let _ = std::fs::remove_dir_all(&staging.0);
-    std::fs::create_dir_all(&staging.0).map_err(|e| format!("{}: {e}", staging.0.display()))?;
+    let _ = files::remove_dir_all(&staging.0);
+    files::make_dir(&staging.0).map_err(cant)?;
     unpack(data, zip, &staging.0)?;
     let root = only_folder(&staging.0).unwrap_or_else(|| staging.0.clone());
     Ok((staging, root))
@@ -424,7 +433,7 @@ pub struct Staging(PathBuf);
 
 impl Drop for Staging {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = files::remove_dir_all(&self.0);
     }
 }
 
@@ -439,18 +448,18 @@ fn only_folder(dir: &Path) -> Option<PathBuf> {
 /// Move `new` to `dest`, keeping the old `dest` until the move has worked.
 pub fn put_in_place(new: &Path, dest: &Path) -> Result<(), String> {
     let old = dest.with_file_name(format!(".old-{}-{}", dest.file_name().unwrap_or_default().to_string_lossy(), unique()));
-    let _ = std::fs::remove_dir_all(&old);
+    let _ = files::remove_dir_all(&old);
     let had = dest.exists();
     if had {
-        std::fs::rename(dest, &old).map_err(|e| format!("Couldn't replace {} ({e}). If it's running, stop recording and try again.", dest.display()))?;
+        files::rename(dest, &old).map_err(|p| format!("Couldn't replace {}. If it's running, stop recording and try again. {p}", dest.display()))?;
     }
-    if let Err(e) = std::fs::rename(new, dest) {
+    if let Err(p) = files::rename(new, dest) {
         if had {
-            let _ = std::fs::rename(&old, dest);
+            let _ = files::rename(&old, dest);
         }
-        return Err(format!("Couldn't install into {} ({e})", dest.display()));
+        return Err(format!("Couldn't install into {}. {p}", dest.display()));
     }
-    let _ = std::fs::remove_dir_all(&old);
+    let _ = files::remove_dir_all(&old);
     Ok(())
 }
 
@@ -469,17 +478,15 @@ pub fn unpack(data: &[u8], zip: bool, into: &Path) -> Result<(), String> {
             }
             let path = into.join(rel);
             if f.is_dir() {
-                std::fs::create_dir_all(&path).map_err(|e| e.to_string())?;
+                files::make_dir(&path)?;
                 continue;
             }
             total += f.size();
             if total > MAX_UNPACKED {
                 return Err("The download unpacks to more than 1 GB".into());
             }
-            if let Some(p) = path.parent() {
-                std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
-            }
-            let mut out = std::fs::File::create(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            files::make_parent(&path)?;
+            let mut out = files::create(&path)?;
             std::io::copy(&mut f.by_ref().take(MAX_UNPACKED), &mut out).map_err(|e| bad(&e))?;
         }
         return Ok(());
@@ -521,7 +528,9 @@ const PROVENANCE: &str = ".install.json";
 
 impl Provenance {
     pub fn write(&self, dir: &Path) {
-        let _ = std::fs::write(dir.join(PROVENANCE), serde_json::to_string_pretty(self).unwrap_or_default());
+        if let Err(p) = files::write(&dir.join(PROVENANCE), serde_json::to_string_pretty(self).unwrap_or_default()) {
+            log::warn!("Where {} came from isn't kept, so it won't be offered updates. {p}", dir.display());
+        }
     }
 
     pub fn read(dir: &Path) -> Option<Provenance> {
@@ -635,6 +644,28 @@ pub(crate) mod tests {
         assert!(root.ends_with("wall-1.0.0") && root.join("index.html").is_file());
         drop(staging);
         assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0, "the staging folder is gone");
+    }
+
+    /// A folder the user can't write to (on the forum: "not authorized to write to the folder").
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_folder_is_named_with_what_to_do() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = temp("unwritable");
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let e = stage(&d.join("plugins/pager"), &zip_of(&[("pager-1.0.0/pager", b"bin")]), true).err();
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let Some(e) = e else { return }; // root writes anywhere
+        assert!(e.starts_with(&format!("Can't install into {}. Plugins and interfaces go beside the config file", d.join("plugins").display())), "{e}");
+        // Whose folder it is and who the app runs as, and what to do (one's own: chmod).
+        assert!(e.contains("Permission denied") && e.contains(&format!("{} is owned by", d.display())) && e.contains("the app runs as") && e.contains("chmod u+w"), "{e}");
+        // A folder that's there but can't be written: the staging folder fails, and the folder is named the same.
+        std::fs::create_dir_all(d.join("plugins")).unwrap();
+        std::fs::set_permissions(d.join("plugins"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let e = stage(&d.join("plugins/pager"), &zip_of(&[("pager-1.0.0/pager", b"bin")]), true).err().unwrap();
+        std::fs::set_permissions(d.join("plugins"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(e.starts_with(&format!("Can't install into {}. ", d.join("plugins").display())), "{e}");
+        assert!(e.contains(&format!("{} is owned by", d.join("plugins").display())) && e.contains("chmod u+w"), "{e}");
     }
 
     #[test]

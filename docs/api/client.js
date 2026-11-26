@@ -29,13 +29,16 @@ export function decodeAudioFrame(buf) {
  *
  *   const rec = new TrunkClient();                       // the page's own recorder
  *   const rec = new TrunkClient({ server: "pi.local:8080" });
+ *   const rec = new TrunkClient({ server: "pi.local:8080", token: "trp_…" }); // signing in is on
  *   rec.on("change", () => draw(rec));                   // anything changed
  *   rec.on("concluded", (m) => console.log(m.entry));    // one message type
  *
  * State (read it, don't change it): connected, version, config, phase
- * ({ phase, error, ended }), status (EngineStatus), sources, calls (on the
+ * ({ phase, error, ended, restartNeeded }), status (EngineStatus: the run's
+ * now, or the last one's after it stopped; null from Start until the first), sources, calls (on the
  * air now), history (recorded calls, newest first), configVersion, talkgroupRows,
- * capabilities, log (after subscribe(["log"])), aliases, error (also why a
+ * capabilities, access ("listen" | "control") and user (the user it signed
+ * in as, or null), log (after subscribe(["log"])), aliases, error (also why a
  * setConfig was refused), exited (the recorder quit; it keeps trying to reconnect).
  * "change" fires once, at `hello`, while a connection is being greeted.
  */
@@ -45,23 +48,32 @@ export class TrunkClient {
    * @param {string} [opts.server] host:port; default the page's own host (Node: localhost:8080)
    * @param {boolean} [opts.secure] wss:// (default: when the page is https)
    * @param {number} [opts.historyLimit] recorded calls kept in `history` (default 500)
+   * @param {string} [opts.token] an access token's secret ("trp_…"), for a recorder with signing
+   *   in on: put on the WebSocket's and the call files' URLs as ?token=. Not needed by a page the
+   *   recorder serves once its browser has signed in (the cookie does), nor with signing in off.
    */
   constructor(opts = {}) {
     const page = typeof location !== "undefined" && location.protocol.startsWith("http") ? location : null;
     this.server = opts.server ?? (page ? page.host : "localhost:8080");
     const secure = opts.secure ?? page?.protocol === "https:";
     this.httpBase = `${secure ? "https" : "http"}://${this.server}`;
-    this.wsUrl = `${secure ? "wss" : "ws"}://${this.server}/api/ws`;
+    this.token = opts.token || null;
+    this._auth = this.token ? `token=${encodeURIComponent(this.token)}` : "";
+    this.wsUrl = `${secure ? "wss" : "ws"}://${this.server}/api/ws${this._auth ? `?${this._auth}` : ""}`;
     this.historyLimit = opts.historyLimit ?? 500;
 
     this.connected = false;
     this.version = null;
     /** What the recorder can do beyond recording (hello.capabilities: "service", "drivers", "plugins", "interfaces", "host", "keys"). */
     this.capabilities = [];
+    /** What this connection may do (hello.access): "listen" or "control"; null until greeted. */
+    this.access = null;
+    /** The user it signed in as, by name (hello.user); null when it didn't. */
+    this.user = null;
     this.config = null;
     /** The version of `config`: a `setConfig` names the one it edits. */
     this.configVersion = 0;
-    this.phase = { phase: "idle", error: null, ended: false };
+    this.phase = { phase: "idle", error: null, ended: false, restartNeeded: false };
     this.status = null;
     this.sources = [];
     this.calls = [];
@@ -70,13 +82,15 @@ export class TrunkClient {
     this.talkgroupRows = {};
     /** Edits of single talkgroups since each system's rows came (`talkgroupEdited`): talkgroups() includes them. */
     this.talkgroupEdits = {};
+    /** Each system's own names for its radios (`unitNames` messages, with `unitNameEdited` made: rows { unit, name, origin }, in order), by short name. */
+    this.unitNameRows = {};
     this.log = [];
-    /** `calls` asked and not answered yet: id → resolve. */
+    /** `queryCalls` asked and not answered yet: id → resolve. */
     this._asked = new Map();
     this._nextId = 1;
     /** Talker aliases heard on the air (saved ones, then live): short name → { unit: alias }. */
     this.aliases = {};
-    this._unitCache = new Map();
+    this._unitCache = new WeakMap();
     /** The latest `error` message from the recorder (a command that failed). */
     this.error = null;
     /** The recorder said it was exiting (`quit`); cleared when it's back. */
@@ -115,9 +129,10 @@ export class TrunkClient {
    * talkgroup, unit (a radio), from / to (start time, Unix ms), cursor (the
    * previous page's `next`) and limit (1 to 500, 100). Answers
    * `{ entries, next?, error? }`; page on with `cursor` while `next` is there. Needs the
-   * `calls` capability; the desktop app answers from its call store.
+   * `calls` capability; the desktop app answers from its call store. (Not `calls`: that's
+   * the calls on the air now.)
    */
-  calls(query = {}) {
+  queryCalls(query = {}) {
     const id = this._nextId++;
     return new Promise((resolve) => {
       this._asked.set(id, resolve);
@@ -136,7 +151,8 @@ export class TrunkClient {
   /**
    * Costly messages come only when asked for, while you show them:
    * subscribe(["log", "spectrum:0"]) — the control channel log, a radio's
-   * waterfall (also "rf:<source>", "decode:<shortName>", "platform").
+   * waterfall (also "rf:<source>", "decode:<shortName>", "platform", and
+   * "unit": unitEvent, what each radio does on the control channel).
    * Replaces the last; kept across reconnects. subscribe([]) stops them.
    */
   subscribe(topics) {
@@ -147,12 +163,13 @@ export class TrunkClient {
   /**
    * Live audio on this connection: listen() every call, listen({ talkgroup })
    * one talkgroup's, listen({ system, talkgroup }) one system's (`system`: its
-   * short name), listen(false) none.
+   * short name), listen(false) none. `voice: true` adds the vocoder frames
+   * (on("voice", (m) => m.chunk)); `audio: false` leaves out the PCM: listen({ voice: true, audio: false }).
    * Kept across reconnects. Chunks come to on("audio", …).
    */
   listen(filter = {}) {
-    this._listen = filter === false ? null : { system: filter.system ?? null, talkgroup: filter.talkgroup ?? null };
-    this.send({ type: "listen", on: !!this._listen, system: this._listen?.system ?? null, talkgroup: this._listen?.talkgroup ?? null });
+    this._listen = filter === false ? null : { system: filter.system ?? null, talkgroup: filter.talkgroup ?? null, voice: !!filter.voice, audio: filter.audio ?? true };
+    this.send(this._listen ? { type: "listen", on: true, ...this._listen } : { type: "listen", on: false, system: null, talkgroup: null });
   }
 
   /**
@@ -174,14 +191,14 @@ export class TrunkClient {
   /**
    * A radio's name on system `shortName` (trunked or conventional), as the
    * system's `unitNames.mode` picks it: "user" (the default) its unit names
-   * (`unitNames.csv`: `unit,name` lines; a unit between slashes is a regular
-   * expression, `/^1(\d{3})$/,Engine $1`) then the talker alias heard, "ota"
-   * the alias first, "user_only", "none". "" when there's none.
+   * (`unitNameRows`: a unit ID, or a regular expression between slashes,
+   * `/^1(\d{3})$/` named `Engine $1`; the first match) then the talker alias
+   * heard, "ota" the alias first, "user_only", "none". "" when there's none.
    */
   unitName(shortName, unit) {
     const sys = this.config?.systems.find((s) => s.shortName === shortName) ?? this.config?.conventional?.find((s) => s.shortName === shortName);
     const names = sys?.unitNames;
-    const user = () => userUnitName(this._unitCache, names?.csv ?? "", unit);
+    const user = () => userUnitName(this._unitCache, this.unitNameRows[shortName] ?? [], unit);
     const heard = () => this.aliases[shortName]?.[unit] || undefined;
     const mode = names?.mode || "user";
     const name = mode === "ota" ? heard() ?? user() : mode === "user_only" ? user() : mode === "none" ? undefined : user() ?? heard();
@@ -227,10 +244,38 @@ export class TrunkClient {
     this.send({ type: "setTalkgroup", system: shortName, talkgroup, edit });
   }
 
+  /**
+   * Replace system `shortName`'s own names for its radios: rows { unit, name }
+   * ([] for none). `from` (optional): where they came from, { kind: "file",
+   * name: "units.csv" } — the rows that change get it. Needs control access.
+   */
+  setUnitNames(shortName, rows, from) {
+    this.send({ type: "setUnitNames", system: shortName, unitNames: rows, ...(from ? { from } : {}) });
+  }
+
+  /** Name radio `unit` of system `shortName` ("": its own name taken out). Needs control access. */
+  setUnitName(shortName, unit, name) {
+    this.send({ type: "setUnitName", system: shortName, unit, name });
+  }
+
   /** A recorded call's file: entry (or its path), "wav" | "json" | "m4a". */
   callUrl(entry, ext = "wav") {
     const path = typeof entry === "string" ? entry : entry.path;
-    return `${this.httpBase}/calls/${path.split("/").map(encodeURIComponent).join("/")}.${ext}`;
+    return `${this.httpBase}/calls/${path.split("/").map(encodeURIComponent).join("/")}.${ext}${this._auth ? `?${this._auth}` : ""}`;
+  }
+
+  /**
+   * Whether signing in is on and what this page may do: { auth, access, user,
+   * proxy, passkeys, passkeyOrigin } (GET /api/session; `access` null: it must
+   * sign in; `proxy`: the proxy in front signed it in; `passkeys`: they work on
+   * this port, the built-in interface's; `passkeyOrigin`: the one origin they
+   * work at, whose /signin offers them). A WebSocket that may
+   * not connect just closes, so this is how a page tells that from a recorder
+   * that's down (which rejects).
+   */
+  async session() {
+    const r = await fetch(`${this.httpBase}/api/session${this._auth ? `?${this._auth}` : ""}`);
+    return r.json();
   }
 
   /** Stop for good. */
@@ -293,6 +338,8 @@ export class TrunkClient {
       case "hello":
         this.version = m.version;
         this.capabilities = m.capabilities ?? [];
+        this.access = m.access ?? null;
+        this.user = m.user ?? null;
         this._greeting = false;
         if (!this.connected) {
           this.connected = true;
@@ -303,8 +350,10 @@ export class TrunkClient {
         if (this._topics.length) this.send({ type: "subscribe", topics: this._topics });
         break;
       case "state":
-        this.phase = { phase: m.phase, error: m.error, ended: m.ended };
+        this.phase = { phase: m.phase, error: m.error, ended: m.ended, restartNeeded: m.restartNeeded };
         if (m.phase !== "running") this.calls = [];
+        // A new run: the last one's status is gone (after Stop it stays, as it ended).
+        if (m.phase === "starting") Object.assign(this, { status: null, sources: [] });
         break;
       case "status":
         Object.assign(this, { status: m.status, sources: m.sources, calls: m.calls });
@@ -326,6 +375,12 @@ export class TrunkClient {
         break;
       case "talkgroupEdited":
         this.talkgroupEdits = { ...this.talkgroupEdits, [m.system]: [...(this.talkgroupEdits[m.system] ?? []), { talkgroup: m.talkgroup, edit: m.edit }] };
+        break;
+      case "unitNames":
+        this.unitNameRows = { ...this.unitNameRows, [m.system]: m.unitNames };
+        break;
+      case "unitNameEdited":
+        this.unitNameRows = { ...this.unitNameRows, [m.system]: withUnitName(this.unitNameRows[m.system] ?? [], m.unit, m.name, m.origin) };
         break;
       case "history":
         this.history = m.entries.slice(0, this.historyLimit);
@@ -396,23 +451,31 @@ export function parseUnitAliases(csv) {
   return out;
 }
 
-/** The name a unit names CSV gives `unit` (first match; `$1` / `\1` take a pattern's groups), or undefined. */
-function userUnitName(cache, csv, unit) {
-  if (!csv) return undefined;
-  let rows = cache.get(csv);
+/** `rows` with radio `unit` named `name` by `origin`, as the recorder edits them: its own row (ahead of the patterns), or taken out when `name` is "". */
+function withUnitName(rows, unit, name, origin) {
+  const key = String(unit);
+  const rest = rows.filter((r) => r.unit !== key);
+  if (!name.trim()) return rest;
+  const had = rows.find((r) => r.unit === key);
+  const row = { unit: key, name: name.trim(), origin: had && had.name === name.trim() ? had.origin : origin };
+  const at = had ? rows.indexOf(had) : rest.findIndex((r) => r.unit.startsWith("/"));
+  const i = at < 0 ? rest.length : at;
+  return [...rest.slice(0, i), row, ...rest.slice(i)];
+}
+
+/** The name `rows` (a system's unit names) give `unit` (first match; `$1` / `\1` take a pattern's groups), or undefined. */
+function userUnitName(cache, names, unit) {
+  if (!names.length) return undefined;
+  let rows = cache.get(names);
   if (!rows) {
     rows = [];
-    for (const line of csv.split(/\r?\n/)) {
-      const t = line.trim();
-      if (!t || t.startsWith("#")) continue;
-      const [pat = "", name = ""] = splitCsv(t);
-      if (!pat || !name) continue;
+    for (const { unit: pat, name } of names) {
       try {
         const re = pat.length > 1 && pat.startsWith("/") && pat.endsWith("/") ? new RegExp(pat.slice(1, -1)) : new RegExp(`^${pat.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
         rows.push([re, name.replace(/\\(\d+)/g, "$$$1")]);
       } catch {}
     }
-    cache.set(csv, rows);
+    cache.set(names, rows);
   }
   const id = String(unit);
   const hit = rows.find(([re]) => re.test(id));

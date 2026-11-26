@@ -1,4 +1,4 @@
-// A system's "Share with the community" switch (Setup → Systems → Basics):
+// A system's "Share with the directory" switch (Setup → Systems → Basics):
 // while it records, the recorder shares what it hears of the system with
 // the directory at trunkrecorder.pro/directory, again as it hears new
 // talkgroups or voice channels (at most hourly; daily otherwise). The
@@ -8,6 +8,7 @@ import { useState } from "react";
 import type { Config, System } from "./protocol.ts";
 import { hasCallSign, trpBase } from "./config.ts";
 import { siteFrequencies, snapshot, updateConfig, useApp } from "./controller.ts";
+import { Fig, Info } from "./charts.tsx";
 import { ago } from "./fmt.ts";
 import { IdentifyDialog } from "./Identify.tsx";
 import { Toggle } from "./inputs.tsx";
@@ -24,7 +25,6 @@ export function ShareSystem(props: { c: Config; i: number }) {
   const { c, i } = props;
   const sys = c.systems[i];
   const app = useApp();
-  const [explain, setExplain] = useState(false);
   const [identifying, setIdentifying] = useState(false);
   const [noCallSign, setNoCallSign] = useState(false);
   const can = SHAREABLE.includes(sys.type);
@@ -34,30 +34,33 @@ export function ShareSystem(props: { c: Config; i: number }) {
       if (on) x.systems[i].share = true;
       else delete x.systems[i].share;
     });
-  const turnOn = () => {
-    set(true);
-    setExplain(!sys.directory);
-  };
+  const turnOn = () => set(true);
   const freqs = siteFrequencies(sys.sites).map((x) => x.freqHz);
   return (
     <div className="field wide share-system">
+      <div className="row share-toggle">
       <Toggle
-        label="Share channel and talkgroup config with the community"
+        label="Share with the directory"
         checked={!!sys.share && can}
         disabled={!can}
         onChange={(v) => {
           setNoCallSign(false);
-          if (!v) return (set(false), setExplain(false));
+          if (!v) return set(false);
           // Sharing needs an FCC call sign (for now): without one, Identify first; on only if it finds one.
           if (hasCallSign(sys.fcc)) turnOn();
           else setIdentifying(true);
         }}
-        hint={
-          can
-            ? "Its sites, channels and the talkgroups it hears (numbers, how often, encrypted or not) go to the directory at trunkrecorder.pro, and again as it hears new ones. Not talkgroup names, and not where you are."
-            : "Conventional and EDACS systems can't be shared yet."
-        }
+        hint={can ? "Sites, channels, talkgroup numbers" : "Not for EDACS yet"}
       />
+      {can && (
+        // (Beside the switch, not in its label: a click on it would flip the switch.)
+        <Info>
+          Its sites, channels and the talkgroups it hears (numbers, how often, encrypted or not) go to the directory at trunkrecorder.pro. Not talkgroup names, and
+          not where you are. It shares once it has decoded the system for a few minutes while recording, then at most hourly as it hears new talkgroups or voice
+          channels (daily otherwise). Shares carry an anonymous ID for this install, nothing else about you. Sharing needs an FCC call sign.
+        </Info>
+      )}
+      </div>
       {identifying && (
         <IdentifyDialog
           target={{ kind: "system", index: i }}
@@ -66,8 +69,7 @@ export function ShareSystem(props: { c: Config; i: number }) {
           fcc={sys.fcc}
           intro={
             <p className="small">
-              Sharing needs the system's FCC call sign, so the directory knows which licensed system it is. Look up who is licensed on its frequencies
-              near you: Share turns on once a call sign is kept.
+              Sharing needs an FCC call sign <Info>So the directory knows which licensed system it is. Share turns on once a call sign is kept.</Info>
             </p>
           }
           onClose={() => {
@@ -79,16 +81,17 @@ export function ShareSystem(props: { c: Config; i: number }) {
         />
       )}
       {noCallSign && !sys.share && (
-        <p className="small muted share-explain">
-          {freqs.length
-            ? "No FCC call sign was kept, so Share stays off. A Motorola P25 system's is often heard on the air while recording; or try Identify farther out."
-            : "Add its control channels first: Identify looks up who is licensed on them."}
-        </p>
-      )}
-      {explain && sys.share && (
-        <p className="small muted share-explain">
-          It shares once it has decoded {sys.shortName} for a few minutes while recording, then at most hourly as it hears new talkgroups or voice
-          channels (daily otherwise). Shares carry an anonymous ID for this install, nothing else about you.
+        <p className="small share-explain">
+          {freqs.length ? (
+            <>
+              <span className="chip warn">No call sign</span> Share stays off{" "}
+              <Info>A Motorola P25 system's call sign is often heard on the air while recording; or try Identify farther out.</Info>
+            </>
+          ) : (
+            <>
+              <span className="chip warn">No control channels</span> Identify needs them
+            </>
+          )}
         </p>
       )}
       {sys.share && can && <ShareLine c={c} sys={sys} state={status?.state} lastShared={status?.lastShared ?? null} error={status?.error ?? null} />}
@@ -101,21 +104,36 @@ function ShareLine(props: { c: Config; sys: System; state?: string; lastShared: 
   const last = props.lastShared;
   const link = sys.directory?.id && (
     <a href={directoryUrl(c, sys.directory.id)} target="_blank" rel="noreferrer">
-      View in the directory
+      Directory ↗
     </a>
   );
   if (!hasCallSign(sys.fcc) || props.state === "needsCallSign")
-    return <p className="small share-status error">Not shared until it has an FCC call sign: Identify finds it.</p>;
+    return (
+      <p className="small share-status error">
+        <span className="chip bad">Not shared</span> Needs a call sign: try Identify
+      </p>
+    );
   if (props.state === "error")
     return (
       <p className="small share-status error">
-        {`Not shared: ${props.error ?? ""}`}
+        <span className="chip bad" title={props.error ?? undefined}>
+          Not shared
+        </span>{" "}
+        {props.error ?? ""}
         {link && <> · {link}</>}
       </p>
     );
   return (
     <p className="small muted share-status">
-      {last ? `Shared ${ago(last / 1000)}` : props.state === "waiting" ? "Shares once it has been decoded a few minutes" : "Shares while it records"}
+      {last ? (
+        <>
+          Shared <Fig v={ago(last / 1000)} />
+        </>
+      ) : props.state === "waiting" ? (
+        "First share after a few minutes"
+      ) : (
+        "Shares while recording"
+      )}
       {link && <> · {link}</>}
     </p>
   );

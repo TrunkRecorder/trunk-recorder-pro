@@ -1,6 +1,6 @@
 //! `trunk-pro tool p25synth <out.cu8|out.cf32> [--center Hz] [--rate Hz]
-//! [--freq Hz] [--keys keys.json] [--mi HEX] [--voice call.frames.jsonl |
-//! call.sdr] [--superframes 10] [--wav out.wav] [--nac 659] [--tg 1201]
+//! [--freq Hz] [--keys keys.json] [--mi HEX] [--voice frames.jsonl |
+//! frames.sdr] [--superframes 10] [--wav out.wav] [--nac 659] [--tg 1201]
 //! [--source 1234567]` — a synthetic P25 Phase 1 transmission (HDU, LDU1 /
 //! LDU2, TDU) on `--freq`, encrypted with the first key of `--keys` (the
 //! keys file `replay --keys` reads), or clear without it. The voice is a

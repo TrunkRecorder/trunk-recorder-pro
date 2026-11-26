@@ -5,7 +5,7 @@
 // leaving part way keeps what was done. Experienced users skip it.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { autoCenter, detectRadios, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, resolvedCenters, sourceCovering, newSystem, parseFreqList, planCenters, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os } from "./config.ts";
+import { detectRadios, pickable, siteNumber, deviceId, DRIVER_KINDS, type DriverKind, enabledChannels, hasBiasT, needsDriver, formatMhz, importTrunkRecorderConfig, kindLabel, receiverOf, resolvedCenters, newSystem, parseFreqList, placeSources, reaches, SOURCE_KINDS, sourceKey, startProblem, trConfigFiles, uniqueShortName, usableHalfWidth, type ImportTodo, type Os, networkRadio, onNetwork, desktopOnly } from "./config.ts";
 import {
   can,
   applySurvey,
@@ -21,6 +21,7 @@ import {
   readTrConfig,
   refreshDevices,
   setTalkgroups,
+  setUnitNames,
   setTodo,
   start,
   startSurvey,
@@ -31,11 +32,14 @@ import {
   useApp,
   web,
   type AppState,
+  holdsRadios,
 } from "./controller.ts";
 import { cleanShortName } from "./fieldText.ts";
 import { openImport, parseBundle, sitesFileBundle, type Bundle } from "./directoryImport.tsx";
-import { BiasT, FileInput, TextInput } from "./inputs.tsx";
-import type { Config, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
+import { BiasT, CopyButton, FileInput, TextInput } from "./inputs.tsx";
+import { Fig, Figs, Info } from "./charts.tsx";
+import { FolderCheck } from "./FolderCheck.tsx";
+import type { Config, OriginFrom, Source, SurveyCandidate, SurveyMonitor, SurveySuggestion, System } from "./protocol.ts";
 import { pluginCopies } from "./protocol.ts";
 import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./talkgroups.ts";
 import { openTodos } from "./todo.ts";
@@ -128,10 +132,10 @@ export function SetupGuide(props: { mode: "start" | "import"; onClose: () => voi
         </button>
       </header>
       <main className="ob-body">
-        {!s.connected && <div className="ob-note bad">Waiting for the recorder… is Trunk Recorder Pro running?</div>}
-        {s.error && (
+        {!s.connected && <div className="ob-note bad">Waiting for the recorder · is it running?</div>}
+        {(s.error ?? s.runError) && (
           <div className="ob-note bad" role="alert">
-            <span>{s.error}</span>
+            <span>{s.error ?? s.runError}</span>
             <button className="ob-link" onClick={dismissError}>
               Dismiss
             </button>
@@ -260,7 +264,7 @@ function Welcome(props: { onStart: () => void; onImport: () => void; onSkip: () 
           Get started
         </button>
         <button className="ob-btn ghost" disabled={!props.ready} onClick={props.onImport}>
-          I have a Trunk Recorder config
+          Import a Trunk Recorder config
         </button>
         <button className="ob-link" onClick={props.onSkip}>
           Skip to the app
@@ -282,7 +286,14 @@ async function connectWebDongle(): Promise<void> {
 
 export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; onBack: () => void }) {
   const { s } = props;
-  const detected = useMemo(() => detectRadios(s.devices, s.radios), [s.devices, s.radios]);
+  // Each radio found, a source each; one that can't be told apart from one before it isn't (Config::radio_picks).
+  const detected = useMemo(() => {
+    const picks = pickable({ ...props.c, sources: [] }, null, s.devices, s.radios);
+    return detectRadios(s.devices, s.radios).map((d) => {
+      const u = picks.at(d.at).unpickable;
+      return u && u.why !== "source" && u.twin != null ? { ...d, busy: `can't be told apart from another: ${u.why === "noSerial" ? "no serial" : "the same serial"}` } : d;
+    });
+  }, [s.devices, s.radios, props.c]);
   const [picked, setPicked] = useState<Set<string> | null>(null);
   // Which radios power an LNA through their bias-T: as saved, until changed here.
   const [biasT, setBiasT] = useState<Set<string> | null>(null);
@@ -329,11 +340,11 @@ export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; 
         title={!detected.length ? "Let's connect your radio" : free.length ? "Which radios should record?" : "Your radios are busy"}
         lead={
           !detected.length
-            ? "Plug in an SDR: RTL-SDR, Airspy, HackRF or similar."
+            ? "Plug in an SDR: RTL-SDR, Airspy, HackRF…"
             : !free.length
               ? "Another program is using them."
               : free.length > 1
-                ? "More radios hear more of a system at once."
+                ? "More radios, more of the system heard."
                 : undefined
         }
       />
@@ -342,7 +353,7 @@ export function RadiosStep(props: { s: AppState; c: Config; onNext: () => void; 
           {[...free, ...detected.filter((d) => d.busy)].map((d) => {
             const on = !d.busy && chosen.has(d.key);
             return (
-              <div key={d.key} className="ob-pick">
+              <div key={`${d.key}#${d.at}`} className="ob-pick">
                 <button className={`ob-card pick${on ? " on" : ""}${d.busy ? " busy" : ""}`} role="checkbox" aria-checked={on} disabled={!!d.busy} onClick={() => toggle(d.key)}>
                   {!d.busy && (
                     <span className="ob-check" aria-hidden="true">
@@ -431,12 +442,12 @@ function tipsFor(os: Os, s: AppState): Tip[] {
     {
       title: "Plug it straight into the computer",
       art: <IconPlug />,
-      body: <p>Skip hubs and extension cables. If one port fails, try another.</p>,
+      body: <p>No hubs or extension cables. Try another port.</p>,
     },
     {
       title: "Close other radio apps",
       art: <IconApps />,
-      body: <p>Only one program can use a radio. Quit SDR#, SDR++, GQRX, rtl_tcp and the like.</p>,
+      body: <p>One app per radio: quit SDR#, SDR++, GQRX, rtl_tcp…</p>,
     },
   ];
   if (web) {
@@ -445,7 +456,7 @@ function tipsFor(os: Os, s: AppState): Tip[] {
       art: <IconLaptop />,
       body: (
         <>
-          <p>Only Chrome and Edge can reach USB radios.</p>
+          <p>Only they can reach USB radios.</p>
           <button className="ob-btn primary" onClick={() => void connectWebDongle()}>
             Connect a radio
           </button>
@@ -459,26 +470,25 @@ function tipsFor(os: Os, s: AppState): Tip[] {
       art: <IconChip />,
       body: (
         <>
-          <p>A one-time fix with the free Zadig tool:</p>
+          <p>Once, with the free Zadig:</p>
           <ol className="ob-numbered">
             <li>
-              Open Zadig from{" "}
+              Open{" "}
               <a href="https://zadig.akeo.ie" target="_blank" rel="noreferrer">
                 zadig.akeo.ie
               </a>
-              .
             </li>
             <li>
-              Choose <b>Options → List All Devices</b>.
+              <b>Options → List All Devices</b>
             </li>
             <li>
-              Pick <b>Bulk-In, Interface (Interface 0)</b>.
+              Pick <b>Bulk-In, Interface (Interface 0)</b>
             </li>
             <li>
-              Make sure <b>WinUSB</b> is selected, then press <b>Replace Driver</b>.
+              <b>WinUSB</b> → <b>Replace Driver</b>
             </li>
+            <li>Replug the radio</li>
           </ol>
-          <p>Then replug the radio.</p>
         </>
       ),
     });
@@ -487,13 +497,13 @@ function tipsFor(os: Os, s: AppState): Tip[] {
       {
         title: "Let your account use the radio",
         art: <IconKey />,
-        body: <p>Run this in a terminal, then replug the radio.</p>,
+        body: <p>Run in a terminal, then replug.</p>,
         cmd: UDEV_RULE,
       },
       {
         title: "Stop the TV-tuner driver",
         art: <IconChip />,
-        body: <p>Linux may claim an RTL-SDR as a TV tuner. This stops it.</p>,
+        body: <p>Linux may grab an RTL-SDR as a TV tuner.</p>,
         cmd: DVB_BLACKLIST,
       },
     );
@@ -502,9 +512,12 @@ function tipsFor(os: Os, s: AppState): Tip[] {
       title: "Check that your Mac sees it",
       art: <IconLaptop />,
       body: (
-        <p>
-          In <b>System Report → USB</b>, look for <b>RTL2838</b> or your radio&apos;s name. Missing? Try another cable or port.
-        </p>
+        <>
+          <p>
+            <b>System Report → USB</b>: look for <b>RTL2838</b> or your radio&apos;s name.
+          </p>
+          <p>Missing? Try another cable or port.</p>
+        </>
       ),
     });
   }
@@ -518,7 +531,7 @@ function tipsFor(os: Os, s: AppState): Tip[] {
       art: <IconBox />,
       body: (
         <>
-          <p>Other radios need their own driver:</p>
+          <p>Others need a driver:</p>
           <ul className="ob-drivers">
             <li className="ok">✓ RTL-SDR — built in</li>
             {known.map((kind) => {
@@ -534,10 +547,10 @@ function tipsFor(os: Os, s: AppState): Tip[] {
           </ul>
           {missing.length > 0 &&
             (os === "windows" ? (
-              <p>Install PothosSDR or your radio&apos;s driver, then restart Trunk Recorder Pro.</p>
+              <p>Install PothosSDR or your radio&apos;s driver, then restart the app.</p>
             ) : (
               <>
-                <p>Install, then restart Trunk Recorder Pro:</p>
+                <p>Install, then restart the app:</p>
                 {missing.map((kind) => {
                   const k = SOURCE_KINDS[kind];
                   return <Command key={kind} label={k.covers ? `${k.covers} (${k.label})` : `${k.label} (${k.driver?.name})`} cmd={k.driver?.[os] ?? ""} />;
@@ -553,8 +566,13 @@ function tipsFor(os: Os, s: AppState): Tip[] {
     art: <IconQuestion />,
     body: (
       <>
-        <p>Try the radio in SDR++. If it fails there too, the radio or cable may be faulty.</p>
-        <p>If it works there, set it up by hand: <b>Exit guide</b> above.</p>
+        <p>Try it in SDR++.</p>
+        <ul className="ob-numbered">
+          <li>Fails there too: radio or cable faulty</li>
+          <li>
+            Works there: <b>Exit guide</b>, set it up by hand
+          </li>
+        </ul>
       </>
     ),
   });
@@ -619,7 +637,7 @@ function Troubleshooter(props: { s: AppState; found: number; onFound: () => void
       {newlyFound ? (
         <div className="ob-note ok">
           <span>
-            <b>Found it!</b> {props.found === 1 ? "A radio is" : `${props.found} radios are`} connected.
+            <b>Found it!</b> <Fig v={props.found} u={props.found === 1 ? "radio" : "radios"} />
           </span>
           <button className="ob-btn primary" onClick={props.onFound}>
             Use it
@@ -654,21 +672,12 @@ function Troubleshooter(props: { s: AppState; found: number; onFound: () => void
 }
 
 function Command(props: { cmd: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
   if (!props.cmd) return null;
-  const copy = () => {
-    void navigator.clipboard?.writeText(props.cmd).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
-  };
   return (
     <div className="ob-cmd">
       {props.label && <span className="ob-cmd-label">{props.label}</span>}
       <pre>{props.cmd}</pre>
-      <button className="ob-btn small" onClick={copy}>
-        {copied ? "Copied" : "Copy"}
-      </button>
+      <CopyButton text={props.cmd} className="ob-btn small" />
     </div>
   );
 }
@@ -687,7 +696,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
   const [bands, setBands] = useState<string[] | null>(null);
   const [manual, setManual] = useState(false);
   const picked = bands ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
-  const unsupported = !can("drivers") && !!c.sources[source] && needsDriver(c.sources[source]);
+  const unsupported = !can("drivers") && !!c.sources[source] && desktopOnly(c.sources[source]);
   // Naming what it finds from FCC licenses: optional, with the location given here.
   const [naming, setNaming] = useState(() => !!savedWhere().text);
   const [where, setWhere] = useState<Where>(savedWhere);
@@ -728,10 +737,10 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
     const sys = c.systems[found.system];
     return (
       <section className="ob-step">
-        <Head art={<ArtDone />} title="System added" lead={<>{sys.name || sys.shortName} is set up. Scanning again replaces it.</>} />
+        <Head art={<ArtDone />} title="System added" lead={<b>{sys.name || sys.shortName}</b>} />
         <div className="ob-center-actions">
           <button className="ob-link" onClick={scan}>
-            Scan again
+            Scan again (replaces it)
           </button>
         </div>
         <Nav onBack={props.onBack} onNext={props.onNext} />
@@ -745,9 +754,8 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
         <Head
           art={<ArtScan still />}
           title="Find a system near you"
-          lead="Sweeps the public-safety bands. Takes a minute or two."
+          lead="Sweeps the public-safety bands · 1–2 min"
         />
-        <p className="ob-aside">You can add more systems later.</p>
         {radios.length > 1 && (
           <div className="ob-field">
             <span className="ob-label">Scan with</span>
@@ -761,7 +769,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
           </div>
         )}
         <div className="ob-more">
-          <h3 className="ob-more-title">Bands to scan</h3>
+          <h3 className="ob-more-title">Bands</h3>
           <div className="ob-chips">
             {s.surveyBands.map((b) => (
               <button
@@ -782,7 +790,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
           <h3 className="ob-more-title">Name what it finds (optional)</h3>
           <label className="toggle">
             <input type="checkbox" checked={naming} onChange={(e) => setNaming(e.target.checked)} />
-            <span>Look up who holds the FCC license for each system found</span>
+            <span>Look up FCC license holders</span>
           </label>
           {naming ? (
             <div className="stack">
@@ -790,12 +798,12 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
               <WhereFields value={where} onChange={setWhere} />
             </div>
           ) : (
-            <p className="ob-aside">Leave this off to scan without sharing a location; the scan works the same.</p>
+            <p className="ob-aside">Off: scan without sharing a location</p>
           )}
         </div>
         {unsupported && <div className="ob-note bad">This radio needs the desktop app to scan.</div>}
         <div className="ob-center-actions">
-          <button className="ob-btn primary big" disabled={!s.connected || s.phase !== "idle" || unsupported || !picked.length || !s.surveyBands.length} onClick={scan}>
+          <button className="ob-btn primary big" disabled={!s.connected || holdsRadios(s.phase) || unsupported || !picked.length || !s.surveyBands.length} onClick={scan}>
             Start scan
           </button>
           <button className="ob-link" onClick={() => setManual(true)}>
@@ -817,13 +825,16 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
     const p = sv.progress;
     return (
       <section className="ob-step">
-        <Head art={<ArtScan />} title="Scanning…" lead={p ? <>Listening around {bandLabel(p.band)}</> : "Getting the radio ready"} />
+        <Head art={<ArtScan />} title="Scanning…" lead={p ? bandLabel(p.band) : "Getting the radio ready"} />
         {p && (
           <div className="ob-meter">
             <progress value={p.hop - 1} max={p.hops} />
-            <span>
-              {Math.round(((p.hop - 1) / p.hops) * 100)}% · {controls.length + dmr.length ? `${controls.length + dmr.length} found so far` : "nothing yet"}
-            </span>
+            <Figs
+              items={[
+                { k: "Swept", v: Math.round(((p.hop - 1) / p.hops) * 100), u: "%" },
+                { k: "Found", v: controls.length + dmr.length },
+              ]}
+            />
           </div>
         )}
         {sv.error && <div className="ob-note bad">{sv.error}</div>}
@@ -843,25 +854,30 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
         <Head
           art={<ArtTower />}
           title={sug ? "Found a system" : "Found one — listening…"}
-          lead={
-            <>
-              Control channel <b className="ob-mono">{formatMhz(m.advertisedHz ?? m.heardHz, 4)} MHz</b>
-              {m.smartnet ? " · SmartNet" : " · P25"}
-              {sv.stage === "monitoring" && <span className="ob-quiet"> · {m.elapsedS.toFixed(0)} s</span>}
-            </>
-          }
         />
+        <div className="ob-figs">
+          <Figs
+            items={[
+              { k: "Control channel", v: formatMhz(m.advertisedHz ?? m.heardHz, 4), u: "MHz" },
+              { k: "Type", v: m.smartnet ? "SmartNet" : "P25" },
+              sv.stage === "monitoring" && { k: "Listening", v: m.elapsedS.toFixed(0), u: "s" },
+            ]}
+          />
+        </div>
         <ul className="ob-checks">
-          <Check ok={m.good >= 10} title="Hearing it clearly">
-            {total ? `${pct}% of messages decoded` : "Waiting for messages…"}
+          <Check ok={m.good >= 10} title="Decoded">
+            {total ? <Fig v={pct} u="%" level={pct < 50 ? "bad" : pct < 80 ? "warn" : "ok"} /> : "Waiting…"}
           </Check>
-          <Check ok={id.sysId != null} title="Who it is">
+          <Check ok={id.sysId != null} title="Identity">
             {id.sysId != null ? (
-              <span className="ob-mono">
-                System ID {hex(id.sysId)}
-                {id.wacn != null ? ` · WACN ${hex(id.wacn)}` : ""}
-                {id.site != null ? ` · site ${id.rfss ?? "?"}-${id.site}` : ""}
-              </span>
+              <Figs
+                inline
+                items={[
+                  { k: "System ID", v: hex(id.sysId) },
+                  id.wacn != null && { k: "WACN", v: hex(id.wacn) },
+                  id.site != null && { k: "Site", v: siteNumber(id) },
+                ]}
+              />
             ) : (
               "Waiting…"
             )}
@@ -872,25 +888,27 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
                 const top = licensedOn([m.advertisedHz ?? m.heardHz, ...m.secondary]);
                 if (top) return `${licenseeName(top.licensee)} · ${top.callSign}${top.lapsed ? " (lapsed)" : ""}`;
                 if (lookup?.stage === "error") return lookup.error;
-                return lookup?.stage === "done" ? "No FCC license found nearby" : "Looking it up…";
+                return lookup?.stage === "done" ? "None found nearby" : "Looking it up…";
               })()}
             </Check>
           )}
-          <Check ok={m.ppm !== null} title="Radio tuning">
-            {m.ppm !== null ? `Corrected by ${m.ppm > 0 ? "+" : ""}${m.ppm.toFixed(1)} ppm` : "Measuring…"}
+          <Check ok={m.ppm !== null} title="Tuning correction">
+            {m.ppm !== null ? <Fig v={`${m.ppm > 0 ? "+" : ""}${m.ppm.toFixed(1)}`} u="ppm" /> : "Measuring…"}
           </Check>
           <Check ok={m.voice.length >= 3} title="Voice channels">
-            {m.voice.length ? `${m.voice.length} seen so far` : "None yet; they appear as people talk"}
+            {m.voice.length ? <Fig v={m.voice.length} /> : "Appear as people talk"}
           </Check>
         </ul>
         {sv.stage === "monitoring" && s.surveySpectrum && (
           <div className="ob-waterfall">
-            <Waterfall radio={s.surveySpectrum} label="What the radio hears" ccs={[{ hz: m.heardHz, label: "Control", color: "var(--accent)" }]} calls={[]} />
+            <Waterfall radio={s.surveySpectrum} label="Live" ccs={[{ hz: m.heardHz, label: "Control", color: "var(--accent)" }]} calls={[]} />
           </div>
         )}
         {others.length > 0 && (
           <details className="ob-more">
-            <summary>{others.length} other control channel{others.length === 1 ? "" : "s"} found</summary>
+            <summary>
+              Other control channels <b>{others.length}</b>
+            </summary>
             <div className="ob-chips">
               {others.map((x) => (
                 <button key={x.freqHz} className="ob-chip" onClick={() => surveyListen(x.freqHz)}>
@@ -954,13 +972,13 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
       ) : (
         <ul className="ob-tips">
           <li>
-            <IconAntenna /> Move the antenna near a window, or higher.
+            <IconAntenna /> Antenna higher, or by a window
           </li>
           <li>
-            <IconTower /> Go back and tick more bands.
+            <IconTower /> Scan more bands
           </li>
           <li>
-            <IconQuestion /> Find your control channel on RadioReference.com.
+            <IconQuestion /> Look it up on RadioReference.com
           </li>
         </ul>
       )}
@@ -1013,12 +1031,12 @@ function ManualSystem(props: { c: Config; target: number | "new"; onDone: (syste
   };
   return (
     <section className="ob-step">
-      <Head art={<ArtTower />} title="Enter the control channel" lead="On RadioReference.com, it's marked in red or with a “c”." />
+      <Head art={<ArtTower />} title="Enter the control channel" lead="RadioReference marks it red or with a “c”" />
       <div className="ob-form">
         <label className="ob-field">
-          <span className="ob-label">Control channel, MHz</span>
+          <span className="ob-label">Control channel (MHz)</span>
           <input className="ob-input ob-mono" value={text} placeholder="851.0125" onChange={(e) => setText(e.target.value)} autoFocus />
-          <span className="ob-hint">Several? Separate them with commas.</span>
+          <span className="ob-hint">Several: separate with commas</span>
         </label>
         <div className="ob-field">
           <span className="ob-label">System type</span>
@@ -1044,8 +1062,6 @@ interface Chan {
   weight: number;
 }
 
-const covers = (center: number, rate: number, hz: number, guard?: number) => Math.abs(hz - center) <= usableHalfWidth(rate, guard);
-
 function CoverageStep(props: { c: Config; found: Found | null; onNext: () => void; onBack: () => void }) {
   const { c, found } = props;
   const sys = found ? c.systems[found.system] : undefined;
@@ -1060,14 +1076,15 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
   const fixed = c.sources.map((x) => (x.type === "file" ? x.centerHz || null : null));
   const first = found && c.sources[found.source] ? found.source : 0;
   const recommended = useMemo(() => {
-    const firstCenter = found?.sug?.centerHz || autoCenter(ccs, rates[first] ?? 2_400_000, guards[first]) || ccs[0] || 0;
-    return planCenters(c.sources.map((x, k) => ({ rateHz: x.rateHz, guardHz: x.guardHz, fixedHz: fixed[k] })), first, firstCenter, ccs, voice);
+    // The radio the survey found the system on stays where it suggested.
+    const at = (k: number) => fixed[k] ?? (k === first ? found?.sug?.centerHz || null : null);
+    return placeSources(c.sources.map((x, k) => ({ rateHz: x.rateHz, guardHz: x.guardHz, fixedHz: at(k) })), { groups: [{ channels: voice, need: ccs }] });
   }, [c.sources.length, found]);
   const [centers, setCenters] = useState<(number | null)[]>(recommended);
 
   if (!sys || !ccs.length) return <Missing onBack={props.onBack} />;
 
-  const reached = (hz: number) => centers.some((ctr, k) => ctr !== null && rates[k] !== null && covers(ctr, rates[k]!, hz, guards[k]));
+  const reached = (hz: number) => centers.some((ctr, k) => ctr !== null && c.sources[k] && reaches(c.sources[k], ctr, hz));
   const ccOk = ccs.some(reached);
   const inVoice = voice.filter((v) => reached(v.hz));
   const allWeight = voice.reduce((a, v) => a + v.weight, 0);
@@ -1091,7 +1108,7 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
       <Head
         title="Where each radio listens"
         art={null}
-        lead="Placed over the channels this system used most."
+        lead="Placed over its busiest channels"
       />
       {groups.map((g, n) => (
         <div key={n} className="ob-plan-group">
@@ -1123,21 +1140,21 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
                 {inVoice.length}
                 <small> / {voice.length}</small>
               </span>
-              <span className="ob-stat-label">voice channels in reach</span>
+              <span className="ob-stat-label">Voice channels in reach</span>
             </div>
             <div className="ob-stat">
               <span className="ob-stat-num">{callsPct}%</span>
-              <span className="ob-stat-label">of calls heard</span>
+              <span className="ob-stat-label">Calls heard</span>
             </div>
           </>
         ) : (
-          <p className="ob-aside">No calls heard yet, so it&apos;s centred on the control channel.</p>
+          <p className="ob-aside">No calls yet · centred on the control channel</p>
         )}
       </div>
-      {!ccOk && <div className="ob-note bad">Without the control channel in reach, nothing records.</div>}
+      {!ccOk && <div className="ob-note bad">Control channel out of reach: nothing records</div>}
       {ccOk && inVoice.length < voice.length && (
         <p className="ob-aside">
-          Calls out of reach are skipped{radios > 1 ? "." : "; a second radio would catch them."}
+          Out-of-reach calls are skipped{radios > 1 ? "" : " · a second radio catches them"}
         </p>
       )}
       <div className="ob-tuners">
@@ -1148,14 +1165,14 @@ function CoverageStep(props: { c: Config; found: Found | null; onNext: () => voi
                 <i />
                 Radio {k + 1} <span className="ob-quiet">· capture file</span>
               </span>
-              <span className="ob-quiet">recorded here; can&apos;t move</span>
+              <span className="ob-quiet">Fixed</span>
               <span className="ob-mono ob-tuner-hz">{formatMhz(ctr, 3)} MHz</span>
             </div>
           ) : (
             <div key={k} className="ob-tuner" style={{ ["--radio" as string]: `var(--sys-${k % 6})` }}>
               <span className="ob-tuner-name">
                 <i />
-                Radio {k + 1} <span className="ob-quiet">· {(rates[k]! / 1e6).toFixed(1)} MHz wide</span>
+                Radio {k + 1} <span className="ob-quiet">· <Fig v={(rates[k]! / 1e6).toFixed(1)} u="MHz wide" /></span>
               </span>
               <input
                 type="range"
@@ -1309,7 +1326,7 @@ function NameStep(props: { c: Config; sys: System; index: number; onNext: () => 
             }}
           />
           <span className={`ob-hint${dup || !sys.shortName ? " bad" : ""}`}>
-            {!sys.shortName ? "It needs a short name." : dup ? "Another system has this name." : "Letters, numbers and dashes."}
+            {!sys.shortName ? "Required" : dup ? "Already used by another system" : "Letters, numbers and dashes"}
           </span>
         </label>
       </div>
@@ -1374,8 +1391,9 @@ function StorageStep(props: { s: AppState; c: Config; defaultDir: string; onNext
           }}
         />
       )}
+      {!choosing && <FolderCheck name="recordings" path={dir} />}
       <p className="ob-aside">
-        Your settings are kept in <span className="ob-mono">{props.s.configPath}</span>.
+        Settings file <span className="ob-mono">{props.s.configPath}</span>
       </p>
       <Nav onBack={props.onBack} onNext={props.onNext} disabled={!dir.trim() || choosing} why={choosing ? "Choose a folder" : "Pick a folder"} />
     </section>
@@ -1429,7 +1447,7 @@ function FolderPicker(props: { start: string; onPick: (path: string) => void }) 
         ))}
       </ul>
       <div className="ob-picker-foot">
-        <input className="ob-input" value={made} placeholder="New folder name (optional)" onChange={(e) => setMade(e.target.value.replace(/[\\/:*?"<>|]/g, ""))} />
+        <input className="ob-input" value={made} placeholder="New folder (optional)" onChange={(e) => setMade(e.target.value.replace(/[\\/:*?"<>|]/g, ""))} />
         <button className="ob-btn primary" onClick={() => props.onPick(made.trim() ? join(made.trim()) : d.path)}>
           {made.trim() ? `Use new folder “${made.trim()}”` : "Use this folder"}
         </button>
@@ -1447,10 +1465,10 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
   const [paste, setPaste] = useState("");
   const parsed = useMemo(() => parseRadioReferencePaste(paste), [paste]);
   const fileRef = useRef<HTMLInputElement>(null);
-  const setList = (next: Talkgroup[]) => setTalkgroups(sys.shortName, next);
+  const setList = (next: Talkgroup[], from?: OriginFrom) => setTalkgroups(sys.shortName, next, from);
   const onFile = async (f: File | undefined) => {
     if (!f) return;
-    setList(readTalkgroupFile(await f.text()).talkgroups);
+    setList(readTalkgroupFile(await f.text()).talkgroups, { kind: "file", name: f.name });
     props.onNext();
   };
   const id = sys.sites[0]?.expect ?? {};
@@ -1470,7 +1488,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
       {loaded > 0 && (
         <div className="ob-note ok">
           <span>
-            <b>{loaded} talkgroup names loaded</b>.
+            <Fig v={loaded} u="talkgroup names loaded" />
           </span>
           <button className="ob-link" onClick={() => setList([])}>
             Remove
@@ -1485,32 +1503,27 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
             <div>
               <b>Find your system</b>
               <p>
-                Open{" "}
                 <a href="https://www.radioreference.com/db/browse/" target="_blank" rel="noreferrer">
-                  RadioReference&apos;s database
-                </a>
-                , then your state, county and system.
-                {id.sysId != null && (
-                  <>
-                    {" "}
-                    Look for <b className="ob-mono">System ID {hex(id.sysId)}</b>
-                    {id.wacn != null && (
-                      <>
-                        {" "}
-                        and <b className="ob-mono">WACN {hex(id.wacn)}</b>
-                      </>
-                    )}
-                    .
-                  </>
-                )}
+                  RadioReference database
+                </a>{" "}
+                → state → county → system
               </p>
+              {id.sysId != null && (
+                <Figs
+                  inline
+                  items={[
+                    { k: "System ID", v: hex(id.sysId) },
+                    id.wacn != null && { k: "WACN", v: hex(id.wacn) },
+                  ]}
+                />
+              )}
             </div>
           </li>
           <li>
             <span className="ob-num">2</span>
             <div>
               <b>Copy the talkgroup table</b>
-              <p>Select the rows and copy. Headings are fine.</p>
+              <p>Select the rows, copy · headings are fine</p>
             </div>
           </li>
           <li>
@@ -1536,12 +1549,12 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
                     </table>
                     <div className="ob-row">
                       <span>
-                        {parsed.length > 5 ? `…and ${parsed.length - 5} more` : `${parsed.length} talkgroup${parsed.length === 1 ? "" : "s"}`}
+                        {parsed.length > 5 ? <>…and <Fig v={parsed.length - 5} u="more" /></> : <Fig v={parsed.length} u={parsed.length === 1 ? "talkgroup" : "talkgroups"} />}
                       </span>
                       <button
                         className="ob-btn primary"
                         onClick={() => {
-                          setList(parsed);
+                          setList(parsed, { kind: "radioReference" });
                           props.onNext();
                         }}
                       >
@@ -1550,7 +1563,7 @@ function TalkgroupsStep(props: { sys: System; index: number; onNext: () => void;
                     </div>
                   </div>
                 ) : (
-                  <div className="ob-note bad">Not a talkgroup table: rows should start with a number.</div>
+                  <div className="ob-note bad">Not a talkgroup table · rows start with a number</div>
                 ))}
             </div>
           </li>
@@ -1599,15 +1612,13 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
       <ul className="ob-summary">
         <li>
           <IconDongle />
-          <span>
-            {radios} radio{radios === 1 ? "" : "s"}
-          </span>
+          <Fig v={radios} u={radios === 1 ? "radio" : "radios"} />
         </li>
         {sys && (
           <li>
             <IconTower />
             <span>
-              {sys.name || sys.shortName}
+              <b>{sys.name || sys.shortName}</b>
               <span className="ob-quiet ob-mono"> · {sys.sites.flatMap((x) => x.controlChannelsHz).map((f) => formatMhz(f, 4)).join(", ")} MHz</span>
             </span>
           </li>
@@ -1620,7 +1631,7 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
         )}
         <li>
           <IconTagSmall />
-          <span>{tgs ? `${tgs} talkgroup names` : "No talkgroup names yet"}</span>
+          {tgs ? <Fig v={tgs} u="talkgroup names" /> : <span className="ob-quiet">No talkgroup names yet</span>}
         </li>
       </ul>
       {problem && <div className="ob-note bad">{problem}</div>}
@@ -1629,10 +1640,10 @@ function DoneStep(props: { s: AppState; c: Config; sys: System | undefined; onSt
           Start recording
         </button>
         <button className="ob-link" onClick={props.onClose}>
-          Open the app without starting
+          Open without starting
         </button>
       </div>
-      <p className="ob-aside">Add more systems later with “Find my system”.</p>
+      <p className="ob-aside">More systems later: “Find my system”</p>
     </section>
   );
 }
@@ -1725,9 +1736,12 @@ function ImportPick(props: { s: AppState; onLoaded: (l: Loaded) => void; onBundl
             Choose a file…
           </button>
         ) : (
-          <button className="ob-link" onClick={() => fileRef.current?.click()}>
-            Or upload a config.json, a system from the directory, or a RadioReference sites file
-          </button>
+          <span className="ob-row">
+            <button className="ob-link" onClick={() => fileRef.current?.click()}>
+              Or upload a file…
+            </button>
+            <Info label="Files">config.json, a system from the directory, or a RadioReference sites file</Info>
+          </span>
         )}
         <FileInput inputRef={fileRef} accept=".json,application/json,.csv,text/csv" onFile={(f) => void upload(f)} />
       </div>
@@ -1791,6 +1805,12 @@ function ConfigPicker() {
 
 /** How an imported source will fare here. */
 function sourceState(src: Source, s: AppState): { tone: "ok" | "warn" | "bad"; text: string } {
+  // A radio on the network: as it last answered (asked when its address was entered, or a search).
+  if (onNetwork(src)) {
+    if (!s.radios) return { tone: "bad", text: "Needs the desktop app" };
+    const n = networkRadio(s.radios, src);
+    return n?.error ? { tone: "warn", text: "Not answering" } : n?.model ? { tone: "ok", text: `${n.model}, answering` } : { tone: "ok", text: "On the network" };
+  }
   if (src.type === "rtlsdr") {
     if (!src.serial) return s.devices.some((d) => !d.busy) ? { tone: "ok", text: "The first free dongle" } : { tone: "warn", text: "No free dongle plugged in" };
     const d = s.devices.find((x) => x.serial === src.serial);
@@ -1798,7 +1818,7 @@ function sourceState(src: Source, s: AppState): { tone: "ok" | "warn" | "bad"; t
   }
   if (src.type === "file") return { tone: "ok", text: "Capture file" };
   if (!s.radios) return { tone: "bad", text: "Needs the desktop app" };
-  const d = s.radios[src.type];
+  const d = needsDriver(src) ? s.radios[src.type] : undefined;
   return d?.available ? { tone: "ok", text: "Driver installed" } : { tone: "bad", text: `Needs ${SOURCE_KINDS[src.type].driver?.name} installed` };
 }
 
@@ -1838,16 +1858,14 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
   // What this config brings (adding: not what was here already).
   const bringsSource = (i: number) => result.added.sources.includes(i);
   const brings = (name: string) => !merge || result.added.systems.includes(name);
-  const used = (i: number) => new Set(cfg.sources.filter((x, k) => k !== i && x.type === "rtlsdr").map((x) => (x.type === "rtlsdr" ? x.serial : "")));
   const addFile = async (name: string, f: File | undefined) => {
     if (f) setFiles({ ...files, [name]: await f.text() });
   };
   const convCount = cfg.conventional.filter((v) => brings(v.shortName)).reduce((n, v) => n + v.channels.length, 0);
   // Systems whose control channel no radio hears (as the radios stand, swaps included).
-  const centers = resolvedCenters(cfg);
   const unheard = (x: System) => {
     const ccs = x.enabled ? x.sites.filter((y) => y.enabled).flatMap((y) => y.controlChannelsHz) : [];
-    return ccs.length > 0 && !ccs.some((f) => sourceCovering(cfg, centers, f) >= 0);
+    return ccs.length > 0 && !ccs.some((f) => receiverOf(cfg, x.shortName, f) >= 0);
   };
   const installed = (id: string) => {
     const p = s.plugins?.plugins.find((x) => x.id === id);
@@ -1875,8 +1893,9 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       }
       x.plugins = plugins;
     });
-    // Each system's talkgroups, beside the config.
+    // Each system's talkgroups and radio names, beside the config (each row from its Trunk Recorder file).
     for (const [system, rows] of Object.entries(result.talkgroups)) if (brings(system)) setTalkgroups(system, rows);
+    for (const [system, rows] of Object.entries(result.unitNames)) if (brings(system)) setUnitNames(system, rows);
     // Radios that aren't ready yet join what's left to do.
     const radios: ImportTodo[] = cfg.sources.flatMap((src, index): ImportTodo[] => {
       if (!bringsSource(index)) return [];
@@ -1902,14 +1921,15 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
           {cfg.sources.map((src, i) => {
             if (!bringsSource(i)) return null;
             const st = sourceState(src, s);
-            const free = s.devices.filter((d) => !d.busy && !used(i).has(d.serial));
+            const picks = pickable(cfg, i, s.devices, s.radios).of("rtlsdr");
+            const free = s.devices.filter((d, n) => !d.busy && !picks[n]?.unpickable);
             const orig = result.config.sources[i];
             return (
               <li key={i} className={st.tone}>
                 <span className="ob-row-main">
                   <b>{sourceLabel(src)}</b>
                   <span className="ob-quiet">
-                    {src.centerHz ? `centred on ${formatMhz(src.centerHz, 3)} MHz` : "placed automatically"} · {(src.rateHz / 1e6).toFixed(1)} MHz wide
+                    {src.centerHz ? <>Centre <Fig v={formatMhz(src.centerHz, 3)} u="MHz" /></> : "Placed automatically"} · Width <Fig v={(src.rateHz / 1e6).toFixed(1)} u="MHz" />
                   </span>
                 </span>
                 <span className={`ob-pill ${st.tone}`}>{st.text}</span>
@@ -1955,7 +1975,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                 <span className="ob-row-main">
                   <b>{x.shortName}</b>
                   <span className="ob-quiet">
-                    {x.type === "smartnet" ? "SmartNet" : x.type === "dmr" ? "DMR" : x.type === "nxdn" ? "NXDN" : "P25"}
+                    {kindLabel(x.type)}
                     {x.sites.length > 1 ? ` · ${x.sites.length} sites` : ""} · {x.sites.flatMap((y) => y.controlChannelsHz).map((f) => formatMhz(f, 4)).join(", ") || "no control channel"}
                   </span>
                 </span>
@@ -2028,7 +2048,7 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                     <span className="ob-row-main">
                       <b>{s.plugins?.plugins.find((x) => x.id === p.id)?.manifest?.name ?? p.name}</b>
                       <span className="ob-quiet">
-                        {streams ? `${streams} stream${streams === 1 ? "" : "s"}` : systems.length ? `for ${systems.join(", ")}` : "settings for every system"}
+                        {streams ? `${streams} stream${streams === 1 ? "" : "s"}` : systems.length ? `For ${systems.join(", ")}` : "All systems"}
                       </span>
                     </span>
                     <span className={`ob-pill ${ok ? "ok" : "warn"}`}>{!can("plugins") ? "Needs the desktop app" : ok ? "Will be turned on" : "Settings kept · add the plugin"}</span>
@@ -2051,10 +2071,10 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
                     <b>{t.kind === "siteLock" ? `Site lock for ${t.system}` : t.kind === "plugins" ? "Other plugins" : "Squelch"}</b>
                     <span className="ob-quiet">
                       {t.kind === "siteLock"
-                        ? `Trunk Recorder followed only site ${t.siteId}.`
+                        ? `Trunk Recorder followed site ${t.siteId} only`
                         : t.kind === "plugins"
-                          ? `${t.names.join(", ")}: no equivalent yet.`
-                          : "Works differently here; check it."}
+                          ? `${t.names.join(", ")}: no equivalent yet`
+                          : "Works differently here · check it"}
                     </span>
                   </span>
                 </li>
@@ -2075,7 +2095,9 @@ function ImportReview(props: { s: AppState; c: Config; loaded: Loaded; onBack: (
       </div>
       {has && (
         <div className="ob-note">
-          <span>{merge ? "Added to your current systems and radios." : "Replaces your current systems and radios."}</span>
+          <span>
+            <b>Current setup</b>
+          </span>
           <div className="ob-seg" role="radiogroup" aria-label="Your current setup">
             {[true, false].map((m) => (
               <button key={String(m)} role="radio" aria-checked={merge === m} className={merge === m ? "on" : ""} onClick={() => setMerge(m)}>
@@ -2115,7 +2137,7 @@ function ImportDone(props: { s: AppState; c: Config; onStart: () => void; onClos
       {todos.length > 0 && (
         <>
           <p className="ob-lead">
-            {todos.length === 1 ? "One thing" : `${todos.length} things`} to finish in setup.
+            <Fig v={todos.length} u="to finish in setup" />
           </p>
           <ul className="ob-summary">
             {todos.map((t, k) => (
@@ -2148,7 +2170,7 @@ function ImportDone(props: { s: AppState; c: Config; onStart: () => void; onClos
               Start recording
             </button>
             <button className="ob-link" onClick={props.onClose}>
-              Open the app without starting
+              Open without starting
             </button>
           </>
         )}
@@ -2306,6 +2328,7 @@ const IconKey = () => icon(<><circle className="ln" cx="11" cy="16" r="6" /><pat
 const IconQuestion = () => icon(<><circle className="ln" cx="16" cy="16" r="12" /><path className="acs" d="M12 12 a4 4 0 1 1 5 4 v3 M17 23 v.5" /></>);
 export const IconAntenna = () => icon(<><path className="ln" d="M16 29 V12 M11 29 h10" /><circle className="ac" cx="16" cy="10" r="2.5" /><path className="acs" d="M21 5 a8 8 0 0 1 0 10 M11 5 a8 8 0 0 0 0 10" /></>);
 export const IconDatabase = () => icon(<><ellipse className="ln" cx="16" cy="7" rx="10" ry="4" /><path className="ln" d="M6 7 v18 a10 4 0 0 0 20 0 V7" /><path className="acs" d="M6 13 a10 4 0 0 0 20 0 M6 19 a10 4 0 0 0 20 0" /></>);
+export const IconLock = () => icon(<><rect className="ln" x="6" y="14" width="20" height="14" rx="2" /><path className="ln" d="M11 14 V10 a5 5 0 0 1 10 0 v4" /><circle className="ac" cx="16" cy="21" r="2" /></>);
 export const IconFolder = () => icon(<path className="ln" d="M3 8 h9 l3 3 h14 v15 h-26 z" />);
 const IconDrive = () => icon(<><rect className="ln" x="3" y="10" width="26" height="12" rx="3" /><circle className="ac" cx="23" cy="16" r="2" /><path className="ln" d="M7 16 h9" /></>);
 const IconClock = () => icon(<><circle className="ln" cx="16" cy="16" r="12" /><path className="acs" d="M16 9 v7 l5 3" /></>);

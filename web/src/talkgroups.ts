@@ -2,7 +2,7 @@
 // (protocol.ts Talkgroup), as the recorder keeps them. A file is read and
 // written by the recorder's own code (rules.ts, through wasm): CSV only at
 // Load CSV and Download.
-import type { Talkgroup, TalkgroupEdit } from "./protocol.ts";
+import type { Origin, Talkgroup, TalkgroupEdit } from "./protocol.ts";
 import { talkgroupsEdit, talkgroupsFromCsv, talkgroupsToCsv, type TalkgroupFileReport } from "./rules.ts";
 
 export type { Talkgroup };
@@ -50,70 +50,78 @@ const RR_MODE = /^(A|D|T|E|M|DE|TE|De|Te|DM|AE|Ae)$/;
 
 /**
  * A Mode cell: "D", or the letter with RadioReference's encryption badge
- * after it ("D ENC") — Trunk Recorder's encrypted modes (DE / TE / E), which
- * it doesn't record. Null when it isn't a mode.
+ * after it, as its page's key says: "Enc" full encryption ("T Enc": TE,
+ * which Trunk Recorder doesn't record), "enc" partial, some clear traffic
+ * ("T enc": Te, recorded). A copy may glue the badge on ("TEnc"). Null when
+ * it isn't a mode.
  */
 function rrMode(cell: string): string | null {
-  const [raw = "", ...badges] = cell.split(/\s+/);
+  const c = cell.trim();
+  const badge = /\s*(enc)\w*$/i.exec(c);
+  const raw = badge && badge.index > 0 ? c.slice(0, badge.index) : (c.split(/\s+/)[0] ?? "");
   // A lone lower-case letter ("d") is the upper-case one.
   const mode = raw.length === 1 ? raw.toUpperCase() : raw;
   if (!RR_MODE.test(mode)) return null;
-  if (!badges.some((b) => /^enc/i.test(b)) || mode.endsWith("E")) return mode;
-  return mode === "D" ? "DE" : mode === "T" ? "TE" : "E";
+  if (!badge || badge.index === 0 || /e$/i.test(mode)) return mode;
+  const full = badge[1][0] === "E";
+  const letter = mode === "D" || mode === "T" || mode === "A" ? mode : "";
+  return letter ? letter + (full ? "E" : "e") : full ? "E" : mode;
 }
 
 /**
  * A talkgroup table copied from RadioReference's web page (free to view, no
- * subscription): rows of DEC, HEX, Mode, Alpha Tag, Description, Tag — tab
- * separated when copied from a browser, else two or more spaces. A line with
- * no talkgroup number before a run of rows is the category heading they fall
- * under ("Metro County Fire"). The column header line is skipped.
+ * subscription): rows of DEC, HEX, Mode, Alpha Tag, Description, Tag, and on
+ * some pages Category and the date it was updated — tab separated when copied
+ * from a browser, else two or more spaces. A line with no talkgroup number
+ * before a run of rows is the category heading they fall under ("Metro County
+ * Fire"); a Category cell wins over it. The column header line is skipped.
  *
- * The page's badges come along: "ONLINE" after a number breaks the row in
- * two ("167" / "ONLINE<tab>0a7<tab>D…"), and "ENC" follows the mode ("D ENC").
+ * The page's badges come along: "ONLINE" (a live feed) after a number
+ * ("167 ONLINE", or stuck to it: "4407Online"), "Enc" / "enc" after the mode
+ * ("D Enc"). Either may break its row in two, the rest of the row on the next
+ * line after the badge: "167" / "ONLINE<tab>0a7<tab>D…", "4411<tab>113b<tab>T"
+ * / "Enc<tab>Alpha Tag<tab>…".
  */
 export function parseRadioReferencePaste(text: string): Talkgroup[] {
-  const out: Talkgroup[] = [];
-  const seen = new Set<number>();
+  // Each row: its number, the cells after it, and the category heading over it.
+  const rows: { num: number; cells: string[]; category: string }[] = [];
   let category = "";
-  // A number on a line of its own: the rest of its row is on the next line, after its badge.
-  let pending: string | null = null;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
-    let f = (raw.includes("\t") ? raw.split("\t") : line.split(/\s{2,}/)).map((x) => x.trim()).filter(Boolean);
-    if (pending !== null) {
-      const num = pending;
-      pending = null;
-      if (f.length > 1 && !/^\d+\b/.test(f[0])) f = [num, ...f.slice(1)];
-      else out.push(row(Number(num), [], category));
+    const f = (raw.includes("\t") ? raw.split("\t") : line.split(/\s{2,}/)).map((x) => x.trim()).filter(Boolean);
+    // A badge that broke the row before it, which stopped at its number or its
+    // mode: the row goes on after it. ENC is its mode's ("T" + "Enc": "T Enc",
+    // as rrMode reads it, its case kept); ONLINE says nothing of the talkgroup.
+    const last = rows.at(-1);
+    if (last && last.cells.length <= 2 && f.length > 1 && /^(online|enc)$/i.test(f[0])) {
+      if (/^enc$/i.test(f[0]) && last.cells.length > 0) last.cells.push(`${last.cells.pop()} ${f[0]}`);
+      last.cells.push(...f.slice(1));
+      continue;
     }
     if (/^dec\b/i.test(f[0] ?? "")) continue;
     // A badge in the number's cell ("167 ONLINE").
-    const num = /^(\d+)(\s+[A-Za-z].*)?$/.exec(f[0] ?? "");
+    const num = /^(\d+)(\s*[A-Za-z].*)?$/.exec(f[0] ?? "");
     if (!num) {
       // A heading: a category name, not a sentence of help text.
       if (f.length === 1 && line.length <= 60) category = line;
       continue;
     }
-    if (f.length === 1) {
-      pending = num[1];
-      continue;
-    }
-    out.push(row(Number(num[1]), f.slice(1), category));
+    rows.push({ num: Number(num[1]), cells: f.slice(1), category });
   }
-  if (pending !== null) out.push(row(Number(pending), [], category));
-  return out.filter((t) => !seen.has(t.number) && !!seen.add(t.number));
+  const seen = new Set<number>();
+  return rows.filter((r) => !seen.has(r.num) && !!seen.add(r.num)).map((r) => row(r.num, r.cells, r.category));
 }
 
-/** A talkgroup from the cells after its number: HEX (optional), Mode, Alpha Tag, Description, Tag. */
+/** A talkgroup from the cells after its number: HEX (optional), Mode, Alpha Tag, Description, Tag, Category (optional; not the date after it). */
 function row(number: number, f: string[], category: string): Talkgroup {
   let k = 0;
   // The HEX column, when copied (it is the same number).
   if (f[k] && /^[0-9a-f]+$/i.test(f[k]) && Number.parseInt(f[k], 16) === number) k++;
   const m = f[k] ? rrMode(f[k]) : null;
   if (m) k++;
-  return talkgroup(number, { mode: m ?? "D", alphaTag: f[k] ?? "", description: f[k + 1] ?? "", tag: f[k + 2] ?? "", category });
+  const cat = f[k + 3] && !/^\d{4}-\d{2}-\d{2}/.test(f[k + 3]) ? f[k + 3] : category;
+  return talkgroup(number, { mode: m ?? "D", alphaTag: f[k] ?? "", description: f[k + 1] ?? "", tag: f[k + 2] ?? "", category: cat });
 }
 
 /** A talkgroup file's text read as the recorder reads one: its rows, and what in it was passed over. */
@@ -126,28 +134,22 @@ export function talkgroupFileText(rows: Talkgroup[]): string {
   return talkgroupsToCsv(rows);
 }
 
-/** The cells an edit of one talkgroup sets, by the file's column names (trunk-app's `TalkgroupEdit::cells`). */
-export function editCells(e: TalkgroupEdit): [string, string][] {
-  const text: [string, string | undefined][] = [
-    ["Alpha Tag", e.alphaTag],
-    ["Description", e.description],
-    ["Tag", e.tag],
-    ["Category", e.category],
-  ];
-  const cells = text.filter((c): c is [string, string] => c[1] !== undefined).map(([c, v]): [string, string] => [c, v.trim()]);
-  if (e.ignore !== undefined) cells.push(["Ignore", e.ignore ? "x" : ""]);
-  return cells;
+/**
+ * `rows` with talkgroup `tg`'s row edited by `origin`: only the cells `edit`
+ * sets change; a talkgroup without a row gets one when a value is set.
+ * Clearing Ignore also undoes Trunk Recorder's way of ignoring, a priority
+ * of −1; a change to its names makes `origin` its origin. The recorder's own
+ * edit (trunk-core's `edit_rows`), so this copy holds what the recorder holds.
+ */
+export function withEdit(rows: Talkgroup[], tg: number, edit: TalkgroupEdit, origin: Origin): Talkgroup[] {
+  return talkgroupsEdit(rows, tg, edit, origin);
 }
 
-/**
- * `rows` with talkgroup `tg`'s row edited: only the cells `edit` sets
- * change; a talkgroup without a row gets one when a value is set. Clearing
- * Ignore also undoes Trunk Recorder's way of ignoring, a priority of −1. The
- * recorder's own edit (trunk-core's `edit_rows`), so this copy holds what
- * the recorder holds.
- */
-export function withEdit(rows: Talkgroup[], tg: number, edit: TalkgroupEdit): Talkgroup[] {
-  return talkgroupsEdit(rows, tg, editCells(edit));
+/** Whether two edits of a talkgroup set the same cells to the same values (as sent, and as the recorder answers). */
+export function sameEdit(a: TalkgroupEdit, b: TalkgroupEdit): boolean {
+  const keys: (keyof TalkgroupEdit)[] = ["alphaTag", "description", "tag", "category", "ignore"];
+  const v = (e: TalkgroupEdit, k: keyof TalkgroupEdit) => (typeof e[k] === "string" ? (e[k] as string).trim() : e[k]);
+  return keys.every((k) => v(a, k) === v(b, k));
 }
 
 /** The edit that marks talkgroup `tg` ignored or not: named `alphaTag` too when `rows` lack it. */

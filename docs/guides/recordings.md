@@ -3,7 +3,7 @@
 This page covers what Trunk Recorder Pro saves for each call: where the files go and how they are
 named, what is in the call JSON, how the audio is processed, M4A files, which files are kept or
 deleted once plugins have uploaded them, the RAM spool, and the rules that decide which calls are
-kept at all.
+kept at all. Capturing what the radios receive (IQ captures) is on [Captures](captures.md).
 
 Every setting mentioned here is on **Setup → Recording**, and is listed with its key and default in
 the [recording configuration reference](../configuration/recording.md).
@@ -36,6 +36,11 @@ The browser version doesn't write files to a folder: it keeps calls in the brows
 
 ## Choosing folders and file names
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/setup-recording-dark.png">
+  <img src="../img/shots/setup-recording-light.png" alt="The Recording tab of Setup">
+</picture>
+
 To lay files out differently, set **Folders and file names** (`filenameFormat`) under **Call
 rules → Files**. It is a path under the recordings folder, built from tokens such as
 `{talkgroup}` and `{time:%Y}`, with `/` making folders. Leave it empty for the layout above.
@@ -65,48 +70,13 @@ group of its card; left at default, it follows the Recording tab's.
 
 ### Tokens
 
-| Token | Gives |
-|---|---|
-| `{short_name}` | The system's short name |
-| `{sys_num}` | The system's number, from 0: the trunked systems, then the conventional ones |
-| `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
-| `{talkgroup_ota}` | A conventional P25, DMR or NXDN call's talkgroup as the air named it (its row may file it under another `{talkgroup}`); empty for other calls |
-| `{talkgroup_alpha_tag}` | The talkgroup's alpha tag, e.g. `FD_Disp` |
-| `{talkgroup_tag}` | The talkgroup's tag, e.g. `Fire_Dispatch` |
-| `{talkgroup_description}` | The talkgroup's description |
-| `{talkgroup_group}` | The talkgroup's category |
-| `{freq}` | Frequency in Hz |
-| `{freq_mhz}` | Frequency in MHz, four decimals: `858.4875` |
-| `{epoch}` | Start time, seconds since 1970 |
-| `{time:FORMAT}` | Start time in local time |
-| `{ztime:FORMAT}` | Start time in UTC |
-| `{call_num}` | The call's number |
-| `{tdma_slot}` | The slot, on two-slot channels (Phase 2, DMR); empty otherwise |
-| `{audio_type}` | `analog`, `digital` or `digital tdma` |
-| `{emergency}`, `{encrypted}` | `1` or `0` |
-| `{priority}`, `{source_num}`, `{recorder_num}` | As in the call JSON |
-| `{color_code}`, `{ran}` | DMR colour code, NXDN RAN; `-1` when the call has none |
-| `{nac}` | A P25 call's NAC, three hex digits (`293`); empty when it has none |
-| `{system_type}`, `{voice_mode}` | As in the call JSON: `conventional`, `p25`… |
-| `{signal}`, `{noise}` | The call's signal and noise levels in whole dBFS (-45.7 becomes `-45`, as in Trunk Recorder); `0` when not measured |
-
-`FORMAT` is strftime's: `%Y` year, `%m` month, `%d` day, `%H%M%S` time, `%j` day of the year, `%a`
-weekday, `%b` month name, and so on. A `-` after the `%` drops the zero padding (`%-m`, `%-d`).
-`%f` gives milliseconds. `iso` and `iso_ms` are shortcuts for an ISO 8601 time. A time format can
-make folders (`{time:%Y/%m}`).
+The tokens (`{short_name}`, `{site}`, `{talkgroup}`, `{time:%Y}`, …), what each gives, and how a
+name is made safe (`-call_<call number>` added, `:` and unsafe characters replaced, no climbing out
+of the recordings folder) are listed in [File names](../configuration/recording.md#file-names).
 
 ```json
 "filenameFormat": "{short_name}/{time:%Y-%m-%d}/{talkgroup}-{talkgroup_alpha_tag}/{time:%H%M%S}_{freq}"
 ```
-
-### Rendering rules
-
-- `-call_<call number>` is always added to the end of the name, as Trunk Recorder does. (So even a
-  format that copies the default layout gives different names from an empty format.)
-- Text from the talkgroup list has `\ / : * ? " < > |` and spaces turned into `_`.
-- A `:` from a time format (`iso`, `%H:%M`) becomes `-`, because Windows can't have it in a name.
-- Empty folders, `.` and `..` are dropped, so a format can't climb out of the recordings folder.
-- An unknown token is left in the name as typed.
 
 ## What each call saves
 
@@ -115,7 +85,6 @@ make folders (`{time:%Y/%m}`).
 | `<name>.wav` | 8 kHz mono 16-bit PCM. Written unless nothing keeps or needs it (see [The archive](#the-archive-whats-kept-and-whats-deleted)) |
 | `<name>.json` | The [call JSON](#the-call-json) |
 | `<name>.m4a` | With **Keep .m4a**, or when an upload plugin wants M4A (then deleted once the plugins are done, unless kept) |
-| `<name>.sdr` | With **Save vocoder frames**, for digital calls (NXDN: `<name>.frames.jsonl`) |
 
 ## The call JSON
 
@@ -125,13 +94,14 @@ It is written on a single line.
 | Field | Meaning |
 |---|---|
 | `call_num` | The call's number |
-| `transmission_id` | The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>` (the first radio known to talk, `0` for none; the first copy's start). With conversations on, the call's first transmission names it |
+| `transmission_id` | The same on every copy of one transmission saved from a system's sites: `<shortName>-<talkgroup>-<radio>-<start ms>` (the first radio heard talking on the best copy, with half a second of its audio, `0` for none; the first copy's start). With conversations on, the call's first transmission names it |
+| `end_reason` | Why it ended: `terminator` (its voice channel's, with conversations off: P25, DMR, NXDN), `squelch` (analog, with conversations off: its squelch shut for half a second), `next_transmission` (the next one's audio on its channel), `timeout` (nothing heard of it for the call timeout), `too_long` (it carries on in the next call), `reassigned` (its channel given to another talkgroup, or a conventional channel's to another row), `stopped` (recording stopped). The log's **Concluding Recorded Call** line ends with it too |
 | `freq` | Frequency, Hz |
 | `freq_error` | How far off the channel the voice was, Hz (0 when not measured). Conventional P25, DMR and NXDN calls have it too; conventional analog receivers don't measure one |
 | `signal`, `noise` | The channel's power during the call and the noise floor under it, dBFS, one decimal; `null` if not measured |
 | `snr` | `signal` minus `noise`, dB |
 | `clean_voice_pct` | Share of vocoder frames decoded cleanly, %; `null` for analog calls |
-| `source_num` | Always `0` |
+| `source_num` | The radio it was heard on: its position in `sources`, counting from 0 |
 | `recorder_num` | Trunked: the recorder slot. Conventional: the index of the channel (frequency) it came on |
 | `tdma_slot`, `phase2_tdma` | The slot, and `1` for a P25 Phase 2 call |
 | `start_time`, `stop_time` | Start and end, seconds since 1970 |
@@ -142,7 +112,7 @@ It is written on a single line.
 | `clock_off` | `true` when the clock calls are stamped by was off as the call ended: `monitor.clockWarnMs` (250 ms) or more from the time server (or, without one, a radio system's clock), or the operating system said it wasn't synchronized (see [Clock](dashboard.md#clock)). Then its times may be off too. Absent otherwise |
 | `priority`, `mode`, `duplex` | As Trunk Recorder writes them (`mode` and `duplex` are always `0` on conventional calls) |
 | `call_length`, `call_length_ms` | Length of the saved audio, seconds (rounded) and milliseconds |
-| `talkgroup` | Talkgroup number. On a conventional channel, the row's TG Number if it has one, else the talkgroup the air named, else a default from the frequency: see [Tones](tones.md#the-number-a-call-is-filed-under) |
+| `talkgroup` | Talkgroup number. On a conventional channel, the row's TG Number if it has one, else the talkgroup the air named, else a default from the frequency: see [Talkgroup numbers](../configuration/conventional.md#talkgroup-numbers) |
 | `talkgroup_ota` | Conventional P25, DMR and NXDN calls only: the talkgroup the air named, whenever it named one, even when equal to `talkgroup`. Absent otherwise, and on trunked calls |
 | `talkgroup_tag` | The talkgroup's alpha tag |
 | `talkgroup_description` | Its description |
@@ -157,10 +127,13 @@ It is written on a single line.
 | `voice_mode` | What its voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm` or `am`. With `system_type`, a conventional P25 call is `conventional` / `p25`, a SmartNet analog one `smartnet` / `fm` |
 | `short_name` | The system's short name |
 | `site` | The site the kept copy was heard on (a system of one site: its short name). Not on conventional calls. A call heard on several sites is saved once |
+| `site_id` | The `id` of that site in the config: the same across renames. Not on conventional calls |
+| `sites` | Every site the call was recorded on (`id` and `name`), `site` first. Not on conventional calls |
+| `system_id` | The system's `id` in the config: the same across renames |
 | `patched_talkgroups` | Only when the talkgroup was patched with others: all of them |
 | `freqList` | One entry for the call: `freq`, `time`, `pos` (0), `len` (seconds of audio), `error_count` (FEC errors), `spike_count` (0) |
 | `errorList` | Per 10 s of audio: `pos`, `len`, `frames`, `error_count`, `bad_frames` (repeated, muted or erased), `max_frame_errors` |
-| `srcList` | Each radio heard: `src` (unit ID), `time`, `pos` (seconds into the call), `emergency`, `signal_system` (empty), `tag` (its name), `tag_ota` (its talker alias), and `lat` and `lon` when it sent its GPS position (P25, Motorola and L3Harris radios) |
+| `srcList` | Each radio heard: `src` (unit ID), `time`, `pos` (seconds into the call), `emergency`, `signal_system` (`MDC1200` or `FLEETSYNC` for an analog radio's ID, else empty), `tag` (its name), `tag_ota` (its talker alias), and `lat` and `lon` when it sent its GPS position (P25, Motorola and L3Harris radios) |
 | `tones` | Only when the voice carried any: each in-band tone in order, `type` (`dtmf`, `knox`, `call_progress`, or `tone` for a single tone), `value` (the digit, `350+440`, or the tone's Hz), `pos` and `len` (seconds), `src` (the radio talking, `0` if not known), `origin` (`frame`: named by a half-rate vocoder's tone frames, so P25 Phase 2, DMR and NXDN; `audio`: found in the audio, so P25 Phase 1, analog FM and AM, and half-rate voice sent without tone frames), and `level` (dBm0, tone frames) |
 | `tone_patterns` | Only when the voice carried any: what the tones make up, in order. `pattern` (`two_tone`, `long`, `hi_low` warble, `pulsed`, `digits` DTMF / KNOX, `morse` (a CW ID), `sequence` of short tones, `beep`), `tones` (Hz: two-tone A then B), `lengths` (seconds; Morse: its dot), `digits` and `knox` for digit strings (Morse: the text), `cycles` (hi-low tones, pulses), `format` (a two-tone page's timing, by Midian's paging timings: `Quick Call II` 1 s + 3 s, `Quick Call II battery save` 2.7 s + 0.8 s, `Quick Call I` 1 s, 0.2 s gap, 1 s, `GE Type 99` 1 s + 1.5 s, `NEC A`, …), `pos`, `len`, `src`, `origin`, `text` (it in words: `two-tone 781.25 → 875 Hz, 0.98 + 2.98 s (Quick Call II)`), and `signals` (the ids of the system's [signals](../configuration/systems.md#signals) it is) |
 | `signals` | Only when the call carried any of its system's [signals](../configuration/systems.md#signals): their ids, in the order first heard |
@@ -184,13 +157,12 @@ Before a call is saved:
 1. **Short transmissions and encrypted ones are cut out.** Transmissions shorter than **Shortest
    transmission, s** are removed. Encrypted transmissions are always removed: what a vocoder makes of
    them is noise.
-2. **Loudness is evened out** (**Even out call loudness**, on by default). Each call's speech is
-   brought to about -18.5 LUFS, close to the level Trunk Recorder's uploads have. The gain is
+2. **Loudness is evened out** (**Even out loudness**, on by default). Each call's speech is
+   brought to about -14 LUFS, louder than Trunk Recorder's uploads (about -18.6). The gain is
    limited to between -18 dB and +24 dB, and a limiter keeps peaks below -2.5 dBFS. A call with less
    than 0.2 s of speech (a keyed radio sending silence, a squelch tail) is left alone rather than
    having its hiss brought up.
-3. **Your level adjustment is applied:** **Digital Level Adjustment, dB** or **Analog Level
-   Adjustment, dB** (-20 to +20 in the interface).
+3. **Your level adjustment is applied:** **Digital level, dB** or **Analog level, dB** (-20 to +20 in the interface).
 
 Analog FM audio is also de-emphasised (750 µs) and high-passed at 300 Hz when it is demodulated,
 which removes CTCSS tones from what you hear.
@@ -263,7 +235,6 @@ Also:
 - **An M4A made only for a plugin** (with **Keep .m4a** off) is deleted once the plugins are done.
 - **A call's audio is never all lost** when some of it is to be kept: if the M4A is to be kept and
   none could be made, the WAV stays in its place.
-- **The frames file** (`.sdr`) stays when either kind of audio is kept.
 - **Nothing that won't be kept is written** when no plugin takes calls. With plugins, the files
   they need are written (to the RAM spool, if it's on) and deleted once they're done.
 
@@ -276,13 +247,15 @@ A call that is only uploaded, then deleted, still gets written to disk and erase
 or SD card that runs for months, that's wear for nothing. The RAM spool keeps those files in memory
 instead.
 
-Turn on **Keep calls waiting to upload in memory** on the Recording tab and set **RAM spool size,
+Turn on **RAM spool** on the Recording tab and set **RAM spool size,
 MB** (256 by default). It takes effect the next time recording starts.
 
 - **macOS:** the app makes a RAM disk of that size (no administrator password needed), mounted out
   of sight inside its data folder (`~/Library/Application Support/trunk-pro/spool`). It doesn't
   appear in the Finder sidebar and isn't indexed by Spotlight.
-- **Linux:** a folder in `/dev/shm`, which is RAM-backed. The app keeps its use under the size you
+- **Linux:** run as a systemd service with a `RuntimeDirectory=` (as the packaged service is), the
+  service's own runtime folder under `/run`; otherwise a folder in `/dev/shm`. Both are
+  RAM-backed. The app keeps its use under the size you
   set. If `/dev/shm` isn't a RAM filesystem on your machine, set `ramSpool.dir` in the config to a
   tmpfs mount of your own.
 - **Other systems (Windows):** there's no automatic spool; set `ramSpool.dir` to a RAM-backed
@@ -306,9 +279,7 @@ When things go wrong, nothing is lost:
   recordings folder and the RAM disk or folder is removed.
 
 The **Overview** page's **Computer** card shows how full the spool is. The dashboard's events
-report it as it fills: `The RAM spool has only N% free: uploads aren't keeping up` (below 25%
-free), `... calls will soon go to the disk` (below 10%), `The RAM spool was full: N calls written
-to the recordings folder instead`, and `The RAM spool has room again`.
+report it as it fills, is full, is deleted and recovers: see [Events](interface.md#events).
 
 ## Spotlight on macOS
 
@@ -317,9 +288,8 @@ recordings folder that gains thousands of calls a day, that's a lot of disk writ
 searches for.
 
 The app checks once a day (and when you change the recordings folder) whether Spotlight indexes the
-folder. If it does, or might, the **Platform** page shows a note: **Spotlight indexes the
-recordings folder** (or **Spotlight may be indexing the recordings folder**) with the steps to stop
-it:
+folder. If it does, or might, the **Platform** page shows a note: **Spotlight indexes
+recordings** (or **Spotlight may index recordings**) with the steps to stop it:
 
 1. Open **System Settings → Spotlight** and click **Search Privacy**.
 2. Click **+** and choose the recordings folder (⇧⌘G in the dialog lets you type a path).
@@ -336,12 +306,20 @@ override them under **Recording** in the **Recording** group of its card; each o
 
 **What is recorded**
 
-- **Talkgroups not in the talkgroup file** (`recordUnknown`, on): applies only when a system has a
+- **Unlisted talkgroups** (`recordUnknown`, on): applies only when a system has a
   talkgroup list. A talkgroup patched with a listed one is recorded anyway.
 - **Unit-to-unit calls** (`recordUnitToUnit`, on): private calls between two radios.
 - **Call timeout, s** (`callTimeoutS`, 3): a call ends this long after its last grant or audio.
+- **Conversations** (`conversationMode`, on): a call is the talkgroup's whole conversation, until
+  it has been quiet for the call timeout. Off, each transmission is a call of its own, ended by its
+  voice channel's terminator (P25 Phase 1 and 2, DMR, NXDN; analog: its squelch shut for half a
+  second), or the next transmission's audio on its channel, or the call timeout when neither comes. Trunked systems only. Setup suggests Off for a system with several sites; see
+  [Calls heard on several sites](multi-site.md#calls-heard-on-several-sites).
 
-These first two apply to trunked systems; they have no effect on conventional channels.
+The first two and **Conversations** apply to trunked systems; they have no effect on conventional
+channels. On the Recorder card, **One copy per multi-site call** (`recording.dropDuplicateCalls`,
+on) saves only the best copy of a call heard on several sites; see
+[Calls heard on several sites](multi-site.md#calls-heard-on-several-sites).
 
 **Which calls are kept**
 
@@ -368,9 +346,11 @@ A call that isn't kept logs `Call not saved - no audio, or shorter than the mini
   **Fixed-point** (the default) is Pavel Yazev's decoder, Trunk Recorder's `softVocoder: false`, and
   usually sounds most natural. **Enhanced** is Trunk Recorder's floating-point synthesis. **mbelib**
   behaves exactly like mbelib.
-- **Save vocoder frames** (`captureFrames`, off): also saves each digital call's raw vocoder frames
-  as `<name>.sdr`, MimoSDR's call file ([sdr-stream](https://github.com/MimoCAD/sdr-stream)):
-  the call's identity and the voice still coded, about a tenth the size of the WAV. MimoSDR's
-  tools read it, and `trunk-pro tool revoice` turns it back into a WAV with a different vocoder, so
-  you can compare them on the same call. NXDN, which the format doesn't cover, is saved as
-  `<name>.frames.jsonl`. See the [command line](../command-line.md).
+- **Signal taps** (`taps`, none; Setup → Recording → Advanced): data from part-way through a
+  channel's receiver, a file for each transmission with a `.jsonl` beside it: the FM discriminator
+  (for pager and data decoders), digital voice frames as they came off the air, each frame's errors.
+  The **Voice frames as vocoded** tap (`voice.frames`) saves each digital transmission's voice
+  still coded, about a tenth the size of the WAV, as an `.sdr` (MimoSDR's call file,
+  [sdr-stream](https://github.com/MimoCAD/sdr-stream)) and a `.jsonl`: MimoSDR's tools read it, and
+  `trunk-pro tool revoice` turns it back into a WAV with a different vocoder, so you can compare
+  them on the same transmission. See [`taps`](../configuration/recording.md#taps).

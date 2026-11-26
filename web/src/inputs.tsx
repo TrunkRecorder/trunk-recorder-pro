@@ -9,19 +9,33 @@
 // The rules for using them: docs/developer/ui-style.md.
 
 import { useEffect, useRef, useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode, type RefObject, type TextareaHTMLAttributes } from "react";
+import { Info } from "./charts.tsx";
 import { hasBiasT, SOURCE_KINDS } from "./config.ts";
+import { can } from "./controller.ts";
 import { asTyped, decimal, finishDraft, gain, hex, talkgroupProblem, type TextCodec } from "./fieldText.ts";
 import type { Source } from "./protocol.ts";
 
-/** A labelled setting. `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show. */
-export function Field(props: { label: string; hint?: ReactNode; children: ReactNode; wide?: boolean; needs?: string; anchor?: string; className?: string }) {
+/** A labelled setting. `needs`: what an import left to fill in here (highlighted); `anchor`: its place, for the to-do list's Show; `info`: the longer why, as an ⓘ beside the label. */
+export function Field(props: { label: string; hint?: ReactNode; info?: ReactNode; children: ReactNode; wide?: boolean; needs?: string; anchor?: string; className?: string }) {
   return (
     <label className={`field${props.wide ? " wide" : ""}${props.needs ? " needs" : ""}${props.className ? ` ${props.className}` : ""}`} id={props.anchor && `need-${props.anchor}`}>
-      <span className="field-label">{props.label}</span>
+      <span className="field-label">
+        {props.label}
+        {props.info && <LabelInfo label={props.label}>{props.info}</LabelInfo>}
+      </span>
       {props.children}
       {props.needs && <span className="field-needs">{props.needs}</span>}
       {props.hint && <span className="field-hint">{props.hint}</span>}
     </label>
+  );
+}
+
+/** An ⓘ inside a label: a click on it opens nothing else (not the label's input). */
+function LabelInfo(props: { label: string; children: ReactNode }) {
+  return (
+    <span onClick={(e) => e.preventDefault()}>
+      <Info label={props.label}>{props.children}</Info>
+    </span>
   );
 }
 
@@ -31,13 +45,16 @@ export function TalkgroupHint(props: { list: readonly unknown[] | undefined; tex
   return problem ? <span className="bad-text">{problem}</span> : <>{props.text}</>;
 }
 
-/** A checkbox with its label and hint. */
-export function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: ReactNode; disabled?: boolean; id?: string }) {
+/** A checkbox with its label and hint; `info`: the longer why, as an ⓘ beside the label. */
+export function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean) => void; hint?: ReactNode; info?: ReactNode; disabled?: boolean; id?: string }) {
   return (
     <label className={`toggle${props.disabled ? " disabled" : ""}`}>
       <input id={props.id} type="checkbox" checked={props.checked} disabled={props.disabled} onChange={(e) => props.onChange(e.target.checked)} />
       <span className="toggle-text">
-        <span>{props.label}</span>
+        <span>
+          {props.label}
+          {props.info && <LabelInfo label={props.label}>{props.info}</LabelInfo>}
+        </span>
         {props.hint && <span className="field-hint">{props.hint}</span>}
       </span>
     </label>
@@ -46,7 +63,9 @@ export function Toggle(props: { label: string; checked: boolean; onChange: (v: b
 
 /** A radio's bias-T switch, wherever it's picked (Setup, the setup guide, a scan's spare radio); none for a radio without one. */
 export function BiasT(props: { src: Source; checked: boolean; onChange: (v: boolean) => void }) {
-  return hasBiasT(props.src) ? <Toggle label="Bias-T" hint={SOURCE_KINDS[props.src.type].biasT} checked={props.checked} onChange={props.onChange} /> : null;
+  // (A dongle's is switched by the desktop app's driver: the browser's WebUSB one leaves it as it is.)
+  const offered = hasBiasT(props.src) && (props.src.type !== "rtlsdr" || can("drivers"));
+  return offered ? <Toggle label="Bias-T" hint={SOURCE_KINDS[props.src.type].biasT} checked={props.checked} onChange={props.onChange} /> : null;
 }
 
 /**
@@ -74,15 +93,18 @@ type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "default
 /**
  * A field's text while it's being typed in, and keeping it when it's done:
  * left, Enter (`enter`), or gone with its page. Escape: back as it was.
+ * `onDraft`: the value as typed (or stepped), before it's kept, for what
+ * shows it as it changes; undefined once the field is left.
  */
-function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void) {
+function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void, onDraft?: (v: T | undefined) => void) {
   const [text, setText] = useState<string | null>(null);
   // (The latest of each, for the handlers and the page going away.)
-  const at = useRef({ text: null as string | null, value, codec, onChange });
-  Object.assign(at.current, { value, codec, onChange });
+  const at = useRef({ text: null as string | null, value, codec, onChange, onDraft });
+  Object.assign(at.current, { value, codec, onChange, onDraft });
   const edit = (t: string | null) => {
     at.current.text = t;
     setText(t);
+    at.current.onDraft?.(t === null ? undefined : codec.parse(t));
   };
   const finish = () => {
     const { text, value, codec, onChange } = at.current;
@@ -97,7 +119,7 @@ function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void) {
     type: (t: string) => edit(t),
     blur: () => {
       finish();
-      setText(null);
+      edit(null);
     },
     key: (e: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>, enter: boolean) => {
       if (e.key === "Escape") {
@@ -113,9 +135,9 @@ function useDraft<T>(value: T, codec: TextCodec<T>, onChange: (v: T) => void) {
  * text as typed, read with `codec.parse` and passed on once the field is left
  * or Enter pressed. `sizeToText`: as wide as its text.
  */
-export function DraftInput<T>(props: InputProps & { value: T; codec: TextCodec<T>; onChange: (v: T) => void; sizeToText?: boolean }) {
-  const { value, codec, onChange, onFocus, onBlur, onKeyDown, sizeToText, ...rest } = props;
-  const d = useDraft(value, codec, onChange);
+export function DraftInput<T>(props: InputProps & { value: T; codec: TextCodec<T>; onChange: (v: T) => void; onDraft?: (v: T | undefined) => void; sizeToText?: boolean }) {
+  const { value, codec, onChange, onDraft, onFocus, onBlur, onKeyDown, sizeToText, ...rest } = props;
+  const d = useDraft(value, codec, onChange, onDraft);
   return (
     <input
       {...rest}
@@ -177,4 +199,67 @@ export function TextArea(props: Omit<TextareaHTMLAttributes<HTMLTextAreaElement>
 export function NumberInput(props: Omit<InputProps, "className"> & { value: number | undefined; onChange: (v: number | undefined) => void; label: string; hex?: boolean; gain?: boolean; narrow?: boolean }) {
   const { label, hex: isHex, gain: isGain, narrow, ...rest } = props;
   return <DraftInput {...rest} className={`mono${narrow ? " narrow" : ""}`} aria-label={label} codec={isHex ? hex : isGain ? gain : decimal} />;
+}
+
+/**
+ * A slider: moves as it's dragged, saved once it's let go (the pointer up, a
+ * key up, or leaving it) — one save per setting, not one per step dragged
+ * through: a radio's gain is set while recording, and a plugin's settings are
+ * sent to it (or it's restarted) at each save. `text`: its value as shown.
+ */
+export function ReleaseSlider(props: {
+  min?: number;
+  max: number;
+  step?: number;
+  value: number;
+  disabled?: boolean;
+  label: string;
+  id?: string;
+  className?: string;
+  text?: (v: number) => string;
+  onChange: (v: number) => void;
+}) {
+  const [draft, setDraft] = useState<number | null>(null);
+  const shown = draft ?? props.value;
+  const text = props.text ? props.text(shown) : String(shown);
+  const done = () => {
+    if (draft !== null && draft !== props.value) props.onChange(draft);
+    setDraft(null);
+  };
+  return (
+    <span className={props.className ?? "row"}>
+      <input
+        id={props.id}
+        type="range"
+        min={props.min ?? 0}
+        max={props.max}
+        step={props.step}
+        value={shown}
+        disabled={props.disabled}
+        aria-label={props.label}
+        aria-valuetext={text}
+        onChange={(e) => setDraft(Number(e.target.value))}
+        onPointerUp={done}
+        onKeyUp={done}
+        onBlur={done}
+      />
+      <span className="mono small">{text}</span>
+    </span>
+  );
+}
+
+/** A button that copies `text` to the clipboard, and says so for a moment. */
+export function CopyButton(props: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(props.text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  };
+  return (
+    <button type="button" className={props.className ?? "btn small"} onClick={copy}>
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
 }

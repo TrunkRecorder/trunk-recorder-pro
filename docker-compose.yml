@@ -17,8 +17,9 @@ services:
     container_name: trunk-pro
     restart: unless-stopped
     ports:
-      # No login: only on a network you trust. "127.0.0.1:8080:8080" keeps
-      # it to this machine.
+      # Signing in is off until you turn it on (Setup -> Access, or
+      # `docker compose exec trunk-pro trunk-pro access ...`): only on a
+      # network you trust. "127.0.0.1:8080:8080" keeps it to this machine.
       - "8080:8080"
     volumes:
       - ./data:/data

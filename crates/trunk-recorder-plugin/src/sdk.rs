@@ -17,10 +17,9 @@ use crate::schema;
 pub trait Plugin: Sized {
     /// The plugin's settings. `#[serde(default)]` on the struct lets a user
     /// leave any of them empty. The settings form is drawn from its schema
-    /// (see [`crate::schema`]). [`NoConfig`] for none. A system can override
-    /// any of them (another server for it, say): read them for a system from
-    /// [`System::settings`], and from [`Setup::config`] only for what isn't
-    /// any one system's.
+    /// (see [`crate::schema`]). [`NoConfig`] for none. A system can set
+    /// again those [`Manifest::system_overrides`] names (another server for
+    /// it, say): read those for a system from [`System::settings`].
     type Config: DeserializeOwned + JsonSchema;
     /// Settings for each system, when the plugin needs some (an API key per
     /// system, say). [`NoConfig`] for none.
@@ -35,13 +34,27 @@ pub trait Plugin: Sized {
     fn start(host: Host, setup: Setup<Self::Config, Self::SystemConfig>) -> Result<Self, String>;
 
     fn call_start(&mut self, _call: CallInfo) {}
+    /// A call changed while it runs (another radio talking, an emergency, a patch, …: see
+    /// [`topic::CALL_UPDATE`](crate::protocol::topic::CALL_UPDATE)): the call as it is now.
+    fn call_update(&mut self, _call: CallInfo) {}
     fn call_end(&mut self, _call: CallInfo) {}
     fn call_concluded(&mut self, _call: ConcludedCall) {}
     fn unit(&mut self, _event: UnitEvent) {}
     fn audio(&mut self, _chunk: AudioChunk) {}
+    /// Live voice as vocoder frames (subscribe to `voice`).
+    fn voice(&mut self, _chunk: VoiceChunk) {}
+    /// A piece of a signal tap's stream (subscribe to the tap's topic, `tap.<id>`:
+    /// [`Tap::topic`](crate::Tap::topic)); `chunk.tap` says which tap's.
+    fn tap(&mut self, _chunk: crate::TapChunk) {}
     fn status(&mut self, _status: Status) {}
+    /// Every series the recorder measures, as running totals since recording started, every
+    /// 10 s ([`topic::TOTALS`]). [`crate::health`] makes node health reports of them.
+    fn totals(&mut self, _totals: Totals) {}
     /// A call's tones made a pattern: every one heard (subscribe to `tone_pattern`).
     fn tone_pattern(&mut self, _t: TonePatternEvent) {}
+    /// A line TRP logged (subscribe to `log`): its own, not the plugin's. Don't log
+    /// for each one, or two plugins that pass lines on can keep each other busy.
+    fn log_line(&mut self, _line: LogLine) {}
     /// One of the plugin's buttons was pressed (`x-actions` in its settings
     /// schema). Answer through `reply`, now or from another thread once the
     /// work is done; a reply dropped unsent answers that it failed.
@@ -51,6 +64,9 @@ pub trait Plugin: Sized {
     /// The answer to [`Host::calls`]: a page of recorded calls, for the
     /// `request` it gave.
     fn calls(&mut self, _request: u64, _page: CallsPage) {}
+    /// The answer to [`Host::save_settings`], for the `request` it gave: saved, or why not.
+    /// (Saved, the settings come to [`Plugin::settings`] first.)
+    fn settings_saved(&mut self, _request: u64, _ok: bool, _message: String) {}
     /// Its settings changed while it runs (set [`Manifest::live_settings`]
     /// for this to be called rather than the plugin restarted). An `Err` is
     /// shown as its status, and the settings it had stay.
@@ -69,11 +85,12 @@ pub use crate::schema::NoConfig;
 #[derive(Clone, Debug)]
 pub struct Setup<C, S> {
     /// The plugin's settings for the whole recorder (each system's, with
-    /// its overrides: [`System::settings`]).
+    /// what it sets again: [`System::settings`]).
     pub config: C,
-    /// Every system, with the plugin's settings for it.
+    /// Every system, with the plugin's settings for it (not those it's turned off for).
     pub systems: Vec<System<C, S>>,
     pub host: HostInfo,
+    /// Where calls are stored: always a full path, as are the paths of each call's files.
     pub capture_dir: PathBuf,
     /// The plugin's own folder, kept across restarts and upgrades.
     pub data_dir: PathBuf,
@@ -83,12 +100,13 @@ pub struct Setup<C, S> {
 
 impl<C, S> Setup<C, S> {
     /// The system an event's `system` names. (Its number is for this run
-    /// only; keep anything you store by [`System::short_name`].)
+    /// only; keep anything you store by [`System::id`].)
     pub fn system(&self, index: u16) -> Option<&System<C, S>> {
         self.systems.iter().find(|s| s.index == index)
     }
-    /// The system with this short name — its identity: every event carries
-    /// it (`short_name`, or a concluded call's `call.short_name`).
+    /// The system with this short name: what users know it by, so what a
+    /// setting they type names it by. (It changes when the system is renamed;
+    /// store by [`System::id`].)
     pub fn system_named(&self, short_name: &str) -> Option<&System<C, S>> {
         self.systems.iter().find(|s| s.short_name == short_name)
     }
@@ -102,7 +120,9 @@ impl<C, S> Setup<C, S> {
 pub struct System<C, S> {
     /// The number events carry for it, for this run only.
     pub index: u16,
-    /// Its identity: unique among the recorder's systems, and what users know it by.
+    /// Its identity: the same across runs and renames ([`SystemInfo::id`]).
+    pub id: u32,
+    /// Unique among the recorder's systems, and what users know it by (it changes when it's renamed).
     pub short_name: String,
     /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
     pub kind: String,
@@ -113,13 +133,64 @@ pub struct System<C, S> {
     pub fcc: std::collections::BTreeMap<String, FccLicense>,
     pub fcc_call_sign: String,
     pub fcc_name: String,
-    /// Its sites.
-    pub sites: Vec<SiteInfo>,
+    /// Its sites (not those the plugin is off for), with the plugin's settings for each.
+    pub sites: Vec<Site<S>>,
     /// The plugin's settings for this system (`None`: left empty).
     pub config: Option<S>,
     /// The plugin's own settings ([`Setup::config`]) as they are for this
-    /// system, with any it overrides.
+    /// system, with those it sets again ([`Manifest::system_overrides`]).
     pub settings: C,
+}
+
+/// A site of a [`System`], and the plugin's settings for it.
+#[derive(Clone, Debug)]
+pub struct Site<S> {
+    /// Its identity: the same across runs and renames ([`SiteInfo::id`]).
+    pub id: u32,
+    /// What calls carry as `site` (it changes when it's renamed).
+    pub name: String,
+    /// The plugin's settings for this site: the system's with those it sets
+    /// again ([`Manifest::site_overrides`]). `None`: as the system's.
+    pub config: Option<S>,
+}
+
+/// Settings a recorded call goes with ([`System::targets`]): a site's own, or the system's.
+#[derive(Debug)]
+pub struct Target<'a, S> {
+    /// The site they're its own (None: the system's).
+    pub site: Option<&'a Site<S>>,
+    pub config: &'a S,
+}
+
+impl<C, S> System<C, S> {
+    /// What recorded call `call` goes with, one for each place it's to go:
+    /// the settings of each site that heard it ([`CallRecord::sites`], else
+    /// its kept copy's) that has its own, and the system's once when one
+    /// that heard it has none of its own (or it names no site). A site the
+    /// plugin is off for counts for nothing; empty: it goes nowhere (no
+    /// settings for it). Uploaders sending a site's calls to an account of
+    /// its own, say, send it once for each.
+    pub fn targets(&self, call: &CallRecord) -> Vec<Target<'_, S>> {
+        let heard: Vec<(u32, &str)> = match call.sites.is_empty() {
+            true => vec![(call.site_id, call.site.as_str())],
+            false => call.sites.iter().map(|s| (s.id, s.name.as_str())).collect(),
+        };
+        // (By id; a call from before ids, by name.)
+        let site_of = |(id, name): (u32, &str)| self.sites.iter().find(|s| if id != 0 { s.id == id } else { !name.is_empty() && s.name == name });
+        let mut out: Vec<Target<'_, S>> = Vec::new();
+        let mut system = heard.iter().all(|&(id, name)| id == 0 && name.is_empty());
+        for site in heard.into_iter().filter_map(site_of) {
+            match &site.config {
+                Some(config) if !out.iter().any(|t| t.site.is_some_and(|s| s.id == site.id)) => out.push(Target { site: Some(site), config }),
+                Some(_) => {}
+                None => system = true,
+            }
+        }
+        if let Some(config) = self.config.as_ref().filter(|_| system) {
+            out.push(Target { site: None, config });
+        }
+        out
+    }
 }
 
 /// The way back to the recorder: logs, health, results. Cheap to clone and
@@ -143,6 +214,25 @@ impl Host {
     pub fn calls(&self, query: CallsQuery) -> u64 {
         let request = self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         self.send(&PluginMessage::CallsQuery { request, query });
+        request
+    }
+
+    /// Save some of its own settings, as if typed in on its form ([`PluginMessage::SettingsSave`]):
+    /// each top-level key of `settings` replaces that setting, the others stay. Refused when it
+    /// would restart the plugin (it needs [`Manifest::live_settings`], one copy, no per-system
+    /// settings, and what it requires set). They come back to [`Plugin::settings`], and the answer to
+    /// [`Plugin::settings_saved`] with the request number this gives. (Its `Config` type, whole,
+    /// is fine; a value that isn't an object is answered as refused.)
+    pub fn save_settings(&self, settings: &impl serde::Serialize) -> u64 {
+        let request = self.requests.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let settings = match serde_json::to_value(settings) {
+            Ok(Value::Object(m)) => m,
+            _ => {
+                self.warn("save_settings: its settings must be an object");
+                return request;
+            }
+        };
+        self.send(&PluginMessage::SettingsSave { request, settings });
         request
     }
 
@@ -173,6 +263,18 @@ impl Host {
     /// The plugin's health, shown in the interface until the next.
     pub fn status(&self, state: State, message: impl Into<String>) {
         self.send(&PluginMessage::Status { state, message: message.into() });
+    }
+
+    /// A notice (`key`: which), shown beside the status until it's cleared or replaced: a later
+    /// `status` doesn't hide it. For what stays true while the plugin runs (settings to fix);
+    /// the plugin's health is the worst of its status and its notices.
+    pub fn notice(&self, key: impl Into<String>, state: State, message: impl Into<String>) {
+        self.send(&PluginMessage::Notice { key: key.into(), state: Some(state), message: message.into() });
+    }
+
+    /// Takes the notice `key` away.
+    pub fn clear_notice(&self, key: impl Into<String>) {
+        self.send(&PluginMessage::Notice { key: key.into(), state: None, message: String::new() });
     }
 
     /// How the plugin's work is going (see [`Metrics`]): queue, timing,
@@ -305,17 +407,23 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
         match msg {
             HostMessage::Hello(_) => host.warn("a second hello, ignored"),
             HostMessage::CallStart(c) => p.call_start(c),
+            HostMessage::CallUpdate(c) => p.call_update(c),
             HostMessage::CallEnd(c) => p.call_end(c),
             HostMessage::CallConcluded(c) => p.call_concluded(c),
             HostMessage::Unit(u) => p.unit(u),
             HostMessage::Audio(a) => p.audio(a),
+            HostMessage::Voice(v) => p.voice(v),
+            HostMessage::Tap(t) => p.tap(t),
             HostMessage::Status(s) => p.status(s),
+            HostMessage::Totals(t) => p.totals(t),
             HostMessage::TonePattern(t) => p.tone_pattern(t),
+            HostMessage::Log(l) => p.log_line(l),
             HostMessage::Action(a) => {
                 let reply = Reply { host: host.clone(), request: a.request, sent: false };
                 p.action(a, reply)
             }
             HostMessage::Calls { request, page } => p.calls(request, page),
+            HostMessage::SettingsSaved { request, ok, message } => p.settings_saved(request, ok, message),
             HostMessage::Settings(h) => match setup::<P>(h).and_then(|s| p.settings(s)) {
                 Ok(()) => host.status(State::Ok, ""),
                 Err(e) => host.status(State::Error, format!("new settings not taken: {e}")),
@@ -353,7 +461,15 @@ fn setup<P: Plugin>(hello: Hello) -> Result<Setup<P::Config, P::SystemConfig>, S
             Value::Null => None,
             v => Some(parse::<P::SystemConfig>(v, &format!("settings for {}", s.short_name))?),
         };
-        systems.push(System { index: s.index, short_name: s.short_name, kind: s.kind, name: s.name, fcc: s.fcc, fcc_call_sign: s.fcc_call_sign, fcc_name: s.fcc_name, sites: s.sites, config, settings });
+        let mut sites = Vec::new();
+        for t in s.sites {
+            let config = match t.config {
+                Value::Null => None,
+                v => Some(parse::<P::SystemConfig>(v, &format!("settings for {}'s site {}", s.short_name, t.name))?),
+            };
+            sites.push(Site { id: t.id, name: t.name, config });
+        }
+        systems.push(System { index: s.index, id: s.id, short_name: s.short_name, kind: s.kind, name: s.name, fcc: s.fcc, fcc_call_sign: s.fcc_call_sign, fcc_name: s.fcc_name, sites, config, settings });
     }
     Ok(Setup { config, systems, host: hello.host, capture_dir: hello.capture_dir, data_dir: hello.data_dir, audio_formats: hello.audio_formats })
 }
@@ -421,6 +537,34 @@ mod tests {
         }
     }
 
+    /// A recorded call goes with the settings of each site that heard it that
+    /// has its own, and the system's once for those that don't.
+    #[test]
+    fn a_call_goes_by_the_sites_that_heard_it() {
+        let site = |id: u32, name: &str, config: Option<u32>| Site { id, name: name.into(), config };
+        let sys = System::<(), u32> {
+            index: 0,
+            id: 1,
+            short_name: "s".into(),
+            kind: "p25".into(),
+            name: String::new(),
+            fcc: Default::default(),
+            fcc_call_sign: String::new(),
+            fcc_name: String::new(),
+            sites: vec![site(7, "north", None), site(8, "south", Some(77)), site(9, "east", Some(88))],
+            config: Some(42),
+            settings: (),
+        };
+        let heard = |ids: &[u32]| CallRecord { sites: ids.iter().map(|&id| SiteRef { id, name: String::new() }).collect(), ..Default::default() };
+        let to = |c: &CallRecord| sys.targets(c).iter().map(|t| (t.site.map(|s| s.id), *t.config)).collect::<Vec<_>>();
+        assert_eq!(to(&heard(&[7, 8])), [(Some(8), 77), (None, 42)], "south's own, and the system's for north");
+        assert_eq!(to(&heard(&[8, 9, 8])), [(Some(8), 77), (Some(9), 88)], "each once; none heard it without its own");
+        assert_eq!(to(&heard(&[5])), [], "a site it's off for (not among its sites)");
+        assert_eq!(to(&CallRecord::default()), [(None, 42)], "no site named: the system's");
+        // From before ids: by name.
+        assert_eq!(to(&CallRecord { site: "south".into(), ..Default::default() }), [(Some(8), 77)]);
+    }
+
     /// A system's settings are the plugin's with what it overrides.
     #[test]
     fn a_system_can_override_the_plugins_settings() {
@@ -466,5 +610,36 @@ mod tests {
         assert_eq!(line, r#"{"type":"calls.query","request":1,"talkgroup":101,"limit":10}"#, "only what was asked goes on the wire");
         let said: Vec<String> = out.logs().into_iter().map(|(_, t)| t).collect();
         assert_eq!(said, ["request 1: 1 calls, next Some(\"1000:sys1/x\")"]);
+    }
+
+    /// Fills in a name it looked up, as it starts.
+    struct Namer(Host);
+
+    impl Plugin for Namer {
+        type Config = NoConfig;
+        type SystemConfig = NoConfig;
+        fn manifest() -> Manifest {
+            Manifest { id: "namer".into(), live_settings: true, ..Default::default() }
+        }
+        fn start(host: Host, _setup: Setup<NoConfig, NoConfig>) -> Result<Self, String> {
+            host.save_settings(&json!({ "serverName": "LolWut" }));
+            Ok(Namer(host))
+        }
+        fn settings_saved(&mut self, request: u64, ok: bool, message: String) {
+            self.0.info(format!("request {request}: {ok} {message}"));
+        }
+    }
+
+    /// A plugin saves some of its settings (`settings.save`, numbered), and the answer for that
+    /// number reaches `Plugin::settings_saved`.
+    #[test]
+    fn a_plugin_saves_its_settings_and_hears_how_it_went() {
+        let dir = testing::temp_dir("sdk-save");
+        let answer = HostMessage::SettingsSaved { request: 1, ok: false, message: "no".into() };
+        let out = testing::run::<Namer>([HostMessage::Hello(testing::hello(&dir, json!({}))), answer]);
+        let sent = out.messages.iter().find(|m| matches!(m, PluginMessage::SettingsSave { .. })).cloned().expect("settings.save sent");
+        assert_eq!(serde_json::to_string(&sent).unwrap(), r#"{"type":"settings.save","request":1,"settings":{"serverName":"LolWut"}}"#);
+        let said: Vec<String> = out.logs().into_iter().map(|(_, t)| t).collect();
+        assert_eq!(said, ["request 1: false no"]);
     }
 }

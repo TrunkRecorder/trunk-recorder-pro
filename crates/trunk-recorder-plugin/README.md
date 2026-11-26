@@ -47,7 +47,7 @@ impl Plugin for Hello {
         Ok(Hello { host })
     }
     fn call_concluded(&mut self, call: ConcludedCall) {
-        self.host.info(format!("TG {} for {} s", call.call.talkgroup, call.call.call_length));
+        self.host.info(format!("TG {} for {} ms", call.call.talkgroup, call.call.audio_ms()));
     }
 }
 
@@ -60,9 +60,15 @@ fn main() {
 
 Start from the [plugin template](https://github.com/TrunkRecorder/trunk-plugin-template).
 It's a working plugin with tests, CI and a release workflow that builds for
-every platform the recorder runs on, and its `docs/` folder is the guide to
-writing plugins: the events, the settings form, uploading, testing and
-releasing.
+every platform the recorder runs on.
+
+The guide is [Writing plugins](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/plugins/writing-plugins.md):
+the template, how a plugin runs, the settings form, testing, releasing and the
+registry. The reference pages beside it list
+[every event](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/developer/plugins/events.md)
+and [every protocol message](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/developer/plugins/protocol.md),
+and [Writing an uploader](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/developer/plugins/uploading.md)
+covers `CallQueue`, `Attempt` and node health reports.
 
 Complete plugins to learn from:
 [OpenMHz](https://github.com/TrunkRecorder/trunk-plugin-openmhz),
@@ -82,6 +88,15 @@ uses only the protocol types, with `default-features = false`.
 recorded calls (by system, talkgroup, radio and time, a page at a time); the page arrives at
 `Plugin::calls(request, page)` with the request number it returned. A `CallsPage` is `entries`, `next` (present when more calls remain: put it in the next query's `cursor`) and `error` (the call store is off: the page is the recent calls alone). The recorder answers from its call store, the
 latest calls included. On the wire the request number rides beside the query and the page: `{"type":"calls.query","request":1,"talkgroup":101}` and `{"type":"calls","request":1,"entries":[...],"next":"..."}`. (Since SDK 0.9.0.)
+
+## Node health reports
+
+Subscribe to `totals` and the recorder sends every series it measures as running totals, with the
+sites, conventional channels and radios they're of, every 10 s (`Plugin::totals`). The `health` module turns them into
+a [node health report](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/docs/api/node-health.md)
+for a service: `History` keeps the totals, a `Reporter` per node says when its report is due (a
+random point in each interval, jittered) and makes it, and is told how the send went
+(`delivered`, `failed`). (Since SDK 0.12.0.)
 
 ## Versions
 

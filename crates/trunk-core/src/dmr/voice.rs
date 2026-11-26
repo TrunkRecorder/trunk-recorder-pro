@@ -4,11 +4,13 @@
 //! each slot independently.
 
 use crate::trunk::Flags;
+use super::alias::{self, Assembler};
 use super::burst::{Burst, Framer};
 use super::slot::{Channel, LcFrom, SlotEvent};
 use crate::dsp::Symbol;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
 use crate::trunk::frames::{Codec, VoiceFrame};
+use crate::trunk::taps::{AirFrame, Tap, TapPiece, TapSet};
 use crate::trunk::voice::TrackerOut;
 
 /// A voice burst carries 60 ms of one slot's speech.
@@ -20,12 +22,19 @@ struct Slot {
     source: Option<u32>,
     group: bool,
     encrypted: bool,
+    /// The transmission's privacy indicator header, once heard: algorithm, key, IV.
+    privacy: Option<(u8, u8, [u8; 4])>,
     emergency: bool,
+    /// The talker alias being put together, and when voice LC last named the talker for alias/GPS attribution.
+    alias: Assembler,
+    lc_s: f64,
+    /// Voice heard since its last terminator.
+    voiced: bool,
 }
 
 impl Slot {
     fn new(seed: u32) -> Self {
-        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, emergency: false }
+        Slot { dec: mbe::Decoder::new(mbe::lcg(seed), mbe::Profile::Enhanced), talkgroup: None, source: None, group: true, encrypted: false, privacy: None, emergency: false, alias: Assembler::default(), lc_s: f64::NEG_INFINITY, voiced: false }
     }
 }
 
@@ -42,11 +51,11 @@ pub struct DmrVoice {
     slots: [Slot; 2],
     bursts: Vec<Burst>,
     ev: Vec<(u8, SlotEvent)>,
+    /// The taps on: [`Tap::VoiceAir`] is this decoder's.
+    pub taps: TapSet,
     /// Voice codewords / those not synthesized as sent, over the carrier's life.
     pub frames: u64,
     pub bad_frames: u64,
-    /// Which slots to vocode (a trunked voice channel skips the slot nobody records).
-    pub vocode: [bool; 2],
 }
 
 impl DmrVoice {
@@ -57,10 +66,16 @@ impl DmrVoice {
             slots: [Slot::new(seed), Slot::new(seed ^ 0x5a5a_5a5a)],
             bursts: Vec::new(),
             ev: Vec::new(),
+            taps: TapSet::NONE,
             frames: 0,
             bad_frames: 0,
-            vocode: [true; 2],
         }
+    }
+
+    /// With `taps` on.
+    pub fn tapped(mut self, taps: TapSet) -> Self {
+        self.taps = taps;
+        self
     }
 
     /// The talkgroup (or, unit to unit, the radio) slot `slot` is talking to, once link control named it.
@@ -84,28 +99,59 @@ impl DmrVoice {
         for b in std::mem::take(&mut self.bursts) {
             let t = t0 + b.sample / rate;
             self.ev.clear();
-            self.chan.burst(&b, &mut self.ev);
+            self.chan.burst_at(&b, t, &mut self.ev);
             for (slot, e) in std::mem::take(&mut self.ev) {
                 self.event(slot, e, t, out);
             }
         }
     }
 
-    fn event(&mut self, slot: u8, e: SlotEvent, t: f64, out: &mut Vec<Out>) {
+    /// The talker alias slot `slot`'s transmission has sent so far, whole or not (`tool dmr`).
+    pub fn alias_so_far(&self, slot: u8) -> Option<&alias::Decoded> {
+        self.slots[slot as usize & 1].alias.so_far()
+    }
+
+    /// One of [`Self::chan`]'s events, at air time `t`: what [`Self::push`] does with each.
+    pub fn event(&mut self, slot: u8, e: SlotEvent, t: f64, out: &mut Vec<Out>) {
         let s = &mut self.slots[slot as usize];
         let mut push = |o: TrackerOut| out.push(Out { slot, t, out: o });
         match e {
+            SlotEvent::Packet(p) => {
+                if let Some(p) = super::hytera::packet(&p).position { push(TrackerOut::Position(p)); }
+            }
             SlotEvent::Lc { lc, from } => {
-                let Some(group) = lc.voice_user() else { return };
-                if from == LcFrom::Terminator {
+                if from == LcFrom::Embedded {
+                    let talker = s.source.filter(|_| t - s.lc_s < super::gps::HOLD_S);
+                    if let Some(p) = super::gps::lc(&lc, talker) {
+                        push(TrackerOut::Position(p));
+                    }
+                    // A talker alias block: whole, it names the radio voice LC named lately.
+                    let fresh = t - s.lc_s < alias::HOLD_S;
+                    let name = s.alias.push(lc, t).and_then(|d| d.alias(s.source.filter(|&u| u != 0 && fresh)?, s.talkgroup));
+                    if let Some(a) = name {
+                        push(TrackerOut::Alias(a));
+                    }
+                }
+                if from == LcFrom::Terminator && lc.ends_voice() {
                     // End of the transmission (repeated through the hang time): not a call of its own.
+                    if std::mem::take(&mut s.voiced) {
+                        push(TrackerOut::Ended);
+                    }
+                    s.alias.reset();
                     s.source = None;
                     s.encrypted = false;
+                    s.privacy = None;
                     s.emergency = false;
                     return;
                 }
+                let Some(group) = lc.voice_user() else { return };
                 let (tg, src) = (lc.target(), lc.source());
                 let fresh = s.talkgroup != Some(tg) || s.source != Some(src) || s.encrypted != lc.encrypted() || s.emergency != lc.emergency();
+                if s.source != Some(src) {
+                    // Another talker: the alias heard so far isn't its.
+                    s.alias.reset();
+                }
+                s.lc_s = t;
                 s.talkgroup = Some(tg);
                 s.group = group;
                 s.source = Some(src);
@@ -113,6 +159,7 @@ impl DmrVoice {
                     // A new transmission: what an earlier one was (its
                     // terminator lost in a fade) doesn't carry over.
                     s.encrypted = lc.encrypted();
+                    s.privacy = None;
                     s.emergency = lc.emergency();
                 } else {
                     s.encrypted |= lc.encrypted();
@@ -122,19 +169,34 @@ impl DmrVoice {
                     push(TrackerOut::Info { source: (src != 0).then_some(src), flags: Flags { emergency: s.emergency, encrypted: s.encrypted, ..Default::default() } });
                 }
             }
-            SlotEvent::Privacy { .. } => {
+            SlotEvent::Privacy { alg, key, iv } => {
+                s.privacy = Some((alg, key, iv));
                 if !s.encrypted {
                     s.encrypted = true;
                     push(TrackerOut::Info { source: None, flags: Flags { emergency: s.emergency, encrypted: true, ..Default::default() } });
                 }
             }
-            SlotEvent::Voice { frame, pos } => {
+            SlotEvent::Voice { frame, pos, k } => {
                 self.frames += 1;
+                s.voiced = true;
                 if pos == Some(0) && s.source.is_none() {
                     // A new superframe with no LC yet: a fresh transmission's vocoder state.
                     s.dec.reset();
                 }
-                if s.encrypted || !self.vocode[slot as usize] {
+                if self.taps.has(Tap::VoiceAir) {
+                    let note = AirFrame {
+                        n: pos.map(|p| p * 3 + k),
+                        errs: frame.errs,
+                        // (Until link control or a privacy header has said, it isn't known.)
+                        encrypted: (s.encrypted || s.source.is_some()).then_some(s.encrypted),
+                        algid: s.privacy.map(|p| p.0),
+                        keyid: s.privacy.map(|p| p.1 as u16),
+                        mi: s.privacy.map(|p| AirFrame::hex(&p.2)),
+                        ..Default::default()
+                    };
+                    push(TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Ambe, &frame.bits, &note)));
+                }
+                if s.encrypted {
                     return;
                 }
                 let mut buf = [0f32; FRAME_SAMPLES];
@@ -154,12 +216,12 @@ impl DmrVoice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dmr::slot::Lc;
+    use crate::dmr::slot::{Lc, FID_MOTOROLA};
 
-    /// Group voice link control to TG 201 from radio 5; `privacy`: the
-    /// service options' privacy bit.
-    fn lc(privacy: bool) -> Lc {
-        Lc([0, 0, if privacy { 0x40 } else { 0 }, 0, 0, 201, 0, 0, 5])
+    /// Voice link control `flco` (feature set `fid`) to 201 from radio 5;
+    /// `privacy`: the service options' privacy bit.
+    fn lc(flco: u8, fid: u8, privacy: bool) -> Lc {
+        Lc([flco, fid, if privacy { 0x40 } else { 0 }, 0, 0, 201, 0, 0, 5])
     }
 
     /// An encrypted transmission whose terminator is lost (a fade), then a
@@ -168,12 +230,219 @@ mod tests {
     fn a_new_transmission_starts_clear() {
         let mut v = DmrVoice::new(1);
         let mut out = Vec::new();
-        v.event(0, SlotEvent::Lc { lc: lc(true), from: LcFrom::Header }, 0.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Header }, 0.0, &mut out);
         assert!(v.slots[0].encrypted);
-        v.event(0, SlotEvent::Lc { lc: lc(false), from: LcFrom::Header }, 1.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Header }, 1.0, &mut out);
         assert!(!v.slots[0].encrypted);
         // Embedded link control saying so mid-transmission still counts.
-        v.event(0, SlotEvent::Lc { lc: lc(true), from: LcFrom::Embedded }, 1.2, &mut out);
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Embedded }, 1.2, &mut out);
         assert!(v.slots[0].encrypted);
     }
+
+    #[test]
+    fn gps_belongs_to_a_recent_talker_on_its_slot() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        let gps = Lc([8, 0x68, 1, 0x80, 0, 0, 0x40, 0, 0]); // 45 N, 90 W
+        let report = SlotEvent::Lc { lc: gps, from: LcFrom::Embedded };
+        v.event(0, report.clone(), 0.0, &mut out);
+        assert!(out.is_empty(), "GPS cannot name its own talker");
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Header }, 0.1, &mut out);
+        out.clear();
+        v.event(1, report.clone(), 0.2, &mut out);
+        assert!(out.is_empty(), "the other slot has no talker");
+        v.event(0, report.clone(), 0.3, &mut out);
+        assert_eq!(out.len(), 1, "encrypted voice still has clear GPS metadata");
+        assert_eq!((out[0].slot, out[0].t), (0, 0.3));
+        let TrackerOut::Position(p) = out[0].out else { panic!("position output") };
+        assert_eq!((p.unit, p.lat, p.lon, p.source), (5, 45.0, -90.0, "HyteraDMR"));
+        assert_eq!(v.talkgroup(0), Some(201));
+        assert!(v.slots[0].encrypted, "coordinates are not service options");
+        out.clear();
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Terminator }, 0.4, &mut out);
+        v.event(0, report.clone(), 0.5, &mut out);
+        assert!(out.is_empty(), "the transmission ended");
+        let mut next = lc(0, 0, false);
+        next.0[8] = 7;
+        v.event(0, SlotEvent::Lc { lc: next, from: LcFrom::Header }, 0.6, &mut out);
+        out.clear();
+        v.event(0, report.clone(), 0.7, &mut out);
+        assert!(matches!(out[0].out, TrackerOut::Position(p) if p.unit == 7));
+        out.clear();
+        v.event(0, SlotEvent::Lc { lc: gps, from: LcFrom::Header }, 0.8, &mut out);
+        v.event(0, SlotEvent::Lc { lc: gps, from: LcFrom::Terminator }, 0.9, &mut out);
+        assert!(out.is_empty(), "only embedded GPS describes the active talker");
+        let terminator = Lc([0x30, 0x68, 0, 0, 0, 201, 0, 0, 7]);
+        v.event(0, SlotEvent::Lc { lc: terminator, from: LcFrom::Terminator }, 1.0, &mut out);
+        v.event(0, report.clone(), 1.1, &mut out);
+        assert!(out.is_empty(), "Hytera's own terminator clears its talker");
+        v.event(0, SlotEvent::Lc { lc: next, from: LcFrom::Header }, 2.0, &mut out);
+        out.clear();
+        v.event(0, report.clone(), 2.0 + super::super::gps::HOLD_S, &mut out);
+        assert!(out.is_empty(), "a missed terminator cannot keep the talker forever");
+        v.event(0, SlotEvent::Lc { lc: next, from: LcFrom::Embedded }, 6.1, &mut out);
+        v.event(0, report, 6.2, &mut out);
+        assert!(matches!(out[0].out, TrackerOut::Position(p) if p.unit == 7), "repeated voice LC refreshes the talker");
+    }
+
+    /// The terminator's link control after voice ends the transmission,
+    /// once: not again as it repeats through the hang time, nor with no voice before it.
+    #[test]
+    fn a_terminator_after_voice_ends_the_transmission_once() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        let ended = |out: &[Out]| out.iter().filter(|o| matches!(o.out, TrackerOut::Ended)).count();
+        let term = SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Terminator };
+        v.event(0, term.clone(), 0.0, &mut out);
+        assert_eq!(ended(&out), 0, "no voice yet");
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Header }, 0.1, &mut out);
+        v.event(0, SlotEvent::Voice { frame: crate::ambe::AmbeFrame { bits: [0; 49], errs: 0 }, pos: Some(0), k: 0 }, 0.2, &mut out);
+        for t in [0.5, 0.86, 1.22] {
+            v.event(0, term.clone(), t, &mut out);
+        }
+        assert_eq!(ended(&out), 1);
+        assert_eq!(out.iter().filter(|o| matches!(o.out, TrackerOut::Ended)).map(|o| (o.slot, o.t)).collect::<Vec<_>>(), [(0, 0.5)]);
+    }
+
+    /// Motorola restricted access (RAS): a call's embedded LC sets the FLCO's
+    /// 0x20 bit. It is still a clear call, group (0x20) or private (0x23).
+    #[test]
+    fn restricted_access_link_control_is_a_clear_call() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc: lc(0, FID_MOTOROLA, false), from: LcFrom::Header }, 0.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: lc(0x20, FID_MOTOROLA, false), from: LcFrom::Embedded }, 0.4, &mut out);
+        assert!(!v.slots[0].encrypted && v.slots[0].group);
+        assert_eq!((v.slots[0].talkgroup, v.slots[0].source), (Some(201), Some(5)));
+        v.event(1, SlotEvent::Lc { lc: lc(0x23, FID_MOTOROLA, false), from: LcFrom::Embedded }, 0.4, &mut out);
+        assert!(!v.slots[1].encrypted && !v.slots[1].group);
+        // Encrypted is the privacy bit, restricted access or not.
+        v.event(0, SlotEvent::Lc { lc: lc(0x20, FID_MOTOROLA, true), from: LcFrom::Embedded }, 0.8, &mut out);
+        assert!(v.slots[0].encrypted);
+    }
+
+    #[test]
+    fn complete_alias_reaches_existing_unit_name_path_without_changing_privacy() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        // XPT voice LC as the channel hands it on: 16-bit IDs.
+        v.event(0, SlotEvent::Lc { lc: crate::dmr::Lc([0, 0x68, 0, 0, 0, 149, 0, 0x13, 0x8e]), from: LcFrom::Header }, 0.0, &mut out);
+        // The captured UTF-16 payload, with its declared length set to the six
+        // units actually supplied. The original declares 13 and stays partial.
+        v.event(0, SlotEvent::Lc { lc: crate::dmr::Lc([4, 0x68, 0xcc, 0, 0x48, 0, 0x79, 0, 0x74]), from: LcFrom::Embedded }, 0.2, &mut out);
+        v.event(0, SlotEvent::Lc { lc: crate::dmr::Lc([5, 0x68, 0, 0x65, 0, 0x72, 0, 0x61, 0]), from: LcFrom::Embedded }, 0.9, &mut out);
+        let aliases: Vec<_> = out.iter().filter_map(|o| match &o.out { TrackerOut::Alias(a) => Some((o.slot, a)), _ => None }).collect();
+        assert_eq!(aliases.len(), 1);
+        assert_eq!((aliases[0].0, aliases[0].1.unit, aliases[0].1.alias.as_str(), aliases[0].1.talkgroup), (0, 5006, "Hytera", Some(149)));
+        assert!(!v.slots[0].encrypted && !v.slots[0].emergency, "alias format byte is not service options");
+        assert!(v.slots[1].source.is_none());
+    }
+
+    #[test]
+    fn gps_interleaved_with_an_alias_preserves_both() {
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc: lc(0, 0x68, true), from: LcFrom::Header }, 0.0, &mut out);
+        for (i, raw) in [
+            [4, 0x68, 0x50, 0x44, 0x45, 0x53, 0x4b, 0x20, 0x31], // "DESK 123"
+            [8, 0x68, 1, 0x80, 0, 0, 0x40, 0, 0], // GPS, 45 N, 90 W
+            [5, 0x68, 0x32, 0x33, 0, 0, 0, 0, 0],
+        ].into_iter().enumerate() {
+            v.event(0, SlotEvent::Lc { lc: Lc(raw), from: LcFrom::Embedded }, 0.2 + i as f64 * 0.36, &mut out);
+        }
+        assert_eq!(out.iter().filter(|o| matches!(&o.out, TrackerOut::Alias(a) if a.unit == 5 && a.alias == "DESK 123")).count(), 1);
+        assert_eq!(out.iter().filter(|o| matches!(o.out, TrackerOut::Position(p) if (p.unit, p.lat, p.lon) == (5, 45.0, -90.0))).count(), 1);
+        assert!(v.slots[0].encrypted && v.slots[0].source == Some(5));
+    }
+
+    #[test]
+    fn alias_names_the_slots_talker_until_it_changes_ends_or_goes_stale() {
+        use crate::dmr::{slot::FID_HYTERA, Lc};
+        // "DESK 123", Latin-1, Hytera FID: a header block and one more.
+        let ms = [Lc([4, FID_HYTERA, 0x50, 0x44, 0x45, 0x53, 0x4b, 0x20, 0x31]), Lc([5, FID_HYTERA, 0x32, 0x33, 0, 0, 0, 0, 0])];
+        let voice = |src: u8, enc: bool| Lc([0, FID_HYTERA, if enc { 0x40 } else { 0 }, 0, 0, 149, 0, 0x13, src]);
+        let names = |out: &[Out]| out.iter().filter_map(|o| match &o.out { TrackerOut::Alias(a) => Some((o.slot, a.unit, a.alias.clone())), _ => None }).collect::<Vec<_>>();
+        let mut v = DmrVoice::new(1);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc: voice(0x8e, true), from: LcFrom::Header }, 0.0, &mut out);
+        v.event(1, SlotEvent::Lc { lc: voice(0x8f, false), from: LcFrom::Header }, 0.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[0], from: LcFrom::Embedded }, 0.2, &mut out);
+        v.event(1, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 0.3, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 0.9, &mut out);
+        assert_eq!(names(&out), [(0, 5006, "DESK 123".to_string())], "slot-local, and an encrypted call's alias is clear");
+        out.clear();
+        v.event(0, SlotEvent::Lc { lc: ms[0], from: LcFrom::Embedded }, 1.0, &mut out);
+        v.event(0, SlotEvent::Lc { lc: voice(0x8f, false), from: LcFrom::Embedded }, 1.1, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 1.7, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[0], from: LcFrom::Embedded }, 1.8, &mut out);
+        v.event(0, SlotEvent::Lc { lc: voice(0x8f, false), from: LcFrom::Terminator }, 1.9, &mut out);
+        v.event(0, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 2.0, &mut out);
+        assert!(names(&out).is_empty(), "a new talker or the end of the transmission starts over");
+        v.event(1, SlotEvent::Lc { lc: ms[0], from: LcFrom::Embedded }, 4.1, &mut out);
+        v.event(1, SlotEvent::Lc { lc: ms[1], from: LcFrom::Embedded }, 4.5, &mut out);
+        assert!(names(&out).is_empty(), "no name for a talker last named long ago");
+    }
+
+    /// The air tap has every codeword as it was sent, with its place in the superframe and
+    /// what the air has said of its encryption: an encrypted one too, which is never vocoded.
+    #[test]
+    fn the_air_tap_gives_each_frame_clear_or_encrypted() {
+        let mut v = DmrVoice { taps: TapSet::of([Tap::VoiceAir]), ..DmrVoice::new(1) };
+        let mut out = Vec::new();
+        let bits: [u8; 49] = std::array::from_fn(|i| (i % 3 == 0) as u8);
+        let voice = |pos, k| SlotEvent::Voice { frame: crate::ambe::AmbeFrame { bits, errs: 1 }, pos, k };
+        let air = |out: &[Out]| -> Vec<(Vec<u8>, AirFrame)> {
+            out.iter()
+                .filter_map(|o| match &o.out {
+                    TrackerOut::Tap(p) => {
+                        assert_eq!((p.tap, o.slot), (Tap::VoiceAir, 1));
+                        let crate::trunk::taps::TapData::Frames { codec: Codec::Ambe, frames } = &p.data else { panic!("AMBE frames") };
+                        Some((frames[0].clone(), p.notes[0].get().unwrap()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        // Joined late: no place, and nothing known of its encryption.
+        v.event(1, voice(None, 2), 0.0, &mut out);
+        let a = air(&out);
+        assert_eq!(a[0].0, bits);
+        assert_eq!(a[0].1, AirFrame { errs: 1, ..Default::default() });
+        out.clear();
+        v.event(1, SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Header }, 0.1, &mut out);
+        v.event(1, voice(Some(4), 1), 0.2, &mut out);
+        assert_eq!(air(&out)[0].1, AirFrame { n: Some(13), errs: 1, encrypted: Some(false), ..Default::default() });
+        assert_eq!(out.iter().filter(|o| matches!(o.out, TrackerOut::Audio(..))).count(), 1);
+        out.clear();
+        v.event(1, SlotEvent::Lc { lc: lc(0, 0, true), from: LcFrom::Header }, 1.0, &mut out);
+        v.event(1, SlotEvent::Privacy { alg: 5, key: 9, iv: [0xde, 0xad, 0xbe, 0xef] }, 1.1, &mut out);
+        v.event(1, voice(Some(0), 0), 1.2, &mut out);
+        let want = AirFrame { n: Some(0), errs: 1, encrypted: Some(true), algid: Some(5), keyid: Some(9), mi: Some("deadbeef".into()), ..Default::default() };
+        assert_eq!(air(&out), [(bits.to_vec(), want)]);
+        assert!(!out.iter().any(|o| matches!(o.out, TrackerOut::Audio(..))));
+        // The next transmission isn't under the last one's privacy header.
+        out.clear();
+        v.event(1, SlotEvent::Lc { lc: lc(0, 0, false), from: LcFrom::Header }, 2.0, &mut out);
+        v.event(1, voice(Some(0), 0), 2.1, &mut out);
+        assert_eq!(air(&out)[0].1.algid, None);
+        // Untapped, nothing more comes out.
+        let mut v = DmrVoice::new(1);
+        out.clear();
+        v.event(1, voice(Some(0), 0), 0.0, &mut out);
+        assert!(!out.iter().any(|o| matches!(o.out, TrackerOut::Tap(_))));
+    }
+
+    #[test]
+    fn xpt_private_encrypted_voice_is_never_vocoded() {
+        let mut v = DmrVoice::new(1);
+        let lc = Lc([3, 0x68, 0x40, 0, 0, 25, 0, 0x12, 0x34]);
+        let mut out = Vec::new();
+        v.event(0, SlotEvent::Lc { lc, from: LcFrom::Embedded }, 0.0, &mut out);
+        assert_eq!(v.talkgroup(0), Some(25));
+        assert_eq!(v.slots[0].source, Some(0x1234));
+        assert!(v.private(0) && v.slots[0].encrypted);
+        v.event(0, SlotEvent::Voice { frame: crate::ambe::AmbeFrame { bits: [0; 49], errs: 0 }, pos: Some(0), k: 0 }, 0.1, &mut out);
+        assert!(out.iter().all(|v| !matches!(v.out, TrackerOut::Audio(..))), "encrypted frames are never vocoded");
+    }
+
 }

@@ -21,9 +21,12 @@
 //!     <out>/<tg>-<epoch>_<freq>.wav + .json like Trunk Recorder.
 //!     --out calls  --short-name sys1  --talkgroups tg.csv  --bandplan file
 //!     --recorders 32  --preroll 1  --timeout 3  --epoch <unix s>
-//!     --record-encrypted  --keep-silent  --no-unknown  --capture-frames  --quiet
+//!     --record-encrypted  --keep-silent  --no-unknown  --quiet
 //!     --keys keys.json|keys.ekc [--keys-password-file F] (P25 encryption keys for every system: see trunk-app's keys.rs)
+//!     --taps fm.discriminator,voice.air,voice.frames (signal taps saved beside the calls)
 //!     --messages (print every control channel message)
+//!     --summary FILE (each site's control channel blocks as JSON, over all of
+//!     it and, for one of our captures, over the part its live figures cover)
 //!     --min-call s  --max-call s  --min-transmission s (drop short calls, split long
 //!     ones, leave out short transmissions)  --auto-tune (correct the sources'
 //!     frequency error as measured on the control channels; reported either way)
@@ -74,14 +77,14 @@
 //! trunk-pro tool cc|voice|frames <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) [options]
 //!     One P25 channel's decode, as JSON lines (the research/native-bench
 //!     format); `frames` only counts the frames of each type.
-//! trunk-pro tool p2 | smartnet | dmr | dmrscan | nxdn | nxdnscan | nxdnsynth | p25synth | snr …
+//! trunk-pro tool p2 | smartnet | dmr | dmrscan | dmrsynth | nxdn | nxdnscan | nxdnsynth | p25synth | perf | snr …
 //!     Phase 2 slots, a SmartNet control channel, one DMR / NXDN channel,
 //!     every DMR / NXDN carrier in a capture, a synthetic NXDN or P25 capture,
 //!     weak-signal curves (each tool's module documents its options).
-//! trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
-//!     Vocode a call's saved frames again.
-//! trunk-pro tool sdr <call.sdr> [--frames]
-//!     A saved .sdr call's metadata as MimoSDR reads it, or its frames as JSON lines.
+//! trunk-pro tool revoice <frames.sdr | frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
+//!     Vocode saved frames (the voice.frames signal tap) again.
+//! trunk-pro tool sdr <frames.sdr> [--frames]
+//!     A saved .sdr file's metadata as MimoSDR reads it, or its frames as JSON lines.
 //! trunk-pro tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]
 //!     The in-band tones (DTMF, KNOX, …) in saved calls, or (--patterns) the pages and alerts they make up.
 //!
@@ -93,13 +96,22 @@
 //! trunk-pro interface search | install | update | add | uninstall | list …
 //!     Interfaces besides the built-in one (the config's `server.interfaces`), each on a
 //!     port of its own: find them in the store, install, update, add a folder of your own.
+//!
+//! trunk-pro access list | add <name> [--access listen|control] | remove <name> | signout <name> | on | off
+//!     Signing in (the config's `server.auth`): its users and their access tokens, and on or off.
 //! ```
 
 mod access;
 mod api_v1;
-mod audio_stream;
 mod clock;
+mod corpus;
+mod data;
+mod diagnostics;
+mod iq_capture;
+mod iq_rules;
+mod iq_send;
 mod directory;
+mod folder;
 mod dmrtool;
 mod interfaces;
 mod kept;
@@ -109,11 +121,13 @@ mod monitor;
 mod nxdntool;
 mod p25synth;
 mod paths;
+mod perftool;
 mod platform;
 mod snrtool;
 mod plugins;
 mod profile;
 mod radio;
+mod reach;
 mod runtime;
 mod sdr;
 mod server;
@@ -122,11 +136,17 @@ mod spotlight;
 mod db;
 mod statstore;
 mod store;
+mod submission;
+mod tape_file;
+mod taps;
+mod tls;
+mod waterfall;
 mod toolkit;
 #[cfg(test)]
 mod protocol_tests;
 mod survey;
 mod tool;
+mod tune;
 mod unlock;
 
 pub use trunk_app::config;
@@ -137,7 +157,8 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
 
-use trunk_core::trunk::{parse_csv, CallConfig, ConvChannel, ConvConfig, ConvMode, Engine, EngineConfig, SystemConfig, Voice, Event, IdField, Identity, Protocol, SaveRules, SourceConfig, SiteConfig, DEFAULT_GUARD_HZ};
+use trunk_app::{Output, Session};
+use trunk_core::trunk::{ConvConfig, ConvMode, Engine, Voice, Event, DEFAULT_GUARD_HZ};
 
 /// `--key value` / `--flag` arguments after the positionals.
 pub struct Args {
@@ -149,8 +170,8 @@ pub struct Args {
 /// value (`--quiet capture.cu8` is a flag and a positional). `--k=v` sets
 /// any option, these included (`--start=0`).
 const FLAGS: &[&str] = &[
-    "analog-default", "auto-tune", "bursts", "capture-frames", "diversity", "dmr-trunk", "frames", "full", "hard-fec", "keep-silent", "messages", "no-gain", "no-open",
-    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "repeat", "s16", "separation", "start", "threads",
+    "analog-default", "auto-tune", "bursts", "diversity", "dmr-trunk", "frames", "full", "hard-fec", "keep-silent", "kinds", "messages", "no-gain", "no-open",
+    "no-unknown", "osw", "quality", "quiet", "record-encrypted", "repeat", "s16", "separation", "start", "threads", "transmissions",
 ];
 
 impl Args {
@@ -212,16 +233,17 @@ conventional channels from SDRs.
 usage:
   trunk-pro [serve] [--port 8080] [--bind 127.0.0.1] [--config file.json] [--no-open] [--start] [--ui folder]
       Start the recorder and open its web interface (the default). Use
-      --bind 0.0.0.0 to reach it from other machines (no authentication!).
+      --bind 0.0.0.0 to reach it from other machines; turn signing in on
+      first (`trunk-pro access`), or anyone who reaches it can run it.
       --ui serves a folder with an index.html as an interface for this run,
       on the next free port, and opens it. See docs/interfaces.
       --start begins recording with the saved settings at once.
       --log-level debug: more in the log (stderr; files and syslog as set up).
   trunk-pro devices [--usrp]
-      List RTL-SDRs, Airspys, bladeRFs and SoapySDR devices (and USRPs with
-      --usrp); shows whether the optional USRP (UHD), Airspy (libairspy),
-      bladeRF (libbladeRF) and SoapySDR
-      drivers are installed, and which SoapySDR modules.
+      List RTL-SDRs, HackRFs, Airspys, HydraSDRs, bladeRFs and SoapySDR
+      devices (and USRPs with --usrp); shows whether the optional USRP (UHD),
+      bladeRF (libbladeRF) and SoapySDR drivers are installed, and which
+      SoapySDR modules.
   trunk-pro capture <out.cu8> --freq Hz [--rate 2400000] [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
       Record raw IQ, like rtl_sdr.
   trunk-pro replay <capture.cu8> --center Hz --rate Hz --cc Hz[,Hz…] [--out calls] …
@@ -233,12 +255,14 @@ usage:
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz,… --nxdn-trunk typeC|typeD [--nxdn-rate 48|96] [--nxdn-channels Hz,…] [--lcn n=Hz,…] [--ran N]
   trunk-pro replay <capture> --center Hz --rate Hz --cc Hz --smartnet 800_standard|800_reband|800_splinter|900|400_custom
   trunk-pro replay <capture> --center Hz --rate Hz --channels channels.csv
+  trunk-pro replay <capture folder> --tapes dir
       Record calls from captures instead of dongles (a trunked system from
       --cc, more from --system, conventional analog FM / AM / P25 / DMR / NXDN
       channels, or both). --format cu8|cs16|cf32 (else from the extension),
       --guard Hz (each band edge left unused; 75000), --auto-tune (correct
       the frequency error measured on the control channel), --messages
-      (print every control channel message), --quiet.
+      (print every control channel message), --summary file (each site's
+      control channel blocks as JSON), --quiet.
   trunk-pro survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,biz-uhf,biz-vhf,t-band] [--gain dB | --no-gain] [--ppm 0] [--rate Hz] [--seconds 30]
   trunk-pro survey <capture> --center Hz --rate Hz [--format cu8|cs16|cf32]
   trunk-pro survey [--radio '{\"type\":\"bladerf\",…}'] --freqs 851.0125,852.5 [--type p25|smartnet|edacs|dmr|nxdn] [--listen s]
@@ -252,6 +276,11 @@ usage:
   trunk-pro rolloff <capture> --center Hz --rate Hz [--format cu8|cs16|cf32] [--full]
       How far in from each edge of the band the noise floor sags, and the
       guard band to leave there (--full: with the spectra and waterfall).
+  trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--rounds 3] [--apply]
+      Ask a recorder that is recording to tune a radio's gain: it follows a
+      plan for the radio's kind, compares each candidate with the best so far
+      by turns, and finds the one its systems decode best at (control channel,
+      then voice). Nothing is saved unless --apply. tune --help: more.
   trunk-pro tool cc|voice|frames|p2 <capture.cu8> --center Hz --rate Hz (--cc Hz | --freq Hz) …
       One P25 channel's decode as JSON lines (diagnostics; frames: counts
       of each frame type; p2: a Phase 2 channel, --nac --sysid --wacn).
@@ -263,15 +292,24 @@ usage:
       One DMR / NXDN channel's messages.
   trunk-pro tool nxdnsynth <out.cu8> --center Hz [--kind conv|typeC|typeD] [--nxdn 48|96]
       A synthetic NXDN capture, for checking a setup.
-  trunk-pro tool p25synth <out.cu8> [--center Hz] [--freq Hz] [--keys keys.json] [--voice call.frames.jsonl] [--wav out.wav]
+  trunk-pro tool dmrsynth <out.cu8> [--center Hz] [--freq Hz]
+      A synthetic DMR repeater with one call on slot 1 (replay --dmr Hz).
+  trunk-pro tool perf rtl|hackrf|airspy <capture.cu8> [--passes N]
+      One radio's read path over a capture, for counting its CPU cost
+      (perf/gate.py).
+  trunk-pro tool p25synth <out.cu8> [--center Hz] [--freq Hz] [--keys keys.json] [--voice frames.sdr|frames.jsonl] [--wav out.wav]
       A synthetic P25 Phase 1 transmission, encrypted with the first key of
       --keys (or clear), for checking decryption (replay --p25 Hz --keys).
+  trunk-pro tool corpus add <capture folder> --manifest file --id ID --protocol P [--tier wideband]
+  trunk-pro tool corpus fetch|run [--only a,b] [--tier t] [--out dir] [--against next|V] [--bless next|V]
+  trunk-pro tool corpus release <version>
+      The recordings regression tests run on (trunkrecorder.pro/corpus): `run` replays them into --out and compares each with its expected output.
   trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2 [--snr 40,20,…]
       Weak-signal curves: one channel decoded again with noise added.
-  trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
+  trunk-pro tool revoice <frames.sdr | frames.jsonl> <out.wav> [--profile fixed|enhanced|mbelib]
       Vocode a call's saved frames (recording setting \"Save vocoder frames\") again.
-  trunk-pro tool sdr <call.sdr> [--frames]
-      A saved .sdr call's metadata as MimoSDR reads it, or (--frames) its frames as JSON lines.
+  trunk-pro tool sdr <frames.sdr> [--frames]
+      A saved .sdr file's metadata as MimoSDR reads it, or (--frames) its frames as JSON lines.
   trunk-pro tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]
       The in-band tones (DTMF, KNOX, call progress, single tones) in saved calls, found as a
       call's are, or (--patterns) the pages, alert tones and digit strings they make up, as the
@@ -284,6 +322,10 @@ usage:
       Interfaces besides the built-in one, each on a port of its own: find
       them in the store, install and update them, add a folder of your own
       (`trunk-pro interface` for the options).
+  trunk-pro access list | add <name> [--access listen|control] | remove <name> | signout <name> | on | off
+      Signing in: add and remove users, each with an access token (its
+      secret is printed once), and turn it on or off. A running recorder
+      takes the change when it's restarted.
   trunk-pro --version
 
 Docs: https://github.com/TrunkRecorder/trunk-recorder-pro
@@ -303,8 +345,10 @@ fn main() {
         Some("capture") => capture(&Args::parse(&argv[1..])),
         Some("survey") => survey::cli(&Args::parse(&argv[1..])),
         Some("rolloff") => profile::cli(&Args::parse(&argv[1..])),
+        Some("tune") => tune::cli(&Args::parse(&argv[1..])),
         Some("plugin") => plugins::cli::run(&Args::parse(&argv[1..])),
         Some("interface") => interfaces::cli::run(&Args::parse(&argv[1..])),
+        Some("access") => access::cli::run(&Args::parse(&argv[1..])),
         _ => die(USAGE),
     }
 }
@@ -318,10 +362,11 @@ fn devices(a: &Args) {
     for d in radio::hackrf::devices() {
         println!("  {}", d["label"].as_str().unwrap_or(""));
     }
-    let ai = radio::airspy::info();
-    println!("Airspy: {}", ai.detail);
-    for d in radio::airspy::devices() {
-        println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
+    for lib in radio::airspy::Lib::ALL {
+        println!("{}: {}", lib.brand(), radio::airspy::info(lib).detail);
+        for d in radio::airspy::devices(lib) {
+            println!("  {}{}", d["label"].as_str().unwrap_or(""), radio::rates_shown(&d));
+        }
     }
     let bi = radio::bladerf::info();
     println!("bladeRF: {}", bi.detail);
@@ -364,72 +409,94 @@ fn devices(a: &Args) {
     }
 }
 
+/// `replay`: a capture decoded as the recorder decodes it live — a
+/// [`Session`] over file sources, with the config one of our captures was
+/// made with, or one made from the flags — the calls written to `--out`.
 fn replay(a: &Args) {
     // Sources: --source file,center,rate (repeatable) or one positional capture.
     let mut files = Vec::new();
-    let mut formats = Vec::new();
     let mut sources = Vec::new();
     let format_of = |path: &str, given: Option<&str>| sample_format(path, given.or(a.get("format")));
+    let file_source = |path: &str, format, center_hz, rate_hz, auto_tune, guard_hz| config::Source {
+        kind: config::SourceKind::File { path: path.into(), realtime: false, format: Some(format) },
+        center_hz,
+        rate_hz,
+        ppm: 0.0,
+        auto_tune,
+        guard_hz,
+        name: String::new(),
+    };
     for s in a.all("source") {
         let f: Vec<&str> = s.split(',').collect();
         if !(3..=4).contains(&f.len()) {
             die("--source wants file,center,rate[,cu8|cs16|cf32]");
         }
         files.push(f[0].to_string());
-        formats.push(format_of(f[0], f.get(3).copied()));
-        sources.push(SourceConfig { center_hz: f[1].parse().unwrap_or(0.0), rate_hz: f[2].parse().unwrap_or(2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ) });
+        sources.push(file_source(f[0], format_of(f[0], f.get(3).copied()), f[1].parse().unwrap_or(0.0), f[2].parse().unwrap_or(2_400_000.0), a.flag("auto-tune"), a.num("guard", DEFAULT_GUARD_HZ)));
     }
-    if let Some(p) = a.positional.first() {
+    // A SigMF capture says what it is (and one of ours, how to decode it).
+    let capture = a.positional.first().filter(|p| iq_capture::is_sigmf(p)).map(|p| iq_capture::open(p).unwrap_or_else(|e| die(&e)));
+    if let Some(c) = &capture {
+        for r in &c.recordings {
+            let path = r.data.display().to_string();
+            sources.push(file_source(&path, r.format, r.center_hz, r.rate_hz, r.auto_tune, r.guard_hz));
+            files.push(path);
+        }
+    } else if let Some(p) = a.positional.first() {
         files.push(p.clone());
-        formats.push(format_of(p, None));
-        sources.push(SourceConfig { center_hz: a.num("center", 0.0), rate_hz: a.num("rate", 2_400_000.0), auto_tune: a.flag("auto-tune"), guard_hz: a.num("guard", DEFAULT_GUARD_HZ) });
+        sources.push(file_source(p, format_of(p, None), a.num("center", 0.0), a.num("rate", 2_400_000.0), a.flag("auto-tune"), a.num("guard", DEFAULT_GUARD_HZ)));
     }
     if files.is_empty() {
         die("replay: no capture given");
     }
-    let hz_list = |k: &str| -> Vec<f64> { a.get(k).unwrap_or("").split(',').filter_map(|s| s.trim().parse().ok()).collect() };
-    let ccs = hz_list("cc");
-    let conventional: Vec<ConvChannel> = hz_list("fm")
-        .into_iter()
-        .map(|f| ConvChannel::new(f, ConvMode::Fm))
-        .chain(hz_list("am").into_iter().map(|f| ConvChannel::new(f, ConvMode::Am)))
-        .chain(hz_list("p25").into_iter().map(|f| ConvChannel::new(f, ConvMode::P25)))
-        .chain(hz_list("dmr").into_iter().map(|f| ConvChannel::new(f, ConvMode::Dmr)))
-        .chain(hz_list("nxdn48").into_iter().map(|f| ConvChannel::new(f, ConvMode::Nxdn(trunk_core::nxdn::Rate::N48))))
-        .chain(hz_list("nxdn96").into_iter().map(|f| ConvChannel::new(f, ConvMode::Nxdn(trunk_core::nxdn::Rate::N96))))
-        .chain(a.get("channels").map_or_else(Vec::new, |p| {
-            let text = fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
-            let parsed = trunk_app::channels::parse(&text).unwrap_or_else(|e| die(&format!("{p}: {e}")));
-            for n in &parsed.notes {
-                eprintln!("{p}: {n}");
-            }
-            let mut cfg = config::Config::default();
-            cfg.conventional = vec![config::Conventional { channels: parsed.channels, ..Default::default() }];
-            cfg.engine_config(0.0, &Default::default()).conventional
-        }))
-        .collect();
+    let formats: Vec<config::SampleFormat> = sources.iter().map(|s| if let config::SourceKind::File { format, .. } = &s.kind { format.unwrap_or_default() } else { Default::default() }).collect();
     let out_dir = a.get("out").unwrap_or("calls").to_string();
     fs::create_dir_all(&out_dir).unwrap_or_else(|e| die(&format!("{out_dir}: {e}")));
-    let talkgroups = a.get("talkgroups").map(|p| parse_csv(&fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}"))))).unwrap_or_default();
     let quiet = a.flag("quiet");
 
-    let calls = CallConfig {
-        call_timeout_s: a.num("timeout", 3.0),
-        record_unknown: !a.flag("no-unknown"),
-        record_encrypted: a.flag("record-encrypted"),
-        max_call_s: a.num("max-call", 0.0),
-        conversation: !a.flag("transmissions"),
-        ..Default::default()
+    // One of our captures: decoded as the systems it was made with, its radios the files.
+    let (mut cfg, names) = match capture.as_ref().and_then(|c| c.config.clone()) {
+        Some(mut c) => {
+            if c.sources.len() != sources.len() {
+                die(&format!("the capture was made with {} radios, and {} are given", c.sources.len(), sources.len()));
+            }
+            // (Received on its radios, by label: the files' now.)
+            let relabel: Vec<(String, String)> = c.sources.iter().zip(&sources).map(|(old, new)| (old.label(), new.label())).collect();
+            for r in c.systems.iter_mut().map(|s| &mut s.receive_on).chain(c.conventional.iter_mut().flat_map(|v| v.channels.iter_mut().map(|ch| &mut ch.receive_on))) {
+                for l in r.iter_mut() {
+                    if let Some((_, new)) = relabel.iter().find(|(old, _)| old == l) {
+                        *l = new.clone();
+                    }
+                }
+            }
+            for (s, f) in c.sources.iter_mut().zip(&sources) {
+                *s = config::Source { name: s.name.clone(), ..f.clone() };
+            }
+            (c, capture.as_ref().map(|c| c.names.clone()).unwrap_or_default())
+        }
+        None => replay_config(a, sources),
     };
-    let save = SaveRules {
-        keep_silent: a.flag("keep-silent"),
-        keep_encrypted: a.flag("record-encrypted"),
-        min_call_s: a.num("min-call", 0.0),
-        min_transmission_s: a.num("min-transmission", 0.0),
-        ..Default::default()
+    // (A command line's folder is the shell's: the config's is a full path.)
+    cfg.recording.capture_dir = std::path::absolute(&out_dir).map_or(out_dir.clone(), |p| p.display().to_string());
+    // --taps fm.discriminator,voice.air: those signal taps saved, of every system.
+    if let Some(ids) = a.get("taps") {
+        cfg.recording.taps = ids.split(',').map(|id| config::TapRoute { tap: trunk_recorder_plugin::Tap::from_id(id.trim()).unwrap_or_else(|| die(&format!("--taps {id}: no such tap"))), systems: Vec::new() }).collect();
+    }
+    let tap_files = taps::TapFiles::default();
+    let multi = cfg.active_systems().count() > 1;
+    let plan_of = cfg.engine_config(0.0, &names);
+    let site_keys: Vec<String> = trunk_core::trunk::sites(&plan_of.systems).map(|(n, s)| trunk_app::session::bandplan_key(&plan_of.systems[n as usize], s)).collect();
+    // One band plan file per site (with several: <file>.<shortName>, <file>.<shortName>.<site>); else the capture's.
+    let bandplans: Vec<String> = a.get("bandplan").map_or_else(Vec::new, |p| site_keys.iter().map(|k| if site_keys.len() > 1 { format!("{p}.{k}") } else { p.to_string() }).collect());
+    let kept: Vec<String> = capture.as_ref().map_or_else(Vec::new, |c| c.bandplans.clone());
+    let bandplan = |key: &str| {
+        let i = site_keys.iter().position(|k| k == key)?;
+        bandplans.get(i).and_then(|p| fs::read_to_string(p).ok()).or_else(|| kept.get(i).filter(|b| !b.is_empty()).cloned())
     };
+    let epoch_ms = a.num("epoch", 0.0) * 1000.0;
+    let mut session = Session::new(cfg.clone(), &names, epoch_ms, &bandplan, runtime::local_offset).unwrap_or_else(|e| die(&e));
     // --keys: every system decrypts with the same keys file (a KFDtool container, with --keys-password-file).
-    let keys = a.get("keys").map(|p| {
+    if let Some(p) = a.get("keys") {
         let l = trunk_app::keys::load(std::path::Path::new(p), a.get("keys-password-file").map(std::path::Path::new)).unwrap_or_else(|e| die(&e));
         for s in &l.skipped {
             eprintln!("--keys: key left out: {s}");
@@ -437,83 +504,17 @@ fn replay(a: &Args) {
         for w in l.ring.warnings() {
             eprintln!("--keys: {w}");
         }
-        std::sync::Arc::new(l.ring)
-    });
-    // Every system goes by the same rules, talkgroups and keys.
-    let system = |name: &str, sites| SystemConfig { calls, save, talkgroups: talkgroups.clone(), keys: keys.clone(), ..SystemConfig::trunked(name, sites) };
-    // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable; sites of one system share its name).
-    let mut systems: Vec<SystemConfig> = Vec::new();
-    if !ccs.is_empty() {
-        // --smartnet <band plan>: the --cc system is SmartNet.
-        let smartnet = a.get("smartnet").map(|plan| trunk_core::trunk::SmartnetConfig {
-            bandplan: tool::smartnet_bandplan(a, if plan == "1" { "800_standard" } else { plan }),
-            analog_default: a.flag("analog-default"),
-        });
-        let site = SiteConfig {
-            control_channels: ccs,
-            // --dmr-trunk: the --cc frequencies are a DMR site's; --dmr-channels
-            // more voice frequencies to watch; --lcn 101=452275000,… its channel table.
-            // --nxdn-trunk [typeC|typeD]: an NXDN site's (--nxdn-rate 48|96,
-            // --nxdn-channels, --lcn for its channel numbers, --ran).
-            protocol: match a.flag("dmr-trunk").then(|| trunk_core::dmr::DmrConfig {
-                channels: hz_list("dmr-channels"),
-                lcn_table: lcn_table(a),
-                color_code: a.get("color-code").and_then(|v| v.parse().ok()),
-            }) {
-                Some(dc) => Protocol::Dmr(dc),
-                None if a.get("nxdn-trunk").is_some() => {
-                    use trunk_core::nxdn::trunking::{Kind, NxdnConfig};
-                    Protocol::Nxdn(NxdnConfig {
-                        kind: if a.get("nxdn-trunk").is_some_and(|k| k.eq_ignore_ascii_case("typeD") || k.eq_ignore_ascii_case("d")) { Kind::TypeD } else { Kind::TypeC },
-                        rate: trunk_core::nxdn::Rate::parse(a.get("nxdn-rate").unwrap_or("48")).unwrap_or_else(|| die("--nxdn-rate 48|96")),
-                        channel_table: lcn_table(a).into_iter().collect(),
-                        channels: hz_list("nxdn-channels"),
-                        ran: a.get("ran").and_then(|v| v.parse().ok()),
-                    })
-                }
-                None => smartnet.map_or(Protocol::P25, Protocol::SmartNet),
-            },
-            ..Default::default()
-        };
-        systems.push(system(a.get("short-name").unwrap_or("replay"), vec![site]));
-    }
-    for spec in a.all("system") {
-        let (name, site) = parse_system(spec).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
-        match systems.iter_mut().find(|s| s.short_name == name) {
-            Some(s) => s.sites.push(site),
-            None => systems.push(system(&name, vec![site])),
+        let ring = std::sync::Arc::new(l.ring);
+        for (id, _) in cfg.system_ids() {
+            session.set_keys(id, Some(ring.clone()));
         }
     }
-    let multi = systems.len() > 1;
-    let sites = trunk_core::trunk::sites(&systems).count() > 1;
-    // The conventional channels: one system of their own, "conv".
-    let mut conventional = conventional;
-    if !conventional.is_empty() {
-        conventional.iter_mut().for_each(|c| c.system = systems.len());
-        systems.push(system("conv", vec![]));
+    if a.get("tapes").is_some() {
+        session.keep_tapes(true);
     }
-    let cfg = EngineConfig {
-        systems,
-        sources,
-        preroll_s: a.num("preroll", 1.0),
-        max_recorders: a.num("recorders", 32.0) as usize,
-        epoch_ms_at_zero: a.num("epoch", 0.0) * 1000.0,
-        conventional,
-        conv: ConvConfig { squelch_db: a.num("squelch", ConvConfig::default().squelch_db), ..Default::default() },
-        capture_frames: a.flag("capture-frames"),
-        ..Default::default()
-    };
-    let engine = Engine::new(cfg).unwrap_or_else(|e| die(&e));
-    // One band plan file per site (with several: <file>.<shortName>, <file>.<shortName>.<site>).
-    let bandplans: Vec<String> = a.get("bandplan").map_or_else(Vec::new, |p| {
-        let systems = engine.systems();
-        trunk_core::trunk::sites(&systems).map(|(n, s)| if sites { format!("{p}.{}", trunk_app::session::bandplan_key(&systems[n as usize], s)) } else { p.to_string() }).collect()
-    });
-    for (i, p) in bandplans.iter().enumerate() {
-        if let Ok(s) = fs::read_to_string(p) {
-            engine.load_bandplan(i, &s);
-        }
-    }
+    session.want_audio = false;
+    let messages = a.flag("messages");
+    session.watch = Some(Box::new(move |ev: &Event, engine: &Engine| print_event(ev, engine, quiet, messages)));
 
     // Streamed from disk, not read whole: a long capture is gigabytes (a
     // small Raspberry Pi has 1–2 GB of memory).
@@ -525,30 +526,62 @@ fn replay(a: &Args) {
             (h, len)
         })
         .collect();
-    let rate0 = engine.sources()[0].rate_hz;
-    let air_s = (data[0].1 / formats[0].bytes_per_sample()) as f64 / rate0;
+    // Where each file's replay starts, and its gaps, in bytes (a capture's: radios start together).
+    let recordings = capture.as_ref().map_or(&[][..], |c| &c.recordings[..]);
+    let starts: Vec<usize> = (0..data.len()).map(|i| recordings.get(i).map_or(0, |r| r.skip as usize * formats[i].bytes_per_sample())).collect();
+    let mut gaps: Vec<std::collections::VecDeque<(usize, u64)>> = (0..data.len()).map(|i| recordings.get(i).map_or_else(Default::default, |r| r.gaps.iter().map(|g| (g.0 as usize * formats[i].bytes_per_sample(), g.1)).collect())).collect();
+    if a.flag("threads") && gaps.iter().any(|g| !g.is_empty()) {
+        die("this capture lost samples, which replay --threads can't reproduce: leave --threads off");
+    }
+    for (i, (file, _)) in data.iter_mut().enumerate() {
+        std::io::Seek::seek(file, std::io::SeekFrom::Start(starts[i] as u64)).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
+    }
+    let rates: Vec<f64> = cfg.sources.iter().map(|s| s.rate_hz).collect();
+    let rate0 = rates[0];
+    let air_s = ((data[0].1 - starts[0]) / formats[0].bytes_per_sample()) as f64 / rate0;
     let mut buf = Vec::new();
     let t0 = Instant::now();
+    // One of our captures: each site's counts where the part its live figures cover starts and ends.
+    let live_window = capture.as_ref().and_then(|c| c.live_window);
+    let mut marks: [Option<Vec<corpus::SiteFrames>>; 2] = [None, None];
+    let mut mark = |t: f64, session: &Session| {
+        for (m, at) in marks.iter_mut().zip(live_window.map_or([f64::INFINITY; 2], |w| [w.0, w.1])) {
+            if m.is_none() && t >= at {
+                *m = Some(corpus::SiteFrames::of(&session.status_and_bandplans().0));
+            }
+        }
+    };
+    mark(0.0, &session);
+    let mut out = Vec::new();
+    let mut written = 0;
+    // The session's clock: the air fed so far, from the epoch.
+    let at = |s: f64| epoch_ms + s * 1000.0;
+    let mut deliver = |session: &mut Session, now_s: f64, out: &mut Vec<Output>| {
+        session.poll(at(now_s), out);
+        written += write_calls(out, session, &out_dir, multi, quiet, &tap_files);
+    };
     // Interleave the sources in ~13.6 ms chunks (rtl_sdr's 32768-sample transfers
     // at 2.4 MSPS), so their clocks advance together as they would live.
     let chunk_s = 32768.0 / 2_400_000.0;
-    let mut written = 0;
+    // The session is polled as a recording's is, about this often (its engine thread waits 20 ms for news).
+    const POLL_S: f64 = 0.02;
     if a.flag("threads") {
         // --threads: each source fed from a thread of its own, as live — none
         // more than LEAD chunks (~55 ms of air) ahead of the slowest.
         const LEAD: usize = 4;
         let done: Vec<std::sync::atomic::AtomicUsize> = data.iter().map(|_| Default::default()).collect();
         let running = std::sync::atomic::AtomicUsize::new(data.len());
+        let feeders: Vec<trunk_app::Feeder> = (0..data.len()).map(|i| session.feeder(i)).collect();
         std::thread::scope(|sc| {
-            for (i, (mut file, len)) in data.drain(..).enumerate() {
-                let (engine, done, running, files, formats) = (&engine, &done, &running, &files, &formats);
+            for ((i, (mut file, len)), feeder) in data.drain(..).enumerate().zip(feeders) {
+                let (done, running, files, formats, starts, rates) = (&done, &running, &files, &formats, &starts, &rates);
                 std::thread::Builder::new()
                     .name(format!("dsp-{i}"))
                     .spawn_scoped(sc, move || {
                         use std::sync::atomic::Ordering::SeqCst;
                         let bps = formats[i].bytes_per_sample();
-                        let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
-                        let (mut pos, mut k, mut buf) = (0usize, 0usize, Vec::new());
+                        let n = ((rates[i] * chunk_s) as usize) * bps;
+                        let (mut pos, mut k, mut buf) = (starts[i], 0usize, Vec::new());
                         loop {
                             let end = (pos + n).min(len - len % bps);
                             if pos >= end {
@@ -559,9 +592,10 @@ fn replay(a: &Args) {
                             }
                             buf.resize(end - pos, 0);
                             file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
+                            let t = epoch_ms + ((pos - starts[i]) / bps) as f64 / rates[i] * 1000.0;
                             match formats[i] {
-                                config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
-                                f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
+                                config::SampleFormat::Cu8 => feeder.push(&buf, 0, t),
+                                f => feeder.push_iq(&trunk_app::samples::to_iq(f, &buf), 0, t),
                             }
                             pos = end;
                             k += 1;
@@ -573,75 +607,207 @@ fn replay(a: &Args) {
                     })
                     .expect("thread");
             }
+            let n0 = (rate0 * chunk_s) as usize;
+            let mut last_s = 0.0;
             while running.load(std::sync::atomic::Ordering::SeqCst) > 0 {
-                written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+                let k = done[0].load(std::sync::atomic::Ordering::SeqCst);
+                if k != usize::MAX {
+                    last_s = (k * n0) as f64 / rate0;
+                }
+                deliver(&mut session, last_s, &mut out);
+                mark(last_s, &session);
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         });
     } else {
-        let mut pos = vec![0usize; data.len()];
+        let mut pos = starts.clone();
+        // Source 0's samples pushed, lost ones too: the air replayed so far.
+        let mut fed0 = 0u64;
+        let mut polled_s = 0.0;
         loop {
             let mut any = false;
+            let now_s = fed0 as f64 / rate0;
             for (i, (file, len)) in data.iter_mut().enumerate() {
                 let bps = formats[i].bytes_per_sample();
-                let n = ((engine.sources()[i].rate_hz * chunk_s) as usize) * bps;
-                let end = (pos[i] + n).min(*len - *len % bps);
+                let n = ((rates[i] * chunk_s) as usize) * bps;
+                let mut end = (pos[i] + n).min(*len - *len % bps);
+                // (Samples lost when it was made: silence, as live.)
+                let mut lost = 0;
+                if let Some(&(at, n)) = gaps[i].front() {
+                    if at <= pos[i] {
+                        lost = n;
+                        fed0 += if i == 0 { n } else { 0 };
+                        gaps[i].pop_front();
+                        any = true;
+                    } else {
+                        end = end.min(at);
+                    }
+                }
                 if pos[i] < end {
                     buf.resize(end - pos[i], 0);
                     file.read_exact(&mut buf).unwrap_or_else(|e| die(&format!("{}: {e}", files[i])));
                     match formats[i] {
-                        config::SampleFormat::Cu8 => engine.push_u8(i, &buf),
-                        f => engine.push_iq(i, &trunk_app::samples::to_iq(f, &buf)),
+                        config::SampleFormat::Cu8 => session.push(i, &buf, lost, at(now_s)),
+                        f => session.push_iq(i, &trunk_app::samples::to_iq(f, &buf), lost, at(now_s)),
                     }
+                    fed0 += if i == 0 { (buf.len() / bps) as u64 } else { 0 };
                     pos[i] = end;
                     any = true;
+                } else if lost > 0 {
+                    session.push_iq(i, &[], lost, at(now_s));
                 }
             }
-            written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
+            // (As often as a recording polls its session: every POLL_S of air.)
+            let now_s = fed0 as f64 / rate0;
+            if now_s - polled_s >= POLL_S || !any {
+                polled_s = now_s;
+                deliver(&mut session, now_s, &mut out);
+            }
+            mark(now_s, &session);
             if !any {
                 break;
             }
         }
     }
-    engine.finish();
-    written += handle_events(&engine, &out_dir, multi, quiet, a.flag("messages"));
-    let cpu = t0.elapsed().as_secs_f64();
-    for (i, p) in bandplans.iter().enumerate() {
-        let _ = fs::write(p, engine.bandplan(i));
+    session.finish(&mut out);
+    written += write_calls(&mut out, &session, &out_dir, multi, quiet, &tap_files);
+    let (st, plans) = session.status_and_bandplans();
+    if let Some(dir) = a.get("tapes") {
+        write_tapes(&session, &st, &plans, std::path::Path::new(dir), capture.as_ref()).unwrap_or_else(|e| die(&e));
     }
-    let st = engine.status();
+    let cpu = t0.elapsed().as_secs_f64();
+    for (p, plan) in bandplans.iter().zip(&plans) {
+        let _ = fs::write(p, plan);
+    }
+    mark(f64::INFINITY, &session);
     println!("\n{air_s:.1} s of air in {cpu:.2} s ({:.0}× real time). {written} call(s) written to {out_dir}/", air_s / cpu);
-    let hex = |v: Option<u32>| v.map_or("?".into(), |v| format!("{v:x}"));
-    let dec = |v: Option<u32>| v.map_or("?".into(), |v| v.to_string());
     for s in &st.sites {
-        let id = &s.identity;
+        let id = s.identity.describe(s.id_fields);
         println!(
-            "  {}: CC {} good / {} bad {}, {}, NAC {} WACN {} SysID {} RFSS {} site {}, {} call(s){}",
+            "  {}: CC {} good / {} bad {}, {}{}, {} call(s){}",
             if s.site_name == s.short_name { s.short_name.clone() } else { format!("{}/{}", s.short_name, s.site_name) },
             s.good,
             s.bad,
-            if s.modulation == "2FSK" { "OSWs" } else { "TSBKs" },
+            s.blocks,
             s.modulation,
-            hex(id.get(IdField::Nac)),
-            hex(id.wacn()),
-            hex(id.sys_id()),
-            dec(id.rfss()),
-            dec(id.site()),
+            if id.is_empty() { id } else { format!(", {id}") },
             s.calls_concluded,
             s.mismatch.as_ref().map_or(String::new(), |m| format!(" — NOT FOLLOWED: {m}")),
         );
+    }
+    let window = live_window.zip(marks[0].as_ref().zip(marks[1].as_ref())).map(|((from_s, to_s), (start, end))| corpus::WindowFrames { from_s, to_s, sites: corpus::SiteFrames::between(start, end) });
+    if let Some(w) = &window {
+        println!("  As live counted, {:.1}–{:.1} s:", w.from_s, w.to_s);
+        for s in &w.sites {
+            println!("    {}: CC {} good / {} bad", if s.site == s.system { s.system.clone() } else { format!("{}/{}", s.system, s.site) }, s.good, s.bad);
+        }
     }
     for (i, t) in st.sources.iter().enumerate() {
         if let Some(e) = t.error_ppm {
             println!("  source {}: frequency error {e:+.2} ppm, corrected by {:+.2} ppm", i + 1, t.applied_ppm);
         }
     }
+    // --summary FILE: the sites' counts as JSON (tool submission's check).
+    if let Some(p) = a.get("summary") {
+        let summary = corpus::ReplaySummary { air_s, sites: corpus::SiteFrames::of(&st), live_window: window };
+        fs::write(p, serde_json::to_string_pretty(&summary).unwrap_or_default()).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+    }
+}
+
+/// The config `replay`'s flags describe, over `sources`, and its systems' names
+/// (`--talkgroups`, every system's).
+fn replay_config(a: &Args, sources: Vec<config::Source>) -> (config::Config, trunk_app::config::NameLists) {
+    use trunk_app::config::{Channel, Conventional, NxdnRate, NxdnType, Site, SmartnetMode, System, SystemKind};
+    let hz_list = |k: &str| -> Vec<f64> { a.get(k).unwrap_or("").split(',').filter_map(|s| s.trim().parse().ok()).collect() };
+    let mut cfg = config::Config { sources, ..Default::default() };
+    // Every system goes by the same rules: these flags, else Trunk Recorder's defaults.
+    let r = &mut cfg.recording;
+    r.call_timeout_s = a.num("timeout", 3.0);
+    r.record_unknown = !a.flag("no-unknown");
+    r.record_encrypted = a.flag("record-encrypted");
+    r.max_call_s = a.num("max-call", 0.0);
+    r.conversation_mode = !a.flag("transmissions");
+    r.keep_silent_calls = a.flag("keep-silent");
+    r.min_call_s = a.num("min-call", 0.0);
+    r.min_transmission_s = a.num("min-transmission", 0.0);
+    r.preroll_s = a.num("preroll", 1.0);
+    r.max_recorders = a.num("recorders", 32.0) as usize;
+    // (Replay's own: what the regression runs and the CPU gate measure.)
+    r.vocoder = config::Vocoder::Enhanced;
+    let lcns = || lcn_table(a).into_iter().map(|(l, hz)| (l.to_string(), hz as f64)).collect();
+    // Trunked systems: --cc (one, named --short-name) and/or --system (repeatable; sites of one system share its name).
+    let ccs = hz_list("cc");
+    if !ccs.is_empty() {
+        let mut sys = System { short_name: a.get("short-name").unwrap_or("replay").into(), sites: Vec::new(), ..Default::default() };
+        let mut site = Site { name: String::new(), control_channels_hz: ccs, ..Default::default() };
+        // --dmr-trunk: the --cc frequencies are a DMR site's; --dmr-channels
+        // more voice frequencies to watch; --lcn 101=452275000,… its channel table.
+        // --nxdn-trunk [typeC|typeD]: an NXDN site's (--nxdn-rate 48|96,
+        // --nxdn-channels, --lcn for its channel numbers, --ran).
+        // --smartnet <band plan>: a SmartNet site's (--bp-base, --bp-spacing, --bp-offset, --bp-high).
+        if a.flag("dmr-trunk") {
+            sys.kind = SystemKind::Dmr;
+            site.dmr_channels_hz = hz_list("dmr-channels");
+            site.lcn_table_hz = lcns();
+            site.color_code = a.get("color-code").and_then(|v| v.parse().ok());
+        } else if let Some(kind) = a.get("nxdn-trunk") {
+            sys.kind = SystemKind::Nxdn;
+            sys.nxdn_type = if kind.eq_ignore_ascii_case("typeD") || kind.eq_ignore_ascii_case("d") { NxdnType::TypeD } else { NxdnType::TypeC };
+            site.nxdn_rate = serde_json::from_value::<NxdnRate>(serde_json::json!(a.get("nxdn-rate").unwrap_or("48"))).unwrap_or_else(|_| die("--nxdn-rate 48|96"));
+            site.lcn_table_hz = lcns();
+            site.nxdn_channels_hz = hz_list("nxdn-channels");
+            site.ran = a.get("ran").and_then(|v| v.parse().ok());
+        } else if let Some(plan) = a.get("smartnet") {
+            sys.kind = SystemKind::Smartnet;
+            sys.default_mode = if a.flag("analog-default") { SmartnetMode::Analog } else { Default::default() };
+            site.bandplan = if plan == "1" { "800_standard" } else { plan }.into();
+            site.bandplan_base_hz = a.num("bp-base", 0.0);
+            site.bandplan_spacing_hz = a.num("bp-spacing", 0.0);
+            site.bandplan_offset = a.num("bp-offset", 0.0) as u16;
+            site.bandplan_high_hz = a.num("bp-high", 0.0);
+            // (Checked here: a bad one would make it P25.)
+            tool::smartnet_bandplan(a, &site.bandplan);
+        }
+        sys.sites.push(site);
+        cfg.systems.push(sys);
+    }
+    for spec in a.all("system") {
+        let (name, site) = parse_system(spec).unwrap_or_else(|e| die(&format!("--system {spec}: {e}")));
+        match cfg.systems.iter_mut().find(|s| s.short_name == name) {
+            Some(s) => s.sites.push(site),
+            None => cfg.systems.push(System { short_name: name, sites: vec![site], ..Default::default() }),
+        }
+    }
+    // The conventional channels: one system of their own, "conv".
+    let mode_channels = |k: &str, mode: ConvMode| hz_list(k).into_iter().map(move |freq_hz| Channel::new(freq_hz, mode));
+    let mut channels: Vec<Channel> = mode_channels("fm", ConvMode::Fm)
+        .chain(mode_channels("am", ConvMode::Am))
+        .chain(mode_channels("p25", ConvMode::P25))
+        .chain(mode_channels("dmr", ConvMode::Dmr))
+        .chain(mode_channels("nxdn48", ConvMode::Nxdn(trunk_core::nxdn::Rate::N48)))
+        .chain(mode_channels("nxdn96", ConvMode::Nxdn(trunk_core::nxdn::Rate::N96)))
+        .collect();
+    if let Some(p) = a.get("channels") {
+        let text = fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+        let parsed = trunk_app::channels::parse(&text).unwrap_or_else(|e| die(&format!("{p}: {e}")));
+        for n in &parsed.notes {
+            eprintln!("{p}: {n}");
+        }
+        channels.extend(parsed.channels);
+    }
+    if !channels.is_empty() {
+        cfg.conventional.push(Conventional { short_name: "conv".into(), squelch_db: a.num("squelch", ConvConfig::default().squelch_db), channels, ..Default::default() });
+    }
+    cfg.assign_system_ids();
+    let rows = a.get("talkgroups").map(|p| trunk_core::trunk::parse_rows(&fs::read_to_string(p).unwrap_or_else(|e| die(&format!("{p}: {e}"))))).unwrap_or_default();
+    let names = if rows.is_empty() { Default::default() } else { trunk_app::config::talkgroup_lists(cfg.system_ids().map(|(id, _)| (id, rows.clone())).collect::<Vec<_>>()) };
+    (cfg, names)
 }
 
 /// `--system name[/site]:Hz[,Hz…][:nac=443,sysid=445,wacn=bee00,rfss=1,site=3]` —
 /// NAC / SysID / WACN in hex; only a control channel with that identity is
 /// followed. `dcfd/south`: site south of system dcfd.
-fn parse_system(spec: &str) -> Result<(String, SiteConfig), String> {
+fn parse_system(spec: &str) -> Result<(String, trunk_app::config::Site), String> {
     let mut parts = spec.splitn(3, ':');
     let head = parts.next().unwrap_or("");
     let (name, site) = head.split_once('/').unwrap_or((head, ""));
@@ -650,21 +816,21 @@ fn parse_system(spec: &str) -> Result<(String, SiteConfig), String> {
         return Err("no short name".into());
     }
     let ccs: Vec<f64> = parts.next().unwrap_or("").split(',').map(|v| v.trim().parse::<f64>().map_err(|_| format!("bad frequency \"{v}\""))).collect::<Result<_, _>>()?;
-    let mut expect = Identity::default();
+    let mut expect = trunk_recorder_plugin::SiteIdentity::default();
     for kv in parts.next().unwrap_or("").split(',').filter(|s| !s.is_empty()) {
         let (k, v) = kv.split_once('=').ok_or_else(|| format!("\"{kv}\": want key=value"))?;
         let h = || u32::from_str_radix(v.trim(), 16).map_err(|_| format!("bad {k} \"{v}\""));
         let d = || v.trim().parse::<u32>().map_err(|_| format!("bad {k} \"{v}\""));
         match k.trim() {
-            "nac" => expect.set(IdField::Nac, h()? as u16 as u32),
-            "sysid" => expect.set(IdField::SysId, h()?),
-            "wacn" => expect.set(IdField::Wacn, h()?),
-            "rfss" => expect.set(IdField::Rfss, d()?),
-            "site" => expect.set(IdField::Site, d()?),
+            "nac" => expect.nac = Some(h()? as u16),
+            "sysid" => expect.sys_id = Some(h()?),
+            "wacn" => expect.wacn = Some(h()?),
+            "rfss" => expect.rfss = Some(d()?),
+            "site" => expect.site = Some(d()?),
             other => return Err(format!("unknown key {other} (nac, sysid, wacn, rfss, site)")),
         }
     }
-    Ok((name.into(), SiteConfig { name: site.into(), control_channels: ccs, expect, ..Default::default() }))
+    Ok((name.into(), trunk_app::config::Site { name: site.into(), control_channels_hz: ccs, expect, ..Default::default() }))
 }
 
 /// "[name] " ("[name/site] ") for a line about `system` (its site `site`)
@@ -685,6 +851,24 @@ fn site_tag(engine: &Engine, site: u16) -> String {
     sys_tag(engine, system, Some(site))
 }
 
+/// `replay --tapes`: each channel's tape, a folder of its own.
+fn write_tapes(session: &Session, status: &trunk_core::trunk::Status, bandplans: &[String], dir: &std::path::Path, capture: Option<&iq_capture::Opened>) -> Result<(), String> {
+    let voice = session.take_voice_tapes();
+    for (i, t) in voice.iter().enumerate() {
+        tape_file::write_voice(&dir.join(format!("voice-{i:03}-{}", t.freq_hz as u64)), t, serde_json::json!({ "trp:purpose": "healthy" }))?;
+    }
+    // (A control tape's decoder is built from its capture's systems.)
+    let config = capture.and_then(|c| c.config_json.as_ref());
+    let control = if config.is_some() { session.control_tapes() } else { Vec::new() };
+    for (i, t) in control.iter().enumerate() {
+        let freq = status.sites.get(t.site as usize).and_then(|s| s.control_channel_hz).unwrap_or(0) as f64;
+        let plan = bandplans.get(t.site as usize).map_or("", String::as_str);
+        tape_file::write_control(&dir.join(format!("control-{i:02}-{}", freq as u64)), t, freq, config.unwrap(), plan, serde_json::json!({ "trp:purpose": "healthy" }))?;
+    }
+    println!("{} voice and {} control channel tapes in {}", voice.len(), control.len(), dir.display());
+    Ok(())
+}
+
 /// "[name] " for a line about system `system` when there are several trunked
 /// ones (a conventional one: any); else "".
 fn system_tag(engine: &Engine, system: u16) -> String {
@@ -696,67 +880,76 @@ fn system_tag(engine: &Engine, system: u16) -> String {
     }
 }
 
-/// Several systems: each writes to `<out>/<shortName>/`.
-fn handle_events(engine: &Engine, out_dir: &str, multi: bool, quiet: bool, messages: bool) -> usize {
+/// What `replay` says of one of the engine's events, as the session handles it.
+fn print_event(ev: &Event, engine: &Engine, quiet: bool, messages: bool) {
+    match ev {
+        Event::ControlChannel { site, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", site_tag(engine, *site), *freq_hz as f64 / 1e6),
+        Event::Note { system, site, text, .. } => eprintln!("{}{text}", sys_tag(engine, *system, *site)),
+        Event::Message { site, msg } if messages => println!("{:7.2}s  {}{} {}", msg.time_s, site_tag(engine, *site), msg.kind.as_str(), msg.meta),
+        Event::CopyStart(c) if !quiet => println!(
+            "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{}{} → {}",
+            c.start_s,
+            sys_tag(engine, c.system, c.site),
+            c.id,
+            c.talkgroup,
+            c.freq_hz as f64 / 1e6,
+            match c.voice {
+                Voice::Am => " AM",
+                Voice::Fm => " FM",
+                _ => "",
+            },
+            if let Voice::P25Tdma { slot } = c.voice { format!(" slot {slot}") } else { String::new() },
+            if c.patched_talkgroups.is_empty() { String::new() } else { format!(" patched {:?}", c.patched_talkgroups) },
+            if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }
+        ),
+        Event::UnitAlias { system, unit, alias, talkgroup } if !quiet => println!("{}ALIAS unit {unit} = \"{alias}\" (TG {talkgroup})", system_tag(engine, *system)),
+        Event::CopyEnd(c) if !quiet => {
+            let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
+            println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system, c.site), c.id, c.talkgroup, srcs.join(","), if c.decrypted { " ENC DEC" } else if c.encrypted { " ENC" } else { "" });
+        }
+        Event::Duplicate { call, kept } if !quiet => {
+            println!("         {}CALL {} TG {} not saved: a copy of {}CALL {}", sys_tag(engine, call.system, call.site), call.id, call.talkgroup, sys_tag(engine, kept.system, kept.site), kept.id)
+        }
+        _ => {}
+    }
+}
+
+/// The calls among `out` (the rest let go), written to `out_dir` as the
+/// recorder names them (several systems: each in `<out>/<shortName>/`). How many.
+fn write_calls(out: &mut Vec<Output>, session: &Session, out_dir: &str, multi: bool, quiet: bool, taps: &taps::TapFiles) -> usize {
     let mut written = 0;
-    for ev in engine.drain_events() {
-        match ev {
-            Event::ControlChannel { site, freq_hz } if !quiet => println!("{}control channel {:.4} MHz", site_tag(engine, site), freq_hz as f64 / 1e6),
-            Event::Note { system, site, text, .. } => eprintln!("{}{text}", sys_tag(engine, system, site)),
-            Event::Message { site, msg } if messages => println!("{:7.2}s  {}{} {}", msg.time_s, site_tag(engine, site), msg.kind.as_str(), msg.meta),
-            Event::CallStart(c) if !quiet => println!(
-                "{:7.2}s  {}CALL {} start TG {} {:.4} MHz{}{}{} → {}",
-                c.start_s,
-                sys_tag(engine, c.system, c.site),
-                c.id,
-                c.talkgroup,
-                c.freq_hz as f64 / 1e6,
-                match c.voice {
-                    Voice::Am => " AM",
-                    Voice::Fm => " FM",
-                    _ => "",
-                },
-                if let Voice::P25Tdma { slot } = c.voice { format!(" slot {slot}") } else { String::new() },
-                if c.patched_talkgroups.is_empty() { String::new() } else { format!(" patched {:?}", c.patched_talkgroups) },
-                if c.recording { "recording".into() } else { format!("monitoring ({})", c.reason.map_or("", |r| r.as_str())) }
-            ),
-            Event::UnitAlias {
-                system,
-                unit,
-                alias,
-                talkgroup,
-            } if !quiet => {
-                println!(
-                    "{}ALIAS unit {unit} = \"{alias}\" (TG {talkgroup})",
-                    system_tag(engine, system)
-                )
-            }
-            Event::CallEnd(c) if !quiet => {
-                let srcs: Vec<String> = c.sources.iter().map(|s| s.src.to_string()).collect();
-                println!("{:7.2}s  {}CALL {} end   TG {} srcs [{}]{}", c.last_update_s.max(c.last_audio_s), sys_tag(engine, c.system, c.site), c.id, c.talkgroup, srcs.join(","), if c.decrypted { " ENC DEC" } else if c.encrypted { " ENC" } else { "" });
-            }
-            Event::Duplicate { call, kept } if !quiet => {
-                println!("         {}CALL {} TG {} not saved: a copy of {}CALL {}", sys_tag(engine, call.system, call.site), call.id, call.talkgroup, sys_tag(engine, kept.system, kept.site), kept.id)
-            }
-            Event::Concluded(k) => {
-                // (Appended, not with_extension: a TDMA base name ends in ".<slot>".)
-                let dir = if multi { Path::new(out_dir).join(&k.short_name) } else { Path::new(out_dir).to_path_buf() };
-                let _ = fs::create_dir_all(&dir);
-                // (A call per transmission: named apart, as the app does.)
-                let name = if engine.systems().get(k.call.system as usize).is_some_and(|s| !s.calls.conversation) { trunk_app::filename::numbered(&k.base_name, k.record.call_num) } else { k.base_name.clone() };
-                let base = dir.join(&name).display().to_string();
-                let _ = fs::write(format!("{base}.wav"), trunk_core::wav::encode(&k.audio, 8000));
-                let _ = fs::write(format!("{base}.json"), k.record.to_json());
-                if let Some(c) = &k.frames {
-                    let _ = fs::write(format!("{base}.{}", c.ext), &c.bytes);
+    let dir_of = |short_name: &str| {
+        let dir = if multi { Path::new(out_dir).join(short_name) } else { Path::new(out_dir).to_path_buf() };
+        let _ = fs::create_dir_all(&dir);
+        dir
+    };
+    for o in out.drain(..) {
+        // A signal tap's stream (--taps), once it has ended: beside the calls, as the recorder names it.
+        if let Output::Tap { chunk, save: Some(rel) } = o {
+            let dir = dir_of(&chunk.short_name);
+            if let Some((rel, file)) = taps.gather(rel, chunk) {
+                let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+                for (ext, bytes) in file.files() {
+                    let _ = fs::write(dir.join(format!("{name}.{ext}")), bytes);
                 }
                 if !quiet {
-                    println!("         wrote {name}.wav  ({:.1} s audio)", k.audio.len() as f64 / 8000.0);
+                    println!("         wrote {name}");
                 }
-                written += 1;
             }
-            _ => {}
+            continue;
         }
+        let Output::File { rel, system, wav, record, .. } = o else { continue };
+        let dir = dir_of(session.config().short_name_of(system).unwrap_or("conv"));
+        // (Its name as the recorder gives it, without the date folders. Appended, not
+        // with_extension: a TDMA base name ends in ".<slot>".)
+        let name = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+        let base = dir.join(&name).display().to_string();
+        let _ = fs::write(format!("{base}.wav"), &wav);
+        let _ = fs::write(format!("{base}.json"), record.to_json());
+        if !quiet {
+            println!("         wrote {name}.wav  ({:.1} s audio)", (wav.len().saturating_sub(44) / 2) as f64 / 8000.0);
+        }
+        written += 1;
     }
     written
 }
@@ -767,6 +960,8 @@ fn capture(a: &Args) {
     let out = a.positional.first().unwrap_or_else(|| die("capture <out.cu8> --freq Hz …"));
     let cfg = radio::rtl::RtlConfig {
         serial: a.get("serial").unwrap_or("").into(),
+        server: a.get("address").map(|a| trunk_app::config::endpoint(a, trunk_app::config::RTL_TCP_PORT)),
+        bias_tee: a.flag("bias-tee"),
         center_hz: a.num("freq", 0.0) as u64,
         rate_hz: a.num("rate", 2_400_000.0) as u32,
         gain_db: a.get("gain").and_then(|g| g.parse().ok()),
@@ -792,7 +987,7 @@ fn capture(a: &Args) {
                 dropped += d;
             }
             Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
-            Ok(sdr::SourceMsg::Samples { .. } | sdr::SourceMsg::Tuned { .. }) => {}
+            Ok(sdr::SourceMsg::Samples { .. } | sdr::SourceMsg::Tuned { .. } | sdr::SourceMsg::Gain { .. }) => {}
             Ok(sdr::SourceMsg::End { .. }) | Err(_) => break,
         }
     }
@@ -827,6 +1022,11 @@ fn serve(a: &Args) {
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     let (hub, _) = tokio::sync::broadcast::channel(4096);
     logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level, hub.clone());
+    if let Some(why) = cfg.server.auth.problem() {
+        log::warn!("{}: signing in: {why} (trunk-pro access)", config_path.display());
+    }
+    // (Asked for and not possible: not served over plain HTTP instead.)
+    let tls = cfg.server.tls.as_ref().map(|t| tls::Tls::new(t, &config_path).unwrap_or_else(|e| fatal(&format!("{}: HTTPS (server.tls): {e}", config_path.display()))));
     // An older config, upgraded: saved so (the old one kept beside it), and told.
     if !cfg.notes.is_empty() {
         match trunk_app::migrate::save(&cfg, &config_path) {
@@ -850,8 +1050,9 @@ fn serve(a: &Args) {
     };
     let bind = a.get("bind").unwrap_or(&cfg.server.bind);
     let addr: std::net::SocketAddr = format!("{bind}:{port}").parse().unwrap_or_else(|e| fatal(&format!("bind address: {e}")));
-    let host = if addr.ip().is_unspecified() { "localhost".into() } else { addr.ip().to_string() };
-    let url = format!("http://{host}:{}", addr.port());
+    // (localhost for the loopback address too: browsers allow passkeys there, on no IP address.)
+    let host = cfg.server.url_host(&addr.ip().to_string());
+    let url = format!("{}://{host}:{}", cfg.server.scheme(), addr.port());
     let listener = match std::net::TcpListener::bind(addr) {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
@@ -884,7 +1085,7 @@ fn serve(a: &Args) {
         s.interfaces.remove(&id);
         interfaces::Dev { id, folder: d, port: s.free_port(&[]) }
     });
-    let ui_url = dev.as_ref().map(|d| format!("http://{host}:{}/", d.port));
+    let ui_url = dev.as_ref().map(|d| format!("{}://{host}:{}/", cfg.server.scheme(), d.port));
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
     let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
@@ -898,37 +1099,46 @@ fn serve(a: &Args) {
         let hub = hub.clone();
         db.on_failure(move |why| runtime::publish(&hub, trunk_app::protocol::ToClient::error(why)));
     }
-    // TEMPORARY (trunk_app::migrate::talkgroup_files_into_store): talkgroup
-    // files an older version kept beside the config, into the store. Delete
-    // this block with it.
+    // TEMPORARY (trunk_app::migrate::files_into_store): talkgroup files and
+    // unit names an older version kept beside or in the config, into the
+    // store. Delete this block with it.
     if !db.is_disabled() {
-        let stored = |name: &str| db.talkgroups(name).is_ok_and(|rows| !rows.is_empty());
-        let mut keep = |name: &str, rows: Vec<trunk_core::trunk::TalkgroupRow>| {
-            kept::write_talkgroups(&db, name, rows.clone());
-            db.flush()?;
-            // (Renamed only once it reads back as it went in.)
-            if db.talkgroups(name)? == rows { Ok(()) } else { Err("not read back as written".into()) }
-        };
-        for n in trunk_app::migrate::talkgroup_files_into_store(&config_path, &cfg, &stored, &mut keep) {
-            log::info!("{n}");
+        fn import<R: runtime::NameList + PartialEq>(db: &db::Db, path: &std::path::Path, cfg: &config::Config, files: &trunk_app::migrate::OldFiles<R>) {
+            let stored = |name: &str| cfg.id_of(name).is_some_and(|id| R::stored(db, id).is_ok_and(|rows| !rows.is_empty()));
+            let mut keep = |name: &str, rows: Vec<R>| {
+                let id = cfg.id_of(name).ok_or_else(|| format!("no system is named {name}"))?;
+                R::keep(db, id, rows.clone());
+                db.flush()?;
+                // (Renamed only once it reads back as it went in.)
+                if R::stored(db, id)? == rows { Ok(()) } else { Err("not read back as written".into()) }
+            };
+            for n in trunk_app::migrate::files_into_store(path, cfg, files, &stored, &mut keep) {
+                log::info!("{n}");
+            }
         }
+        import(&db, &config_path, &cfg, &trunk_app::migrate::TALKGROUP_FILES);
+        import(&db, &config_path, &cfg, &trunk_app::migrate::UNIT_NAME_FILES);
     }
-    let talkgroups = kept::load_talkgroups(&db, &cfg);
-    runtime::load_names(&shared, &cfg, &talkgroups, &db);
+    let names = kept::load_names(&db, &cfg);
+    runtime::load_names(&shared, &cfg, &names, &db);
     let ctx = Arc::new(runtime::Ctx {
         config_path: config_path.clone(),
         config: Mutex::new(cfg),
         config_version: std::sync::atomic::AtomicU64::new(1),
-        talkgroups: Mutex::new(talkgroups),
+        names: Mutex::new(names),
         hub: hub.clone(),
         lifecycle: Mutex::new(runtime::Lifecycle::default()),
-        phase: Mutex::new(runtime::PhaseInfo { phase: "idle", error: None, ended: false }),
+        phase: Mutex::new(runtime::PhaseInfo::default()),
+        run: Mutex::new(None),
         recent: Mutex::new(std::collections::VecDeque::new()),
         db,
         quit: tokio::sync::Notify::new(),
+        interfaces_due: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
+        tune: Default::default(),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: addr.ip(),
+        bind_flag: a.get("bind").is_some(),
         interfaces: interfaces::Interfaces::new(dev, addr.port()),
         shared,
         series,
@@ -938,10 +1148,25 @@ fn serve(a: &Args) {
         engine: Mutex::new(None),
         host_last: Mutex::new(None),
         spool: Mutex::new(None),
+        folders: Default::default(),
+        taps: Default::default(),
         clock: Default::default(),
         unlocked: Default::default(),
+        iq: Default::default(),
+        sessions: access::Sessions::load(&paths::data_dir()),
+        passkeys: Default::default(),
+        cloudflare: Default::default(),
+        tls: tls.map(std::sync::OnceLock::from).unwrap_or_default(),
     });
-    monitor::start(ctx.clone());
+    // A folder failing, and taking files again, is an event too ([`folder`]).
+    let weak = Arc::downgrade(&ctx);
+    ctx.folders.on_event(Box::new(move |e| {
+        if let Some(ctx) = weak.upgrade() {
+            ctx.event(e);
+        }
+    }));
+    ctx.plugins.archive.writes_to(ctx.folders.recordings.clone());
+    iq_send::resume(&ctx, &iq_capture::root(&ctx.config.lock().unwrap()));
     // What each call kept once its plugins are done, for the history list.
     let weak = Arc::downgrade(&ctx);
     ctx.plugins.archive.on_settle(Box::new(move |rel, audio, json| {
@@ -963,14 +1188,17 @@ fn serve(a: &Args) {
         log::info!("Trunk Recorder Pro {} — open {url}", env!("CARGO_PKG_VERSION"));
         log::info!("Using Config file: {}", config_path.display());
         log::info!("Capture Directory: {}", c.recording.capture_dir);
+        // (Checked here, so why it can't take calls is said next to where it is; the monitor checks it again as it runs.)
+        ctx.folders.recordings.set_path(Path::new(&c.recording.capture_dir));
+        let _ = ctx.folders.recordings.check();
         log::info!("Call store: {}", ctx.db.describe().unwrap_or_else(|| "off (the call files and recent calls only)".into()));
         let dir = if l.dir.is_empty() { config_path.parent().unwrap_or(Path::new(".")).join("logs") } else { config_path.parent().unwrap_or(Path::new(".")).join(&l.dir) };
         log::info!("Log Level: {} · Log to File: {}{} · System log: {}", level.unwrap_or(l.level).as_str(), l.file, if l.file { format!(" ({})", dir.display()) } else { String::new() }, l.syslog);
     }
+    monitor::start(ctx.clone());
     let auto = a.flag("start") || ctx.config.lock().unwrap().server.auto_start;
     if auto {
-        let cfg = ctx.config.lock().unwrap().clone();
-        if let Err(e) = ctx.begin_recording(cfg) {
+        if let Err(e) = ctx.begin_recording() {
             log::error!("Not started: {e}");
         }
     }

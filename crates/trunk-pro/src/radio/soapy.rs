@@ -16,7 +16,7 @@ use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
-use crate::sdr::{Applied, Block, Control, Gain, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
 
 type Dev = *mut c_void;
 type Stream = *mut c_void;
@@ -77,6 +77,8 @@ struct Api {
     set_gain_mode: unsafe extern "C" fn(Dev, c_int, usize, bool) -> c_int,
     set_gain: unsafe extern "C" fn(Dev, c_int, usize, f64) -> c_int,
     set_gain_element: unsafe extern "C" fn(Dev, c_int, usize, *const c_char, f64) -> c_int,
+    /// The overall gain it's set to (its stages together).
+    get_gain: Option<unsafe extern "C" fn(Dev, c_int, usize) -> f64>,
     set_antenna: unsafe extern "C" fn(Dev, c_int, usize, *const c_char) -> c_int,
     write_setting: unsafe extern "C" fn(Dev, *const c_char, *const c_char) -> c_int,
 }
@@ -119,7 +121,7 @@ fn api() -> Result<&'static Api, String> {
             names.extend(["libSoapySDR.so.0.7".to_string(), "libSoapySDR.so".to_string()]);
         }
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
-        let (lib, path) = super::load("TRUNK_PRO_SOAPY", &names, "SoapySDR", true)?;
+        let (lib, path) = super::load("TRUNK_PRO_SOAPY", &names, "SoapySDR", true, "")?;
         // SAFETY: the signatures are SoapySDR's C API (0.7 / 0.8).
         unsafe {
             macro_rules! f {
@@ -167,6 +169,7 @@ fn api() -> Result<&'static Api, String> {
                 set_gain_mode: f!("SoapySDRDevice_setGainMode"),
                 set_gain: f!("SoapySDRDevice_setGain"),
                 set_gain_element: f!("SoapySDRDevice_setGainElement"),
+                get_gain: opt!("SoapySDRDevice_getGain"),
                 set_antenna: f!("SoapySDRDevice_setAntenna"),
                 write_setting: f!("SoapySDRDevice_writeSetting"),
                 _lib: lib,
@@ -313,7 +316,7 @@ pub fn search_paths() -> Vec<String> {
 }
 
 /// Drivers this recorder has its own source for: better used that way.
-const NATIVE: &[(&str, &str)] = &[("rtlsdr", "RTL-SDR"), ("hackrf", "HackRF"), ("airspy", "Airspy"), ("bladerf", "bladeRF"), ("uhd", "USRP")];
+const NATIVE: &[(&str, &str)] = &[("rtlsdr", "RTL-SDR"), ("hackrf", "HackRF"), ("airspy", "Airspy"), ("hydrasdr", "HydraSDR"), ("bladerf", "bladeRF"), ("uhd", "USRP")];
 
 /// Devices the loaded modules can see: [{args, label, driver}]. A real
 /// search (USB, network): some modules take seconds, so it runs only when asked.
@@ -418,6 +421,9 @@ impl crate::sdr::Radio for SoapyConfig {
             self.gain_db = Some(db as f64);
         }
     }
+    fn gain(&self) -> Option<Gain> {
+        if self.agc { Some(Gain::Agc) } else { self.gain_db.map(|g| Gain::Db(g as f32)) }
+    }
     fn rate_hz(&self) -> f64 {
         self.rate_hz
     }
@@ -442,6 +448,8 @@ struct Device {
     stream: Stream,
     active: bool,
     ppm: f64,
+    /// Its stages' gains ([`SoapyConfig::gains`]), set after the overall one each time it's set.
+    stages: Vec<(String, f64)>,
 }
 
 impl Drop for Device {
@@ -468,21 +476,36 @@ impl Tunable for Device {
         Ok(Retuned { hz, gap: 0 })
     }
     /// A manual gain (AGC on or off waits for the next start).
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
-        let Gain::Db(db) = g else { return Ok(0) };
+    fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
+        let Gain::Db(db) = g else { return Ok(Regained::LEFT_ALONE) };
         // SAFETY: an open device.
-        unsafe { self.gain(db as f64) }.map(|()| 0)
+        unsafe { self.gain(Some(db as f64)) }?;
+        Ok(Regained { gap: 0, gain: self.gain_set() })
     }
 }
 
 impl Device {
-    unsafe fn gain(&self, db: f64) -> Result<(), String> {
+    /// A manual gain: the AGC off, `db` overall (None: as the device has it),
+    /// then each of its stages' — which an overall gain set alone would undo.
+    unsafe fn gain(&self, db: Option<f64>) -> Result<(), String> {
         unsafe {
             if (self.a.has_gain_mode)(self.dev, RX, 0) {
                 check(self.a, "AGC off", (self.a.set_gain_mode)(self.dev, RX, 0, false))?;
             }
-            check(self.a, "gain", (self.a.set_gain)(self.dev, RX, 0, db))
+            if let Some(db) = db {
+                check(self.a, "gain", (self.a.set_gain)(self.dev, RX, 0, db))?;
+            }
+            for (k, db) in &self.stages {
+                let ck = CString::new(k.as_str()).map_err(|e| e.to_string())?;
+                check(self.a, &format!("gain {k}"), (self.a.set_gain_element)(self.dev, RX, 0, ck.as_ptr(), *db))?;
+            }
+            Ok(())
         }
+    }
+    /// The overall gain it's set to, when its SoapySDR can say.
+    fn gain_set(&self) -> Option<Gain> {
+        // SAFETY: an open device.
+        self.a.get_gain.map(|get| Gain::Db(unsafe { get(self.dev, RX, 0) } as f32))
     }
     /// The rates its module says it runs at: a span (min to max of its ranges) when one is a
     /// span, else the rates themselves.
@@ -534,7 +557,7 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
             let why = a.last_error.map(|f| unsafe { cstr(f()) }).filter(|s| !s.is_empty()).unwrap_or_else(|| "no matching device".into());
             return Err(format!("{what} open: {why}"));
         }
-        Ok((Handed(Device { a, dev, stream: std::ptr::null_mut(), active: false, ppm: 0.0 }), sdrplay))
+        Ok((Handed(Device { a, dev, stream: std::ptr::null_mut(), active: false, ppm: 0.0, stages: Vec::new() }), sdrplay))
     })?;
     let mut d = d.0;
     d.ppm = cfg.ppm;
@@ -543,7 +566,7 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
         // What it runs at, for the list of radios and the refusal.
         let rates = d.rates();
         if let Some(r) = &rates {
-            super::remember(&key(&cfg.args), Caps { model: String::new(), rates: r.clone() });
+            super::remember(&key(&cfg.args), Caps { model: String::new(), rates: r.clone(), gains: Vec::new() });
         }
         check(a, "sample rate", (a.set_sample_rate)(d.dev, RX, 0, cfg.rate_hz))?;
         let actual = (a.get_sample_rate)(d.dev, RX, 0);
@@ -569,18 +592,13 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
             }
             check(a, "AGC", (a.set_gain_mode)(d.dev, RX, 0, true))?;
         } else {
-            if has_agc {
-                check(a, "AGC off", (a.set_gain_mode)(d.dev, RX, 0, false))?;
-            }
-            if let Some(g) = cfg.gain_db {
-                d.gain(g)?;
-            }
-            for (k, db) in &cfg.gains {
-                let ck = CString::new(k.as_str()).map_err(|e| e.to_string())?;
-                check(a, &format!("gain {k}"), (a.set_gain_element)(d.dev, RX, 0, ck.as_ptr(), *db))?;
-            }
+            d.stages = cfg.gains.clone();
+            d.gain(cfg.gain_db)?;
         }
         d.tune(cfg.center_hz)?;
+        if !cfg.agc {
+            sink.gained(cfg.gain(), d.gain_set());
+        }
 
         let chan = [0usize];
         d.stream = match a.setup_stream {
@@ -600,7 +618,7 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
         check(a, "start", (a.activate)(d.dev, d.stream, 0, 0, 0))?;
         d.active = true;
 
-        let mut next_ns: Option<f64> = None;
+        let mut stamps = Stamps::new(cfg.rate_hz);
         let mut overflowed = false;
         let mut timeouts = 0;
         while !stop.load(Ordering::Relaxed) {
@@ -618,17 +636,9 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
                 let n = (a.read_stream)(d.dev, d.stream, ptrs.as_ptr(), per - got, &mut flags, &mut t, 1_000_000);
                 if n > 0 {
                     timeouts = 0;
-                    if flags & HAS_TIME != 0 {
-                        // Samples lost show as a jump in the buffer time.
-                        if let Some(want) = next_ns {
-                            let gap = ((t as f64 - want) * cfg.rate_hz / 1e9).round();
-                            if gap > 0.0 {
-                                dropped += gap as u64;
-                            }
-                        }
-                        next_ns = Some(t as f64 + n as f64 * 1e9 / cfg.rate_hz);
-                    } else if overflowed {
-                        // No timestamps: an overflow lost about one transfer.
+                    dropped += stamps.read(n as usize, (flags & HAS_TIME != 0).then_some(t));
+                    if overflowed && !stamps.timed() {
+                        // No timestamps (or none to go by): an overflow lost about one transfer.
                         dropped += mtu as u64;
                     }
                     overflowed = false;
@@ -660,9 +670,233 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
     Ok(())
 }
 
+/// A stream's timestamps, as what they say of samples lost: a buffer that
+/// starts later than the samples before it end lost the difference.
+///
+/// A read without a time continues the one before: SoapyRemote stamps only
+/// the first read of a network buffer split over several (the rest of it
+/// comes back with no time), so those samples count too, or the next
+/// buffer's time looks ahead by them (#209). And timestamps that don't keep
+/// to the sample count are noticed over the first second, said once, and
+/// ignored: samples lost are then counted by overflows, as with none.
+///
+/// That's judged over windows of samples, not step by step: SoapyRTLSDR
+/// before 0.3.4 counts its buffers' times in bytes but the reads within one
+/// in samples, so over SoapyRemote's small reads most steps keep to the
+/// count and each buffer's first jumps by a buffer (#209: ~2.4 M "lost" a
+/// second). Over a window its times run at twice real time. The median
+/// window is taken, so a loss (the stream's first buffer, say) doesn't
+/// decide it.
+struct Stamps {
+    rate: f64,
+    /// Where the next sample's time should be, ns.
+    next_ns: Option<f64>,
+    /// Whether any read was stamped.
+    stamped: bool,
+    trust: Trust,
+    /// While learning: the window's first time and its samples since, each
+    /// window's time against its samples', and the samples the times say
+    /// were lost (counted once they're trusted).
+    window: Option<(f64, u64)>,
+    ratios: Vec<f64>,
+    held: u64,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Trust {
+    Learning,
+    Yes,
+    /// They run at this many times real time.
+    No(f64),
+}
+
+impl Stamps {
+    /// A window's samples, s, and the windows looked at before deciding.
+    const WINDOW_S: f64 = 0.1;
+    const WINDOWS: usize = 9;
+
+    fn new(rate: f64) -> Stamps {
+        Stamps { rate, next_ns: None, stamped: false, trust: Trust::Learning, window: None, ratios: Vec::new(), held: 0 }
+    }
+
+    /// Whether lost samples are going by the timestamps.
+    fn timed(&self) -> bool {
+        self.stamped && !matches!(self.trust, Trust::No(_))
+    }
+
+    /// `n` samples read, stamped `time_ns` (none: continuing the read
+    /// before); the samples lost before them.
+    fn read(&mut self, n: usize, time_ns: Option<i64>) -> u64 {
+        let rate = self.rate;
+        let ns = |k: u64| k as f64 * 1e9 / rate;
+        let Some(t) = time_ns.map(|t| t as f64) else {
+            if let Some((_, k)) = self.window.as_mut() {
+                *k += n as u64;
+            }
+            self.next_ns = self.next_ns.map(|x| x + ns(n as u64));
+            return 0;
+        };
+        let gap = self.next_ns.map_or(0, |want| ((t - want) * rate / 1e9).round().max(0.0) as u64);
+        if self.trust == Trust::Learning {
+            match self.window {
+                Some((t0, k)) if k as f64 >= rate * Self::WINDOW_S => {
+                    self.ratios.push((t - t0) / ns(k));
+                    self.window = Some((t, 0));
+                }
+                None => self.window = Some((t, 0)),
+                Some(_) => {}
+            }
+            if let Some((_, k)) = self.window.as_mut() {
+                *k += n as u64;
+            }
+            self.held += gap;
+            if self.ratios.len() >= Self::WINDOWS {
+                self.decide();
+            }
+        }
+        self.stamped = true;
+        self.next_ns = Some(t + ns(n as u64));
+        match self.trust {
+            Trust::Yes => gap + std::mem::take(&mut self.held),
+            Trust::No(_) | Trust::Learning => 0,
+        }
+    }
+
+    /// Times that keep to the samples over the median window, or a rate other than real time.
+    fn decide(&mut self) {
+        let mut r = std::mem::take(&mut self.ratios);
+        self.window = None;
+        r.sort_by(f64::total_cmp);
+        let median = r[r.len() / 2];
+        self.trust = if (median - 1.0).abs() < 0.05 { Trust::Yes } else { Trust::No(median) };
+        if let Trust::No(k) = self.trust {
+            self.held = 0;
+            let hint = if (k - 2.0).abs() < 0.1 { " (SoapyRTLSDR before 0.3.4 does: it counts bytes, not samples; update it)" } else { "" };
+            log::warn!("SoapySDR: this driver's timestamps run at {k:.2}× real time{hint}; going by the sample count instead");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RATE: f64 = 2_400_000.0;
+
+    /// Reads of `sizes`, as SoapyRemote gives them: a network buffer of `buf`
+    /// samples split over the reads asked for, only each buffer's first read
+    /// stamped; `scale`: the time's rate against real time; `lost`: buffers
+    /// (by number) the network lost. The samples lost, in all.
+    fn remote(stamps: &mut Stamps, reads: usize, ask: usize, buf: usize, scale: f64, lost: &[usize]) -> u64 {
+        let (mut total, mut b, mut left) = (0, 0usize, 0usize);
+        for _ in 0..reads {
+            let mut time = None;
+            if left == 0 {
+                while lost.contains(&b) {
+                    b += 1;
+                }
+                time = Some((b as f64 * buf as f64 * 1e9 / RATE * scale) as i64);
+                left = buf;
+                b += 1;
+            }
+            let n = ask.min(left);
+            left -= n;
+            total += stamps.read(n, time);
+        }
+        total
+    }
+
+    /// #209: SoapyRemote's buffers of 2012 split by reads of a 10 ms block:
+    /// the unstamped rest of each continues it, so nothing is lost.
+    #[test]
+    fn a_split_buffers_unstamped_rest_continues_it() {
+        let mut s = Stamps::new(RATE);
+        assert_eq!(remote(&mut s, 5000, 1500, 2012, 1.0, &[]), 0);
+        assert_eq!(s.trust, Trust::Yes);
+    }
+
+    /// A buffer the network lost: its samples, once.
+    #[test]
+    fn a_buffer_lost_is_counted() {
+        let mut s = Stamps::new(RATE);
+        assert_eq!(remote(&mut s, 5000, 1500, 2012, 1.0, &[500]), 2012);
+        // (While learning too: held until the times are trusted.)
+        let mut s = Stamps::new(RATE);
+        assert_eq!(remote(&mut s, 5000, 1500, 2012, 1.0, &[3]), 2012);
+    }
+
+    /// SoapyRTLSDR before 0.3.4: times at twice real time aren't believed, and nothing's counted lost.
+    #[test]
+    fn timestamps_at_twice_real_time_are_ignored() {
+        let mut s = Stamps::new(RATE);
+        assert_eq!(remote(&mut s, 5000, 16384, 16384, 2.0, &[]), 0);
+        assert!(matches!(s.trust, Trust::No(k) if (k - 2.0).abs() < 0.01), "{:?}", s.trust);
+        assert!(!s.timed(), "overflows count instead");
+    }
+
+    /// #209: SoapyRTLSDR 0.3.3 behind SoapyRemote. Its buffers' times count
+    /// bytes (each starts two buffers' worth of time after the last) while
+    /// the reads within one count samples, and the remote splits them into
+    /// network buffers of 2012, each stamped at its first sample: most steps
+    /// keep to the count, but over time the times run at twice real time.
+    #[test]
+    fn an_old_rtlsdr_behind_soapyremote_is_noticed() {
+        const DRIVER: usize = 16_384;
+        const NET: usize = 2012;
+        let mut s = Stamps::new(RATE);
+        let (mut lost, mut sample) = (0u64, 0usize);
+        // The network buffers, as (time, samples): within a driver buffer, never across one.
+        let net = (0..2_000).flat_map(|b| {
+            let base = b * 2 * DRIVER;
+            (0..DRIVER).step_by(NET).map(move |o| (((base + o) as f64 * 1e9 / RATE) as i64, NET.min(DRIVER - o)))
+        });
+        // Read 10 ms at a time, as the source does: a network buffer's rest comes unstamped.
+        let ask = (RATE / 100.0) as usize;
+        let mut left = 0usize;
+        let mut pending = net.peekable();
+        while sample < 2_000 * DRIVER - ask {
+            let mut got = 0;
+            while got < ask {
+                let time = if left == 0 {
+                    let (t, n) = pending.next().unwrap();
+                    left = n;
+                    Some(t)
+                } else {
+                    None
+                };
+                let n = (ask - got).min(left);
+                left -= n;
+                got += n;
+                lost += s.read(n, time);
+            }
+            sample += got;
+        }
+        assert!(matches!(s.trust, Trust::No(k) if (k - 2.0).abs() < 0.1), "{:?}", s.trust);
+        assert_eq!(lost, 0, "nothing counted lost: the times aren't believed");
+    }
+
+    /// SoapyRemote's first buffer comes late (#209: 54.6 ms): one window off,
+    /// the median keeps to the count, and the times are trusted.
+    #[test]
+    fn a_late_first_buffer_doesnt_decide_it() {
+        let late = (0.0546 * RATE) as usize;
+        let mut s = Stamps::new(RATE);
+        let (mut total, mut t) = (s.read(2012, Some(0)), 2012 + late);
+        for _ in 0..3000 {
+            total += s.read(2012, Some((t as f64 * 1e9 / RATE) as i64));
+            t += 2012;
+        }
+        assert_eq!(s.trust, Trust::Yes);
+        assert_eq!(total, late as u64, "the late start, once");
+    }
+
+    /// No timestamps at all: nothing from them.
+    #[test]
+    fn no_timestamps_counts_nothing() {
+        let mut s = Stamps::new(RATE);
+        assert_eq!((0..100).map(|_| s.read(2012, None)).sum::<u64>(), 0);
+        assert!(!s.timed());
+    }
 
     #[test]
     fn rates_from_ranges() {

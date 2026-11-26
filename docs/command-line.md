@@ -30,9 +30,11 @@ tools. Most people only ever run `trunk-pro` with no arguments and do the rest i
 | [`replay`](#replay) | Record calls from capture files instead of radios |
 | [`survey`](#survey) | Find a system: scan the bands, then listen to the best control channel |
 | [`rolloff`](#rolloff) | Measure how a radio's band edges sag, and the guard band to use |
-| [`tool …`](#tool) | Diagnostics: one channel's decode, scans, weak-signal curves, re-vocoding |
+| [`tune`](#tune) | Find a radio's best gain on a recorder that is recording |
+| [`tool …`](#tool) | Diagnostics: one channel's decode, scans, re-vocoding; [developer tools](developer/tools.md) too |
 | [`plugin …`](#plugin) | Find, install, update, remove and test plugins |
 | [`interface …`](#interface) | Find, install, update and remove interfaces, or add a folder of your own |
+| [`access …`](#access) | Signing in: users and their access tokens, and turning it on or off |
 
 ## Running the app (`serve`)
 
@@ -50,7 +52,7 @@ you press **Start** in the interface, or right away with `--start` or the config
 |---|---|---|
 | `--config file.json` | the app's config folder | The config file to use. Everything the app learns and installs (band plans, unit names, plugins, stats history, logs) is kept in the folder this file is in, so two recorders with their own configs never share them. |
 | `--port n` | `server.port` (8080) | The built-in interface's port, for this run only. |
-| `--bind address` | `server.bind` (`127.0.0.1`) | The address to listen on, for this run only. `0.0.0.0` makes the interface reachable from other machines. There is no login: see [Remote access](guides/interface.md#remote-access). |
+| `--bind address` | `server.bind` (`127.0.0.1`) | The address to listen on, for this run only. `0.0.0.0` makes the interface reachable from other machines. Signing in is off unless you turn it on ([`access`](#access)): see [Remote access and signing in](guides/remote-access.md). |
 | `--no-open` | | Don't open a browser (headless machines, services). |
 | `--start` | `server.autoStart` | Start recording at once with the saved settings. If the settings can't start, the reason is logged as `Not started: …` and the app keeps running. |
 | `--ui folder` | | Serve a folder with an `index.html` as an interface for this run, with control access, on the first free port above the built-in interface's, and open it instead of the built-in one. Nothing is saved. See [Interfaces](interfaces/README.md). |
@@ -67,16 +69,15 @@ Where the default config lives:
 If the file doesn't exist, the app starts with the default config (one RTL-SDR source, no
 systems) and the interface offers the setup guide. If it exists but can't be read, the app stops with
 `<path>: not a config this version reads (…)`: a wrong type, or a choice the app doesn't list (a
-system `type` of `P25x`). See [Troubleshooting](troubleshooting.md). A config from an older version
-is upgraded when it's read: its talkgroups are moved out into `<shortName>.talkgroups.csv` files
-beside it, and the log says what changed.
+system `type` of `P25x`). See [Troubleshooting](troubleshooting.md).
 
 At start the log says where everything is:
 
 ```text
-Trunk Recorder Pro 0.2.0 — open http://localhost:8080
+Trunk Recorder Pro 0.4.0 — open http://localhost:8080
 Using Config file: /home/pi/.config/trunk-pro/config.json
 Capture Directory: /home/pi/TrunkRecorderPro
+Call store: sqlite /home/pi/.config/trunk-pro/trunk-pro.sqlite
 Log Level: info · Log to File: false · System log: false
 ```
 
@@ -119,10 +120,9 @@ trunk-pro --log-level debug
 trunk-pro devices [--usrp [args]]
 ```
 
-Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened) and the HackRFs, then whether the optional Airspy
-(libairspy), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy and
-bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
-at, bladeRFs with their full serials; for
+Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened), the HackRFs, the Airspys and the HydraSDRs (the Airspy and HydraSDR drivers are built in: `Airspy: built in`, `HydraSDR: built in`), then whether the optional bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy,
+HydraSDR and bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
+at, HydraSDRs with theirs, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
 found. USRPs are only searched for with `--usrp`, optionally with UHD device arguments
 (`--usrp type=b200`), because a search can be slow.
@@ -178,7 +178,7 @@ trunk-pro replay --source cap1.cu8,center,rate[,format] [--source …] --cc Hz[,
 
 | Option | Default | What it does |
 |---|---|---|
-| `<capture>` | | One capture file (the first argument that isn't an option) |
+| `<capture>` | | One capture file (the first argument that isn't an option), or a SigMF capture: its folder, `.sigmf-collection` or `.sigmf-meta`. A SigMF capture says its centre, rate and format; [one made by the recorder](guides/captures.md#capture-what-trp-receives) also says its systems, so it needs no other options. |
 | `--center Hz` | | Its centre frequency |
 | `--rate Hz` | 2400000 | Its sample rate |
 | `--source file,center,rate[,format]` | | A capture with its own centre and rate; repeat for several radios. They're fed in step, as they would be live. |
@@ -259,14 +259,17 @@ called `conv`.
 | `--max-call s` | 0 (no limit) | Split calls longer than this |
 | `--transmissions` | off | Conversation mode off: each transmission is a call of its own (`conversationMode`) |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
-| `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
+| `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](developer/tools.md#tool-channel) |
+| `--taps` | none | Signal taps to save beside the calls, by id (`fm.discriminator,voice.air,voice.frames`): see [`taps`](configuration/recording.md#taps) |
 | `--messages` | off | Print every control channel message |
+| `--summary file` | | Also write each site's control channel blocks, good and bad, as JSON: over all of it and, for one of our captures, over the part its live figures (`trp:live`) cover |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
 
 At the end it prints how fast it ran, how many calls it wrote, and for each system the control
 channel's good and bad message counts, modulation and identity (NAC, WACN, SysID, RFSS, site).
-A system whose control channel belonged to another site says `NOT FOLLOWED` and why. Each source's
-measured frequency error is printed too.
+A system whose control channel belonged to another site says `NOT FOLLOWED` and why. For one of our
+captures, each site's blocks over the part live counted ("As live counted, 0.9–20.0 s"), to set beside
+its `trp:live`. Each source's measured frequency error is printed too.
 
 ```bash
 # A UHF SmartNet OBT system: the band plan numbers come from your system's listing
@@ -281,9 +284,11 @@ trunk-pro replay vhf.cu8 --center 154500000 --rate 2400000 --fm 154130000,154415
 
 ```bash
 trunk-pro survey [--serial S] [--bands 800,700,…] [--gain dB | --no-gain] [--ppm 0] [--seconds 30]
-                 [--rate 2400000]
+                 [--rate 2400000] [--buflen n] [--buffers n]
 trunk-pro survey <capture> --center Hz [--rate Hz] [--format cu8|cs16|cf32]
-    either: [--identify lat,lon[,km]] [--api URL]
+trunk-pro survey [--radio '{"type":"bladerf",…}'] --freqs 851.0125,852.5
+                 [--type p25|smartnet|edacs|dmr|nxdn] [--listen s]
+    any of these: [--identify lat,lon[,km]] [--api URL]
 ```
 
 The command-line version of **Find my system**: scans the bands for control channels (P25,
@@ -300,12 +305,17 @@ settings (`suggest`) and how long it took.
 | `--bands list` | `800,700,900,uhf,vhf` | Any of `800`, `700`, `900`, `uhf`, `vhf`, and also `uhf-fed` (380–420 MHz), `biz-uhf`, `biz-vhf` (business bands, where most DMR is) and `t-band` (470–512 MHz), which are only scanned when you name them. |
 | `--gain dB` | AGC, then a gain search | A fixed gain; turns off the gain search |
 | `--no-gain` | | Don't search for the best gain |
-| `--ppm n` | 0 | Frequency correction while scanning |
+| `--ppm n` | 0 | Frequency correction while scanning, in whole ppm |
 | `--seconds n` | 30 | How long to listen to the best control channel |
 | `--identify lat,lon[,km]` | | Then look up the FCC licenses within `km` (50) of there for what was heard, from trunkrecorder.pro: a last JSON line, `{"licenses": [...]}` |
 | `--api URL` | https://trunkrecorder.pro | The API `--identify` asks |
 | `--rate Hz` | 2400000 | Sample rate |
-| `<capture>` `--center` `--format` | | Look at a capture instead of scanning with a dongle. An unknown `--format` is refused |
+| `--buflen n` `--buffers n` | 0 (the driver's) | The RTL-SDR's USB transfer size and transfers in flight, as for [`capture`](#capture) |
+| `--radio json` | | Survey this radio instead of an RTL-SDR: a source as in the config (`'{"type":"bladerf",…}'`) |
+| `--freqs MHz,…` | | Don't scan: listen to just these frequencies, each probed, and say which of a system's sites are heard here |
+| `--type t` | | With `--freqs`: look for only this protocol (`p25`, `smartnet`, `edacs`, `dmr` or `nxdn`), with its receivers only |
+| `--listen s` | by `--type` | With `--freqs`: how many seconds to listen to each |
+| `<capture>` `--center` `--format` | format from the extension | Look at a capture instead of scanning with a dongle. `--center` is required, and `--rate` is the capture's. An unknown `--format` is refused |
 
 ```bash
 trunk-pro survey --bands 800,700
@@ -327,10 +337,124 @@ JSON. `--full` adds the spectrum, floor and waterfall rows. Without `--gain` it 
 trunk-pro rolloff --center 858500000
 ```
 
+## tune
+
+```bash
+trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--slice 15] [--rounds 3]
+               [--settle 4] [--max-steps 12] [--margin 1] [--mode manual|linearity|sensitivity]
+               [--protect 5] [--try stage=value,…] [--yes] [--apply]
+```
+
+Asks a recorder that is **recording** to find the gain at which one of its radios decodes its
+systems best. The recorder at `--url` does the tuning (it can be another computer's; it is the
+[interface API](api/README.md)'s `tuneGain`, which needs control access); this command asks for it
+and shows how it goes. Each gain to try goes on the radio as a **trial**: the radio takes it at once,
+as a gain edited in Setup, but nothing is saved and the config isn't changed. The recorder scores
+what the radio's systems decode while it is set:
+
+- **The control channel first.** P25's coverage (the share of the control channel's air decoded),
+  else the share of messages decoded while it was locked. Without the control channel nothing is
+  recorded.
+- **Then voice frames lost**, when a system had at least 5 seconds of voice. A system's score is
+  70 % control channel and 30 % voice then, else its control channel alone.
+- **A gain that clips** (more than 0.5 % of samples at full scale, as the dashboard warns) is
+  refused, whatever it decoded.
+
+The setting's score (0 to 100) is the systems' average with the weakest counted twice, so a gain
+that helps the strong systems a little at a weak one's cost isn't chosen. The systems scored are
+those whose control channels the recorder receives on that radio, or only `--systems`. The radio's
+other systems are still watched then, and shown (the scored ones starred), and protected: a
+candidate that costs one of them more than `--protect` points (5 by default) on average over the
+rounds is refused, and one that costs one of them more than twice that in its first round is
+refused at once, so it isn't kept on the air for the rest. On one 800 MHz Airspy, the LNA that
+suited a weak simulcast system best took a neighbouring system's control channel from 74 % to 45 %:
+that is what this stops.
+
+**Settings are compared, not scored once.** How well a control channel decodes drifts from minute
+to minute (traffic, a simulcast site's fading) by more than a step of gain usually changes it: on
+one 800 MHz Airspy the same gain scored 92 and then 84 ten minutes apart. So each candidate is
+compared with the best so far by turns, `--slice` seconds each after `--settle` seconds to settle,
+for `--rounds` rounds (best first in one round, the candidate first in the next), and it is moved to
+only when it scored better on average by more than `--margin` **and** by more than twice the
+standard error of the rounds' differences.
+
+**A control channel already decoded in full is compared by its SNR.** Once it decodes 99.8 % at
+one gain it can't score better at another, however close to the noise it is: on one RTL-SDR at
+490 MHz, 16.6 dB and 25.4 dB both decoded 99.8 %, but the control channel's SNR went from 13.6 to
+20.3 dB. So a candidate that decodes no worse (by less than `--margin`) is also better when the
+weakest scored system's control channel SNR is higher by more than 2 dB and by more than twice the
+standard error of the rounds' differences: that margin is what a fade takes. A candidate takes `rounds × 2 × (settle + slice)`
+seconds: 114 by default.
+
+**Each kind of radio has a plan**, from how it is built. The front of the chain (the LNA) sets the
+noise figure and is what strong signals overload, so it moves first; the stages after it only bring
+the level into the ADC's range, so they move last. Where the radio's maker drew a path through its
+stages (an Airspy's linearity and sensitivity tables, an R820T's gain table, the gain table behind an AD9361's one number),
+the search goes along that path: each step on it is a setting the maker measured. A move goes one
+way while each step is better; refused at its first step, it tries the other way. When any move
+was kept, the moves are walked once more (one stage moved can change what suits another), never
+trying a setting twice.
+
+| Radio | Plan |
+|---|---|
+| Airspy, HydraSDR | **Linearity** or **sensitivity** (the mode it is in, or `--mode`): the table's step (0–21), by 3, then 1. Linearity gives up the LNA and mixer before the VGA, what wins against strong signals. **Manual**: the LNA (0–14), then the mixer (0–15), by 3 then 1, and the VGA last, down first, kept to 12 (higher with the LNA up saturates the ADC); AGC off |
+| HackRF | The LNA first (0–40 dB, by 8), then the VGA (by 6 dB, then 2, to 40 dB), the RF amp last, and tried on only with the LNA at 24 dB or under: it adds little and puts strong signals at the mixer (more than −5 dBm at the input damages a HackRF) |
+| RTL-SDR | The tuner's gain table (0–49.6 dB; the LNA and mixer together, the VGA fixed), about 5 dB at a time, then one entry; AGC off |
+| bladeRF, USRP, SoapySDR | The overall gain, which the driver shares over the stages front first: by 6 dB, then 1. Its AGC must be off (that takes a Stop and Start), and a SoapySDR radio needs an overall gain set |
+
+At the end the best is compared with the starting setting once more, and recommended only if it is
+still clearly better.
+
+**Recording and uploading go on while it runs**, for every system, so a poor setting costs the
+radio's systems while it is tried: their calls in those seconds are recorded (and uploaded) as that
+setting hears them. Other radios aren't touched. A setting under which a control channel that was
+decoding stops for 10 seconds is given up at once, and one that clips heavily after 5. However it
+ends (done, an error, Ctrl-C), the radio goes back as it was, unless `--apply` keeps the best, which
+is then saved in the config as an edit in Setup would be. Since the trials are never saved, a
+tuning cut short (the recorder stopped, this command killed) leaves the config as it was; stopping
+recording, or editing that radio in Setup, stops the tuning.
+
+Before anything changes, it shows the plan, how long it will take ("This will take up to about 24
+minutes") and which systems may record worse meanwhile, and waits for Enter (in a terminal; `--yes`
+doesn't ask). At the end a **summary** says what it recommends and what that does, system by system,
+from the final comparison of the new gain against the current one:
+
+```text
+Summary (21 min, 9 settings compared)
+  Recommended: gain LNA 9 · MIX 10 · VGA 10 (now LNA 10 · MIX 10 · VGA 10).
+  With it, measured against the current one by turns (3 rounds): score +4.2 ± 1.3
+     Balch            control channel 74.3% → 79.0% (+4.7)
+     MetroC           control channel 75.6% → 80.7% (+5.1) · voice lost 13.3% → 6.5%
+```
+
+The frequency correction is Setup's (its **Set correction to**), not this command's.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--url` | `http://127.0.0.1:8080` | The recorder's built-in interface |
+| `--source N` | the only one | The radio, by its number in Setup's list (from 1). Needed when there are several |
+| `--systems a,b` | every system on the radio | Score only these (short names); the others are still watched and guarded |
+| `--protect points` | 5 | With `--systems`: the most one of the radio's other systems may lose (0–100 scale). `off` or `0` allows any loss |
+| `--try stage=value,…` | | Compare this one setting with the one the radio has, and nothing else: `lna=11,mixer=10,vga=9` (Airspy manual), `step=16` (Airspy linearity or sensitivity), `lna=32,vga=24,amp=on` (HackRF), `gain=33.8` (RTL-SDR, bladeRF, USRP, SoapySDR). With `--apply`, kept if it is clearly better |
+| `--slice s` | 15 | How long each side of a round is measured (at least 5) |
+| `--rounds n` | 3 | Rounds per comparison (2 to 20). More rounds tell smaller differences apart |
+| `--settle s` | 4 | How long a gain runs before it is measured |
+| `--max-steps n` | 12 | At most this many candidates compared |
+| `--margin` | 1 | A move is kept only when it scores this much better (0–100 scale) |
+| `--mode` | the radio's | Airspy, HydraSDR: search `manual`, `linearity` or `sensitivity` instead |
+| `--yes` | | Don't ask before starting |
+| `--apply` | | Keep the best gain, and save it |
+
+```bash
+trunk-pro tune --url http://192.168.1.20:8080 --source 2
+trunk-pro tune --source 1 --systems county,city --mode sensitivity --apply
+trunk-pro tune --source 2 --try lna=11,vga=9          # before applying what a --systems run found
+```
+
 ## tool
 
-Diagnostic tools, mostly for developers and for chasing a decoding problem down to one channel.
-They read raw `cu8` captures (from `trunk-pro capture` or `rtl_sdr`) and print JSON lines on
+Diagnostic tools for chasing a decoding problem down to one channel, and for looking at saved
+calls. They read raw `cu8` captures (from `trunk-pro capture` or `rtl_sdr`) and print JSON lines on
 stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted as well.
 
 | Tool | What it does |
@@ -344,12 +468,12 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool dmr` | One DMR channel's link control, CSBKs and calls |
 | `tool nxdnscan` | Every NXDN carrier in a capture |
 | `tool nxdn` | One NXDN channel's messages |
-| `tool nxdnsynth` | Make a synthetic NXDN capture |
-| `tool p25synth` | Make a synthetic P25 Phase 1 capture, encrypted with a key of yours or clear |
-| `tool snr` | Weak-signal curves: decode a strong channel again with noise added |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
-| `tool sdr` | A saved `.sdr` call's metadata, or its frames |
+| `tool sdr` | A saved `.sdr` file's metadata, or its frames |
 | `tool tones` | The in-band tones in saved calls, or the patterns they make up |
+
+The tools for testing and measuring the decoders (`p25synth`, `dmrsynth`, `nxdnsynth`, `perf`,
+`corpus`, `submission`, `channel`, `snr`) are in [Developer tools](developer/tools.md).
 
 ### tool cc, voice, frames
 
@@ -403,94 +527,45 @@ trunk-pro tool dmr <capture.cu8> --center Hz --rate Hz --freq Hz [--bursts] [--a
 codes and what they carry. `dmr` prints one channel's messages; `--bursts` prints every burst, and
 `--audio` writes a slot's voice (8 kHz, 32-bit float).
 
-### tool nxdnscan, nxdn and nxdnsynth
+### tool nxdnscan and nxdn
 
 ```bash
 trunk-pro tool nxdnscan <capture.cu8> --center Hz [--rate Hz] [--seconds N] [--step 6250] [--guard 75000]
 trunk-pro tool nxdn <capture.cu8> --center Hz --freq Hz [--rate Hz] [--nxdn 48|96] [--frames]
                     [--audio out.f32] [--variant …]
-trunk-pro tool nxdnsynth <out.cu8> [--center 451000000] [--kind conv|typeC|typeD] [--nxdn 48|96]
-                         [--rate 2400000]
 ```
 
 `nxdnscan` runs every channel through both NXDN receivers and lists those with NXDN on them, with
-rate and RAN. `nxdn` prints one channel's messages (`--frames`: every frame). `nxdnsynth` writes a
-synthetic capture, handy for checking a setup when there's no NXDN on the air near you:
-
-- `conv`: a conventional call at centre + 50 kHz
-- `typeC` (the default): a control channel at centre + 18.75 kHz granting group 3001 on
-  channel 12, whose call is at centre + 68.75 kHz
-- `typeD`: repeaters at centre + 12.5 and + 62.5 kHz, the call on the second
-
-### tool p25synth
-
-```bash
-trunk-pro tool p25synth <out.cu8|out.cf32> [--center 851000000] [--freq centre+100000]
-                        [--rate 2400000] [--keys keys.json] [--mi HEX] [--voice call.frames.jsonl]
-                        [--superframes 10] [--wav out.wav] [--nac 659] [--tg 1201]
-```
-
-Writes one P25 Phase 1 transmission (a header, then 180 ms voice frames, then a terminator) on
-`--freq`. With `--keys`, the voice is encrypted with the first key in that
-[keys file](configuration/systems.md#encryption-keys-keys), under its algorithm and key ID, with
-`--mi` (16 hex digits) as the first message indicator. Without it the transmission is clear.
-`--voice` takes the voice from a call saved with **Save vocoder frames** (`.sdr` or
-`.frames.jsonl`); otherwise the frames are made up and sound like noise. `--wav` also writes the
-transmission as 48 kHz discriminator audio, the input DSD-style decoders take.
-
-Use it to check decryption without an encrypted system on the air:
-
-```bash
-trunk-pro tool p25synth test.cu8 --keys keys.json --voice call.frames.jsonl
-trunk-pro replay test.cu8 --center 851000000 --rate 2400000 --p25 851100000 --keys keys.json
-```
-
-The call should be saved with `"decrypted": 1` and sound like the call `--voice` came from.
-Replay it with a different key and it's noise.
-
-### tool snr
-
-```bash
-trunk-pro tool snr <capture.cu8> --center Hz --rate Hz --freq Hz --kind dmr|p25|smartnet|p2
-                   [--seconds N] [--snr 40,20,16,14,12,10,8,6] [--variant base,…] [--cutoff Hz]
-                   [--trials 1] [--nac --sysid --wacn] [--repeat] [--kinds]
-```
-
-Takes one strong channel from a capture and decodes it again and again with noise added at each
-SNR, counting how much of what the clean run decoded still comes through. It's how receiver
-changes are compared. `--kind p2` needs `--nac`, `--sysid` and `--wacn` (hex). `--quality`
-(with `--kind p2`) reports a real channel as it is, and `--separation` the C4FM receiver's level
-separation at each SNR. `--repeat` (with `--kind p25`) scores the vocoder's frame-repeat rules,
-on soft- and hard-decision error counts: wrong frames played, good frames repeated, and how far
-the audio is from the clean run's. `--kinds` (with `--kind p25`) counts the voice channel's
-signalling per kind of word (link control, encryption sync, TDULC) rather than together.
+rate and RAN. `nxdn` prints one channel's messages (`--frames`: every frame). To make a synthetic
+NXDN capture, see [`tool nxdnsynth`](developer/tools.md#tool-nxdnsynth).
 
 ### tool revoice
 
 ```bash
-trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
+trunk-pro tool revoice <frames.sdr | frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
                        [--seed 1] [--hard-fec] [--s16]
 ```
 
-Runs a call's saved vocoder frames through the vocoder again, for example to hear it with another
-vocoder (`enhanced` unless `--profile` says otherwise; recording's own default is `fixed`). The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
-`replay --capture-frames`). `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
+Runs a transmission's saved vocoder frames through the vocoder again, for example to hear it with another
+vocoder (`enhanced` unless `--profile` says otherwise; recording's own default is `fixed`). The frames are those the
+[`voice.frames` signal tap](configuration/recording.md#taps) saves (Setup → Recording → Advanced → Signal taps, or
+`replay --taps voice.frames`): its `.sdr` or its `.jsonl`. `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
 16-bit samples instead of a WAV.
 
 ### tool sdr
 
 ```bash
-trunk-pro tool sdr <call.sdr> [--frames]
+trunk-pro tool sdr <frames.sdr> [--frames]
 ```
 
-Prints a saved `.sdr` call's metadata as JSON, as MimoSDR reads it, or with `--frames` its vocoder
+Prints a saved `.sdr` file's metadata as JSON, as MimoSDR reads it, or with `--frames` its vocoder
 frames as JSON lines (one frame per line: `codec`, `bits` in hex, `e0`, `errs`, `erased`, and `out`,
 what the vocoder made of it).
 
 ### tool tones
 
 ```bash
-trunk-pro tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]
+trunk-pro tool tones <frames.sdr | frames.jsonl | call.wav>… [--patterns]
 ```
 
 Finds the in-band tones in saved calls as a call's are found while recording: DTMF, KNOX, call
@@ -556,7 +631,7 @@ at once.
 | `interface install <id \| owner/repo> [--tag v1.2.0] [--port n]` | Install an interface from the store, or from a GitHub repository's release (its latest, or `--tag`). It's served on the first free port, or `--port`. One from outside the store gets listen access whatever it asks for. |
 | `interface update [id…]` | Install newer versions of installed interfaces (all, or these). |
 | `interface add <folder> [--port n]` | Serve a folder of your own. Its `interface.json`, if any, gives its id and the access it gets; otherwise the folder's name is its id. |
-| `interface uninstall <id>` | Stop serving it and forget it. An installed copy is deleted; a folder of your own is left alone. |
+| `interface uninstall <id>` | Stop serving it and forget it (`remove` works too). An installed copy is deleted; a folder of your own is left alone. |
 | `interface list` | Every interface: its port, access, address or why it isn't served, and its folder. |
 
 ```bash
@@ -565,14 +640,46 @@ trunk-pro interface install trunkamp
 trunk-pro interface add ~/wall-display --port 8090
 ```
 
+## access
+
+```bash
+trunk-pro access list | add <name> [--access listen|control] | remove <name> | signout <name>
+                   | passkey remove <name> <passkey> | on | off
+```
+
+Signing in: who may, each user with a role and an access token (see
+[Signing in](guides/remote-access.md#signing-in)), for a recorder with no browser nearby, and the
+way back in when you've lost your token. Every subcommand takes `--config file.json`, for a
+recorder that runs with a config other than the default (run it as the account the recorder runs
+as). They write the config file (`access signout`, `access-state.json` beside it); a running
+recorder picks the change up when it restarts, so restart it right away (a setting saved from the
+browser before then would write over the change).
+Setup → **Access** does the same at once.
+
+| Subcommand | What it does |
+|---|---|
+| `access list` | Whether signing in is on, what `anonymous` allows, the [proxy in front](guides/remote-access.md#behind-a-proxy-that-signs-people-in) if set (its header, addresses, what others get and its names mapped to users), and each user: their name, role, the day their token was made, the day they were last signed out everywhere, and their passkeys (name and day). |
+| `access add <name> [--access listen\|control]` | Add a user (control unless `--access listen`) with an access token. Its secret is printed once, on stdout (the rest on stderr), so `trunk-pro access add kiosk --access listen > kiosk.token` keeps it in a file. |
+| `access remove <name>` | Remove a user: whoever signed in as them is signed out. Refused if they're the last one with control access while signing in is on. |
+| `access signout <name>` | Sign a user out everywhere: every browser signed in as them until now signs in again. Their access token still works for a program that sends it with each request: remove the token, or the user, for that. `access list` shows the day. |
+| `access passkey remove <name> <passkey>` | Remove one of a user's passkeys, by its name as `access list` shows it: whoever signed in with it is signed out. Refused if it's the last way in for the last control user while signing in is on. (Passkeys are added from a browser: Setup → **Access**.) |
+| `access on` | Turn signing in on. Refused until there's a user with control access. |
+| `access off` | Turn signing in off: the recovery when you're locked out. |
+
+```bash
+trunk-pro access add luke
+trunk-pro access on
+systemctl --user restart trunk-pro    # or however the recorder runs
+```
+
 ## Environment variables
 
 | Variable | What it does |
 |---|---|
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
-| `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching |
 | `TRUNK_PRO_BLADERF` | The libbladeRF library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |
+| `TRP_CORPUS_CACHE` | Where [`tool corpus`](developer/tools.md#tool-corpus) keeps its files, when `--cache` isn't given |
 | `NO_COLOR` | When set (and `log.color` is empty), the log isn't coloured |
 | `XDG_CONFIG_HOME` | Linux: where the default config folder goes (`$XDG_CONFIG_HOME/trunk-pro`) |
 | `HOME` (or `USERPROFILE`) | Your home folder: the default config folder (macOS, Linux) and recordings folder (`~/TrunkRecorderPro`), and `~/` in paths |

@@ -15,14 +15,10 @@
 
 use super::mac::MacMsg;
 use crate::alias::Alias;
-use crate::bits::crc_ccitt_bytes;
+use crate::bits::{crc_ccitt_bytes, hex};
 
 const MOTOROLA: u8 = 0x90;
 const HARRIS: u8 = 0xa4;
-
-fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
     (0..s.len() / 2).map(|i| u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()).collect()

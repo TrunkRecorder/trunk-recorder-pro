@@ -8,6 +8,7 @@
 //!
 //! `plugin --describe` prints the plugin's [`Manifest`] (one JSON object) and exits.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Deserializer, Serialize};
@@ -28,19 +29,53 @@ pub mod topic {
     pub const CALL_START: &str = "call.start";
     /// A call ended ([`super::CallInfo`]); its files follow in `call.concluded`.
     pub const CALL_END: &str = "call.end";
+    /// A call changed while it runs ([`super::CallInfo`], all of it as it is now): whenever any of
+    /// it does — another radio talking (`sources` gains it), its flags (an emergency, encrypted),
+    /// its patched talkgroups, whether it's recorded, its key or its decryption, a radio's
+    /// position; on a conventional channel, its talkgroup from the air or its tone.
+    pub const CALL_UPDATE: &str = "call.update";
     /// A recorded call's files are on disk ([`super::ConcludedCall`]).
     pub const CALL_CONCLUDED: &str = "call.concluded";
     /// A radio registered, affiliated, … ([`super::UnitEvent`]).
     pub const UNIT: &str = "unit";
     /// Live audio of recording calls ([`super::AudioChunk`]).
     pub const AUDIO: &str = "audio";
+    /// Live voice of recording digital calls as the vocoder frames it was
+    /// made from ([`super::VoiceChunk`]): the same frames, at the same
+    /// moments, as the `audio` topic's PCM.
+    pub const VOICE: &str = "voice";
     /// Every system's state, every few seconds ([`super::Status`]).
     pub const STATUS: &str = "status";
+    /// Every series the recorder measures, as running totals since recording started, every
+    /// 10 s ([`super::Totals`]): node health reports ([`crate::health`]) are made of them. A
+    /// plugin off for a system or site isn't sent its sites', channels' or series; the radios' are.
+    pub const TOTALS: &str = "totals";
     /// A call's tones made a pattern ([`super::TonePatternEvent`]): every page,
     /// alert tone, DTMF string and Morse ID heard, named by the system's signals or not.
     pub const TONE_PATTERN: &str = "tone_pattern";
 
-    pub const ALL: &[&str] = &[CALL_START, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, STATUS, TONE_PATTERN];
+    /// Each line TRP logs, as its console shows it ([`super::LogLine`]): to send on
+    /// elsewhere. A plugin isn't sent its own lines.
+    pub const LOG: &str = "log";
+
+    /// A signal tap's chunks ([`crate::TapChunk`]) come on topic `tap.<id>`, one for each tap
+    /// ([`crate::TAPS`], [`crate::Tap::topic`]): `tap.fm.discriminator`, `tap.voice.air`, ….
+    /// Subscribing turns the tap on, for the systems the plugin is on for.
+    pub const TAP: &str = crate::tap::TAP_TOPIC;
+
+    /// (The taps' topics are [`crate::TAPS`]', not listed here.)
+    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, TOTALS, TONE_PATTERN, LOG];
+
+    /// A call's live media ([`AUDIO`], [`VOICE`]) and the taps' streams: late isn't live, so
+    /// a plugin delayed for the call, or catching up, isn't given it.
+    pub fn is_live(topic: &str) -> bool {
+        topic == AUDIO || topic == VOICE || topic.starts_with(TAP)
+    }
+
+    /// A topic the recorder has: one of [`ALL`], or a tap's.
+    pub fn known(topic: &str) -> bool {
+        ALL.contains(&topic) || crate::Tap::of_topic(topic).is_some()
+    }
 }
 
 /// Audio formats a plugin can ask for ([`Manifest::audio_formats`]). A plugin
@@ -78,6 +113,18 @@ pub struct Manifest {
     /// object); the form repeats it under each system.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_config: Option<Value>,
+    /// Those of its settings ([`Manifest::config`], top-level keys) a system
+    /// may set again for itself (another server for it, say), which it reads
+    /// from [`SystemInfo::settings`]. None (the default): every system has the
+    /// plugin's settings, and a system's card in Setup offers none of them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub system_overrides: Vec<String>,
+    /// Those of its settings for each system ([`Manifest::system_config`],
+    /// top-level keys) a site of a system may set again for itself (an
+    /// uploader's account for that site, say): in [`SiteInfo::config`]. None
+    /// (the default): a system's sites have its settings.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub site_overrides: Vec<String>,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub homepage: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -156,6 +203,8 @@ pub enum HostMessage {
     Hello(Hello),
     #[serde(rename = "call.start")]
     CallStart(CallInfo),
+    #[serde(rename = "call.update")]
+    CallUpdate(CallInfo),
     #[serde(rename = "call.end")]
     CallEnd(CallInfo),
     #[serde(rename = "call.concluded")]
@@ -164,10 +213,19 @@ pub enum HostMessage {
     Unit(UnitEvent),
     #[serde(rename = "audio")]
     Audio(AudioChunk),
+    #[serde(rename = "voice")]
+    Voice(VoiceChunk),
+    /// A piece of a signal tap's stream (topic `tap.<id>`: its `tap` says which).
+    #[serde(rename = "tap")]
+    Tap(crate::TapChunk),
     #[serde(rename = "status")]
     Status(Status),
+    #[serde(rename = "totals")]
+    Totals(Totals),
     #[serde(rename = "tone_pattern")]
     TonePattern(TonePatternEvent),
+    #[serde(rename = "log")]
+    Log(LogLine),
     /// Someone pressed one of the plugin's buttons (`x-actions` in its
     /// settings schema): answer with [`PluginMessage::ActionResult`]. Only
     /// a plugin that has actions is sent one.
@@ -177,6 +235,14 @@ pub enum HostMessage {
     /// plugin with [`Manifest::live_settings`] is sent one; others restart.
     #[serde(rename = "settings")]
     Settings(Hello),
+    /// The answer to a [`PluginMessage::SettingsSave`] (the same `request`): saved, or why not.
+    #[serde(rename = "settings.saved")]
+    SettingsSaved {
+        request: u64,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        message: String,
+    },
     /// The answer to a [`PluginMessage::CallsQuery`] (the same `request`).
     #[serde(rename = "calls")]
     Calls {
@@ -203,9 +269,10 @@ pub struct Hello {
     /// The plugin's settings, as the user entered them (see [`Manifest::config`]);
     /// each system's, with its overrides, are in [`SystemInfo::settings`].
     pub config: Value,
-    /// Every system calls can come from, including conventional channels.
+    /// Every system calls can come from, including conventional channels;
+    /// not those the plugin is turned off for (nothing about them is sent).
     pub systems: Vec<SystemInfo>,
-    /// Where calls are stored.
+    /// Where calls are stored: always a full path, as are the paths of each call's files.
     pub capture_dir: PathBuf,
     /// A folder of the plugin's own that survives restarts and upgrades (queues, state).
     pub data_dir: PathBuf,
@@ -226,12 +293,15 @@ pub struct HostInfo {
 pub struct SystemInfo {
     /// The number events carry for it (`system`) while the recorder runs:
     /// from 0, the trunked systems then the conventional ones (each a
-    /// system of its own here). It can change between runs: know systems by
-    /// `short_name`.
+    /// system of its own here). It changes between runs, as systems are
+    /// added, removed or turned off: for this run only.
     pub index: u16,
-    /// The system's short name: its identity (unique among all the
-    /// recorder's systems), its folder, and what users know it by. Every
-    /// event carries it.
+    /// Its id: the same across runs and renames, never another system's.
+    /// Know a system by it (events carry it as `system_id`).
+    pub id: u32,
+    /// The system's short name: unique among the recorder's systems, its
+    /// folder, and what users know it by (it changes when it's renamed).
+    /// Every event carries it.
     pub short_name: String,
     /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
     pub kind: String,
@@ -258,18 +328,39 @@ pub struct SystemInfo {
     /// null when the user left them empty.
     pub config: Value,
     /// The plugin's own settings ([`Hello::config`]) as they are for this
-    /// system: a system can override some of them (another server, say).
+    /// system: a system can set again those [`Manifest::system_overrides`]
+    /// names (another server, say).
     /// Null: as in `Hello::config`.
     #[serde(skip_serializing_if = "Value::is_null")]
     pub settings: Value,
+}
+
+/// A site, by its id and its name ([`CallRecord::sites`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteRef {
+    pub id: u32,
+    pub name: String,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 /// One site of a [`SystemInfo`].
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SiteInfo {
-    /// What calls and unit events carry as `site`.
+    /// Its id: the same across runs and renames, never another site's (any
+    /// system's). Events carry it as `site_id`.
+    pub id: u32,
+    /// What calls and unit events carry as `site` (it changes when it's renamed).
     pub name: String,
+    /// The plugin's settings for this site ([`SystemInfo::config`] with
+    /// those the site sets again: [`Manifest::site_overrides`]). Null: as
+    /// the system's.
+    #[serde(skip_serializing_if = "Value::is_null")]
+    pub config: Value,
 }
 
 /// Who is licensed on one of a system's frequencies ([`SystemInfo::fcc`]).
@@ -288,14 +379,19 @@ pub struct FccLicense {
 pub struct CallInfo {
     /// Unique while the recorder runs (Trunk Recorder's call_num).
     pub id: u32,
-    /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
+    /// [`SystemInfo::index`]: for this run only.
     pub system: u16,
+    /// [`SystemInfo::id`]: the system's identity.
+    pub system_id: u32,
     pub short_name: String,
     /// The site it is on (its name; a system of one site's is its short
     /// name; empty for a conventional system's call). A call heard on
     /// several sites is told once, by the site that had it first.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site: String,
+    /// That site's [`SiteInfo::id`] (0: none).
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub site_id: u32,
     pub talkgroup: u32,
     /// Conventional P25 / DMR / NXDN: the talkgroup the air named (this
     /// recorder's addition, like `site`). `talkgroup` is what the call is
@@ -336,6 +432,19 @@ pub struct CallInfo {
     /// Talkgroups patched with this one so far, its own included, ascending;
     /// empty when it isn't patched.
     pub patched_talkgroups: Vec<u32>,
+    /// The talkgroups patched with this one (`patched_talkgroups` without its
+    /// own, which `talkgroup_tag` names), each with its name. (Since SDK 0.15.1.)
+    pub patched: Vec<TalkgroupName>,
+}
+
+/// A talkgroup and its name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TalkgroupName {
+    pub talkgroup: u32,
+    /// Its alpha tag, from the system's talkgroups. Empty: none.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub alpha_tag: String,
 }
 
 /// A radio heard on a call, and what its transmission said of itself: P25's
@@ -368,7 +477,7 @@ pub struct ConcludedCall {
     /// The call's key: its files' path relative to the capture folder, without
     /// an extension (`<shortName>/<Y>/<M>/<D>/<tg>-<start>_<freq>`).
     pub path: String,
-    /// [`SystemInfo::index`]: for this run only; the system's identity is `call.short_name`.
+    /// [`SystemInfo::index`]: for this run only; the system's identity is `call.system_id`.
     pub system: u16,
     /// Its call JSON, in Trunk Recorder's format (the `.json` file's contents).
     pub call: CallRecord,
@@ -404,10 +513,21 @@ pub struct CallRecord {
     pub call_num: u64,
     /// The same on every copy of one transmission (a system's sites, each
     /// recording it): `<system>-<talkgroup>-<radio>-<start ms>`, the radio
-    /// the first known to talk (0: none), the start the first copy's. With
-    /// conversation mode on, a call's first transmission names it.
+    /// the first heard talking on the best copy, with half a second of its
+    /// audio (not one that only keyed up; 0: none known), the start the
+    /// first copy's. With conversation mode on, a call's first transmission
+    /// names it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub transmission_id: String,
+    /// Why it ended: `terminator` (its voice channel's, conversation mode
+    /// off: P25, DMR, NXDN), `squelch` (analog, conversation mode off: its
+    /// squelch shut for the transmission gap), `next_transmission` (the next
+    /// one's audio on its channel), `timeout` (nothing heard of it for the
+    /// call timeout), `too_long` (it carries on in the next call),
+    /// `reassigned` (its channel given to another talkgroup, or a
+    /// conventional channel's to another row), `stopped`. Empty: not said.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub end_reason: String,
     /// Hz.
     pub freq: u64,
     /// How far off its channel the voice carrier came in, Hz (the mean over the call).
@@ -454,9 +574,11 @@ pub struct CallRecord {
     /// synchronized (this recorder's addition; absent when the clock was fine).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub clock_off: bool,
-    /// Seconds of audio.
+    /// Seconds of audio, to the nearest second as Trunk Recorder writes it
+    /// (a 0.4 s call says 0): [`CallRecord::audio_ms`] is exact.
     #[serde(serialize_with = "plain")]
     pub call_length: f64,
+    /// Milliseconds of audio (0 in a record from before it).
     pub call_length_ms: i64,
     pub talkgroup: u32,
     /// Conventional P25 / DMR / NXDN: the talkgroup the air named (this
@@ -494,10 +616,22 @@ pub struct CallRecord {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub voice_mode: String,
     pub short_name: String,
+    /// Its system's id ([`SystemInfo::id`]; this recorder's addition): the
+    /// same across renames and runs, unlike `short_name` and `system`. 0: not known.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub system_id: u32,
     /// The site its copy was kept from (this recorder's addition; a system
     /// of one site: its short name; none for a conventional system's).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site: String,
+    /// That site's id ([`SiteInfo::id`]; this recorder's addition). 0: none.
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub site_id: u32,
+    /// Every site of its system it was recorded on (this recorder's addition):
+    /// the one its copy was kept from first, then those whose copies were
+    /// the same call. None for a conventional system's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sites: Vec<SiteRef>,
     /// Every talkgroup patched with this one during the call, its own
     /// included; absent (empty) when it wasn't patched with another.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -528,6 +662,7 @@ impl Default for CallRecord {
         CallRecord {
             call_num: 0,
             transmission_id: String::new(),
+            end_reason: String::new(),
             freq: 0,
             freq_error: 0,
             signal: None,
@@ -570,6 +705,9 @@ impl Default for CallRecord {
             voice_mode: String::new(),
             short_name: String::new(),
             site: String::new(),
+            system_id: 0,
+            site_id: 0,
+            sites: Vec::new(),
             patched_talkgroups: Vec::new(),
             freq_list: Vec::new(),
             error_list: Vec::new(),
@@ -583,6 +721,15 @@ impl Default for CallRecord {
 }
 
 impl CallRecord {
+    /// Its audio, ms: `call_length_ms`, else (a record without it) `call_length`.
+    pub fn audio_ms(&self) -> i64 {
+        Some(self.call_length_ms).filter(|&l| l > 0).unwrap_or((self.call_length * 1000.0).round() as i64)
+    }
+    /// It has audio: not a call kept with none (the recorder's "Keep calls with
+    /// no audio", or an encrypted one), which has nothing to play or upload.
+    pub fn has_audio(&self) -> bool {
+        self.audio_ms() > 0
+    }
     /// Voice frames with bit errors, over the call.
     pub fn error_count(&self) -> u64 {
         self.freq_list.iter().map(|f| f.error_count).sum()
@@ -807,6 +954,8 @@ fn flag<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
 #[serde(default)]
 pub struct TonePatternEvent {
     pub short_name: String,
+    /// [`SystemInfo::id`].
+    pub system_id: u32,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site: String,
     /// The call it's on (its `call_num`).
@@ -830,12 +979,16 @@ pub struct TonePatternEvent {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UnitEvent {
-    /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
+    /// [`SystemInfo::index`]: for this run only.
     pub system: u16,
+    /// [`SystemInfo::id`]: the system's identity.
+    pub system_id: u32,
     pub short_name: String,
-    /// The site whose control channel told it (its name).
+    /// The site whose control channel told it (its name), and its [`SiteInfo::id`].
     #[serde(skip_serializing_if = "String::is_empty")]
     pub site: String,
+    #[serde(skip_serializing_if = "is_zero_u32")]
+    pub site_id: u32,
     /// "registration" | "deregistration" | "affiliation" | "acknowledge" |
     /// "location" | "data_grant" | "answer_request" | "call_alert" |
     /// "emergency_alarm"
@@ -863,8 +1016,10 @@ pub struct UnitEvent {
 #[serde(default)]
 pub struct AudioChunk {
     pub call_id: u32,
-    /// [`SystemInfo::index`]: for this run only; `short_name` is the system's identity.
+    /// [`SystemInfo::index`]: for this run only.
     pub system: u16,
+    /// [`SystemInfo::id`]: the system's identity.
+    pub system_id: u32,
     pub short_name: String,
     pub talkgroup: u32,
     pub sample_rate: u32,
@@ -883,6 +1038,183 @@ impl AudioChunk {
     }
 }
 
+/// A recording digital call's live voice ([`topic::VOICE`]): the vocoder
+/// frames one `audio` chunk's PCM was made from, FEC-corrected, in order,
+/// with who was talking.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct VoiceChunk {
+    pub call_id: u32,
+    /// [`SystemInfo::index`]: for this run only.
+    pub system: u16,
+    /// [`SystemInfo::id`]: the system's identity.
+    pub system_id: u32,
+    pub short_name: String,
+    pub talkgroup: u32,
+    /// Who is talking (0: not known yet), and their name, as a call's `sources` give it.
+    pub unit: u32,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub unit_name: String,
+    /// Of a call decrypted with our keys (only plugins with `shareDecrypted` are given it).
+    pub decrypted: bool,
+    pub frames: Vec<VoiceFrame>,
+}
+
+/// A vocoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Codec {
+    /// IMBE full rate (P25 Phase 1, EDACS ProVoice).
+    Imbe,
+    /// AMBE+2 half rate (P25 Phase 2, DMR, NXDN).
+    Ambe,
+}
+
+impl Codec {
+    pub const ALL: [Codec; 2] = [Codec::Imbe, Codec::Ambe];
+
+    /// As its serde name, series keys and node health reports have it: `imbe`, `ambe`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Codec::Imbe => "imbe",
+            Codec::Ambe => "ambe",
+        }
+    }
+
+    /// Information bits in one of its frames.
+    pub fn bits(self) -> usize {
+        match self {
+            Codec::Imbe => 88,
+            Codec::Ambe => 49,
+        }
+    }
+}
+
+/// What the vocoder made of a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FrameKind {
+    Voice,
+    Repeat,
+    Muted,
+    /// An AMBE erasure frame, a reserved tone ID, or a tone frame on the
+    /// `mbelib` profile: silence.
+    Erasure,
+    /// An AMBE+2 tone frame, played as its tone (ID 255: silence).
+    Tone,
+}
+
+/// One vocoder frame (20 ms) as the recorder decoded it: the `voice` topic's,
+/// and a line of the `voice.frames` signal tap's sidecar. In JSON its `bits` are hex, MSB
+/// first, the last byte zero-padded ([`bits_hex`]).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "FrameJson")]
+pub struct VoiceFrame {
+    pub codec: Codec,
+    /// Information bits (0 / 1), after FEC: [`Codec::bits`] of them.
+    #[serde(serialize_with = "serialize_bits")]
+    pub bits: Vec<u8>,
+    /// IMBE: bit errors corrected in u0 (the Golay word carrying pitch). AMBE: 0.
+    pub e0: u32,
+    /// Bit errors the FEC corrected in the whole frame.
+    pub errs: u32,
+    /// Known lost (a cut LDU); `errs` is then meaningless.
+    pub erased: bool,
+    pub kind: FrameKind,
+    /// AMBE+2: the tone the vocoder played for it, (ID, level): a tone
+    /// frame's, or the one a damaged frame repeated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tone: Option<(u8, u8)>,
+}
+
+impl VoiceFrame {
+    /// Repeated, muted or otherwise not synthesized as sent (a tone frame,
+    /// played as its tone, is as sent).
+    pub fn bad(&self) -> bool {
+        self.erased || !matches!(self.kind, FrameKind::Voice | FrameKind::Tone)
+    }
+
+    /// Frames as JSON lines: one a line, in order (frame k
+    /// covers the call's audio from k × 20 ms).
+    pub fn to_jsonl(frames: &[VoiceFrame]) -> String {
+        frames.iter().map(|f| serde_json::to_string(f).unwrap_or_default() + "\n").collect()
+    }
+
+    /// [`Self::to_jsonl`] back; Err names the line (from 1) that isn't a frame.
+    pub fn from_jsonl(text: &str) -> Result<Vec<VoiceFrame>, String> {
+        text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()).map(|(n, l)| serde_json::from_str(l).map_err(|e| format!("line {}: not a frame ({e})", n + 1))).collect()
+    }
+}
+
+fn serialize_bits<S: serde::Serializer>(bits: &[u8], s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&bits_hex(bits))
+}
+
+/// A [`VoiceFrame`] as JSON has it: its bits as hex, which its codec says how many of to keep.
+#[derive(Deserialize)]
+struct FrameJson {
+    codec: Codec,
+    bits: String,
+    #[serde(default)]
+    e0: u32,
+    #[serde(default)]
+    errs: u32,
+    #[serde(default)]
+    erased: bool,
+    kind: FrameKind,
+    #[serde(default)]
+    tone: Option<(u8, u8)>,
+}
+
+impl TryFrom<FrameJson> for VoiceFrame {
+    type Error = String;
+    fn try_from(f: FrameJson) -> Result<Self, String> {
+        let bits = hex_bits(&f.bits, f.codec.bits()).ok_or_else(|| format!("bits {:?} aren't {} bits of hex", f.bits, f.codec.bits()))?;
+        Ok(VoiceFrame { codec: f.codec, bits, e0: f.e0, errs: f.errs, erased: f.erased, kind: f.kind, tone: f.tone })
+    }
+}
+
+/// Bits (0 / 1), MSB first, as hex (the last byte zero-padded).
+pub fn bits_hex(bits: &[u8]) -> String {
+    use std::fmt::Write;
+    bits.chunks(8).fold(String::with_capacity(bits.len().div_ceil(4)), |mut s, c| {
+        let _ = write!(s, "{:02x}", c.iter().enumerate().fold(0u8, |a, (i, &v)| a | ((v & 1) << (7 - i))));
+        s
+    })
+}
+
+/// [`bits_hex`] back to `n` bits; None when it isn't that many bits of hex.
+pub fn hex_bits(hex: &str, n: usize) -> Option<Vec<u8>> {
+    if hex.len() != n.div_ceil(8) * 2 {
+        return None;
+    }
+    let mut bits = Vec::with_capacity(n);
+    for k in 0..hex.len() / 2 {
+        let b = u8::from_str_radix(hex.get(2 * k..2 * k + 2)?, 16).ok()?;
+        bits.extend((0..8).map(|i| (b >> (7 - i)) & 1));
+    }
+    bits.truncate(n);
+    Some(bits)
+}
+
+/// A line TRP logged ([`topic::LOG`]), at the level its log is set to.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LogLine {
+    /// Unix seconds.
+    pub time: f64,
+    /// `trace`, `debug`, `info`, `warning`, `error` or `fatal`.
+    pub level: String,
+    /// The system it's about (its short name), when it's one's.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub system: String,
+    /// What it says, as the console has it after the time and level (`[clmrn-I]\t12C\tTG: …`).
+    pub text: String,
+    /// The whole line, as the console prints it (without colour):
+    /// `[2026-11-04 14:02:11.123456] (info)   …`.
+    pub line: String,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Status {
@@ -894,22 +1226,25 @@ pub struct Status {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SystemStatus {
-    pub index: u16,
-    pub short_name: String,
-    /// One entry per site: this one's name (a system of one site: its short
-    /// name). `site` below is its number, as the control channel says it.
-    pub site_name: String,
-    /// The control channel being decoded (none: searching).
-    pub control_channel_hz: Option<u64>,
+    /// Which site (one entry per site).
+    #[serde(flatten)]
+    pub scope: SiteScope,
     /// Control channel messages decoded per second.
     pub decode_rate: f64,
     pub active_calls: u32,
     pub recording: u32,
-    /// The system's identity, as far as its control channel has stated it
-    /// (none until it has): P25 NAC, WACN, system ID, RFSS and site; site
-    /// also for SmartNet when its OBT sends one.
+}
+
+/// What a site says it is, as far as its control channel has stated it (a field not stated
+/// left out): P25 its NAC, WACN, System ID, RFSS and site; SmartNet its System ID and site
+/// (when OBT sends it); DMR its colour code, Tier III also its network and site (its System
+/// Identity Code's, as sent); NXDN its RAN, Type-C also its system (`sys_id`) and site. The
+/// recorder's config writes a site lock the same way (`expect`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SiteIdentity {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nac: Option<u32>,
+    pub nac: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wacn: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -918,6 +1253,166 @@ pub struct SystemStatus {
     pub rfss: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub site: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_code: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ran: Option<u8>,
+}
+
+/// One trunked site: which it is, and what its control channel says it is ([`SystemStatus`],
+/// [`Totals::sites`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SiteScope {
+    /// Its system's [`SystemInfo::index`], `id` and `short_name`.
+    pub index: u16,
+    pub system_id: u32,
+    pub short_name: String,
+    /// This site's name (a system of one site: its short name), and its [`SiteInfo::id`].
+    pub site_name: String,
+    pub site_id: u32,
+    /// Its series' key (`sys/<short name>`, or `sys/<short name>/site/<site>`): [`Totals::series`]
+    /// has its control channel under `<key>/cc/…`, its copies of calls under `<key>/calls/…`
+    /// and `<key>/voice/…`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub key: String,
+    /// [`SystemInfo::kind`]: `p25`, `smartnet`, `edacs`, `dmr`, `nxdn`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub protocol: String,
+    /// The control channel being decoded (none: searching).
+    pub control_channel_hz: Option<u64>,
+    /// The radio it's heard on ([`SourceScope::index`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<usize>,
+    /// Its control channel's symbol rate, baud, when it counts the air its blocks account for (`cc/airSym`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol_rate: Option<u32>,
+    /// What its control channel has said it is (none of it until it has).
+    pub identity: SiteIdentity,
+}
+
+/// Every series the recorder measures, as running totals since recording started
+/// ([`topic::TOTALS`]), and what their keys are of. A plugin takes the difference between two to
+/// have a window of its own choosing ([`Totals::since`]); [`crate::health`] makes node health
+/// reports of them. The series are the dashboard's (`docs/developer/plugins/events.md#series`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Totals {
+    /// Unix seconds.
+    pub time: f64,
+    /// When recording started (Unix s): the totals count from here. A later `since` than the
+    /// last message's means recording restarted, and the totals with it.
+    pub since: f64,
+    /// By key (`sys/dcfd/cc/good`, `src/800/dropped`…).
+    pub series: BTreeMap<String, Total>,
+    /// Each trunked site.
+    pub sites: Vec<SiteScope>,
+    /// Each conventional frequency.
+    pub channels: Vec<ChannelScope>,
+    /// Each radio.
+    pub sources: Vec<SourceScope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock: Option<ClockState>,
+}
+
+impl Totals {
+    /// Series `key`'s total (none: never reported).
+    pub fn get(&self, key: &str) -> Option<&Total> {
+        self.series.get(key)
+    }
+
+    /// What `self` counted since `base` (none, or from before a restart of recording: since
+    /// recording started): every series' difference, as [`Total::since`].
+    pub fn since(&self, base: Option<&Totals>) -> Totals {
+        let base = base.filter(|b| b.since == self.since && b.time <= self.time);
+        let series = self.series.iter().map(|(k, t)| (k.clone(), t.since(base.and_then(|b| b.series.get(k))))).collect();
+        Totals { series, ..self.clone() }
+    }
+}
+
+/// One series' running total ([`Totals`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Total {
+    /// A counter: what it counted. A gauge: its value times the seconds it held it, summed.
+    pub sum: f64,
+    /// Seconds: a gauge's, measured; a counter's, in which it counted any.
+    pub s: f64,
+    /// Its value in the latest tick: a gauge's as it is, a counter's a second (none: not reported then).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub now: Option<f64>,
+}
+
+impl Total {
+    /// What it added since `base` (none: everything).
+    pub fn since(&self, base: Option<&Total>) -> Total {
+        let b = base.copied().unwrap_or_default();
+        Total { sum: self.sum - b.sum, s: self.s - b.s, now: self.now }
+    }
+
+    /// A gauge's mean over its seconds (none: under a second of them).
+    pub fn mean(&self) -> Option<f64> {
+        (self.s >= 1.0).then(|| self.sum / self.s)
+    }
+
+    /// A counter's count.
+    pub fn count(&self) -> u64 {
+        self.sum.max(0.0).round() as u64
+    }
+}
+
+/// One conventional frequency ([`Totals::channels`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelScope {
+    /// Its series' key (`sys/<short name>/ch/<Hz>`): `<key>/{open,signal,closed,noise,snr}`, its
+    /// transmissions under `<key>/calls/…`, their frames under `<key>/voice/…`.
+    pub key: String,
+    /// [`SystemInfo::index`] and `short_name`.
+    pub index: u16,
+    pub short_name: String,
+    pub freq_hz: u64,
+    /// `fm`, `am`, `p25`, `dmr`, `nxdn48`, `nxdn96`.
+    pub mode: String,
+    /// Its rows' names, each once.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub names: Vec<String>,
+    /// The code its rows record by, when they share one (`CTCSS 151.4`, `DCS 023N`, `NAC 293`, `CC 1`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    /// The radio it's heard on ([`SourceScope::index`]).
+    pub source: usize,
+}
+
+/// One radio ([`Totals::sources`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SourceScope {
+    /// Its series' key (`src/<label>`): `<key>/{samples,dropped,clipPct,ppm,tune}`.
+    pub key: String,
+    pub index: usize,
+    /// Its label, as Setup shows it.
+    pub name: String,
+    /// `airspy`, `hackrf`, `rtlsdr`, …
+    pub driver: String,
+    /// AutoTune corrects it (`<key>/tune`: the correction on top of the configured ppm).
+    pub auto_tune: bool,
+}
+
+/// How right the recorder's clock is ([`Totals::clock`]).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClockState {
+    /// How it's kept: `ntp`, `gps`, `ptp`, `none` (not synchronized), `unknown` (synchronized,
+    /// by a time service the recorder can't name); none: the operating system doesn't say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync: Option<String>,
+    /// The recorder's clock less the time a P25 system broadcasts (SYNC_BCST, when the system
+    /// marks it valid), ms: the latest heard on any site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_offset_ms: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -1018,6 +1513,18 @@ pub enum PluginMessage {
         #[serde(default)]
         message: String,
     },
+    /// Something that stays true until the plugin says otherwise (a setting to fix, say), shown
+    /// beside its status: a later `status` doesn't replace it. One per `key`: a notice with the
+    /// same key replaces it, and one with no `state` takes it away. The plugin's health is the
+    /// worst of its status and its notices. They go when the plugin stops or restarts.
+    #[serde(rename = "notice")]
+    Notice {
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<State>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        message: String,
+    },
     /// What became of a concluded call (`path`: [`ConcludedCall::path`]).
     #[serde(rename = "call.result")]
     CallResult {
@@ -1048,6 +1555,16 @@ pub enum PluginMessage {
         #[serde(flatten)]
         query: CallsQuery,
     },
+    /// Save some of its own settings, as if typed in on its settings form: each key of
+    /// `settings` replaces that setting (null removes it), the rest stay. TRP writes
+    /// them to the config, shows them on the form at once, and sends them back as `settings`;
+    /// then answers with [`HostMessage::SettingsSaved`]. Refused when it would restart the
+    /// plugin: it has to take settings as it runs ([`Manifest::live_settings`]), run as one copy,
+    /// have no per-system settings, and keep every setting it needs set. For what the plugin learns that the user would otherwise type (names
+    /// for IDs, say: mark those fields `readOnly`) or changes made through it elsewhere. Not
+    /// for state: that goes in its data folder.
+    #[serde(rename = "settings.save")]
+    SettingsSave { request: u64, settings: Map<String, Value> },
     /// How an [`Action`] went: shown by the button that was pressed.
     #[serde(rename = "action.result")]
     ActionResult {
@@ -1204,6 +1721,15 @@ pub mod base64 {
 mod tests {
     use super::*;
 
+    /// A plugin can be off for a system unless it takes every system's
+    /// figures; it offers no system its settings unless it names them.
+    #[test]
+    fn what_a_plugin_lets_systems_do() {
+        let m: Manifest = serde_json::from_str(r#"{"id":"x","system_overrides":["server"]}"#).unwrap();
+        assert_eq!(m.system_overrides, ["server"]);
+        assert!(!serde_json::to_string(&Manifest::default()).unwrap().contains("system_overrides"), "none: left out");
+    }
+
     /// A Trunk Recorder file (flags as booleans, a field this crate doesn't
     /// name) reads; written back, flags are 0/1 as the recorder's own files
     /// have them, levels to a tenth, seconds as written, and the unknown field kept.
@@ -1221,6 +1747,15 @@ mod tests {
         assert!(back.ends_with("\"rec_state_type\":\"STOPPED\"}"), "{back}");
         // Read and written again, it's the same.
         assert_eq!(serde_json::from_str::<CallRecord>(&back).unwrap().to_json(), back);
+    }
+
+    /// A call's audio: exact from `call_length_ms`; a record without it, whole seconds.
+    #[test]
+    fn audio_ms() {
+        let r = |len: f64, ms: i64| CallRecord { call_length: len, call_length_ms: ms, ..Default::default() };
+        assert_eq!((r(0.0, 400).audio_ms(), r(0.0, 400).has_audio()), (400, true), "a 0.4 s call says 0 s");
+        assert_eq!(r(4.0, 0).audio_ms(), 4000);
+        assert!(!r(0.0, 0).has_audio());
     }
 
     #[test]
@@ -1263,15 +1798,37 @@ mod tests {
     }
 
     #[test]
+    fn voice_frames_go_as_json_and_come_back() {
+        let ambe = VoiceFrame { codec: Codec::Ambe, bits: (0..49).map(|i| (i % 3 == 0) as u8).collect(), e0: 0, errs: 2, erased: false, kind: FrameKind::Repeat, tone: None };
+        let imbe = VoiceFrame { codec: Codec::Imbe, bits: (0..88).map(|i| (i % 5 == 1) as u8).collect(), e0: 1, errs: 3, erased: false, kind: FrameKind::Voice, tone: None };
+        let chunk = VoiceChunk { call_id: 7, talkgroup: 101, unit: 1234, frames: vec![ambe.clone(), imbe.clone()], ..Default::default() };
+        let line = serde_json::to_string(&HostMessage::Voice(chunk.clone())).unwrap();
+        assert!(line.contains(r#""type":"voice""#) && line.contains(r#""codec":"ambe","bits":"#) && line.contains(r#""kind":"repeat""#) && !line.contains("tone"), "{line}");
+        let HostMessage::Voice(back) = serde_json::from_str(&line).unwrap() else { panic!("{line}") };
+        assert_eq!(back, chunk);
+        assert!(back.frames[0].bad() && !back.frames[1].bad());
+        // Bits as hex are their codec's count: too few or too many isn't a frame.
+        assert!(serde_json::from_str::<VoiceFrame>(r#"{"codec":"ambe","bits":"00","kind":"voice"}"#).is_err());
+        assert_eq!(hex_bits(&bits_hex(&imbe.bits), 88), Some(imbe.bits.clone()));
+        // A call's frame capture, a line each.
+        assert_eq!(VoiceFrame::from_jsonl(&VoiceFrame::to_jsonl(&[ambe.clone(), imbe.clone()])), Ok(vec![ambe, imbe]));
+        assert!(VoiceFrame::from_jsonl("{}\n").unwrap_err().starts_with("line 1"));
+    }
+
+    #[test]
     fn system_identity_is_there_once_stated() {
         // From a recorder that doesn't send it: none of it.
         let s: SystemStatus = serde_json::from_str(r#"{"index":0,"short_name":"county","decode_rate":39.8}"#).unwrap();
-        assert_eq!((s.nac, s.wacn, s.sys_id, s.rfss, s.site), (None, None, None, None, None));
+        assert_eq!(s.scope.identity, SiteIdentity::default());
         // Nothing stated yet: nothing written.
         let v = serde_json::to_value(&s).unwrap();
-        assert!(["nac", "wacn", "sys_id", "rfss", "site"].iter().all(|k| v.get(k).is_none()), "{v}");
-        let s = SystemStatus { nac: Some(0x3A0), wacn: Some(0xBEE00), sys_id: Some(0x3AB), rfss: Some(1), site: Some(5), ..s };
+        assert_eq!(v["identity"], serde_json::json!({}), "{v}");
+        let identity = SiteIdentity { nac: Some(0x3A0), wacn: Some(0xBEE00), sys_id: Some(0x3AB), rfss: Some(1), site: Some(5), ..Default::default() };
+        let s = SystemStatus { scope: SiteScope { identity, ..s.scope }, ..s };
         let v = serde_json::to_value(&s).unwrap();
-        assert_eq!((v["nac"].as_u64(), v["wacn"].as_u64(), v["site"].as_u64()), (Some(0x3A0), Some(0xBEE00), Some(5)));
+        assert_eq!((v["identity"]["nac"].as_u64(), v["identity"]["sysId"].as_u64(), v["identity"]["site"].as_u64()), (Some(0x3A0), Some(0x3AB), Some(5)));
+        // A DMR site's: its colour code (Tier III: its network and site too).
+        let dmr = serde_json::to_value(SiteIdentity { color_code: Some(1), network: Some(12), site: Some(3), ..Default::default() }).unwrap();
+        assert_eq!(dmr, serde_json::json!({ "colorCode": 1, "network": 12, "site": 3 }));
     }
 }

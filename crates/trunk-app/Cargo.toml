@@ -26,3 +26,7 @@ roxmltree = "0.21.1"
 base64 = "0.23.1"
 zeroize = "1.9.1"
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+
+[target.'cfg(unix)'.dependencies]
+# Who owns a folder that can't be written to, and who the app runs as (`files`).
+libc = "0.2.190"

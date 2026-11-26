@@ -1,8 +1,9 @@
 //! The call store over HTTP: `GET /api/v1/calls`, `/api/v1/calls/{path}` and
-//! `/api/v1/storage`, for interfaces and tools on other machines. They answer
+//! `/api/v1/storage`, for interfaces and tools on other machines (and
+//! `/api/v1/export/{table}`, Setup → Data's CSV files: `crate::data`). They answer
 //! as `callsQuery` does ([`runtime::calls`]: the store, the latest calls
 //! included). Every door that serves the API serves these, with the access
-//! the WebSocket there has.
+//! the WebSocket there has ([`Caller::access`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::json;
 
-use crate::access::Door;
+use crate::access::Caller;
 use trunk_app::protocol::CallsQuery;
 use crate::runtime::{self, Ctx};
 
@@ -25,7 +26,8 @@ pub fn router() -> Router<Arc<Ctx>> {
         Router::new()
             .route("/calls", get(calls))
             .route("/calls/{*path}", get(call))
-            .route("/storage", get(storage)),
+            .route("/storage", get(storage))
+            .route("/export/{table}", get(crate::data::export)),
     )
 }
 
@@ -42,14 +44,14 @@ fn error(code: StatusCode, msg: &str) -> Fail {
     Fail(code, msg.to_string())
 }
 
-/// Why a request may not go on: its door is gone or off, or the store is.
-fn hidden(ctx: &Ctx, door: &Door) -> Option<Response> {
-    crate::server::access_of(ctx, door).is_none().then(|| StatusCode::NOT_FOUND.into_response())
+/// Why a request may not go on: it may do nothing (its door is gone or off), or the store is.
+fn hidden(ctx: &Ctx, caller: &Caller) -> Option<Response> {
+    caller.access(ctx).is_none().then(|| StatusCode::NOT_FOUND.into_response())
 }
 
 /// [`hidden`], or the store is off (503).
-fn refused(ctx: &Ctx, door: &Door) -> Option<Response> {
-    hidden(ctx, door).or_else(|| ctx.db.is_disabled().then(|| error(StatusCode::SERVICE_UNAVAILABLE, "the call store is off").into_response()))
+fn refused(ctx: &Ctx, caller: &Caller) -> Option<Response> {
+    hidden(ctx, caller).or_else(|| ctx.db.is_disabled().then(|| error(StatusCode::SERVICE_UNAVAILABLE, "the call store is off").into_response()))
 }
 
 /// Parameter `name`, trimmed; one that is empty is as if not given.
@@ -96,11 +98,11 @@ async fn read<T: Send + 'static>(ctx: &Arc<Ctx>, f: impl FnOnce(&crate::db::Db) 
 
 async fn calls(
     State(ctx): State<Arc<Ctx>>,
-    Extension(door): Extension<Door>,
+    Extension(caller): Extension<Caller>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     // (With the store off: the recent calls, as callsQuery answers; the page's `error` says so.)
-    if let Some(r) = hidden(&ctx, &door) {
+    if let Some(r) = hidden(&ctx, &caller) {
         return r;
     }
     let q = match query(&q) {
@@ -117,10 +119,10 @@ async fn calls(
 
 async fn call(
     State(ctx): State<Arc<Ctx>>,
-    Extension(door): Extension<Door>,
+    Extension(caller): Extension<Caller>,
     Path(path): Path<String>,
 ) -> Response {
-    if let Some(r) = hidden(&ctx, &door) {
+    if let Some(r) = hidden(&ctx, &caller) {
         return r;
     }
     let path = path.replace('\\', "/");
@@ -139,8 +141,8 @@ async fn call(
     }
 }
 
-async fn storage(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>) -> Response {
-    if let Some(r) = refused(&ctx, &door) {
+async fn storage(State(ctx): State<Arc<Ctx>>, Extension(caller): Extension<Caller>) -> Response {
+    if let Some(r) = refused(&ctx, &caller) {
         return r;
     }
     let (retention_days, commit_seconds) = {
@@ -166,16 +168,12 @@ async fn storage(State(ctx): State<Arc<Ctx>>, Extension(door): Extension<Door>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::access::Door;
     use crate::db::TestDir;
 
     /// `GET path` on a server of `ctx` as `door`: the status and body.
     async fn get_as(ctx: &Arc<Ctx>, door: Door, path: &str) -> (u16, String) {
-        let app = crate::server::api(Router::new())
-            .layer(Extension(door))
-            .with_state(ctx.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}{path}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await });
+        let url = format!("http://{}{path}", crate::server::test_server(ctx, door).await);
         tokio::task::spawn_blocking(move || {
             let agent: ureq::Agent = ureq::Agent::config_builder()
                 .http_status_as_error(false)
@@ -212,7 +210,7 @@ mod tests {
             (Some(0), true, true)
         );
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
+        runtime::index_call(&ctx, None, "ohmarcs/a", &r, true, true);
         ctx.db.flush().unwrap();
         let (code, body) = get(&ctx, "/api/v1/calls?talkgroup=9179").await;
         assert_eq!(code, 200, "not the docs 404: {body}");
@@ -272,7 +270,7 @@ mod tests {
         let dir = TestDir::new("api-v1-empty");
         let ctx = runtime::test_ctx(&dir.join("api-v1-empty-cap"));
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
+        runtime::index_call(&ctx, None, "ohmarcs/a", &r, true, true);
         ctx.db.flush().unwrap();
         for q in [
             "talkgroup=",
@@ -336,7 +334,7 @@ mod tests {
         crate::db::seed_unopenable(&store);
         let ctx = runtime::test_ctx_with_store(&dir.join("cap"), &store);
         let r = crate::db::row::tests::record(9179, 1_700_000_000_000);
-        runtime::index_call(&ctx, "ohmarcs/a", &r, true, true);
+        runtime::index_call(&ctx, None, "ohmarcs/a", &r, true, true);
         let (code, body) = get(&ctx, "/api/v1/calls").await;
         let v = json_of(&body);
         assert_eq!((code, v["entries"].as_array().map(Vec::len)), (200, Some(1)), "{body}");

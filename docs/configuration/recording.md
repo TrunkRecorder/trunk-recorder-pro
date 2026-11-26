@@ -2,7 +2,8 @@
 
 The `recording` object says where calls are saved and which are kept. This page lists its keys, the
 per-system overrides and the `filenameFormat` tokens. For what a recording folder looks like, the
-call JSON, M4A files and the RAM spool, see the [recordings guide](../guides/recordings.md).
+file name editor, the call JSON, M4A files, the archive and the RAM spool, see the
+[recordings guide](../guides/recordings.md).
 
 ```json
 "recording": {
@@ -23,12 +24,12 @@ plugin fails**).
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `captureDir` | | `~/TrunkRecorderPro` | string | The recordings folder. Write an absolute path: `~` isn't expanded, and a relative path is taken from wherever the app was started |
+| `captureDir` | | `~/TrunkRecorderPro` | string | The recordings folder: a full path (`/data/recordings`, `C:\Recordings`), or `~/…` for the home folder. A relative path (`recordings`) won't start: it would mean a different folder to the recorder and to each plugin |
 | `prerollS` | | `1` | number | Seconds of air from before each grant added to the start of a trunked call. The interface allows 0–3 |
 | `maxRecorders` | | `32` | integer | Calls recorded at once, across all trunked systems. The interface allows 1–64 |
 | `callTimeoutS` | | `3` | number | Per system. A call ends this long after its last grant or update came in (or its last audio), s. Trunk Recorder checks once a second, so the same value there ends calls up to 2 s later. The interface allows 1–30 |
-| `conversationMode` | | `true` | bool | Per system (trunked). **Conversations**: a call holds a talkgroup's transmissions until it's quiet for `callTimeoutS`. `false`: each transmission is a call of its own, so on a system with several sites the best copy of each transmission is kept. Setup suggests `false` for a system with several sites. See [multi-site](../guides/multi-site.md#calls-heard-on-several-sites) |
-| `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway |
+| `conversationMode` | | `true` | bool | Per system (trunked and conventional). **Conversations**: a call holds a talkgroup's transmissions until it's quiet for `callTimeoutS`. `false`: each transmission is a call of its own, ended by its voice channel's terminator (P25, DMR, NXDN; analog: its squelch shut for 0.5 s), the next transmission's audio on its channel, or else `callTimeoutS`; so on a system with several sites the best copy of each transmission is kept. Setup suggests `false` for a system with several sites. See [multi-site](../guides/multi-site.md#calls-heard-on-several-sites) |
+| `recordUnknown` | | `true` | bool | Per system. Record talkgroups that aren't in the talkgroup file. Only matters when there is a talkgroup file; a talkgroup patched with a listed one is recorded anyway, and a conventional row with a name of its own counts as listed |
 | `recordEncrypted` | | `false` | bool | Per system. Keep calls flagged encrypted (by the grant or the talkgroup's `Mode`), with their radios, even with no audio. Encrypted transmissions are always left out of the audio, unless decrypted (see [systems.md](systems.md#encryption-keys-keys)). Config only: not in the interface |
 | `recordUnitToUnit` | | `true` | bool | Per system. Record P25 individual calls: unit-to-unit (private) and telephone interconnect |
 | `keepSilentCalls` | | `false` | bool | Per system. Keep calls with no audio (encrypted, or nothing decoded) |
@@ -41,22 +42,16 @@ plugin fails**).
 | `archiveWav` | | `true` | bool | Per system. **Keep .wav**: keep each call's `.wav` once the plugins are done with it. `false`: deleted then (with no plugin, never written) |
 | `archiveM4a` | | `false` | bool | Per system. **Keep .m4a**: keep an `.m4a` of each call. Needs an encoder: see `m4a`. An `.m4a` is still made for a plugin that uploads M4A (OpenMHz, say) whether this is on or not; off, that one is deleted once the plugins are done |
 | `callLog` | | `true` | bool | Per system. **Keep call JSON**: the same, for the call JSON |
-| `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps every file the call has (WAV, M4A, JSON, frames) whatever the three above say (a skip doesn't) |
+| `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps every file the call has (WAV, M4A, JSON) whatever the three above say (a skip doesn't) |
 | `filenameFormat` | | `""` | string | Per system. Folders and file names under `captureDir`. See [File names](#file-names) |
 | `dropDuplicateCalls` | | `true` | bool | Multi-site: a call heard on several sites of one system is saved once, keeping the cleanest copy or the talkgroup's Preferred Site. See [systems.md](systems.md#multi-site) |
 | `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (also `"fixed-point"`; usually sounds most natural), `"enhanced"` or `"mbelib"` (any case; anything else is refused when the config is read) |
-| `captureFrames` | | `false` | bool | Also save each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for diagnosis and `trunk-pro tool revoice` |
+| `taps` | | `[]` | list | Signal taps saved to files: what a voice channel's receiver makes on the way to a call's audio. See [`taps`](#taps) |
 | `m4a` | | see below | object | The M4A encoder for `archiveM4a` and for plugins that upload M4A |
 | `ramSpool` | | see below | object | Keep files only the upload plugins need in RAM instead of `captureDir` |
 
 If `archiveM4a` is on but no `.m4a` could be made (no encoder, or the encode failed), the `.wav` is
-kept in its place: a call whose audio is to be kept never loses all of it. The frames file
-(`captureFrames`) stays when either kind of audio is kept.
-
-Configs from before v0.2.4 with `audioArchive` and `compressWav` are upgraded automatically when
-read: `archiveWav` takes `audioArchive`'s value, and `archiveM4a` is on when both were on (a
-system's own override takes any value it didn't set from the top-level `recording`). The old keys
-are removed on save.
+kept in its place: a call whose audio is to be kept never loses all of it.
 
 When a call flagged encrypted at its grant isn't kept (`recordEncrypted` off), it isn't recorded at
 all, unless its system has [encryption keys](systems.md#encryption-keys-keys). One that turns
@@ -70,7 +65,8 @@ encrypted part-way is kept with its clear transmissions.
 | `bitrateKbps` | | `32` | integer | AAC bitrate, 8–320 kb/s |
 
 Each call is encoded once, and the same `.m4a` serves `archiveM4a` and every plugin. Changing
-`m4a` while recording restarts the plugins.
+`m4a` while recording restarts the plugins with the new encoder; the `.m4a` that `archiveM4a` keeps
+uses it from the next Start.
 
 ### `ramSpool`
 
@@ -90,6 +86,67 @@ deleted right after (see [The archive](../guides/recordings.md#the-archive-whats
   `captureDir`.
 - Its room is shown on the dashboard's **Platform** page, with an event as it fills.
 
+### `taps`
+
+A signal tap is a place part-way through a voice channel's receive chain (after the demodulator,
+after error correction) whose data can be had as it is made: for another decoder, or to see how
+well a channel decodes. Each row of `taps` saves one tap to files. A [plugin](../plugins/README.md)
+that takes a tap asks for it itself (it subscribes to `tap.<id>`), needs no row, and is listed
+beside the rows in **Setup → Recording → Advanced → Signal taps**.
+
+```json
+"recording": {
+  "taps": [
+    { "tap": "fm.discriminator", "systems": [3] },
+    { "tap": "voice.frames" }
+  ]
+}
+```
+
+| Key | Required | Default | Type | Description |
+|---|---|---|---|---|
+| `tap` | ✓ | | string | Which tap (below) |
+| `systems` | | every system | list of numbers | The systems (their `id`s, trunked or conventional) whose channels it's saved from |
+
+| Tap | From | Files | What it is |
+|---|---|---|---|
+| `fm.discriminator` | Analog FM channels | `.wav` + `.jsonl` | The FM demodulator's output before de-emphasis, the voice filters and the CTCSS notch: 16-bit mono at 22,050 Hz, ±5 kHz deviation as half of full scale, while the squelch is open. What `multimon-ng` and its kind decode POCSAG, FLEX and other data from |
+| `voice.air` | Digital voice channels: P25 (Phase 1 and 2), DMR, NXDN, EDACS ProVoice | `.jsonl` | Each voice frame as it came off the air: error-corrected, **not** decrypted (encrypted voice stays encrypted, whether or not the recorder has its key), with its place in the superframe, its bit errors and the encryption (`algid`, `keyid`, `mi`) it is under, as far as the air has said |
+| `voice.frames` | Digital voice channels | `.sdr` + `.jsonl` | Each voice frame the vocoder was given: after error correction and, where the recorder has the key, decryption, with its bit errors and what the vocoder made of it. To hear a transmission through another vocoder (`trunk-pro tool revoice`), or in MimoSDR: the `.sdr` is its call file ([sdr-stream](https://github.com/MimoCAD/sdr-stream)), written for P25 and DMR (NXDN and ProVoice, which the format doesn't cover, have the `.jsonl` alone) |
+| `voice.errors` | Digital voice channels | `.jsonl` | No data, only figures: for each frame vocoded, the bit errors corrected and what the vocoder made of it (`voice`, `repeat`, `muted`, …) |
+
+Each **transmission** on a channel is a stream with files of its own, since a channel is only
+decoded while there is something on it. A stream ends at the air's terminator, when the squelch
+closes, after half a second of nothing, or when the channel is closed; a carrier that never drops
+is cut every 10 minutes. The files are written when the stream ends, beside the system's calls:
+
+```
+<captureDir>/<shortName>/<year>/<month>/<day>/<start>_<freqHz>-tap_<stream>.<tap>.wav
+<captureDir>/<shortName>/<year>/<month>/<day>/<start>_<freqHz>-tap_<stream>.<tap>.jsonl
+```
+
+The `.jsonl` is the stream's sidecar, there for every tap. Its first line describes the stream;
+each line after it is one item of it that something is known about, `at` its place in the stream
+(a sample of the `.wav`, a frame, or a note of a tap with no data):
+
+```json
+{"tap":"voice.air","stream":41,"system":0,"system_id":3,"short_name":"dcfd","freq_hz":854612500.0,"slot":0,"call_id":912,"talkgroup":101,"unit":7001,"voice_mode":"p25","time":1795600000.2,"data":{"kind":"frames","codec":"imbe","frames":[]},"items":36}
+{"at":0,"bits":"a3f0…","n":0,"errs":1,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
+{"at":1,"bits":"7c21…","n":1,"errs":0,"e0":0,"encrypted":true,"algid":132,"keyid":66,"mi":"0102030405060708a9"}
+```
+
+`call_id`, `talkgroup` and `unit` are the call on the channel and who is talking, as soon as the
+stream knew them, left out when it never did; `voice_mode` is what the voice was sent as. A
+frame's `bits` are hex, first bit first, the last byte padded with zeros. A line of `voice.frames`
+is a whole vocoder frame (`codec`, `bits`, `errs`, `e0`, `erased`, `kind`), which is what
+`trunk-pro tool revoice` reads; its first line says `"decrypted":true` when the recorder decrypted
+the voice with your keys. The line and note fields are those of the plugin topic:
+[Plugin events](../developer/plugins/events.md#tapid).
+
+Taps apply at the next **Start**. They aren't a call's files: no plugin uploads them, the archive
+rules (`archiveWav`, …) don't touch them, and nothing deletes them. The IQ a channel is decoded
+from is not a tap: see [Captures](../guides/captures.md).
+
 ## Per-system rules
 
 A trunked or conventional system's own `recording` object can override any rule marked "per system"
@@ -103,7 +160,7 @@ above. A rule left out follows the global `recording`.
 | Key | Type |
 |---|---|
 | `callTimeoutS`, `minCallS`, `maxCallS`, `minTransmissionS`, `digitalLevelDb`, `analogLevelDb` | number |
-| `recordUnknown`, `recordEncrypted`, `recordUnitToUnit`, `keepSilentCalls`, `normalizeAudio`, `archiveWav`, `archiveM4a`, `callLog`, `archiveFilesOnFailure` | bool |
+| `conversationMode`, `recordUnknown`, `recordEncrypted`, `recordUnitToUnit`, `keepSilentCalls`, `normalizeAudio`, `archiveWav`, `archiveM4a`, `callLog`, `archiveFilesOnFailure` | bool |
 | `filenameFormat` | string |
 
 Other keys in a system's `recording` (`captureDir`, `vocoder` and the like) are recorder-wide only;
@@ -121,8 +178,7 @@ With `filenameFormat` empty, calls are saved as Trunk Recorder saves them, in lo
 Month and day aren't zero-padded (`2026/10/4`). `<freq>` is in Hz. `.<slot>` is added for P25
 Phase 2 and DMR calls. With `conversationMode` off, `-call_<call_num>` is added too, as a format's
 names have it: two transmissions of a talkgroup on one channel can begin in the same second. A system's sites share its folder; the call JSON's `site` says which site's
-copy it is. Calls saved by an older version, when each site was a system, stay in each site's old
-folder and are still found.
+copy it is.
 
 Otherwise `filenameFormat` is a path template relative to `captureDir`, with `/` making folders,
 built from Trunk Recorder's tokens. The interface's **Folders and file names** editor shows a preview
@@ -138,24 +194,24 @@ message naming it.
 |---|---|
 | `{short_name}` | The system's short name |
 | `{site}` | The site the call was kept from, by name (a system of one site: its short name; none for a conventional system) |
-| `{sys_num}` | The system's number: 0, 1, 2… for the systems being recorded, trunked first, then conventional (before 0.2.0 a conventional system's was counted down from 65535) |
+| `{sys_num}` | The system's number: 0, 1, 2… for the systems being recorded, trunked first, then conventional |
 | `{talkgroup}`, `{talkgroup_display}` | The talkgroup number |
 | `{talkgroup_ota}` | A conventional P25, DMR or NXDN call's talkgroup as the air named it (its row may file it under another `{talkgroup}`); empty for other calls |
-| `{talkgroup_alpha_tag}` | The talkgroup's alpha tag |
+| `{talkgroup_alpha_tag}` | The talkgroup's alpha tag (`FD_Disp`) |
 | `{talkgroup_description}` | Its description |
 | `{talkgroup_tag}` | Its tag ("Fire Dispatch") |
 | `{talkgroup_group}` | Its category |
 | `{freq}` | The frequency, Hz |
-| `{freq_mhz}` | The frequency, MHz with 4 decimals |
+| `{freq_mhz}` | The frequency, MHz with 4 decimals (`858.4875`) |
 | `{epoch}` | The start time, Unix seconds |
-| `{time:FORMAT}` | The start time in local time, `FORMAT` being strftime's: `%Y %m %d %H %M %S`, `%j`, `%a`, `%b`, `%F`, `%T`, `%z` and so on, `%f` for milliseconds, `%-m` (or `%-d`…) without padding. Or `iso` / `iso_ms` |
+| `{time:FORMAT}` | The start time in local time, `FORMAT` being strftime's: `%Y %m %d %H %M %S`, `%j`, `%a`, `%b`, `%F`, `%T`, `%z` and so on, `%f` for milliseconds, `%-m` (or `%-d`…) without padding. Or `iso` / `iso_ms`. A time format can make folders (`{time:%Y/%m}`) |
 | `{ztime:FORMAT}` | The same in UTC (`iso` ends in `Z`) |
 | `{call_num}` | The call's number |
 | `{tdma_slot}` | The slot (Phase 2, DMR); empty when the call has none |
 | `{system_type}` | The kind of system: `p25`, `smartnet`, `dmr`, `nxdn`, `edacs` or `conventional` |
 | `{voice_mode}` | What the call's voice was: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm` or `am` |
 | `{nac}` | A P25 call's NAC, three hex digits (`293`); empty for other calls |
-| `{color_code}` | DMR colour code |
+| `{color_code}` | A DMR call's colour code; −1 otherwise |
 | `{ran}` | An NXDN call's RAN; −1 otherwise |
 | `{source_num}`, `{recorder_num}` | Which source and recorder |
 | `{audio_type}` | `analog`, `digital` or `digital_tdma` (the call JSON's `audio_type`, space made `_`) |

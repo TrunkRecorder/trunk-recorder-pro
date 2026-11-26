@@ -53,7 +53,7 @@ lists the differences.
 
 - **RTL-SDR dongles** work out of the box on every platform. Trunk Recorder Pro drives them
   itself (no `librtlsdr`), which works for dongles with an **R820T, R828D or E4000** tuner. That is
-  nearly every dongle sold today, including the RTL-SDR Blog V3 and V4, and older E4000 ones.
+  nearly every dongle sold today, including the RTL-SDR Blog V3, V4 and V4L, and older E4000 ones.
 - **HackRF One** works out of the box too (firmware 2021.03 or newer), also in Docker.
 - **Older RTL-SDRs** with an FC0012, FC0013 or FC2580 tuner, **USRPs**, **Airspy R2 / Mini**
   and anything with a **SoapySDR** module (SDRplay, LimeSDR, ...) work too, once you have
@@ -67,7 +67,7 @@ one slice, one dongle is enough. [Radios](../guides/radios.md) explains how to p
 ### A computer
 
 Trunk Recorder Pro is light. On a Raspberry Pi 5 recording a P25 system from one RTL-SDR it used
-about 5 % of one CPU core and 56 MB of memory (see [Performance](../performance.md) for how that
+about 5 % of one CPU core and 56 MB of memory (see [Performance](../developer/performance.md) for how that
 was measured). Any reasonably recent computer will do; a Raspberry Pi 5 is plenty for a typical
 system.
 
@@ -101,7 +101,7 @@ You need:
 - **Rust 1.99 or newer** (the `rust-version` in `Cargo.toml`), from [rustup](https://rustup.rs).
 - **Node.js 20 or newer** for the web interface (the release builds use Node 22).
 
-Since 0.2.0 the interface runs the recorder's own rules as WebAssembly, so the WebAssembly engine is
+The interface runs the recorder's own rules as WebAssembly, so the WebAssembly engine is
 built first, with the WebAssembly target and `wasm-bindgen-cli` at the version pinned in `Cargo.lock`
 (0.2.129 at the time of writing):
 

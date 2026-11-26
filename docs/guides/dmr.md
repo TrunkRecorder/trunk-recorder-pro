@@ -1,7 +1,7 @@
 # Trunked DMR
 
 This page explains how Trunk Recorder Pro records trunked DMR sites: Motorola Capacity Plus,
-Capacity Max and Connect Plus, and ETSI Tier III. It covers what to list, colour codes, slots,
+Capacity Max and Connect Plus, ETSI Tier III, and [Hytera XPT](#hytera-xpt). It covers what to list, colour codes, slots,
 how channel numbers are learned, and restricted-access systems. Every key is listed in the
 [trunked systems reference](../configuration/systems.md#dmr). Conventional DMR channels are
 covered in [Conventional channels](conventional.md).
@@ -17,6 +17,8 @@ The trunked flavours differ in how a call gets its channel:
 - **Capacity Plus** (and Linked Capacity Plus) has no control channel and no grants. Idle radios
   sit on a *rest channel*, which moves from repeater to repeater. A call starts on the rest
   channel and the rest channel moves on.
+- **Hytera XPT** shares home/free repeaters without a dedicated control channel.
+  See [Hytera XPT](#hytera-xpt).
 - **Capacity Max, Connect Plus and Tier III** have a control channel that grants calls to a
   *logical channel number* (LCN), as P25 does.
 
@@ -32,10 +34,15 @@ In **Setup** → **Systems**, **Add a system** and set **Type** to **DMR (trunke
 
 - **Site frequencies, MHz** (`controlChannelsHz`): for Capacity Plus, **every repeater** of the
   site. For the others, the control channel(s).
-- **Voice frequencies, MHz** (`dmrChannelsHz`): for Tier III, Capacity Max and Connect Plus, the
-  site's voice frequencies. This is Trunk Recorder's `channels`.
+- **Watched frequencies, MHz** (`dmrChannelsHz`): for Tier III, Capacity Max and Connect Plus,
+  voice frequencies listened to all the time, as the site frequencies are. A call on one is found
+  by its own link control, and a grant naming a channel the table doesn't have is learned from it.
+  This is Trunk Recorder's `channels`. Each must be inside a source.
+- **Voice channels, MHz** (`voiceChannelsHz`): optional. The radios are placed over these, and
+  over the channel table's frequencies, but nothing listens to one until a grant names it. Use it
+  to place a radio for a site's voice channels without watching them.
 - **Colour code** (`colorCode`): leave empty ("auto") to take the control channel's.
-- **Channel table (optional)** (`lcnTableHz`): channel numbers you already know, as
+- **Channel table** (`lcnTableHz`): channel numbers you already know, as
   `101=452.275, 102=452.300`. This is Trunk Recorder's `lcnTable`. Leave it empty to learn them.
 
 In the config file (frequencies in Hz):
@@ -79,14 +86,22 @@ channel and slot. The recorder turns the channel number into a frequency from, i
    (some Tier III systems);
 3. what it has learned.
 
+**System code.** Tier III and Capacity Max control channels send a 16-bit System Identity Code
+(in C_ALOHA and C_BCAST). Its model (Tiny, Small, Large or Huge) sets how the rest splits into a
+network and a site, which become the site's identity beside its colour code: a site can be locked
+to them with `expect` (`{ "network": 12, "site": 4 }`). The Decode page's line under the graphs
+shows them with the code, its model and which category of radio may use the site, for example
+`B013`, Large, network 12, site 4, category A+B. The log notes it when first heard and whenever it
+changes.
+
 **Learning a channel.** When a grant names a channel it doesn't know, the recorder notes the
 talkgroup and slot and waits up to 4 seconds. If that talkgroup's link control then shows up on
 the same slot of one of the watched voice frequencies, that frequency is the channel. The log
 says so ("Channel 101 is 452.27500 MHz (talkgroup 5 granted there came up on it)"). Learning
 only works for frequencies you've listed, so list them all.
 
-Learned channels are saved to `<shortName>.bandplan` in the folder the config file is in, and
-loaded on the next start, so a known channel is followed from the first grant.
+Learned channels are kept in the recorder's store (for each site) and loaded on the next start, so
+a known channel is followed from the first grant.
 
 **Slots.** Each slot records its own call. File names end in `.0` or `.1`, and the call JSON has
 `tdma_slot` and `color_code`.
@@ -94,6 +109,57 @@ loaded on the next start, so a known channel is followed from the first grant.
 **Private calls.** A slot's link control says whether the call is to a group or to one radio.
 Radio-to-radio calls are recorded as unit-to-unit calls (on by default; **Unit-to-unit calls**
 under **Call rules**).
+
+## Hytera XPT
+
+XPT is received only: no transmitter, registration, affiliation or decryption is implemented.
+Select **DMR (trunked)**. XPT uses the existing 4800-baud DMR receiver,
+burst framing, FEC, two-slot transport, AMBE+2 decoder and recording pool.
+
+XPT is set up as Capacity Plus is: there is no dedicated control
+channel, so list every repeater of the site and give the recorder SDR coverage
+of all of them. A repeater is a physical carrier with two slots; its **LCN
+(repeater number, from 1) is not its logical slot number (LSN)**:
+`LSN = 2 * (LCN - 1) + slot`, where the displayed slot is 1 or 2.
+
+Example site settings within a system with `"type": "dmr"`:
+
+```json
+{
+  "controlChannelsHz": [451000000],
+  "dmrChannelsHz": [451012500],
+  "lcnTableHz": {"1": 451000000, "2": 451012500}
+}
+```
+
+`controlChannelsHz` and `dmrChannelsHz` together are the watched repeaters;
+which one is listed as the control channel doesn't matter. `lcnTableHz` gives
+repeater numbers; a repeater left out is learned when a call setup for it is
+followed by that call's voice on a listed frequency. **Do not enter logical
+slot numbers as repeater numbers.** Nothing is learned from status target
+hints, because private-target hashes are not unique IDs.
+
+Hytera permits different colour codes on the repeaters of one site. Leave
+`colorCode` empty in that case: once XPT is identified, every listed frequency
+is taken as the site's, whatever its code. A `colorCode` that is set still
+filters every carrier. Do not put unrelated systems or different sites in one
+site configuration; co-channel sites with identical colour codes cannot be
+separated by the implemented signalling.
+
+Both slots and several repeaters are decoded at the same time; the recording
+pool and source bandwidth decide how many calls. Calls are opened and
+refreshed from voice LC on their actual carrier and slot, so a target hash, a
+data preamble or an unconfirmed setup is never recorded as a call.
+
+The dashboard shows an XPT site as it shows Capacity Plus: the variant (Hytera XPT), the rest
+channel in the line beside it (`rest LSN n (MHz)`), and each carrier's slots with their calls.
+The free repeater's frequency carries the **rest** chip. Every
+repeater with a free slot sends status, so the chip is on the free
+repeater when its frequency is known, else on the one taken first while it keeps
+sending. The message log has the deduplicated status lines.
+
+What is decoded, what has been checked on real captures and what is still unverified is in
+[Hytera XPT: protocol notes](../developer/protocols/xpt.md).
 
 ## Colour codes
 
@@ -116,9 +182,38 @@ alone. Nothing to configure. The dashboard marks the site **keyed**.
 ## Encryption
 
 Encrypted transmissions (the link control's privacy bit, or a privacy header) are marked and left
-out of the audio. A call that was all encrypted is kept, without audio, only when
-`recordEncrypted` is `true` in the config file; there is no switch for it in Setup. The recorder
+out of the audio. A call that was all encrypted is kept, without audio, when
+`recordEncrypted` is `true` in the config file (there is no switch for it in Setup); a call the
+grant didn't mark encrypted is also kept when **Calls with no audio** is on. The recorder
 can't decrypt anything.
+
+## Over-the-air radio names
+
+DMR talker aliases are decoded from embedded link control on trunked and
+conventional channels. Supported forms are standard FID `0x00` and Hytera FID
+`0x68` (FLCO `0x04`–`0x07`), and Motorola FID `0x10` (FLCO `0x14`–`0x17`).
+The four encodings are 7-bit ASCII, ISO-8859-1, UTF-8 and UTF-16BE. Lengths
+are code units, not displayed characters; multibyte characters and UTF-16
+surrogate pairs may cross fragments.
+
+Complete, valid aliases with fresh voice LC identifying the radio use the
+existing learned-radio-name store and name-priority settings. Assembly is
+independent for each carrier and slot. Missing/out-of-order/conflicting blocks,
+new headers, source/talkgroup changes, matching voice termination, protected LC
+and four-second timeouts discard incomplete state. An alias cannot establish
+a call's identity or change its encryption state.
+
+`tool dmr` emits `alias` JSON records with text, format, declared/received code
+units and `complete` (its `lc` records name the radio). Valid partial Unicode
+prefixes are shown without replacement characters; partial or unattributed
+results never overwrite saved radio names. For example, the supplied Hytera
+capture declares 13 UTF-16 units but only supplies six (`Hytera`) before its
+alias header repeats. This remains a partial diagnostic, not a learned name.
+
+No alias is invented when the feature is disabled or fragments are absent.
+Clear alias LC can be decoded even when audio is encrypted; protected/encrypted
+LC itself is not decrypted. Protocol layouts follow ETSI TS 102 361-2 V2.5.1
+§§7.1.1.4–5 and 7.2.18–19.
 
 ## Several sites
 
@@ -132,7 +227,9 @@ system's **Sites** (**Add site**) so a call heard on both is saved once:
             { "name": "south", "controlChannelsHz": [452525000] }] }
 ```
 
-There is no site lock for DMR; colour codes keep sites apart. See
+There is no **Site lock** field in Setup for DMR; colour codes keep sites apart. On a Tier III or
+Capacity Max site you can also lock to its network and site by hand in the config (`expect`,
+above). See
 [Several systems and sites](multi-site.md).
 
 ## What the dashboard shows
@@ -181,3 +278,16 @@ that the other frequencies have been added.
 
 **Calls from another system.** Set **Colour code** to the site's, so a neighbour on a shared
 frequency is ignored.
+
+
+## GPS positions
+
+- **GPS sent with voice** (standard DMR and Hytera, XPT included): the radio's position is kept on its entry in the
+  call JSON (`srcList[].lat`, `lon`), as a P25 radio's is. There's nothing to set.
+- **Hytera location reports sent as data** (as text, or compressed): add the data carrier to the site's **Watched
+  frequencies** (or as a conventional DMR channel). A report is a position event. It's kept on a call the radio is
+  on, else reported with talkgroup 0, and makes no recording of its own.
+- **Compressed reports** are experimental: only the north/west form seen so far is read. Others are kept raw.
+- **Hytera registration and offline messages** show as registrations in the log.
+
+See [DMR GPS and data](../developer/protocols/dmr-gps.md) for the formats and their sources.

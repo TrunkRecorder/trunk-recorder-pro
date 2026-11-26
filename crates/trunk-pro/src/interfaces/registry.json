@@ -36,39 +36,102 @@
       ]
     },
     {
+      "id": "trunk-classic",
+      "name": "Trunk Classic",
+      "description": "A classic text-mode trunk tracker view: each site's control channel, the channels in use, talkgroups, radios and their affiliations, calls, neighboring sites, patches and the control channel's messages as they come.",
+      "repository": "https://github.com/taclane/trunk-classic",
+      "license": "MIT",
+      "tier": "community",
+      "version": "0.2.3",
+      "api": 1,
+      "access": "listen",
+      "tag": "v0.2.3",
+      "commit": "d07d6659dd78dc0f395bee4c0d1c5c74dc6ef565",
+      "asset": {
+        "url": "https://github.com/taclane/trunk-classic/releases/download/v0.2.3/trunk-classic-0.2.3.zip",
+        "sha256": "5fb1470d8949a2b132306d81645ecdcef0ca430aa9c48ca04e68d0e1c1b727d0"
+      },
+      "screenshots": [
+        {
+          "url": "https://github.com/taclane/trunk-classic/releases/download/v0.2.3/trunk-classic-0.2.3-main.png",
+          "sha256": "088a149618098795a86a689184d60c3a870597b670c4374a91b942849367dbdb",
+          "caption": "Channels, the control channel's messages, and the talkgroups heard"
+        },
+        {
+          "url": "https://github.com/taclane/trunk-classic/releases/download/v0.2.3/trunk-classic-0.2.3-users.png",
+          "sha256": "1c52e12cf437c1512b5e2bb6bcb6c17694d36e676dec667827617212ffac6d5c",
+          "caption": "Radios: their affiliations, registrations and airtime, with the column picker open"
+        },
+        {
+          "url": "https://github.com/taclane/trunk-classic/releases/download/v0.2.3/trunk-classic-0.2.3-phone.png",
+          "sha256": "cff99ecf123b4af23a7ae84fcc894a42e93905500c7857f06aaeccd85aa19c76",
+          "caption": "At phone width"
+        }
+      ]
+    },
+    {
+      "id": "trunk-rain",
+      "name": "Vocoder Rain",
+      "description": "Live digital voice as digital rain: each 20 ms vocoder frame falls as a streak of its own bits, tagged with its talkgroup and talker, over a faint layer of the control channel's messages. A novelty.",
+      "repository": "https://github.com/taclane/trunk-rain",
+      "license": "MIT",
+      "tier": "community",
+      "version": "0.2.0",
+      "api": 1,
+      "access": "listen",
+      "tag": "v0.2.0",
+      "commit": "69503a717d7b0c1dae1cdc6d1340dabe9030ff21",
+      "asset": {
+        "url": "https://github.com/taclane/trunk-rain/releases/download/v0.2.0/trunk-rain-0.2.0.zip",
+        "sha256": "3fd22bbb63f51fb934695264a43d85297443e9f2252fd9dd63e843f3e8434bda"
+      },
+      "screenshots": [
+        {
+          "url": "https://github.com/taclane/trunk-rain/releases/download/v0.2.0/trunk-rain-0.2.0-main.png",
+          "sha256": "2d96e4a9218b6e43d885ad4ee9bbfa7ecba0656bd274fe19ab0a42f758789ef1",
+          "caption": "Each streak is a talker's vocoder frames in hex, bright at the head and dimming behind; damaged frames fall in red, tags name the talkgroup and the radio, and the control channel is a faint layer behind"
+        },
+        {
+          "url": "https://github.com/taclane/trunk-rain/releases/download/v0.2.0/trunk-rain-0.2.0-kana.png",
+          "sha256": "592ea1e6e4239d07ab09639cc1a674854f9ad4850662aa12c6afa12606c0efb2",
+          "caption": "Mirrored kana, digits and symbols, coloured by talkgroup, with the control channel a little brighter"
+        }
+      ]
+    },
+    {
       "id": "trunk-tris",
       "name": "Trunk-tris",
       "description": "A relaxing game of Tetris for each radio system, played by the computer, its pieces made by the control channel: grants, affiliations and registrations. NES or Game Boy look, music, high scores.",
       "repository": "https://github.com/TrunkRecorder/trunk-tris",
       "license": "MIT",
       "tier": "official",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "api": 1,
       "access": "listen",
-      "tag": "v0.3.0",
-      "commit": "ea0740fc5261da2ce13e7c585198031ece3132f3",
+      "tag": "v0.4.0",
+      "commit": "03a43d59d5197fe7477f26cbd937c6bd91dd8c44",
       "asset": {
-        "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0.zip",
-        "sha256": "543e3802e7b770e3c9442594677fe5f6945e9594d1b3ac06134cfc38bb9e9c3e"
+        "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.4.0/trunk-tris-0.4.0.zip",
+        "sha256": "36121eeb40faf952e89c32ab60bab91e645ced31591425cb71773cf3468f37a3"
       },
       "screenshots": [
         {
-          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0-main.png",
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.4.0/trunk-tris-0.4.0-main.png",
           "sha256": "f98f6162cffd803008e5c8d13d9281eddecd4b958906aae0d4a72e9df60130f7",
           "caption": "Two systems' games side by side, each piece made by a message on that system's control channel"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0-gameboy.png",
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.4.0/trunk-tris-0.4.0-gameboy.png",
           "sha256": "13150c575dc9ada8453bb197667e1af6554c771db37bfda1cf6789ee44cd7535",
           "caption": "The Game Boy look: the LCD's dot matrix, its shadows and its slow pixels, in the green of the first Game Boy"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0-four.png",
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.4.0/trunk-tris-0.4.0-four.png",
           "sha256": "3f564727a0756b173e4c1018eb409198d80a47590d243fe05fed344c76d658b1",
           "caption": "As many games as the screen fits; with more systems than that, they take turns"
         },
         {
-          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.3.0/trunk-tris-0.3.0-scores.png",
+          "url": "https://github.com/TrunkRecorder/trunk-tris/releases/download/v0.4.0/trunk-tris-0.4.0-scores.png",
           "sha256": "0f321816597603fd2b7aa7d4d86de68d09bedbe07fe87395f1c2594e30b87177",
           "caption": "Game over, and one high score table for every system"
         }

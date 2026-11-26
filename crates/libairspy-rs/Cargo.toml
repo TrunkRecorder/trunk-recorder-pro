@@ -1,0 +1,19 @@
+[package]
+name = "libairspy-rs"
+version = "0.2.1"
+# Trunk Recorder Pro's fork: what the C library does and the port didn't,
+# and a way to take samples on the caller's own thread. See README.md.
+edition = "2024"
+rust-version = "1.95"
+description = "Pure-Rust port of libairspy — Airspy R2/Mini USB driver, no C library required."
+# The driver matches upstream libairspy's BSD-3-Clause; the IQ converters are
+# ported from the last all-MIT revision of airspyone_host. See NOTICE.
+license = "BSD-3-Clause AND MIT"
+repository = "https://github.com/jasonherald/libairspy-rs"
+keywords = ["sdr", "airspy", "radio", "iq", "usb"]
+categories = ["hardware-support", "science", "embedded"]
+
+[dependencies]
+nusb = "0.2.7"
+thiserror = "2"
+log = "0.4"

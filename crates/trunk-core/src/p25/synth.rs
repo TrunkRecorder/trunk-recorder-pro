@@ -13,7 +13,7 @@ use num_complex::Complex32;
 use super::crypt::{next_mi, Algorithm, Keystream, Phase};
 use super::fec::{golay24_encode, hamming1063_encode, rs_encode};
 use super::frame::{encode_nid, frame_dibits, HDU, LDU1, LDU2, SYNC_BITS, TDU};
-use super::phase2::{crc12, duid_codeword, xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, BURST_FACCH_S, BURST_SACCH_S, SLOT_DIBITS};
+use super::phase2::{crc12, duid_codeword, xor_mask, Packet, BURST_2V, BURST_4V, BURST_DIBITS, BURST_FACCH_S, BURST_SACCH_S, SLOT_DIBITS, VCW_AT_2V, VCW_AT_4V, VCW_DIBITS};
 use super::voice::{bytes_to_hexbits, imbe_bits_to_params, imbe_header_encode, EncryptionSync};
 use crate::ambe::encode_vcw;
 use crate::dsp::c4fm::SYMBOL_RATE;
@@ -284,9 +284,9 @@ impl Tx2 {
                     })
                     .collect();
                 let mut x = [0u8; BURST_DIBITS];
-                let at: &[usize] = if burst < 4 { &[11, 48, 96, 133] } else { &[11, 48] };
+                let at: &[usize] = if burst < 4 { &VCW_AT_4V } else { &VCW_AT_2V };
                 for (f, &a) in frames.iter().zip(at) {
-                    x[a..a + 36].copy_from_slice(&encode_vcw(f));
+                    x[a..a + VCW_DIBITS].copy_from_slice(&encode_vcw(f));
                 }
                 let mut put_hexbit = |at: usize, h: u8| {
                     x[at..at + 3].copy_from_slice(&[h >> 4 & 3, h >> 2 & 3, h & 3]);
@@ -388,6 +388,8 @@ mod tests {
     use crate::p25::crypt::{Keyring, ALGID_ADP, ALGID_AES_128, ALGID_AES_256, ALGID_DES_OFB, ALGID_TDES};
     use crate::p25::frame::{decode_nid, Frame};
     use crate::p25::voice::{decode_hdu, decode_ldu1_lc, decode_ldu2_es, imbe_params_to_bits, ldu_imbe};
+    use crate::trunk::frames::Codec;
+    use crate::trunk::taps::{AirFrame, Tap, TapData, TapSet};
     use crate::trunk::voice::{build, CipherId, TrackerOut, VoiceKind, VoiceSpec};
 
     /// A frame's dibits as the framer hands it on (op25's raw body).
@@ -444,11 +446,18 @@ mod tests {
         wrong_key: usize,
         /// The audio frames' bits and erasure flags.
         voice: Vec<([u8; 88], bool)>,
+        /// The air tap's frames, each with its note.
+        air: Vec<(Vec<u8>, AirFrame)>,
     }
 
     /// `frames` through the Phase 1 voice decoder (C4FM receivers, framer,
     /// tracker) at 48 kHz, with `keys`, and Gaussian noise of `sigma`.
     fn hear(frames: &[Vec<u8>], keys: Option<Keyring>, sigma: f32) -> Heard {
+        hear_tapped(frames, keys, sigma, TapSet::NONE)
+    }
+
+    /// [`hear`], with `taps` on.
+    fn hear_tapped(frames: &[Vec<u8>], keys: Option<Keyring>, sigma: f32, taps: TapSet) -> Heard {
         // Random symbols around it: the receivers need all four levels to
         // set their thresholds, and time to flush.
         let mut x = 5u32;
@@ -480,19 +489,25 @@ mod tests {
             analog: Default::default(),
             ignore_hz: Vec::new(),
             keys: keys.map(Arc::new),
+            taps,
         });
         let mut out = Vec::new();
         for c in iq.chunks(4800) {
             v.push(c, &mut out);
         }
         v.flush(&mut out);
-        let mut h = Heard { cipher: Vec::new(), decrypted: 0, wrong_key: 0, voice: Vec::new() };
+        let mut h = Heard { cipher: Vec::new(), decrypted: 0, wrong_key: 0, voice: Vec::new(), air: Vec::new() };
         for o in out {
             match o.out {
                 TrackerOut::Cipher(c) => h.cipher.push(c),
                 TrackerOut::Decrypted => h.decrypted += 1,
                 TrackerOut::WrongKey(_) => h.wrong_key += 1,
                 TrackerOut::Audio(_, f) => h.voice.push((f.bits.try_into().unwrap(), f.erased)),
+                TrackerOut::Tap(p) => {
+                    assert_eq!(p.tap, Tap::VoiceAir);
+                    let TapData::Frames { codec: Codec::Imbe, frames } = p.data else { panic!("not IMBE frames") };
+                    h.air.push((frames[0].clone(), p.notes[0].get().unwrap()));
+                }
                 _ => {}
             }
         }
@@ -521,6 +536,34 @@ mod tests {
                 assert!(!erased && *bits == t.voice[i], "{algid:#x}: frame {i} isn't the clear voice");
             }
         }
+    }
+
+    /// The air tap: every voice frame as it was sent — encrypted ones still encrypted, key or
+    /// none — each with its place in the superframe and the sync it's under. Off, nothing.
+    #[test]
+    fn the_air_tap_gives_each_frame_as_it_was_sent() {
+        let key = vec![9; 32];
+        let t = tx(Some((es(ALGID_AES_256, 0x0042), key.clone())), 2);
+        assert!(hear(&t.frames(), None, 0.0).air.is_empty(), "off");
+        for keys in [None, Some(keyring(ALGID_AES_256, 0x0042, &key))] {
+            let decrypts = keys.is_some();
+            let h = hear_tapped(&t.frames(), keys, 0.0, TapSet::of([Tap::VoiceAir]));
+            assert_eq!(h.voice.len(), if decrypts { 36 } else { 0 });
+            assert_eq!(h.air.len(), 36);
+            for (i, (bits, note)) in h.air.iter().enumerate() {
+                assert_eq!(note.n, Some((i % 18) as u8));
+                assert_eq!((note.errs, note.erased, note.encrypted), (0, false, Some(true)), "frame {i}");
+                assert_eq!((note.algid, note.keyid), (Some(ALGID_AES_256), Some(0x0042)));
+                assert_eq!(note.mi.as_ref().map(String::len), Some(18));
+                assert!(bits[..] != t.voice[i][..], "frame {i} is as sent: encrypted");
+            }
+            assert_ne!(h.air[0].1.mi, h.air[18].1.mi, "each superframe under its own MI");
+        }
+        // Clear voice: the bits that were sent, and said to be clear.
+        let t = tx(None, 1);
+        let h = hear_tapped(&t.frames(), None, 0.0, TapSet::of([Tap::VoiceAir]));
+        assert_eq!(h.air.len(), 18);
+        assert!(h.air.iter().zip(&t.voice).all(|((bits, note), v)| bits[..] == v[..] && note.encrypted == Some(false)));
     }
 
     /// The wrong key decrypts to noise, found out within the first

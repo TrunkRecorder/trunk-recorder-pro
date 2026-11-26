@@ -7,12 +7,12 @@ work differently here.
 ## Running the import
 
 1. Open the import, either way:
-   - On first run, the setup guide's welcome screen has **I have a Trunk Recorder config**.
-   - Any time later: **Setup** → **Systems** → **Import Trunk Recorder config…**.
+   - On first run, the setup guide's welcome screen has **Import a Trunk Recorder config**.
+   - Any time later: **Setup** → **Systems** → **Import…**.
 2. **Choose config.** In the desktop app you browse the recorder's computer: open the folder
    Trunk Recorder runs from, and when it holds a `config.json`, press **Use it** (or click any
-   `.json` file). **Or upload a config.json** picks one from the computer your browser is on
-   instead. In the browser version, press **Choose config.json…**.
+   `.json` file). **Or upload a file…** picks one from the computer your browser is on
+   instead. In the browser version, press **Choose a file…**.
 3. **Review.** "Here's what comes over" lists the radios, systems, conventional channels, the
    recordings folder and any uploaders, with anything that needs attention marked:
    - When the desktop app reads `config.json` from disk, it also reads each system's
@@ -46,6 +46,7 @@ The importer reads Trunk Recorder's keys and writes this app's. A key not listed
 | Trunk Recorder | Trunk Recorder Pro |
 |---|---|
 | `driver: "osmosdr"`, `device: "rtl=…"` | `rtlsdr` source. A serial becomes `serial`; a device index (`rtl=0`) becomes `""`, the first free dongle. `buflen=` → `bufLen`, `buffers=` → `buffers` (the defaults changed to 16 KiB × 128, so you rarely need them). A `rate` over 3.2 MSPS becomes 2.4 MSPS |
+| `device` containing `hydrasdr` | `hydrasdr` source, set as an Airspy's are below. A rate it can't do becomes 5 MSPS |
 | `device` containing `airspy` | `airspy` source. The serial from `airspy=0x…`; `bias=1` → `biasTee`. `lnaGain`, `mixGain`, `ifGain` / `vgaGain` (or `gainSettings` LNA / MIX / IF) → manual mode steps; otherwise `gain` → the linearity step (0–21). A rate the Airspy can't do becomes 6 MSPS |
 | `device` containing `bladerf` (`bladerf=0`, `bladerf=<serial>`, `numchan=1,feature=default,bladerf=<serial>`), or `driver: "bladerf"` | `bladerf` source. A serial becomes `serial`; an index (`bladerf=0`) becomes `""`, the first board. `rate`, `gain` (or `gainSettings` full), `agc`, `error` / `ppm`, `autoTune`, `biastee=` and `bandwidth=` come across |
 | `device: "hackrf=…"`, `airspyhf`, `lime` / `limesdr`, `sdrplay`, `plutosdr`, `redpitaya`, `xtrx`, or `soapy=…` | `soapy` source with matching `args` (`driver=hackrf`, plus `serial=…` when the device string had one; `soapy=` arguments kept as they are). Stage gains (`lnaGain`, `vgaGain`, `ampGain`, `ifGain`, `bbGain`, `mixGain`, `tiaGain`, `pgaGain`, `vga1Gain`, `vga2Gain`, `gainSettings`) → `gains`. AGC is on if `agc` was, or if no gain was given. A HackRF One can be changed to the native `hackrf` source by hand |
@@ -59,7 +60,7 @@ The importer reads Trunk Recorder's keys and writes this app's. A key not listed
 | `error` (Hz) | Converted to `ppm` at the source's center frequency, sign reversed (`error: 3000` at 770 MHz → `ppm: -4`) |
 | `autoTune` | `autoTune` |
 
-USRP, Airspy, bladeRF and SoapySDR sources need their driver installed on this computer; the review says so.
+USRP, Airspy, HydraSDR, bladeRF and SoapySDR sources need their driver installed on this computer; the review says so.
 
 ### Trunked systems
 
@@ -69,8 +70,8 @@ USRP, Airspy, bladeRF and SoapySDR sources need their driver installed on this c
 | `shortName` | `shortName` (made unique if two systems share one) |
 | `control_channels` | its site's `controlChannelsHz` |
 | `modulation: "qpsk"` / `"fsk4"` | its site's `modulation` the same; anything else, or no `modulation`, becomes `"auto"` |
-| `talkgroupsFile` | The system's talkgroup file, `<shortName>.talkgroups.csv` beside the config (not a config key). Semicolon, tab or bar delimiters become commas, header names are tidied |
-| `unitTagsFile`, `unitTagsMode` | `unitNames.csv` (contents), `unitNames.name`, `unitNames.mode` |
+| `talkgroupsFile` | The system's talkgroup file, kept in the recorder's store (not a config key). Semicolon, tab or bar delimiters become commas, header names are tidied |
+| `unitTagsFile`, `unitTagsMode` | The system's unit names, kept in the recorder's store (not a config key), each named as from that file; `unitNames.mode` |
 | `bandplan` | its site's `bandplan` (default `800_standard`), and the keys below |
 | `bandplanBase`, `bandplanSpacing`, `bandplanHigh` (MHz) | `bandplanBaseHz`, `bandplanSpacingHz`, `bandplanHighHz` (Hz) |
 | `bandplanOffset` | `bandplanOffset` |
@@ -89,7 +90,7 @@ USRP, Airspy, bladeRF and SoapySDR sources need their driver installed on this c
 | `channels` (frequencies) | `channels`, one row per frequency |
 | `channelFile` | Its rows, copied into `channels`. With no `Mode` column, each row takes its system's mode. The file isn't linked; you can link one later in Setup |
 | `enabled: false` | `enabled: false` |
-| `squelch` | Not converted. A to-do asks you to check the squelch (see [below](#squelch-is-relative)) |
+| `squelch` | Not converted. When the system has channels, a to-do asks you to check the squelch (see [below](#squelch-is-relative)) |
 
 ### Call rules
 
@@ -167,9 +168,6 @@ The browser version has no plugins, so there these settings aren't kept.
 
 ## Defaults that differ
 
-This app's own configs from before v0.2.4, with `audioArchive` and `compressWav`, are upgraded to
-`archiveWav` and `archiveM4a` automatically when read.
-
 When a key is missing from the Trunk Recorder config, the import leaves this app's default, which is
 not always Trunk Recorder's:
 
@@ -177,9 +175,9 @@ not always Trunk Recorder's:
 |---|---|---|
 | `compressWav` | on | off (`archiveM4a: false`): turn on **Keep .m4a** if you want `.m4a` files kept |
 | `archiveFilesOnFailure` | off | on |
-| `multiSite` / duplicate calls | off: every copy saved | on (`dropDuplicateCalls: true`): a call heard on several sites is saved once. The import notes this; turn off **Save a call heard on several sites once** to keep every copy |
+| `multiSite` / duplicate calls | off: every copy saved | on (`dropDuplicateCalls: true`): a call heard on several sites is saved once. The import notes this; turn off **One copy per multi-site call** to keep every copy |
 | `modulation` | `qpsk` | `auto` (both receivers) |
-| `captureDir` | the folder it was started from | `~/TrunkRecorderPro` |
+| `captureDir` | the folder it was started from | `~/TrunkRecorderPro`; a full path only, so a relative one (`./audio`) isn't imported |
 | `frequencyFormat` | `exp` | `mhz` |
 
 ## Concepts that work differently
@@ -196,8 +194,10 @@ Trunked systems need none: calls start from the control channel's grants. See th
 
 In Trunk Recorder each site is a system of its own, joined by `multiSite`. Here one system (one short
 name, folder and talkgroup file) lists its sites, each a control channel to follow. A call heard on
-several of them is saved once, keeping the best copy rather than the first. The call JSON's
-`short_name` is the system, and `site` the site its copy was kept from.
+several of them is saved once, keeping the best copy rather than the first (see
+[Several systems and sites](guides/multi-site.md#calls-heard-on-several-sites)). The call JSON's
+`short_name` is the system, `site` the site its copy was kept from, and `sites` every site it was
+recorded on.
 
 ### No recorder counts
 
@@ -225,14 +225,15 @@ plugins are published. A Trunk Recorder MQTT status plugin entry isn't imported 
 
 The config is in the app's config folder ([where](configuration/README.md#where-the-file-is)), not
 the folder you run it from, and keys are camelCase with frequencies in Hz. Talkgroup files are copied into the
-recorder (its call store, or `<shortName>.talkgroups.csv` beside the config) and unit files stored **inside** it (`unitNames.csv`), so editing
-the original CSV afterwards changes nothing: load it again in Setup. A conventional system can stay linked to a
+recorder's [store](configuration/storage.md), and so are unit files, so editing the original CSV afterwards changes nothing: load it again in Setup,
+or edit one talkgroup or radio on its page. Each talkgroup and unit name remembers where it came from (the file it was
+imported from, until it's changed). A conventional system can stay linked to a
 channel CSV, though (`channelFile`), re-read at every Start.
 
 ### What stays compatible
 
 - **Talkgroup, unit tag and channel CSV files** read as they are, including RadioReference's
-  exports. See [systems.md](configuration/systems.md#talkgroup-file) and
+  exports. See [Talkgroups and units](guides/talkgroups-and-units.md#format) and
   [conventional.md](configuration/conventional.md#csv-format).
 - **Call JSON** uses Trunk Recorder's field names (`talkgroup`, `start_time`, `freq`, `srcList`, `freqList`
   and so on), so tools that read Trunk Recorder's JSON read these. See the

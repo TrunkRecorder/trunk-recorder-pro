@@ -176,3 +176,12 @@ test("an RTL-SDR's buflen and buffers come along", () => {
   ]);
   assert.ok(r.notes.some((n) => n.includes("buflen=1000")));
 });
+
+test("a Trunk Recorder captureDir relative to where it was started isn't taken: the recorder's folders are full paths (#211)", () => {
+  const before = defaultConfig().recording.captureDir;
+  const r = importTrunkRecorderConfig(JSON.stringify({ ...JSON.parse(tr800), captureDir: "./audio" }), defaultConfig(), { "county.csv": csv });
+  assert.equal(r.config.recording.captureDir, before, "the folder it had");
+  assert.ok(r.notes.some((n) => n.includes('"./audio" isn\'t a full path')), r.notes.join("\n"));
+  const home = importTrunkRecorderConfig(JSON.stringify({ ...JSON.parse(tr800), captureDir: "~/audio" }), defaultConfig(), { "county.csv": csv });
+  assert.equal(home.config.recording.captureDir, "~/audio", "~ is the recorder's home: it reads it so");
+});

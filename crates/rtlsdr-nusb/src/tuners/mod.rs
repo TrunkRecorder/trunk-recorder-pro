@@ -25,12 +25,80 @@ pub enum TunerKind {
     E4000,
 }
 
+impl TunerKind {
+    /// The gains it offers, tenths of a dB, lowest first (librtlsdr's tables: what a gain is set to the
+    /// nearest of). The R820T and R828D share one.
+    pub fn gains_tenths(self) -> Vec<i32> {
+        match self {
+            TunerKind::R820T | TunerKind::R828D => r82xx::GAINS.to_vec(),
+            TunerKind::E4000 => e4k::gain_steps().map(|(g, ..)| g).collect(),
+        }
+    }
+
+    /// Its kind from the tuner number librtlsdr gives it (`rtlsdr_tuner`, which `rtl_tcp` sends in its
+    /// greeting: 1 E4000, 5 R820T, 6 R828D); none for one not driven here (FC0012, FC0013, FC2580).
+    pub fn from_librtlsdr(code: u32) -> Option<TunerKind> {
+        match code {
+            1 => Some(TunerKind::E4000),
+            5 => Some(TunerKind::R820T),
+            6 => Some(TunerKind::R828D),
+            _ => None,
+        }
+    }
+}
+
+/// The board around the tuner, known by its USB strings. The RTL-SDR Blog
+/// boards add an HF upconverter (below 28.8 MHz, so no direct sampling) and
+/// switch the tuner's inputs themselves.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Board {
+    /// Any other board: the tuner alone.
+    #[default]
+    Generic,
+    /// RTL-SDR Blog V4: an R828D with notch filters and three inputs.
+    BlogV4,
+    /// RTL-SDR Blog V4L: an R828S, which answers as an R820T, with two inputs.
+    BlogV4L,
+}
+
+impl Board {
+    pub(crate) fn from_usb(manufacturer: Option<&str>, product: Option<&str>) -> Self {
+        match (manufacturer, product) {
+            (Some("RTLSDRBlog"), Some("Blog V4")) => Board::BlogV4,
+            (Some("RTLSDRBlog"), Some("Blog V4L")) => Board::BlogV4L,
+            _ => Board::Generic,
+        }
+    }
+    /// Whether it upconverts below 28.8 MHz.
+    pub fn upconverter(self) -> bool {
+        self != Board::Generic
+    }
+    /// The tuner the board is built with, if it is a known board.
+    pub(crate) fn tuner(self) -> Option<TunerKind> {
+        match self {
+            Board::Generic => None,
+            Board::BlogV4 => Some(TunerKind::R828D),
+            Board::BlogV4L => Some(TunerKind::R820T),
+        }
+    }
+}
+
 /// Each tuner's I2C address, the register that identifies it and what it
 /// holds there, in the order probed: the R82xx first, so their dongles see
 /// no extra NAKed request.
 const PROBES: [(TunerKind, u8, u8, u8); 3] = [(TunerKind::R820T, 0x34, 0, 0x69), (TunerKind::R828D, 0x74, 0, 0x69), (TunerKind::E4000, 0xc8, 2, 0x40)];
 
 impl TunerKind {
+    /// The gain a manual `db` is set to: the tuner's nearest step, dB.
+    pub fn gain_db(self, db: f32) -> f32 {
+        let tenths = match self {
+            TunerKind::R820T | TunerKind::R828D => r82xx::nearest_gain(db),
+            TunerKind::E4000 => e4k::nearest_gain(db).0,
+        };
+        tenths as f32 / 10.0
+    }
+
     /// Its 8-bit I2C address.
     pub(crate) fn address(self) -> u8 {
         PROBES.iter().find(|p| p.0 == self).expect("every kind is probed").1
@@ -81,10 +149,10 @@ impl Tuner {
         }
         Err(disconnected.unwrap_or(Error::UnsupportedTuner))
     }
-    pub fn new(kind: TunerKind, blog_v4: bool) -> Self {
+    pub fn new(kind: TunerKind, board: Board) -> Self {
         match kind {
             TunerKind::E4000 => Tuner::E4000(E4000::new()),
-            _ => Tuner::R82xx(R82xx::new(kind, blog_v4)),
+            _ => Tuner::R82xx(R82xx::new(kind, board)),
         }
     }
     pub fn kind(&self) -> TunerKind {

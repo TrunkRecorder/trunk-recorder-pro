@@ -224,19 +224,29 @@ pub struct Interfaces {
     /// Why one that should be served isn't (its port is taken, say), by id.
     pub(crate) problems: Mutex<BTreeMap<String, String>>,
     pub dev: Option<Dev>,
-    /// The built-in interface's port this run (`--port` may differ from the config's).
-    builtin_port: u16,
+    /// The built-in interface's port this run (`--port` may differ from the config's), as listened on once it is.
+    builtin_port: std::sync::atomic::AtomicU16,
 }
 
 impl Interfaces {
     pub fn new(dev: Option<Dev>, builtin_port: u16) -> Interfaces {
-        Interfaces { shelf: Shelf::new(&store::REGISTRY), serving: Mutex::new(BTreeMap::new()), problems: Mutex::new(BTreeMap::new()), dev, builtin_port }
+        Interfaces { shelf: Shelf::new(&store::REGISTRY), serving: Mutex::new(BTreeMap::new()), problems: Mutex::new(BTreeMap::new()), dev, builtin_port: builtin_port.into() }
+    }
+
+    /// The built-in interface's port this run: where its pages are (passkeys' origin, [`crate::access::passkey::Rp`]).
+    pub fn builtin_port(&self) -> u16 {
+        self.builtin_port.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The built-in interface listening on `port`.
+    pub(crate) fn listening_on(&self, port: u16) {
+        self.builtin_port.store(port, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Ports in use this run that the config doesn't know of: the built-in
     /// interface's (`--port`) and `--ui`'s.
     pub fn taken(&self) -> Vec<u16> {
-        [Some(self.builtin_port), self.dev.as_ref().map(|d| d.port)].into_iter().flatten().collect()
+        [Some(self.builtin_port()), self.dev.as_ref().map(|d| d.port)].into_iter().flatten().collect()
     }
 
     /// Why interface `id` can't be served as things are, if it can't: the
@@ -247,7 +257,7 @@ impl Interfaces {
         }
         let port = cfg.server.interfaces.get(id)?.port;
         cfg.server.interface_problem(id).or_else(|| {
-            if port == self.builtin_port {
+            if port == self.builtin_port() {
                 Some(format!("Port {port} is the built-in interface's."))
             } else if self.dev.as_ref().is_some_and(|d| d.port == port) {
                 Some(format!("Port {port} is --ui's this run."))
@@ -369,13 +379,13 @@ impl Interfaces {
         let mime = image_type(&shot.url).ok_or("not a picture")?;
         let cache = crate::paths::data_dir().join("interface-screenshots").join(&sha);
         if let Ok(data) = std::fs::read(&cache) {
-            if crate::store::sha256_hex(&data) == sha {
+            if crate::toolkit::sha256_hex(&data) == sha {
                 return Ok((data, mime));
             }
         }
         let data = crate::store::download(&shot.url, &sha, MAX_SCREENSHOT, "a screenshot")?;
-        let _ = std::fs::create_dir_all(cache.parent().unwrap());
-        let _ = crate::config::write_atomic(&cache, &data);
+        // (Only a cache: fetched again next time.)
+        let _ = trunk_app::files::make_parent(&cache).and_then(|_| trunk_app::files::write_atomic(&cache, &data));
         Ok((data, mime))
     }
 
@@ -414,7 +424,7 @@ impl Interfaces {
         if cfg.server.interfaces.get(id).is_none_or(|i| i.path.is_empty()) {
             let dir = interfaces_dir().join(id);
             if dir.is_dir() {
-                std::fs::remove_dir_all(&dir).map_err(|e| format!("Couldn't delete {}: {e}", dir.display()))?;
+                trunk_app::files::remove_dir_all(&dir).map_err(|p| format!("Couldn't delete {}. {p}", dir.display()))?;
             }
         }
         Ok(())

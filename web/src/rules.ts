@@ -12,7 +12,7 @@
 // each time.
 
 import init, * as wasm from "./web/pkg/trunk_web.js";
-import type { Channel, Config, SignalDef, Site, Talkgroup, TonePatternKind } from "./protocol.ts";
+import type { Channel, Config, FoundRadio, Origin, SignalDef, Site, Talkgroup, TapInfo, TalkgroupEdit, TonePatternKind, UnitName } from "./protocol.ts";
 
 let ready = false;
 
@@ -37,9 +37,19 @@ function rules(): typeof wasm {
   return wasm;
 }
 
+/** Every signal tap, in the order of the receive chain: the recorder's own list. */
+export function signalTaps(): TapInfo[] {
+  return JSON.parse(rules().signalTaps()) as TapInfo[];
+}
+
 /** The talkgroup files an older config's JSON holds, as JSON by short name (migrate.ts). */
 export function configTalkgroups(json: string): string {
   return rules().configTalkgroups(json);
+}
+
+/** The unit names files an older config's JSON holds (`unitNames.csv`), as JSON by short name (migrate.ts). */
+export function configUnitNames(json: string): string {
+  return rules().configUnitNames(json);
 }
 
 /** A talkgroup file read ([`talkgroupsFromCsv`]): its rows, and what in it was passed over. */
@@ -65,9 +75,55 @@ export function talkgroupsToCsv(rows: Talkgroup[]): string {
   return rules().talkgroupsToCsv(JSON.stringify(rows));
 }
 
-/** `rows` with talkgroup `number`'s cells set ([column, value], Trunk Recorder's names): the recorder's own edit for setTalkgroup. */
-export function talkgroupsEdit(rows: Talkgroup[], number: number, cells: [string, string][]): Talkgroup[] {
-  return JSON.parse(rules().talkgroupsEdit(JSON.stringify(rows), number, JSON.stringify(cells))) as Talkgroup[];
+/** `rows` with talkgroup `number` edited as `edit` says, by `origin`: the recorder's own edit for setTalkgroup. */
+export function talkgroupsEdit(rows: Talkgroup[], number: number, edit: TalkgroupEdit, origin: Origin): Talkgroup[] {
+  return JSON.parse(rules().talkgroupsEdit(JSON.stringify(rows), number, JSON.stringify(edit), JSON.stringify(origin))) as Talkgroup[];
+}
+
+/** Talkgroups `next` in place of `rows`, as the recorder takes setTalkgroups (`from`: its `from`, with the time set): rows that change are `from`'s. */
+export function talkgroupsReplace(rows: Talkgroup[], next: Talkgroup[], from: Origin | undefined): Talkgroup[] {
+  return JSON.parse(rules().talkgroupsReplace(JSON.stringify(rows), JSON.stringify(next), from ? JSON.stringify(from) : "")) as Talkgroup[];
+}
+
+/** A unit names file read ([`unitNamesFromCsv`]): its rows, and the patterns that aren't regular expressions. */
+export interface UnitNamesFileReport {
+  unitNames: UnitName[];
+  bad: string[];
+}
+
+/** A unit names file (Trunk Recorder's unitTagsFile) read as the recorder reads one (trunk_core::trunk::read_unit_names). */
+export function unitNamesFromCsv(text: string): UnitNamesFileReport {
+  return JSON.parse(rules().unitNamesFromCsv(text)) as UnitNamesFileReport;
+}
+
+/** Radio names as a unit names file. */
+export function unitNamesToCsv(rows: UnitName[]): string {
+  return rules().unitNamesToCsv(JSON.stringify(rows));
+}
+
+/** `rows` with radio `unit` named `name` ("": its own name taken out), by `origin`: the recorder's own edit for setUnitName. */
+export function unitNamesEdit(rows: UnitName[], unit: number, name: string, origin: Origin): UnitName[] {
+  return JSON.parse(rules().unitNamesEdit(JSON.stringify(rows), unit, name, JSON.stringify(origin))) as UnitName[];
+}
+
+/** Radio names `next` in place of `rows`, as `talkgroupsReplace`. */
+export function unitNamesReplace(rows: UnitName[], next: UnitName[], from: Origin | undefined): UnitName[] {
+  return JSON.parse(rules().unitNamesReplace(JSON.stringify(rows), JSON.stringify(next), from ? JSON.stringify(from) : "")) as UnitName[];
+}
+
+/** Each system's names looked up, by its rows and mode: made once for each. */
+const namers = new WeakMap<UnitName[], Map<string, wasm.UnitNamer>>();
+
+/** Radio `unit`'s name by `rows` in `mode` (`heard`: the talker alias heard for it), as the recorder names its calls' talkers. */
+export function unitNameOf(rows: UnitName[], mode: string, unit: number, heard: string | undefined): string | undefined {
+  let byMode = namers.get(rows);
+  if (!byMode) namers.set(rows, (byMode = new Map()));
+  let namer = byMode.get(mode);
+  if (!namer) {
+    namer = new (rules().UnitNamer)(JSON.stringify(rows), mode);
+    byMode.set(mode, namer);
+  }
+  return namer.name(unit, heard);
 }
 
 /** The store's config now, and what has been worked out of it. */
@@ -101,6 +157,40 @@ export const startProblem = perConfig((j) => rules().configProblem(j) ?? null);
 /** Two systems sharing a short name, or one without, or two sites of a system one name (Config::name_problem), or null. */
 export const nameProblem = perConfig((j) => rules().configNameProblem(j) ?? null);
 
+/** Each source's label (Source::label, "RTL-SDR SN 200"): the radio — what a system's or channel's receiveOn names it by, and its status by. A name doesn't change it. */
+export const sourceLabels = (c: Config): string[] => sourceNames(c).map((x) => x.label);
+
+/** Each source's label (as sourceLabels) and title ("Source 2 (Whip)", Source::title: what every message and page calls it). */
+export const sourceNames = perConfig((j) => JSON.parse(rules().configSources(j)) as { label: string; title: string }[]);
+
+/** A source, by its place in the config and its title ("Source 2 (Whip)"). */
+export interface SourceRef {
+  index: number;
+  title: string;
+}
+/** Why a found radio can't be a source's own: no serial or another's (with more than one of its family plugged in), or another source names it. */
+export type Unpickable =
+  /** `twin`: the first found before it that it can't be told from (none: it is the first). */
+  | { why: "noSerial" | "sameSerial"; twin?: number | null }
+  | ({ why: "source" } & SourceRef);
+/** A found radio, to one source: why it can't be its own, and another source on "the first found" that may take it. */
+export interface RadioPick {
+  unpickable?: Unpickable;
+  first?: SourceRef;
+}
+
+/**
+ * The radios found (`{ kind, id }`, `id` the serial or device arguments a source names it by), as
+ * source `i` (null: a new one, or one to scan with) may be set to them (Config::radio_picks); with,
+ * when an RTL-SDR can't be told apart, a serial none has (`freeSerial`), for rtl_eeprom.
+ */
+export function radioPicks(c: Config, i: number | null, found: { kind: string; id: string }[]): { radios: RadioPick[]; freeSerial?: string } {
+  return JSON.parse(rules().configRadioPicks(JSON.stringify(c), i ?? -1, JSON.stringify(found)));
+}
+
+/** The source each frequency the config lists is received on, as Start will choose it, pins and all (Config::receivers); source null: none it may be received on reaches it. */
+export const receivers = perConfig((j) => JSON.parse(rules().configReceivers(j)) as { system: string; hz: number; source: number | null }[]);
+
 /** Each source's centre: as set, or (0 = auto) where Start places it; null where nothing fits (Config::resolved_centers). */
 export const resolvedCenters = perConfig((j) => Array.from(rules().configCenters(j), (c) => c || null));
 
@@ -109,12 +199,7 @@ export function usableHalfWidth(rateHz: number, guardHz: number = DEFAULT_GUARD_
   return rules().usableHalfWidth(rateHz, guardHz);
 }
 
-/** A centre that fits every one of `hz` in one source, off the DC spike, or null. */
-export function autoCenter(hz: number[], rateHz: number, guardHz: number = DEFAULT_GUARD_HZ): number | null {
-  return rules().autoCenter(Float64Array.from(hz), rateHz, guardHz) ?? null;
-}
-
-/** A source to place (planCenters): its rate and guard, and its centre if it can't move (a capture file). */
+/** A source to place (placeSources): its rate and guard, and its centre if it can't move (a capture file). */
 export interface Placing {
   rateHz: number;
   guardHz?: number;
@@ -122,12 +207,91 @@ export interface Placing {
 }
 
 /**
- * Where to tune each radio for a system found on the air (the recorder's
- * plan_centers): `first` at `firstCenter`, the others over the busiest voice
- * channels still out of reach, or alongside the first; each off the DC spike.
+ * What radios are placed to reach (place::Targets): groups of channels, each
+ * with how much it counts (calls seen; 1 when unknown), what it needs reached
+ * before any channel counts — one of `need` (a site's control channels), or
+ * with `all` every one (a conventional system's channels) — and on any
+ * source (the guide's are).
  */
-export function planCenters(sources: Placing[], first: number, firstCenter: number, ccs: number[], voice: { hz: number; weight: number }[]): (number | null)[] {
-  return JSON.parse(rules().planCenters(JSON.stringify({ sources, first, firstCenter, ccs, voice })));
+export interface Targets {
+  groups: { channels: { hz: number; weight: number }[]; need?: number[]; all?: boolean }[];
+}
+
+/**
+ * Where to tune each radio, as Start places auto ones (the recorder's
+ * place_sources): a fixed one stays, each other over a group of needs not
+ * reached yet, then the busiest channels still out of reach, else alongside;
+ * each off the DC spike.
+ */
+export function placeSources(sources: Placing[], targets: Targets): (number | null)[] {
+  return JSON.parse(rules().placeSources(JSON.stringify({ sources, targets })));
+}
+
+/** How good a way of tuning the sources is (place::Score), compared in this order. */
+export interface AdviceScore {
+  /** Systems (sites, conventional systems) whose control channel, or channels, no source reaches. */
+  unmet: number;
+  /** The weight of channels reached (one each; calls heard, when known). */
+  reached: number;
+  /** Sources something needs. */
+  needed: number;
+  /** Their sample rates together, Hz. */
+  rateHz: number;
+  /** Sources whose centre or rate changes. */
+  changes: number;
+}
+
+/** Better centres and rates for the sources (place::Advice): how they do now and with it, and each source as advised. */
+export interface Advice {
+  before: AdviceScore;
+  after: AdviceScore;
+  sources: {
+    centerHz: number | null;
+    rateHz: number;
+    /** Its centre or rate is other than now. */
+    changed: boolean;
+    /** Taken alone, it can be on auto (it is, or goes back to it) rather than set to `centerHz`. */
+    auto: boolean;
+    /** On auto in the advice: taking all of it, it is set to auto. */
+    released: boolean;
+    /** Something needs it, with the advice; false: it can go. */
+    needed: boolean;
+  }[];
+}
+
+/** What each system was heard on, by short name: each frequency and its calls (out of band too), to weigh advice by. */
+export type Heard = Record<string, { hz: number; weight: number }[]>;
+
+/**
+ * Better centres and rates for `c`'s sources than they have, or null
+ * (Config::advice): `found` is each source's found radio, `heard` what each
+ * system was heard on.
+ */
+export function sourceAdvice(c: Config, found: (FoundRadio | undefined)[], heard: Heard = {}): Advice | null {
+  return JSON.parse(rules().configAdvice(JSON.stringify(c), JSON.stringify(found.map((f) => f ?? null)), JSON.stringify(heard)));
+}
+
+/** A found radio, by what it says it runs at (`rates` or `rateRange`), as the rules read it. */
+type Found = FoundRadio | undefined;
+
+/** The rates a source of kind `kind` may run at (rates::offered): its radio's (`found`), else its kind's, the usual first. */
+export function sourceRates(kind: string, found?: Found): number[] {
+  return Array.from(rules().sourceRates(kind, JSON.stringify(found ?? null)));
+}
+
+/** The inputs a source of kind `kind` picks from, by number (a HydraSDR's); none for the others. */
+export function sourceInputs(kind: string): string[] {
+  return rules().sourceInputs(kind);
+}
+
+/** Whether the radio runs at `hz`, as it said when opened (true when it didn't say). */
+export function rateOk(hz: number, found: Found): boolean {
+  return rules().rateOk(hz, JSON.stringify(found ?? null));
+}
+
+/** `hz` if the radio runs at it (or didn't say), else the nearest it does: its first rate, or the end of its range. */
+export function rateFor(hz: number, found: Found): number {
+  return rules().rateFor(hz, JSON.stringify(found ?? null));
 }
 
 /** Why a SmartNet site's band plan can't be used, or null (smartnet::Bandplan::from_config). */
@@ -188,4 +352,77 @@ export type Step = { hz: number[]; s: number };
 /** What a tone pattern (as the call JSON's `tone_patterns` and the tones log have it) sounds like, step by step. */
 export function toneSteps(p: { pattern: TonePatternKind; tones: number[]; lengths: number[]; digits?: string; knox?: boolean; cycles?: number }): Step[] {
   return JSON.parse(rules().toneSteps(JSON.stringify(p)));
+}
+
+/** What a row of a conventional mode can say: the recorder's ConvMode (convModes). */
+export interface ModeFacts {
+  mode: Channel["mode"];
+  /** In a message ("AM channels carry no tone or code"). */
+  name: string;
+  /** What tells its rows on a frequency apart ("tone", "NAC or talkgroup"); none: one row, no code. */
+  codeName: string | null;
+  takesCode: boolean;
+  /** Every transmission names its talkgroup, which a row can match (and AutoTune use): the digital modes. */
+  matchesTalkgroup: boolean;
+  /** A call's talkgroup may be the air's: the digital modes, and auto when it settles on one. */
+  airNamesTalkgroup: boolean;
+  /** FM or AM and nothing else. */
+  analog: boolean;
+  /** Has an analog receiver, whose bandwidth and Demodulation settings it takes: analog, and auto. */
+  analogReceiver: boolean;
+  /** Has an FM receiver (tones, de-emphasis). */
+  hasFm: boolean;
+  /** A row can pick a slot: DMR. */
+  slotted: boolean;
+}
+
+/** Every conventional mode, in the order Setup lists them (modes.ts adds how each is shown). */
+export function convModes(): ModeFacts[] {
+  return JSON.parse(rules().convModes()) as ModeFacts[];
+}
+
+/** A row's code, and the slot and talkgroup it records (absent: any). */
+export interface AccessParts {
+  code: string;
+  slot?: number;
+  matchTalkgroup?: number;
+}
+
+/**
+ * A row's Code column for its mode, as the recorder reads it (Access::parse): FM's tone or DCS code,
+ * P25's NAC and talkgroup, DMR's colour code, slot and talkgroup, NXDN's RAN and group; or why not.
+ */
+export function parseAccess(mode: Channel["mode"], text: string): AccessParts | { error: string } {
+  return JSON.parse(rules().accessParse(mode, text)) as AccessParts | { error: string };
+}
+
+/** Whether two rows of `mode` record the same transmissions (a DCS code and its alias too): Access::same. */
+export function sameAccess(mode: Channel["mode"], a: AccessParts, b: AccessParts): boolean {
+  return rules().accessSame(mode, JSON.stringify(a), JSON.stringify(b));
+}
+
+/** A tone as shown, and what FRS/GMRS radios call it there (privacy code 1–38 on every brand; 39–121 Motorola's). */
+export interface ToneLabel {
+  text: string;
+  privacy: { code: number; motorola: boolean } | null;
+}
+
+/**
+ * A CTCSS tone or DCS code, written any way a channel's Code may be, as it's shown ("151.4 Hz",
+ * "D023N"), and on FRS/GMRS frequency `freqHz` its privacy code: Tone::label, Tone::privacy_code.
+ * As written when it isn't one.
+ */
+export function toneLabel(code: string, freqHz = 0): ToneLabel {
+  const t = JSON.parse(rules().toneLabel(code, freqHz)) as { text: string; privacy?: ToneLabel["privacy"] };
+  return { text: t.text, privacy: t.privacy ?? null };
+}
+
+/** Why `path` can't be a folder the recorder writes to (it must be a full path, or ~/…), or null: config::folder_problem. */
+export function folderProblem(path: string): string | null {
+  return rules().folderProblem(path) ?? null;
+}
+
+/** A frequency as written (a field, a list, an imported config): Hz, from MHz under 10 000, else as given; undefined when not above 0. channels::hz_of. */
+export function hzOf(v: number): number | undefined {
+  return rules().hzOf(v) ?? undefined;
 }

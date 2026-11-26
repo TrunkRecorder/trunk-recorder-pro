@@ -45,17 +45,26 @@ whose audio is played. The call's JSON has the same patterns once it's saved.
 At the bottom of each system's page on the **Radio system** tab, the **Tones** card lists every
 pattern heard in the span you've chosen: which talkgroup carried it, its tones and timing, the
 codes it may be, how often, when last, which radios sent it, and the signals it is. ▶ plays it in
-the browser. **Add** makes a pattern a signal: give it an id (`TOWN_FIRE`) and a name, and choose
-whether it counts only on that talkgroup.
+the browser. The columns are **Talkgroup**, **Heard**, **Likely**, **Times**, **Last** and **Sent
+by**. **Add** (for people who may edit) makes the pattern a signal of this system straight away: its
+id comes from the talkgroup's alpha tag (or the pattern's name), with `_2`, `_3` added if that id
+is taken, and it counts only on that talkgroup. There is no prompt; to change the id, name or
+anything else, use **Signals in Setup** on the card. Once a pattern is a signal, its id shows as a
+chip in place of **Add**.
 
-Beeps are hidden unless you ask for them (**With beeps**): most are speech or background noise.
+Above the table, the system's signals are listed as chips (or "No signals yet"). **Show** chooses
+what is listed: **Heard** (without beeps), **With beeps**, or only **Signals of <system>**, each
+with its count. Beeps are hidden unless you ask for them (**With beeps**): most are speech or
+background noise.
 
 ## Editing signals
 
-A system's signals are in Setup, under the system's **Signals** (a conventional system's too). Type
+A system's signals are in Setup → Systems (or Conventional), in the system's card, under **Plugins**
+→ **Signals** (a disclosure, listing how many there are). Type
 one in from a paging list: each kind asks for what it is, a page's tone A and tone B, a long tone's
 one tone, DTMF or KNOX digits, a Morse ID's text. Lengths are only what ▶ plays (pressed again, it
 stops): they aren't matched, since pagers vary them. A signal is kept once it has what it needs.
+Each signal has **Edit**, **Remove** and ▶ buttons, and a plugin that can use signals (to add one to its own settings, say) adds a button of its own.
 
 ## How near a tone has to be
 
@@ -77,7 +86,7 @@ Digits and Morse text match exactly.
 - **Plugins** subscribed to `tone_pattern` hear every pattern as soon as it's over, with the
   signals it is (if any). A plugin's [delays](../configuration/plugins.md#delays) hold it, as they
   do its calls; one heard in voice decrypted with your keys goes only to plugins allowed decrypted
-  calls. See [Writing plugins](../plugins/writing-plugins.md#topics).
+  calls. See [Plugin events](../developer/plugins/events.md#tone_pattern).
 
 The signal settings are in the [systems reference](../configuration/systems.md#signals).
 

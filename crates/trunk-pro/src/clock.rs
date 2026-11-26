@@ -4,11 +4,13 @@
 //! offset itself), and what the radio systems' own clocks say — read, never
 //! set: the OS's time service keeps the clock, this only watches it.
 //!
-//! Calls aren't stamped by the wall clock as it is now but by the recording's
-//! clock: the wall clock at Start, carried on by a monotonic clock so that it
-//! never jumps. The two part when the time service corrects the clock during
-//! a recording ([`Health::drift_ms`]), and what call times are off by is the
-//! recording clock's error: [`Health::problem`] judges that.
+//! A recording runs on its own clock: the wall clock at Start, carried on by
+//! a monotonic clock so that it never jumps. The two part as the time service
+//! corrects the wall clock, and on macOS steadily (its monotonic clock runs at
+//! the crystal's rate, uncorrected) ([`Health::drift_ms`]). Times given out
+//! follow the wall clock all the same: the engine thread hands the session
+//! the difference each poll (`Session::correct_wall_clock`), so what call
+//! times are off by is the wall clock's error, which [`Health::problem`] judges.
 //!
 //! [`Clock`] (`ctx.clock`) keeps the latest of it all and the one verdict
 //! ([`Health::problem`]) the dashboard, its events and every finished call go by.
@@ -107,8 +109,6 @@ pub struct Service {
 pub enum Cause {
     /// The clock itself, measured against the time server.
     Clock,
-    /// The clock calls are stamped by: right at Start, corrected since.
-    Recording,
     /// Against the radio systems' clocks (no time server answer).
     Radio,
     /// The OS says it isn't synchronized.
@@ -136,8 +136,10 @@ pub struct Health {
     pub measured: Option<(Measured, f64)>,
     /// Why the last query failed, while it fails.
     pub error: Option<String>,
-    /// While recording: the wall clock less the recording's, ms (positive:
-    /// the wall clock was set ahead since Start, or the computer slept).
+    /// While recording: the wall clock less the recording's own, ms
+    /// (positive: the wall clock was set ahead since Start, the computer
+    /// slept, or the monotonic clock runs slow). Shown, not judged: call
+    /// times are corrected by it.
     pub drift_ms: Option<f64>,
     /// The radio systems' clocks, each site's latest.
     pub radio: Vec<RadioClock>,
@@ -189,10 +191,6 @@ impl Health {
             if o.abs() >= warn {
                 return off(o, Cause::Clock, format!("The clock is {} {} {}: call times are off by as much", amount(o), way(o), self.server.as_deref().unwrap_or("the time server")));
             }
-            // The clock is right now; the recording's may not be.
-            if let Some(rec) = self.drift_ms.map(|d| o + d).filter(|r| r.abs() >= warn) {
-                return off(rec, Cause::Recording, format!("Calls are being stamped {} {} the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it", amount(rec), way(rec)));
-            }
         } else if let Some((site, r)) = self.radio_reference(now).filter(|(_, r)| r.abs() >= warn) {
             return off(r, Cause::Radio, format!("Calls are being stamped {} {} {site}'s radio system clock: is this computer's clock synchronized?", amount(r), way(r)));
         }
@@ -229,18 +227,22 @@ impl Default for Clock {
 }
 
 impl Clock {
-    /// Ask `server` (SNTP, when there's one) and the OS's time service, each
-    /// as often as it should be, on a thread of their own; the server only
-    /// while `on()` (turned off, its answers are forgotten).
-    pub fn start(self: &Arc<Self>, server: Option<String>, on: impl Fn() -> bool + Send + 'static) {
+    /// Ask the time server `server()` names now (SNTP, when there's one) and
+    /// the OS's time service, each as often as it should be, on a thread of
+    /// their own. The server changed or gone, its answers are forgotten.
+    pub fn start(self: &Arc<Self>, server: impl Fn() -> Option<String> + Send + 'static) {
         let me = self.clone();
         let _ = std::thread::Builder::new().name("clock".into()).spawn(move || {
             let (mut next_time, mut next_service) = (Instant::now(), Instant::now());
+            let mut asked: Option<String> = None;
             loop {
-                if server.is_some() && !on() {
+                let server = server();
+                if server != asked {
                     me.forget_server();
                     next_time = Instant::now();
-                } else if let Some(s) = server.as_deref().filter(|_| Instant::now() >= next_time) {
+                    asked = server.clone();
+                }
+                if let Some(s) = server.as_deref().filter(|_| Instant::now() >= next_time) {
                     let ok = me.measure(s);
                     next_time = Instant::now() + if ok { TIME_EVERY } else { TIME_RETRY };
                 }
@@ -283,6 +285,12 @@ impl Clock {
         if clock.is_none() {
             x.health.radio.clear();
         }
+    }
+
+    /// How the computer's clock is kept, as node health reports name it ([`sync_kind`]).
+    pub fn sync_kind(&self) -> Option<&'static str> {
+        let x = self.inner.lock().unwrap();
+        sync_kind(x.health.os, x.health.service.as_ref())
     }
 
     /// The radio systems' clocks, as the recording last heard them.
@@ -389,6 +397,29 @@ impl StepWatch {
 fn step(wall_ms: f64, mono_ms: f64) -> Option<f64> {
     let jump = wall_ms - mono_ms;
     (jump.abs() >= STEP_MS).then_some(jump)
+}
+
+/// How the computer's clock is kept, as node health reports name it (`clock.sync`): `none`
+/// when the OS says it isn't synchronized; synchronized, by what its time service follows:
+/// chrony on a GPS receiver or its pulse (a refclock named GPS, PPS, NMEA, SHM or SOCK) `gps`,
+/// on a PTP hardware clock (PHC) `ptp`, on a server `ntp`; systemd-timesyncd `ntp`; a service
+/// that doesn't say `unknown`. None when the OS doesn't say either way.
+pub fn sync_kind(os: Option<OsClock>, service: Option<&Service>) -> Option<&'static str> {
+    if !os?.synced {
+        return Some("none");
+    }
+    let Some(s) = service else { return Some("unknown") };
+    if s.name != "chrony" {
+        return Some("ntp");
+    }
+    let reference = s.server.as_deref().unwrap_or("").to_ascii_uppercase();
+    Some(if ["GPS", "PPS", "NMEA", "SHM", "SOCK"].iter().any(|r| reference.starts_with(r)) {
+        "gps"
+    } else if reference.starts_with("PHC") {
+        "ptp"
+    } else {
+        "ntp"
+    })
 }
 
 /// The time service and what it follows: chrony (`chronyc -c -n tracking`),
@@ -632,11 +663,15 @@ mod tests {
             drift_ms,
             ..Default::default()
         };
-        // The clock was 2 s ahead at Start, then set right (back 2 s): it's right now, calls aren't.
-        assert_eq!(server(10.0, Some(-2000.0)).said(now), Some((false, "Calls are being stamped 2.0 s ahead of the right time: the clock was corrected after recording started. Stop and Start again to stamp them by it".into())));
-        assert_eq!(server(10.0, Some(-100.0)).said(now), None, "within the warning");
-        assert_eq!(server(10.0, Some(-2000.0)).problem(now).map(|p| p.cause), Some(Cause::Recording), "the interface points at the recording's clock");
+        // The clock was 2 s ahead at Start, then set right (back 2 s), or a
+        // day of a Mac's raw clock running slow: calls follow the wall clock
+        // all the same, so the drift is no problem — however large.
+        for drift in [-2000.0, -100.0, 6000.0, -86_400e3, 0.0] {
+            assert_eq!(server(10.0, Some(drift)).said(now), None, "drift {drift} ms");
+        }
         assert_eq!(server(10.0, None).said(now), None, "not recording");
+        // What is judged is the wall clock: off by the time server, whatever the drift.
+        assert_eq!(server(6000.0, Some(-6000.0)).problem(now).map(|p| (p.cause, p.bad)), Some((Cause::Clock, true)));
         // No time server answer: the radio systems' clocks are the reference.
         let radio = |offsets: &[f64], ago: f64| Health {
             radio: offsets.iter().enumerate().map(|(i, o)| RadioClock { site: format!("site{i}"), offset_ms: *o, at_s: now - ago, valid: true }).collect(),
@@ -652,6 +687,22 @@ mod tests {
         // With a time server answer, the radio systems are shown, not judged by.
         let both = Health { radio: radio(&[900.0], 30.0).radio, ..server(10.0, Some(0.0)) };
         assert_eq!(both.said(now), None);
+    }
+
+    #[test]
+    fn reports_name_how_the_clock_is_kept() {
+        let synced = Some(OsClock { synced: true, max_error_ms: 50.0 });
+        let chrony = |server: &str| Service { name: "chrony", server: Some(server.into()), stratum: Some(1), last_sync: None };
+        let timesyncd = Service { name: "systemd-timesyncd", server: Some("ntp.ubuntu.com (91.189.91.157)".into()), stratum: Some(2), last_sync: None };
+        assert_eq!(sync_kind(synced, Some(&timesyncd)), Some("ntp"));
+        assert_eq!(sync_kind(synced, Some(&chrony("162.159.200.123"))), Some("ntp"));
+        assert_eq!(sync_kind(synced, Some(&chrony("PPS"))), Some("gps"), "a GPS receiver's pulse");
+        assert_eq!(sync_kind(synced, Some(&chrony("NMEA"))), Some("gps"));
+        assert_eq!(sync_kind(synced, Some(&chrony("SHM0"))), Some("gps"), "gpsd through shared memory");
+        assert_eq!(sync_kind(synced, Some(&chrony("PHC0"))), Some("ptp"));
+        assert_eq!(sync_kind(synced, None), Some("unknown"), "synchronized, by a service that doesn't say");
+        assert_eq!(sync_kind(Some(OsClock { synced: false, max_error_ms: 16_000.0 }), Some(&timesyncd)), Some("none"));
+        assert_eq!(sync_kind(None, Some(&timesyncd)), None, "the OS doesn't say");
     }
 
     #[test]

@@ -1,0 +1,33 @@
+{
+  "v": 1,
+  "node": { "systemId": 5678, "apiKey": "00000000-0000-0000-0000-000000000000" },
+  "recorder": { "name": "sdrtrunk-vce", "version": "0.6.2" },
+  "window": { "start": 1794590212.4, "end": 1794590509.9, "seq": 37 },
+  "sites": [
+    {
+      "name": "Metro Cap+",
+      "protocol": "dmr",
+      "receiver": "rooftop",
+      "id": { "colorCode": 3, "site": 1 },
+      "cc": { "hz": 461237500, "lockedS": 297.5, "good": 4200, "bad": 130, "syncLossSym": 3100, "airSym": 604800,
+              "symbolRate": 4800, "merDb": 18.5 },
+      "calls": { "started": 140, "recorded": 131, "notRecorded": { "data": 3, "noFrequency": 2, "noRecorder": 4 } },
+      "voice": { "ambe": { "frames": 52000, "bad": 610, "errors": 9800, "missing": 240 } }
+    },
+    {
+      "name": "Metro Cap+",
+      "protocol": "dmr",
+      "receiver": "indoor",
+      "id": { "colorCode": 3, "site": 1 },
+      "cc": { "hz": 461237500, "lockedS": 288.5, "good": 3900, "bad": 410, "syncLossSym": 21000, "airSym": 561600,
+              "symbolRate": 4800, "merDb": 12.1 },
+      "calls": { "started": 140, "recorded": 128, "notRecorded": { "data": 3, "noFrequency": 2, "noRecorder": 4 } },
+      "voice": { "ambe": { "frames": 50110, "bad": 2210, "errors": 15400, "missing": 1380 } }
+    }
+  ],
+  "radios": [
+    { "name": "Airspy R2 rooftop", "kind": "airspy", "seconds": 297.5, "droppedS": 0.0, "ppmError": 0.12 },
+    { "name": "RTL-SDR indoor", "kind": "rtlsdr", "seconds": 297.5, "droppedS": 3.0, "ppmError": -0.85 }
+  ],
+  "clock": { "sync": "unknown" }
+}

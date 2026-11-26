@@ -6,14 +6,15 @@
 // card in Setup), by an id the call JSON and plugins use.
 
 import { useState } from "react";
-import { radioQuery, usePolled, type AppState, type SystemRef } from "../controller.ts";
-import { Card, Choice } from "../charts.tsx";
+import { mayEdit, radioQuery, usePolled, useSelect, type AppState, type SystemRef } from "../controller.ts";
+import { Card, Choice, Info } from "../charts.tsx";
 import { ago } from "../fmt.ts";
 import type { Conventional, SignalDef, System, ToneRow } from "../protocol.ts";
 import { PlayButton } from "../PlayButton.tsx";
 import { signalId } from "../rules.ts";
 import { showTodo } from "../Setup.tsx";
 import { addSignal } from "../Signals.tsx";
+import { unitIdText } from "../units.ts";
 import { running, type DashSystem } from "./data.ts";
 
 const rowKey = (r: ToneRow) => `${r.tg}|${r.pattern}|${r.knox}|${r.digits}|${r.tones.join(",")}`;
@@ -43,6 +44,7 @@ function systemOf(s: AppState, name: string): { sys: System | Conventional; at: 
 
 /** The tones log's table (rows as the recorder sent them). */
 export function ToneTable({ rows, system, at }: { rows: ToneRow[]; system: string; at: SystemRef | null }) {
+  const mdc = useSelect((x) => x.mdcUnits[system]);
   return (
     <div className="table-wrap tall">
       <table className="calls">
@@ -83,7 +85,7 @@ export function ToneTable({ rows, system, at }: { rows: ToneRow[]; system: strin
               </td>
               <td className="mono">{x.count}</td>
               <td className="small">{ago(x.last)}</td>
-              <td className="small">{x.radios.map((u) => u.name || u.unit).join(", ") || "—"}</td>
+              <td className="small">{x.radios.map((u) => u.name || unitIdText(mdc, u.unit)).join(", ") || "—"}</td>
               <td className="nowrap">
                 <PlayButton spec={x} />
                 {x.signals.length ? (
@@ -121,13 +123,26 @@ export function Tones({ s, sys, hours }: { s: AppState; sys: DashSystem; hours: 
     <Card title="Tones" id="tones">
       {own && (
         <div className="row">
-          <span className="muted small">
-            {defs.length ? `Signals of ${sys.name}: ${defs.map((d) => d.id).join(", ")}.` : "No signals yet: Add one heard below, or type one in from a paging list on the system's card in Setup."}
-          </span>
+          {defs.length ? (
+            <span className="row" aria-label={`Signals of ${sys.name}`}>
+              <span className="muted small">Signals</span>
+              {defs.map((d) => (
+                <span key={d.id} className="chip ok mono">
+                  {d.id}
+                </span>
+              ))}
+            </span>
+          ) : (
+            <span className="muted small">
+              No signals yet<Info>Add one heard below, or type one in from a paging list on the system's card in Setup.</Info>
+            </span>
+          )}
           <span className="spacer" />
-          <button className="btn ghost small" onClick={() => showTodo(typeof own.at === "number" ? `signals-${sys.name}` : `convsignals-${sys.name}`)}>
-            Signals in Setup
-          </button>
+          {mayEdit() && (
+            <button className="btn ghost small" onClick={() => showTodo(typeof own.at === "number" ? `signals-${sys.name}` : `convsignals-${sys.name}`)}>
+              Signals in Setup
+            </button>
+          )}
         </div>
       )}
       <div className="row">
@@ -144,11 +159,12 @@ export function Tones({ s, sys, hours }: { s: AppState; sys: DashSystem; hours: 
       </div>
       {shown.length === 0 ? (
         <p className="empty">
-          No tones heard in this span{show === "heard" && beeps ? ` (${beeps} beeps: speech taken for a tone, or tones in the background)` : ""}. Pages, alert tones, DTMF and
-          Morse IDs are found in the voice of every kind of call, and listed here as they're heard.
+          No tones heard in this span
+          {show === "heard" && beeps ? <span title="Speech taken for a tone, or tones in the background"> · {beeps} beeps</span> : null}
+          <Info>Pages, alert tones, DTMF and Morse IDs are found in the voice of every kind of call, and listed here as they're heard.</Info>
         </p>
       ) : (
-        <ToneTable rows={shown.slice(0, 300)} system={sys.name} at={own?.at ?? null} />
+        <ToneTable rows={shown.slice(0, 300)} system={sys.name} at={mayEdit() ? (own?.at ?? null) : null} />
       )}
       {shown.length > 300 && <p className="muted small">300 of {shown.length} shown.</p>}
     </Card>

@@ -12,7 +12,7 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"bladerf"`, `"hackrf"`, `"soapy"` or `"file"` (any case). Any other
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"hydrasdr"`, `"bladerf"`, `"hackrf"`, `"spyserver"`, `"soapy"` or `"file"` (any case). Any other
 `type`, or none, makes the file unreadable.
 
 The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
@@ -22,18 +22,54 @@ Anything else is refused when the file is read.
 
 These work the same way on every type; each type's table below repeats them with that type's default.
 
+### Name
+
+`name` is optional. It is shown beside the source's number ("Source 2 (Whip)") wherever a source is
+named: Setup, the RF page, the survey, to-dos and the log. That way you can tell radios apart by what
+they are for (an antenna, a band) as well as by their position in the list. It only names the source: it
+changes nothing about how the source records, and changing it while recording takes effect at once, with
+no restart. A system kept on particular sources (`receiveOn`) names the radio by its label
+(`"RTL-SDR SN 200"`, shown beside the title on the RF page), so renaming a source never moves anything
+off it.
+
 ### Center frequency and Auto
 
 `centerHz` is the frequency in the middle of the block of spectrum the source receives, in Hz.
-**`0` means Auto**: when recording starts, the app centers the source over whatever the sources
-before it in the list don't cover yet. It tries, in order: every uncovered system's control channels
-and known voice channels plus the conventional channels; just the control channels (and DMR and NXDN
-watched frequencies) plus the conventional channels; the first uncovered system with its voice
-channels; that system's control channels alone. It also keeps the center off any channel (the DC
-spike at the center of an SDR's band). If none of those fit, recording won't start until you set a
-center by hand.
+**`0` means Auto**: when recording starts, each Auto source in turn is centered over what the
+sources before it don't reach yet. What a system needs comes first: one of a P25 or SmartNet site's
+control channels; every control and watched frequency of a DMR, NXDN or EDACS site; every channel of a
+conventional system. Then the most of the remaining listed channels, packed so what's left needs as
+few more radios as possible. With everything reached, a spare source goes beside the others. The
+center is kept off every channel (the DC spike at the center of an SDR's band). If a source can't be
+placed, recording won't start until you set its center by hand.
 
 Setup shows where an Auto source will be placed under **Center frequency, MHz**.
+
+### Suggested settings
+
+Setup's **Radios** tab suggests a better center and sample rate for each source when there is one,
+for centers typed in as well as Auto ones. It tries the sources on Auto, and each source at each rate
+it runs at (an Airspy's or bladeRF's as the radio said when it was opened), and compares the results
+in this order:
+
+1. every system's needs reached;
+2. more of the channels reached: the ones the config lists, and the frequencies each system was heard
+   granting in the last week, by their calls (also those no source covered);
+3. fewer radios needed;
+4. a lower total sample rate, which means less CPU and USB traffic;
+5. the fewest changes.
+
+The suggestions never put an RTL-SDR past 2.4 MSPS, where many machines drop samples (a rate you set
+by hand stays).
+
+Only a strict improvement is suggested. A capture file's center and rate are the recording's, so they're
+never suggested. Each source's card says what to set, and **Use** takes it. A source is set back to
+Auto when Auto would place it there; otherwise the center is written in. The banner above the sources
+says what the suggestions do together, and **Apply all** takes them all. A source the others then make
+unnecessary says it can be removed.
+
+While recording, the RF page says when Setup has suggestions. When a channel a system needs is out of
+reach, Start's message names the settings that would reach it.
 
 ### Guard band and usable bandwidth
 
@@ -56,47 +92,56 @@ little wider.
 ### Frequency correction (`ppm`) and AutoTune
 
 `ppm` corrects the radio's frequency error, in parts per million. A frequency *f* is tuned as
-*f* / (1 + ppm × 10⁻⁶). On an RTL-SDR it must be a whole number; on the other types a fraction is
-fine.
+*f* / (1 + ppm × 10⁻⁶). An RTL-SDR takes whole ppm: a fraction is rounded when the dongle is opened
+(Setup offers only whole numbers). On the other types a fraction is used as it is.
 
 The error is measured all the time, on P25 and SmartNet control channels and on digital calls (P25,
 NXDN) a second or longer, and Setup shows it under the ppm field with a button to set the correction.
 With `autoTune` on, the measured error (the median of the last 20 measurements) is applied by itself:
 new voice channels open at the corrected frequency, and a P25 control channel more than 150 Hz off is
-reopened at it (at most every 200 s). Each source's error is kept for the next run (`tune.json` in
-the data folder), which starts from it until it measures its own.
+reopened at it (at most every 200 s). Each source's error is kept in the store for the next run, which
+starts from it until it measures its own.
+
+While recording, the dashboard's gain alert (on the **RF** page) has a **Tune gain** button that tries
+gains on the air and keeps the best. The trial gains aren't saved to the config. See the
+[radios guide](../guides/radios.md#gain-and-agc) and [`trunk-pro tune`](../command-line.md#tune).
 
 ## `"type": "rtlsdr"`
 
-An RTL-SDR dongle, driven directly over USB (no driver library needed).
+An RTL-SDR dongle, driven directly over USB (no driver library needed), or on another machine through its `rtl_tcp`
+server ([below](#an-rtl-sdr-on-the-network-rtl_tcp)).
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `type` | ✓ | | string | `"rtlsdr"` |
-| `serial` | ✓ | | string | The dongle's serial number. `""` = the first free dongle |
+| `serial` | | `""` | string | The dongle's serial number. `""` = the first free dongle |
+| `address` | | | string | Its `rtl_tcp` server, `host` or `host:port`, when it's on another machine. Left out: on USB |
 | `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
 | `rateHz` | ✓ | | number | Sample rate. 2 400 000 is typical; the interface offers 2 048 000, 2 560 000, 3 200 000, 1 920 000 and 1 024 000 too |
 | `gainDb` | | `25.4` | number | Tuner gain, dB. Ignored with `agc`. Most dongles go 0–49.6 |
 | `agc` | | `false` | bool | Use the tuner's AGC instead of `gainDb` |
-| `ppm` | ✓ | | integer | Frequency correction, whole ppm |
+| `biasTee` | | `false` | bool | Power an LNA through the antenna port (an RTL-SDR Blog V3 or V4). The desktop app's; the browser version leaves it as it is |
+| `ppm` | | `0` | number | Frequency correction, ppm. An RTL-SDR rounds it to a whole number |
 | `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 | `bufLen` | | `0` | integer | Bytes per USB transfer (Trunk Recorder's `buflen`), a multiple of 512, at most 16 MiB. `0` = 16 384. **USB transfer size** in Setup |
 | `buffers` | | `0` | integer | USB transfers kept in flight (Trunk Recorder's `buffers`), at most 256. `0` = enough for about 2 MiB: 128 at the default size, 32 at 65 536 |
+
+`rateHz` is one of an RTL2832U's two ranges, 225 001–300 000 or 900 001–3 200 000, and `gainDb` 0–50: anything else won't start.
 
 The defaults (128 transfers of 16 KiB) suit any number of dongles on one bus, so `bufLen` and
 `buffers` rarely need setting. A retune or gain change halts the dongle's output for a moment and
 changes only the tuner; the samples the chip dropped meanwhile (it counts them itself) are reported
 as dropped. A USB stall is cleared in place, without reopening the dongle.
 
-The native driver handles R820T and R828D tuners (the RTL-SDR Blog V3 and V4, and most current
-dongles) and the older Elonics E4000. The E4000 runs at zero IF, so a small DC spike sits at the
+The native driver handles R820T and R828D tuners (the RTL-SDR Blog V3, V4 and V4L, and most
+current dongles) and the older Elonics E4000. The E4000 runs at zero IF, so a small DC spike sits at the
 center frequency (keep a control channel off it); a manual `gain` is the nearest of its steps
 from -1 to 42 dB, and manual gain is better than AGC, which sits low. It can't tune about
 1090–1230 MHz. For a dongle with an FC0012, FC0013 or FC2580 tuner, use a `soapy` source with
 `"args": "driver=rtlsdr"`; see [other radios](../install/other-radios.md).
 
-Two dongles with the same serial can't be told apart. Give each its own with `rtl_eeprom -s`.
+Two dongles with the same serial, or with none, can't be told apart: Setup greys them out and says the `rtl_eeprom -s` to run to give each its own.
 
 ## `"type": "usrp"`
 
@@ -143,16 +188,59 @@ one is refused when opened, with a message to update it (`hackrf_spiflash`).
 
 A `soapy` source with `driver=hackrf` still works, for a rad1o or a HackRF behind SoapyRemote. On Windows the built-in HackRF driver isn't available yet: use a `soapy` source with `driver=hackrf` there.
 
+### An RTL-SDR on the network (`rtl_tcp`)
+
+An `rtlsdr` source with an `address` is a dongle on another machine, through its `rtl_tcp` server. Nothing to install here, and it
+works in Docker (not in the browser version, which can't open a TCP connection). Start the server where the dongle is
+(`rtl_tcp -a 0.0.0.0`, or with `-p` for another port); it serves **one client at a time**, so two sources can't share one address.
+
+```json
+{ "type": "rtlsdr", "address": "pi.local", "centerHz": 0, "rateHz": 2400000, "gainDb": 30, "biasTee": false, "ppm": 0 }
+```
+
+The port is `1234` unless the address gives one: `pi.local` is `pi.local:1234`, and a server started with `-p 4321` is
+`pi.local:4321`. An IPv6 address is written in brackets: `[fe80::1]` or `[fe80::1]:4321`. Its keys are a dongle's, but for `serial`,
+`bufLen` and `buffers`, which are USB's. A gain is set to the nearest step of the tuner the server names (an R820T / R828D has 29,
+0–49.6; an E4000 has 14), from the same tables as on USB; for any other tuner it is sent as given.
+
+`rtl_tcp` answers nothing, so what a source reports as its gain is the step it set (the log says when that isn't the `gainDb` asked). Whatever a previous client left set on the
+server (direct sampling, the digital AGC, the bias-T) is set again when a source connects. A lost connection is retried every few
+seconds, as an unplugged dongle is. The samples are 8-bit, as a dongle's own: 4.8 MB/s (38 Mbit/s) at 2.4 MSPS. A link too slow for
+that makes the server drop samples at its end; wire it where you can.
+An `rsp_tcp` server (an SDRplay) speaks the same protocol, in its 8-bit mode (not `-b 16`).
+
+## `"type": "spyserver"`
+
+A receiver on another machine, through Airspy's `spyserver`: an Airspy R2, Mini or HF+, or an RTL-SDR behind it. Nothing to
+install here, and it works in Docker. The source reads the server's I/Q stream at one of its decimation stages, so the samples are the
+receiver's own; its FFT stream isn't used.
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `type` | ✓ | | string | `"spyserver"` |
+| `address` | ✓ | | string | The server, `host` or `host:port` (port `5555` if left off) |
+| `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
+| `rateHz` | ✓ | | number | Sample rate: one the server offers, its top rate halved some number of times, each to the nearest whole Hz (an Airspy R2's server usually starts at 2.5, then 1.25 …). Another is refused, with the ones offered. The recorder asks the server when the address is saved, and Setup lists the rates it says, starting at the highest |
+| `iqFormat` | | `"cu8"` | string | How the I/Q travels, as a capture file's samples are: `"cu8"`, `"cs16"` or `"cf32"` (2, 4 or 8 bytes a sample). The server may insist on one of its own |
+| `gain` | | `14` | integer | The server's own gain step (an index into its gain table, not dB: an Airspy R2 has 0–21, an HF+ 0–8, an RTL-SDR 0–28), held to what the server has |
+| `digitalGainDb` | | automatic | integer | What the server multiplies the stream by before quantising it for the link, 0–60 dB; it is divided out again here, so levels don't change. Left out: 3 dB for each decimation stage, and for an R2 a dB more for each gain step below its top |
+| `autoTune` | | `false` | bool | Not used |
+| `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
+
+A server lets any number of clients listen but **only the first to connect can move the receiver**. A source that connects second
+keeps to a window inside what the first has tuned (it is refused with the window's limits when `centerHz` is outside it), and its `gain`
+is the first client's. `ppm` is not used: the receiver's own crystal is the server's.
+
 ## `"type": "airspy"`
 
-An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
+An Airspy R2 or Mini, by the driver built in: nothing to install ([Other radios](../install/other-radios.md#airspy)).
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
 | `type` | ✓ | | string | `"airspy"` |
 | `serial` | | `""` | string | Serial number in hex. `""` = the first found |
 | `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
-| `rateHz` | ✓ | | number | R2: 10 000 000 or 2 500 000. Mini: 6 000 000 or 3 000 000 |
+| `rateHz` | ✓ | | number | R2: 10 000 000 or 2 500 000. Mini: 6 000 000 or 3 000 000 (10 000 000 with newer firmware). Setup offers what the radio reports |
 | `gainMode` | | `"linearity"` | string | `"linearity"` (best near transmitters), `"sensitivity"` (best for weak signals) or `"manual"` (each stage set separately). Any other value is refused |
 | `gainStep` | | `14` | integer | Linearity or sensitivity step, 0–21 |
 | `lnaStep` | | `10` | integer | Manual mode: LNA step, 0–14 |
@@ -166,6 +254,29 @@ An Airspy R2 or Mini, through libairspy. libairspy must be installed separately.
 | `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 
 The Airspy gains are the driver's steps, not dB.
+
+## `"type": "hydrasdr"`
+
+A HydraSDR RFOne, driven directly over USB by the driver built in (nothing to install). Its tuner and gain stages are an Airspy R2's, so its gain is set the same way.
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `type` | ✓ | | string | `"hydrasdr"` |
+| `serial` | | `""` | string | Serial number in hex. `""` = the first found |
+| `centerHz` | ✓ | | number | Center frequency, Hz. `0` = Auto |
+| `rateHz` | ✓ | | number | 10 000 000, 5 000 000 or 2 500 000 |
+| `gainMode` | | `"linearity"` | string | `"linearity"`, `"sensitivity"` or `"manual"`, as an Airspy's |
+| `gainStep` | | `14` | integer | Linearity or sensitivity step, 0–21 |
+| `lnaStep` | | `10` | integer | Manual mode: LNA step, 0–14 |
+| `mixerStep` | | `10` | integer | Manual mode: mixer step, 0–15 |
+| `vgaStep` | | `10` | integer | Manual mode: VGA (IF) step, 0–15 |
+| `agc` | | `false` | bool | Manual mode: the RFOne's AGC sets the LNA and mixer (the VGA step still applies) |
+| `rfPort` | | `0` | integer | The input: `0` ANT, `1` CABLE1, `2` CABLE2 |
+| `biasTee` | | `false` | bool | Power an LNA through the ANT port (4.5 V, up to 300 mA). Only on ANT: with another `rfPort` the source won't start |
+| `packing` | | `true` | bool | Send 12-bit samples packed over USB |
+| `ppm` | | `0` | number | Frequency correction, ppm |
+| `autoTune` | | `false` | bool | Apply the measured frequency error by itself |
+| `guardHz` | | `75000` | number | Left unused at each edge of the band, Hz |
 
 ## `"type": "bladerf"`
 

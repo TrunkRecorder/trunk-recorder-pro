@@ -62,6 +62,14 @@ impl Protocol {
             Protocol::Edacs(_) => "edacs",
         }
     }
+
+    /// Its grants number talkgroups as its voice channels do (P25): a voice
+    /// channel naming another than its grant's was given away
+    /// ([`super::voice::reassigned`]). A SmartNet system's P25 voice names
+    /// its own numbers.
+    pub fn voice_names_grants(&self) -> bool {
+        matches!(self, Protocol::P25)
+    }
 }
 
 /// What a system's protocol has to show beyond what every system shows.
@@ -92,11 +100,22 @@ pub enum CarrierPlan {
 /// system checks against its site lock before following.
 #[derive(Clone, Debug)]
 pub struct Step {
-    /// Something decoded cleanly (it shows the control channel is alive).
+    /// Something decoded cleanly (it shows the control channel is alive):
+    /// [`Step::new`], the one rule every protocol's steps go by.
     pub good: bool,
     pub msgs: Vec<Message>,
     /// What the site has said about itself, as of these messages.
     pub identity: Identity,
+}
+
+impl Step {
+    /// What a block of the control channel came to: `msgs`, and the site's
+    /// `identity`. It's good — the control channel is alive — when the
+    /// protocol `decoded` something cleanly in it (its good count rose: an
+    /// idle block counts) or it said anything.
+    pub fn new(msgs: Vec<Message>, identity: Identity, decoded: bool) -> Step {
+        Step { good: decoded || !msgs.is_empty(), msgs, identity }
+    }
 }
 
 /// One trunking protocol's control channel(s): IQ in, [`Step`]s out.
@@ -115,6 +134,12 @@ pub trait ControlChannel: Send {
     fn flush(&mut self, _out: &mut Vec<Step>) {}
     /// Blocks decoded cleanly and lost, so far.
     fn counts(&self) -> (u64, u64);
+    /// What those blocks are called, plural ("TSBKs"), for summaries.
+    fn blocks(&self) -> &'static str;
+    /// Its symbol rate, baud, when it counts the air its blocks account for (`airSym`).
+    fn symbol_rate(&self) -> Option<u32> {
+        None
+    }
     /// How far off the control channel comes in, Hz, when known (AutoTune,
     /// the dashboard). No default: each protocol says.
     fn offset_hz(&self) -> Option<f32>;
@@ -146,6 +171,12 @@ pub trait ControlChannel: Send {
     fn patch_hold_s(&self) -> f64 {
         patches::P25_HOLD_S
     }
+    /// It sends a call's grant again every few seconds while the call goes on, its hang time
+    /// too, maybe less often than the call timeout (DMR's Late Entry): calls are held as long as
+    /// it's heard repeating ([`super::calls::CallManager::hold_repeats`]).
+    fn repeats_grants(&self) -> bool {
+        false
+    }
     /// How its analog calls are demodulated.
     fn analog(&self) -> AnalogTuning {
         AnalogTuning::default()
@@ -159,8 +190,17 @@ pub trait ControlChannel: Send {
     /// What the dashboard shows of it beyond what every system shows.
     fn status(&self) -> ProtocolStatus;
     /// Its receivers' measurements for the dashboard's history (framing,
-    /// eye opening, deviation…; see [`crate::metrics`]). Default: none.
-    fn report(&self, _sink: &mut dyn Sink) {}
+    /// eye opening, deviation…; see [`crate::metrics`]). Default: what every
+    /// control channel knows of its carrier, its offset and eye opening (a
+    /// protocol with more says those too).
+    fn report(&self, sink: &mut dyn Sink) {
+        if let Some(off) = self.offset_hz() {
+            sink.gauge("offset", off as f64);
+        }
+        if let Some(sep) = self.quality().sep {
+            sink.gauge("sep", sep as f64);
+        }
+    }
     /// How well its receiver hears the control channel (the dashboard's).
     fn quality(&self) -> super::voice::ChannelQuality;
 }
@@ -177,6 +217,10 @@ pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
             good: 0,
             bad: 0,
             air: 0,
+            sync_end_s: None,
+            unsynced_s: 0.0,
+            pushed: 0,
+            sync_loss_sym: 0,
             notes: Vec::new(),
             t0: 0.0,
             rate,
@@ -186,16 +230,18 @@ pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
             let ccs: Vec<u64> = cfg.control_channels.iter().map(|&f| f.round() as u64).collect();
             let site = edacs::site::Site::new(ec.clone(), &ccs, rate);
             let note = format!("Watching {} EDACS frequencies (the control channel, and each channel to check the list)", site.carriers().len());
-            Box::new(Edacs { site, identity: Identity::default(), note })
+            Box::new(Watched { site, note })
         }
         Protocol::Dmr(dc) => {
-            let note = format!("Watching {} DMR frequencies", cfg.control_channels.len() + dc.channels.len());
-            Box::new(Dmr { site: dmr::Site::new(&cfg.control_channels, rate, dc.clone()), note })
+            let site = dmr::Site::new(&cfg.control_channels, rate, dc.clone());
+            let note = format!("Watching {} DMR frequencies", site.carriers.len());
+            Box::new(Watched { site, note })
         }
         Protocol::Nxdn(nc) => {
             let what = if nc.kind == nxdn::trunking::Kind::TypeD { "repeaters" } else { "frequencies" };
-            let note = format!("Watching {} NXDN {what} ({})", cfg.control_channels.len() + nc.channels.len(), nc.kind.name());
-            Box::new(Nxdn { site: nxdn::trunking::Site::new(&cfg.control_channels, rate, nc.clone()), note })
+            let site = nxdn::trunking::Site::new(&cfg.control_channels, rate, nc.clone());
+            let note = format!("Watching {} NXDN {what} ({})", site.carriers.len(), nc.kind.name());
+            Box::new(Watched { site, note })
         }
     }
 }
@@ -212,11 +258,31 @@ struct P25 {
     bad: u64,
     /// Symbols of air the decoded blocks account for (see [`crate::p25::diversity::air_symbols`]).
     air: u64,
+    /// Time without frame sync, between frames: a control channel sends without
+    /// a pause, so a gap between one frame's end and the next's start is time no
+    /// receiver framed. `sync_end_s`: where the last frame ended (None: since a
+    /// restart); `unsynced_s`: the gaps closed; `pushed`: samples in since the
+    /// bank started (frames' `sample` counts from there too, `t0` being the
+    /// tap's start); `sync_loss_sym`: the symbols of both, as of the last push (a counter: it only grows).
+    sync_end_s: Option<f64>,
+    unsynced_s: f64,
+    pushed: u64,
+    sync_loss_sym: u64,
     notes: Vec<(NoteLevel, String)>,
     /// The last push's start time and rate (for the flush).
     t0: f64,
     rate: f64,
 }
+
+/// P25 Phase 1's symbol rate, symbols a second.
+const P25_SYMBOL_RATE: f64 = 4800.0;
+
+/// A gap between control channel frames shorter than this is the framer's
+/// rounding, not lost sync, s.
+const SYNC_GAP_S: f64 = 0.005;
+/// A gap still open is counted less this: the frames the receivers hold
+/// while they pick the best copy, not yet out, s.
+const SYNC_PENDING_S: f64 = 0.5;
 
 impl P25 {
     fn groups(&mut self, groups: &[Group], out: &mut Vec<Step>) {
@@ -228,6 +294,13 @@ impl P25 {
             let cf = control_frame(g, f.nid.duid);
             self.bad += cf.lost as u64;
             self.air += cf.air;
+            let end = t + cf.framed as f64 / P25_SYMBOL_RATE;
+            if let Some(e) = self.sync_end_s
+                && t - e > SYNC_GAP_S
+            {
+                self.unsynced_s += t - e;
+            }
+            self.sync_end_s = Some(self.sync_end_s.map_or(end, |e| e.max(end)));
             for o in &cf.osps {
                 self.good += 1;
                 let msgs = self.parser.parse(o, f.nid.nac, t);
@@ -245,7 +318,7 @@ impl P25 {
                         _ => {}
                     }
                 }
-                out.push(Step { good: true, msgs, identity: self.identity.clone() });
+                out.push(Step::new(msgs, self.identity.clone(), true));
             }
         }
     }
@@ -262,12 +335,18 @@ impl ControlChannel for P25 {
         self.bank.report(sink);
         // A rate: over the symbol rate, the share of the channel's air decoded.
         sink.counter("airSym", self.air);
+        // A rate: over the symbol rate, the share of the time running without frame sync.
+        sink.counter("syncLossSym", self.sync_loss_sym);
     }
     fn plan(&self) -> CarrierPlan {
         CarrierPlan::Hunt { cutoff_hz: P25_CUTOFF_HZ }
     }
     fn restart(&mut self, rate: f64) {
         self.bank = Bank::new(rate, self.bank_cfg);
+        // Time stopped isn't time without sync (gaps already counted stay counted);
+        // the new bank counts samples from 0.
+        self.sync_end_s = None;
+        self.pushed = 0;
     }
     fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
         std::mem::take(&mut self.notes)
@@ -278,6 +357,7 @@ impl ControlChannel for P25 {
     }
     fn push(&mut self, _carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
         (self.t0, self.rate) = (t0, rate);
+        self.pushed += iq.len() as u64;
         let mut groups = Vec::new();
         let was = self.bank.detected();
         self.bank.push(iq, &mut groups);
@@ -286,6 +366,10 @@ impl ControlChannel for P25 {
             self.notes.push((NoteLevel::Info, format!("Modulation detected: {what}; only its receivers run now (set modulation \"{setting}\" to skip detecting it)")));
         }
         self.groups(&groups, out);
+        // The gaps closed, and the one still open (less the frames the receivers still hold).
+        let pushed_s = t0 + self.pushed as f64 / rate;
+        let open = self.sync_end_s.map_or(0.0, |e| (pushed_s - e - SYNC_PENDING_S).max(0.0));
+        self.sync_loss_sym = self.sync_loss_sym.max(((self.unsynced_s + open) * P25_SYMBOL_RATE) as u64);
     }
     fn flush(&mut self, out: &mut Vec<Step>) {
         let mut groups = Vec::new();
@@ -295,6 +379,12 @@ impl ControlChannel for P25 {
     fn counts(&self) -> (u64, u64) {
         (self.good, self.bad)
     }
+    fn blocks(&self) -> &'static str {
+        "TSBKs"
+    }
+    fn symbol_rate(&self) -> Option<u32> {
+        Some(P25_SYMBOL_RATE as u32)
+    }
     fn offset_hz(&self) -> Option<f32> {
         self.bank.offset_hz()
     }
@@ -302,14 +392,14 @@ impl ControlChannel for P25 {
         true
     }
     fn identity_fields(&self) -> &'static [IdField] {
-        &IdField::ALL
+        &[IdField::Nac, IdField::Wacn, IdField::SysId, IdField::Rfss, IdField::Site]
     }
     fn voice_params(&self, id: &Identity) -> VoiceParams {
         let tdma_key = match (id.nac(), id.sys_id(), id.wacn()) {
             (Some(nac), Some(sys), Some(wacn)) => Some((nac as u32, sys, wacn)),
             _ => None,
         };
-        VoiceParams { tdma_key, nac: id.nac().map(|n| n as u16) }
+        VoiceParams { tdma_key, nac: id.nac().map(|n| n as u16), ..Default::default() }
     }
     fn modulation(&self) -> &'static str {
         if let Some(m) = self.bank.detected() {
@@ -374,13 +464,16 @@ impl ControlChannel for Smartnet {
         self.bad += bad - bad0;
         self.identity.set_opt(IdField::SysId, cc.parser.sys_id);
         self.identity.set_opt(IdField::Site, cc.parser.site);
-        out.push(Step { good: good > good0, msgs, identity: self.identity.clone() });
+        out.push(Step::new(msgs, self.identity.clone(), good > good0));
     }
     fn forget_site(&mut self) {
         self.identity = Identity::default();
     }
     fn counts(&self) -> (u64, u64) {
         (self.good, self.bad)
+    }
+    fn blocks(&self) -> &'static str {
+        "OSWs"
     }
     fn offset_hz(&self) -> Option<f32> {
         self.cc.as_ref().map(|c| c.offset_hz())
@@ -403,46 +496,170 @@ impl ControlChannel for Smartnet {
     }
 }
 
-/// EDACS: every frequency of the site watched at once ([`edacs::site::Site`]):
-/// the control channel wherever it is, and each LCN's frequency checked (and
-/// learned) by which carrier keys when a call is assigned it. The identity
-/// is the site's ID.
-struct Edacs {
-    site: edacs::site::Site,
-    identity: Identity,
+/// A site watched whole — every frequency it may use, each with a receiver
+/// of its own — as EDACS, trunked DMR and NXDN are: what [`Watched`] asks of
+/// it, the same for each, and what its protocol says of itself.
+trait WatchedSite: Send {
+    /// The frequencies watched, Hz.
+    fn carriers_hz(&self) -> Vec<f64>;
+    /// Each carrier's channel filter, Hz.
+    fn cutoff_hz(&self) -> f64;
+    /// IQ of carrier `carrier`, whose first sample was at air time `t0`, at `rate`.
+    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Message>);
+    /// Control blocks decoded and lost.
+    fn counts(&self) -> (u64, u64);
+    /// What the site says it is.
+    fn identity(&self) -> Identity;
+    fn forget_site(&mut self) {}
+    /// The carrier sending control blocks now.
+    fn control_hz(&self) -> Option<u64>;
+    /// How far off that carrier comes in, Hz (AutoTune).
+    fn offset_hz(&self) -> Option<f32>;
+    fn quality(&self) -> super::voice::ChannelQuality;
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)>;
+    /// The channel table learned, to keep between runs, and back.
+    fn map_to_string(&self) -> String;
+    fn map_from_str(&mut self, s: &str);
+    // What the protocol says of itself:
+    fn name(&self) -> &'static str;
+    fn blocks(&self) -> &'static str;
+    fn identity_fields(&self) -> &'static [IdField];
+    fn modulation(&self) -> &'static str;
+    fn status(&self) -> ProtocolStatus;
+    fn voice_params(&self) -> VoiceParams {
+        VoiceParams::default()
+    }
+    fn patch_hold_s(&self) -> f64 {
+        patches::P25_HOLD_S
+    }
+    fn repeats_grants(&self) -> bool {
+        false
+    }
+    fn analog(&self) -> AnalogTuning {
+        AnalogTuning::default()
+    }
+}
+
+/// A watched site as a control channel: one way for all of them.
+struct Watched<S> {
+    site: S,
+    /// What's said when it starts ("Watching 6 DMR frequencies").
     note: String,
 }
 
-impl ControlChannel for Edacs {
+impl<S: WatchedSite> ControlChannel for Watched<S> {
     fn name(&self) -> &'static str {
-        "EDACS"
+        self.site.name()
     }
     fn plan(&self) -> CarrierPlan {
-        CarrierPlan::Watch { carriers: self.site.carriers(), cutoff_hz: edacs::CHANNEL_CUTOFF_HZ, note: self.note.clone() }
+        CarrierPlan::Watch { carriers: self.site.carriers_hz(), cutoff_hz: self.site.cutoff_hz(), note: self.note.clone() }
     }
     fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
-        let (good0, _) = self.site.counts();
+        let good0 = self.site.counts().0;
         let mut msgs = Vec::new();
         self.site.push(carrier, iq, t0, rate, &mut msgs);
-        let good = self.site.counts().0 > good0;
-        self.identity.set_opt(IdField::Site, self.site.parser.site);
-        out.push(Step { good: good || !msgs.is_empty(), msgs, identity: self.identity.clone() });
+        let decoded = self.site.counts().0 > good0;
+        out.push(Step::new(msgs, self.site.identity(), decoded));
     }
     fn forget_site(&mut self) {
-        self.identity = Identity::default();
+        self.site.forget_site();
     }
     fn counts(&self) -> (u64, u64) {
         self.site.counts()
     }
+    fn blocks(&self) -> &'static str {
+        self.site.blocks()
+    }
     fn offset_hz(&self) -> Option<f32> {
         self.site.offset_hz()
+    }
+    fn identity_fields(&self) -> &'static [IdField] {
+        self.site.identity_fields()
+    }
+    fn voice_params(&self, _identity: &Identity) -> VoiceParams {
+        self.site.voice_params()
+    }
+    fn modulation(&self) -> &'static str {
+        self.site.modulation()
+    }
+    fn control_hz(&self) -> Option<u64> {
+        self.site.control_hz()
+    }
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
+        self.site.take_notes()
+    }
+    fn patch_hold_s(&self) -> f64 {
+        self.site.patch_hold_s()
+    }
+    fn repeats_grants(&self) -> bool {
+        self.site.repeats_grants()
+    }
+    fn analog(&self) -> AnalogTuning {
+        self.site.analog()
+    }
+    fn bandplan(&self) -> String {
+        self.site.map_to_string()
+    }
+    fn load_bandplan(&mut self, s: &str) {
+        self.site.map_from_str(s);
+    }
+    fn status(&self) -> ProtocolStatus {
+        self.site.status()
+    }
+    fn quality(&self) -> super::voice::ChannelQuality {
+        self.site.quality()
+    }
+}
+
+/// EDACS: every frequency of the site watched at once ([`edacs::site::Site`]):
+/// the control channel wherever it is, and each LCN's frequency checked (and
+/// learned) by which carrier keys when a call is assigned it. The identity
+/// is the site's ID.
+impl WatchedSite for edacs::site::Site {
+    fn carriers_hz(&self) -> Vec<f64> {
+        self.carriers()
+    }
+    fn cutoff_hz(&self) -> f64 {
+        edacs::CHANNEL_CUTOFF_HZ
+    }
+    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Message>) {
+        edacs::site::Site::push(self, carrier, iq, t0, rate, out);
+    }
+    fn counts(&self) -> (u64, u64) {
+        edacs::site::Site::counts(self)
+    }
+    fn identity(&self) -> Identity {
+        let mut id = Identity::default();
+        id.set_opt(IdField::Site, self.parser.site);
+        id
+    }
+    fn forget_site(&mut self) {
+        self.parser.forget_site();
+    }
+    fn control_hz(&self) -> Option<u64> {
+        edacs::site::Site::control_hz(self)
+    }
+    fn offset_hz(&self) -> Option<f32> {
+        edacs::site::Site::offset_hz(self)
     }
     /// (Its 2FSK receiver doesn't measure an eye opening.)
     fn quality(&self) -> super::voice::ChannelQuality {
         Default::default()
     }
-    fn control_hz(&self) -> Option<u64> {
-        self.site.control_hz()
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
+        edacs::site::Site::take_notes(self).into_iter().map(|(warn, t)| (if warn { NoteLevel::Warning } else { NoteLevel::Info }, t)).collect()
+    }
+    fn map_to_string(&self) -> String {
+        edacs::site::Site::map_to_string(self)
+    }
+    fn map_from_str(&mut self, s: &str) {
+        edacs::site::Site::map_from_str(self, s);
+    }
+    fn name(&self) -> &'static str {
+        "EDACS"
+    }
+    fn blocks(&self) -> &'static str {
+        "messages"
     }
     fn identity_fields(&self) -> &'static [IdField] {
         &[IdField::Site]
@@ -450,8 +667,8 @@ impl ControlChannel for Edacs {
     fn modulation(&self) -> &'static str {
         "2FSK 9600"
     }
-    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
-        self.site.take_notes().into_iter().map(|(warn, t)| (if warn { NoteLevel::Warning } else { NoteLevel::Info }, t)).collect()
+    fn status(&self) -> ProtocolStatus {
+        ProtocolStatus::Edacs
     }
     fn patch_hold_s(&self) -> f64 {
         patches::SMARTNET_HOLD_S
@@ -460,127 +677,209 @@ impl ControlChannel for Edacs {
     fn analog(&self) -> AnalogTuning {
         AnalogTuning { data_mute: true, ..AnalogTuning::default() }
     }
-    fn bandplan(&self) -> String {
-        self.site.map_to_string()
-    }
-    fn load_bandplan(&mut self, s: &str) {
-        self.site.map_from_str(s);
-    }
-    fn status(&self) -> ProtocolStatus {
-        ProtocolStatus::Edacs
-    }
 }
 
 /// Trunked DMR: every carrier of the site at once (link control and CSBKs).
-/// Sites are told apart by colour code, not by the site lock.
-struct Dmr {
-    site: dmr::Site,
-    note: String,
-}
-
-impl ControlChannel for Dmr {
-    fn name(&self) -> &'static str {
-        "DMR"
+/// Sites are told apart by colour code; it states that (and Tier III its
+/// network and site) as its identity.
+impl WatchedSite for dmr::Site {
+    fn carriers_hz(&self) -> Vec<f64> {
+        self.carriers.iter().map(|c| c.hz as f64).collect()
     }
-    fn plan(&self) -> CarrierPlan {
-        CarrierPlan::Watch { carriers: self.site.carriers.iter().map(|c| c.hz as f64).collect(), cutoff_hz: dmr::CHANNEL_CUTOFF_HZ, note: self.note.clone() }
+    fn cutoff_hz(&self) -> f64 {
+        dmr::CHANNEL_CUTOFF_HZ
     }
-    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
-        let mut msgs = Vec::new();
-        self.site.push(carrier, iq, t0, rate, &mut msgs);
-        out.push(Step { good: !msgs.is_empty(), msgs, identity: Identity::default() });
+    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Message>) {
+        dmr::Site::push(self, carrier, iq, t0, rate, out);
     }
     fn counts(&self) -> (u64, u64) {
         // Blocks (CSBKs, link control) decoded and lost, on every carrier.
-        let slots = || self.site.carriers.iter().flat_map(|c| c.chan.slots.iter());
+        let slots = || self.carriers.iter().flat_map(|c| c.chan.slots.iter());
         (slots().map(|s| s.good_blocks).sum(), slots().map(|s| s.bad_blocks).sum())
     }
-    fn modulation(&self) -> &'static str {
-        self.site.variant.map_or("DMR", |v| v.name())
+    fn identity(&self) -> Identity {
+        dmr::Site::identity(self).clone()
     }
     fn control_hz(&self) -> Option<u64> {
-        self.site.control_hz()
+        dmr::Site::control_hz(self)
     }
     /// The carrier sending control blocks now: its receiver's.
     fn offset_hz(&self) -> Option<f32> {
-        self.site.offset_hz()
+        dmr::Site::offset_hz(self)
     }
     fn quality(&self) -> super::voice::ChannelQuality {
-        super::voice::ChannelQuality { sep: self.site.quality(), phase_err_deg: None }
+        super::voice::ChannelQuality { sep: dmr::Site::quality(self), phase_err_deg: None }
     }
     fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
         // (All news: the colour code, the variant, channels learned.)
-        self.site.take_notes().into_iter().map(|t| (NoteLevel::Info, t)).collect()
+        dmr::Site::take_notes(self).into_iter().map(|t| (NoteLevel::Info, t)).collect()
     }
-    fn bandplan(&self) -> String {
-        self.site.map_to_string()
+    fn map_to_string(&self) -> String {
+        dmr::Site::map_to_string(self)
     }
-    fn load_bandplan(&mut self, s: &str) {
-        self.site.map_from_str(s);
+    fn map_from_str(&mut self, s: &str) {
+        dmr::Site::map_from_str(self, s);
+    }
+    fn name(&self) -> &'static str {
+        "DMR"
+    }
+    fn blocks(&self) -> &'static str {
+        "blocks"
+    }
+    /// Its colour code; Tier III and Capacity Max (and a site not known yet) also its network
+    /// and site, which Capacity Plus, Connect Plus and XPT never send. (A configured colour
+    /// code holds the site to its own; [`IdField`]s add nothing to that unless a site lock
+    /// names them.)
+    fn identity_fields(&self) -> &'static [IdField] {
+        match self.variant {
+            Some(dmr::Variant::CapacityPlus | dmr::Variant::ConnectPlus | dmr::Variant::Xpt) => &[IdField::ColorCode],
+            _ => &[IdField::ColorCode, IdField::Network, IdField::Site],
+        }
+    }
+    fn modulation(&self) -> &'static str {
+        self.variant.map_or("DMR", |v| v.name())
     }
     fn status(&self) -> ProtocolStatus {
-        ProtocolStatus::Dmr(self.site.status())
+        ProtocolStatus::Dmr(dmr::Site::status(self))
+    }
+    fn voice_params(&self) -> VoiceParams {
+        VoiceParams { dmr: self.variant, ..Default::default() }
+    }
+    /// A Tier III site repeats a kept channel's grant, Late Entry set, at intervals the network
+    /// chooses (5.3 s measured on one, against the 3 s call timeout).
+    fn repeats_grants(&self) -> bool {
+        true
     }
 }
 
 /// Trunked NXDN: every carrier of the site at once (CAC on the control
 /// channel; VCALL / SCCH on the traffic channels). Type-C sites state their
 /// system and site code (SITE_INFO), which the site lock checks.
-struct Nxdn {
-    site: nxdn::trunking::Site,
-    note: String,
-}
-
-impl ControlChannel for Nxdn {
+impl WatchedSite for nxdn::trunking::Site {
+    fn carriers_hz(&self) -> Vec<f64> {
+        self.carriers.iter().map(|c| c.hz as f64).collect()
+    }
+    fn cutoff_hz(&self) -> f64 {
+        nxdn::trunking::Site::status(self).rate.unwrap_or(nxdn::Rate::N96).cutoff_hz()
+    }
+    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Message>) {
+        nxdn::trunking::Site::push(self, carrier, iq, t0, rate, out);
+    }
+    fn counts(&self) -> (u64, u64) {
+        nxdn::trunking::Site::counts(self)
+    }
+    fn identity(&self) -> Identity {
+        nxdn::trunking::Site::identity(self).clone()
+    }
+    fn control_hz(&self) -> Option<u64> {
+        nxdn::trunking::Site::control_hz(self)
+    }
+    /// The carrier sending control blocks now: its receiver's.
+    fn offset_hz(&self) -> Option<f32> {
+        nxdn::trunking::Site::offset_hz(self)
+    }
+    fn quality(&self) -> super::voice::ChannelQuality {
+        super::voice::ChannelQuality { sep: nxdn::trunking::Site::quality(self), phase_err_deg: None }
+    }
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
+        nxdn::trunking::Site::take_notes(self)
+    }
+    fn map_to_string(&self) -> String {
+        nxdn::trunking::Site::map_to_string(self)
+    }
+    fn map_from_str(&mut self, s: &str) {
+        nxdn::trunking::Site::map_from_str(self, s);
+    }
     fn name(&self) -> &'static str {
         "NXDN"
     }
-    fn plan(&self) -> CarrierPlan {
-        let cutoff_hz = self.site.status().rate.unwrap_or(nxdn::Rate::N96).cutoff_hz();
-        CarrierPlan::Watch { carriers: self.site.carriers.iter().map(|c| c.hz as f64).collect(), cutoff_hz, note: self.note.clone() }
-    }
-    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Step>) {
-        let (good0, _) = self.site.counts();
-        let mut msgs = Vec::new();
-        self.site.push(carrier, iq, t0, rate, &mut msgs);
-        let good = self.site.counts().0 > good0;
-        out.push(Step { good: good || !msgs.is_empty(), msgs, identity: self.site.identity().clone() });
-    }
-    fn counts(&self) -> (u64, u64) {
-        self.site.counts()
+    fn blocks(&self) -> &'static str {
+        "CAC frames"
     }
     fn identity_fields(&self) -> &'static [IdField] {
-        match self.site.kind() {
-            nxdn::trunking::Kind::TypeC => &[IdField::SysId, IdField::Site],
-            nxdn::trunking::Kind::TypeD => &[],
+        match self.kind() {
+            nxdn::trunking::Kind::TypeC => &[IdField::SysId, IdField::Site, IdField::Ran],
+            nxdn::trunking::Kind::TypeD => &[IdField::Ran],
         }
     }
     fn modulation(&self) -> &'static str {
-        match self.site.status().rate {
+        match nxdn::trunking::Site::status(self).rate {
             Some(nxdn::Rate::N96) => "NXDN96",
             _ => "NXDN48",
         }
     }
-    fn control_hz(&self) -> Option<u64> {
-        self.site.control_hz()
-    }
-    /// The carrier sending control blocks now: its receiver's.
-    fn offset_hz(&self) -> Option<f32> {
-        self.site.offset_hz()
-    }
-    fn quality(&self) -> super::voice::ChannelQuality {
-        super::voice::ChannelQuality { sep: self.site.quality(), phase_err_deg: None }
-    }
-    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
-        self.site.take_notes()
-    }
-    fn bandplan(&self) -> String {
-        self.site.map_to_string()
-    }
-    fn load_bandplan(&mut self, s: &str) {
-        self.site.map_from_str(s);
-    }
     fn status(&self) -> ProtocolStatus {
-        ProtocolStatus::Nxdn(self.site.status())
+        ProtocolStatus::Nxdn(nxdn::trunking::Site::status(self))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What a control channel reports: its counters, by name.
+    #[derive(Default)]
+    struct Counters(std::collections::BTreeMap<String, u64>);
+    impl Sink for Counters {
+        fn counter(&mut self, name: &str, total: u64) {
+            self.0.insert(name.to_string(), total);
+        }
+        fn gauge(&mut self, _: &str, _: f64) {}
+    }
+
+    /// A P25 control channel's TSDU frame as dibits: sync, NID, its TSBKs'
+    /// air (zeros: they won't decode, but the frame is framed all the same),
+    /// status symbols where they go.
+    fn tsdu(nac: u16) -> Vec<u8> {
+        use crate::p25::frame::{encode_nid, TSDU};
+        const SYNC: u64 = 0x5575_F5FF_77FF;
+        let nid = encode_nid(nac, TSDU);
+        let mut bits = (0..64).map(|i| ((nid >> (63 - i)) & 1) as u8);
+        let mut d: Vec<u8> = (0..24).map(|k| ((SYNC >> (2 * (23 - k))) & 3) as u8).collect();
+        for p in 24..360 {
+            d.push(if (p + 1) % 36 == 0 { 0b01 } else { bits.next().unwrap_or(0) << 1 | bits.next().unwrap_or(0) });
+        }
+        d
+    }
+
+    /// The time a control channel runs without frame sync is counted from
+    /// the gaps between its frames: none while frames run back to back, the
+    /// gap's length after a second of nothing, and it never goes down.
+    #[test]
+    fn time_without_frame_sync_is_the_gaps_between_frames() {
+        let rate = 37_500.0;
+        let frames: Vec<u8> = (0..40).flat_map(|_| tsdu(0x293)).collect(); // 3 s
+        let mut ph = 0.0;
+        let mut iq = crate::p25::synth::modulate(&frames, rate, 0.0, 0.3, &mut ph);
+        let first = iq.len();
+        iq.extend(vec![Complex32::default(); rate as usize]); // 1 s of nothing
+        iq.extend(crate::p25::synth::modulate(&frames, rate, 0.0, 0.3, &mut ph));
+        iq.extend(vec![Complex32::default(); (0.3 * rate) as usize]);
+        crate::nxdn::synth::add_noise(&mut iq, 0.01, &mut 1);
+        let cfg = SiteConfig { protocol: Protocol::P25, ..Default::default() };
+        let mut cc = build(&cfg, rate);
+        let (mut out, mut reported) = (Vec::new(), Vec::new());
+        for (k, c) in iq.chunks(1875).enumerate() {
+            // (Its tap's start time: frames count samples from there.)
+            cc.push(0, c, 0.0, rate, &mut out);
+            let mut n = Counters::default();
+            cc.report(&mut n);
+            reported.push((k * 1875, n.0.get("syncLossSym").copied().unwrap_or(0)));
+        }
+        let at = |sample: usize| reported.iter().rev().find(|(s, _)| *s <= sample).map_or(0, |(_, n)| *n);
+        assert!(at(first - 1875) < 100, "back to back: none ({})", at(first - 1875));
+        let total = reported.last().unwrap().1;
+        assert!((4300..=5600).contains(&total), "a second of nothing is about 4800 symbols: {total}");
+        assert!(reported.windows(2).all(|w| w[1].1 >= w[0].1), "only grows");
+    }
+
+    /// A voice channel naming another talkgroup ends a call only where grants
+    /// number talkgroups as the voice does: a SmartNet system's P25 voice
+    /// names its own (the reference capture's calls were cut into pieces).
+    #[test]
+    fn only_p25_voice_names_its_grants_talkgroups() {
+        assert!(Protocol::P25.voice_names_grants());
+        let bandplan = crate::smartnet::Bandplan::from_config("400_custom", 459_000_000.0, 10_000.0, 380, 461_000_000.0).unwrap();
+        assert!(!Protocol::SmartNet(SmartnetConfig { bandplan, analog_default: false }).voice_names_grants());
     }
 }

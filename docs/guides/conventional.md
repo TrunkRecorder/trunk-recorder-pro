@@ -22,6 +22,7 @@ Each channel has a mode:
 | DMR | `dmr` | DMR Tier II; both slots, each recording its own calls (the channel is opened 6.25 kHz wide, as for trunked DMR) |
 | NXDN48 | `nxdn48` | NXDN at 4800 bps (6.25 kHz) |
 | NXDN96 | `nxdn96` | NXDN at 9600 bps (12.5 kHz) |
+| Auto | `auto` | Whatever turns up: analog FM, P25, DMR or NXDN (see [Auto](#auto)) |
 
 One list can mix modes. A config can have trunked systems, conventional channels, or both. With
 no trunked system at all, it records conventional channels only.
@@ -41,12 +42,18 @@ A frequency can belong to only one conventional system.
 
 Plugins treat each conventional system as one more system. Systems are numbered from 0: the
 trunked systems being recorded first, then the conventional ones. That number is what
-`{sys_num}` gives in a [file name format](recordings.md#tokens), and what upload plugins see. It
-can change when you add, remove or switch off a system, so plugins go by short name.
+`{sys_num}` gives in a [file name format](../configuration/recording.md#file-names), and what upload plugins see. It
+can change when you add, remove or switch off a system, so plugins are also given the system's
+`system_id`, which stays the same through renames and runs.
 
 ## Adding channels
 
 ### In the interface
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/setup-conventional-dark.png">
+  <img src="../img/shots/setup-conventional-light.png" alt="The Conventional tab of Setup">
+</picture>
 
 Open **Setup**, then the **Conventional** tab, and click **Add a conventional system**. In the
 panel that appears:
@@ -55,35 +62,31 @@ panel that appears:
    if you like, a **Name** such as "County Fire".
 2. Type frequencies in MHz into **Add frequencies, MHz** (for example `154.430, 155.100,
    460.125`), pick the mode beside it, and click **Add**. Or click **Add a channel** for one row.
-3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (analog
-   only; see [Bandwidth](#bandwidth)), **Records** (what it takes, as chips), **Name** (the alpha
+3. Fill in the table. Each row has **On**, **Frequency, MHz**, **Mode**, **Bandwidth** (FM, AM
+   and auto; see [Bandwidth](#bandwidth)), **Records** (what it takes, as chips), **Name** (the alpha
    tag), **TG Number** and **Squelch**. **Edit** opens the rest of the row: its **Code**, DMR's
    **Slot** and a digital row's **Match TG**, and the **Description**, **Tag** and **Category** its
    calls carry (offering the tags and categories the system uses already). A row's tag and category
    show under its name.
-4. Leave **Squelch, dB above noise** at 8 to start with. See [Tuning the squelch](#tuning-the-squelch).
+4. Leave **Squelch, dB** at 8 to start with. See [Tuning the squelch](#tuning-the-squelch).
 
 The **TG Number** column is the number calls are filed under: in file names, the call JSON and
-uploads. Leave it blank and it defaults to the frequency in kHz (154.430 MHz becomes 154430),
-which stays the same however you reorder the list. A second row on the same frequency gets that
-number with a digit added (1543251, 1543252, ...). A digital (P25, DMR or NXDN) row with no
-TG Number is filed under the talkgroup the radio sends, when it sends one. The air's number is also
-written to the call JSON as `talkgroup_ota`.
+uploads. Left blank, an analog row files under the frequency in kHz (154.430 MHz becomes 154430)
+and a digital row under the talkgroup the radio sends; the rules are in
+[Talkgroup numbers](../configuration/conventional.md#talkgroup-numbers).
 
 **Code** limits a row to transmissions carrying one CTCSS tone, DCS code, NAC, colour code or RAN,
 written bare (`151.4`, `D023N`, `293`, `1`, `5`). **Slot** (DMR) and **Match TG** (P25, DMR, NXDN)
 narrow it further. Leave them blank to record everything on the frequency. Splitting a shared
-frequency is covered in [Tones and access codes](tones.md). A config with an older `tone` key is
-upgraded when it loads.
+frequency is covered in [Tones and access codes](tones.md).
 
-**Import CSV…** reads a channel file and asks whether to **Replace the list** or **Add to the
-list**. **Export CSV** writes the whole list, codes and names included, as a CSV you can edit and
+**Import CSV…** reads a channel file and asks whether to **Replace N** (the channels there now) or **Add to them**. **Export CSV** writes the whole list, codes and names included, as a CSV you can edit and
 import again (or link as a [channel file](#in-a-spreadsheet-desktop-app)).
 
 ### In a spreadsheet (desktop app)
 
 If you'd rather keep the list in Excel, Numbers or LibreOffice, link the system to a CSV file.
-Under **Channel file (optional)**, type a path such as `fire-channels.csv` and click **Use this
+Under **Channel file**, type a path such as `fire-channels.csv` and click **Use this
 file**. If the file doesn't exist yet, it is created from the current list. From then on the
 channels come from the file: the table becomes read-only, and you edit the file instead.
 
@@ -127,41 +130,18 @@ Frequencies in the config are in Hz. Every key is listed in the
 
 ### The channel CSV
 
-A header row names the columns, in any order and any case; then one channel per row:
-
-```csv
-TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune
-1001,154.4300,,,,fm,County Fire Dispatch,,Fire Dispatch,Fire,,,true
-,154.3250,D223N,,,fm,County A Fire,,,Fire,,,true
-,154.3250,151.4,,,fm,County B Fire,,,Fire,,,true
-,460.1250,,,,p25,PD Tac 2,,Law Tac,Police,12,,true
-,119.1000,,,,am,Tower,,Aircraft,Airport,,,true
-```
-
-- `Frequency` is MHz when it has a decimal point, otherwise Hz.
-- `Mode` is `fm`, `am`, `p25`, `dmr`, `nxdn48` or `nxdn96`; empty means `fm`, unless `Code` holds
-  a NAC (then `p25`), a colour code (`dmr`) or a RAN (`nxdn48`). An old `Tone` column still reads,
-  as `Code`. A combined string such as `CC1 TS2 TG201` in `Code` is split into `Code`, `Slot` and
-  `Match TG`.
-- `Squelch dB` is 3-40 dB above the noise floor; empty uses the system's.
-- `Bandwidth kHz` is an `fm` or `am` row's filter width, 4-20; empty uses the mode's default.
-- `Enable` set to `false`, `no`, `0` or `off` turns a row off.
-- `AutoTune` set to `true`, `yes`, `1` or `on` lets a digital row's calls correct its source's
-  frequency error; empty is off. See [Frequency correction](#frequency-correction).
-- Commas, semicolons or tabs all work, as do decimal commas and the byte-order mark Excel adds in
-  some locales. Blank rows and lines starting with `#` are skipped.
-
-Rows that can't be read are reported by row number, and the rest are used. A Trunk Recorder
-channel file reads as it is; see [Coming from Trunk Recorder](#coming-from-trunk-recorder). The
-full column list is in the [configuration reference](../configuration/conventional.md).
+A channel file, and **Import CSV…**, take a header row and one channel per row, with the same
+columns as the table (`TG Number`, `Frequency`, `Code`, `Mode`, `Alpha Tag`, `Squelch dB`…). A
+Trunk Recorder channel file reads as it is. The columns and how they're read are in
+[Channel file](../configuration/conventional.md#channel-file-channelfile).
 
 ### Covering the channels with a radio
 
 Every enabled channel must be inside a source's bandwidth. If a source's center is left on
 **Auto**, it is placed to cover the channels when they fit. If they don't, recording won't start
-and says which ones are outside: `Conventional channel(s) outside every source's bandwidth: ...
-MHz — move a center frequency or disable them.` See [Radios](radios.md) for centers, sample rates
-and guard bands.
+and says which ones are outside (`Conventional channel(s) outside the bandwidth of every source
+they may be received on: ... MHz`). See [Radios](radios.md) for centers, sample rates and guard
+bands.
 
 ### Frequency correction
 
@@ -229,6 +209,43 @@ Things that follow from this:
 - A call longer than **Longest call, s** is saved and a new one started. With no limit set, a
   stuck carrier is saved in 600 s parts.
 
+## Auto
+
+A channel whose mode is `auto` records whatever is on it. Use it where the protocol isn't one thing: the
+FRS and GMRS channels, say, where almost everything is analog FM but a digital radio can turn up.
+
+When the channel opens, the analog FM receiver and each digital one (P25, DMR, NXDN48 and NXDN96) all
+listen to it, and what each one puts out is held back. The channel then settles on one of them:
+
+- A **digital** receiver is settled on once it has decoded about two P25 LDUs' worth of voice frames (or six
+  DMR bursts), or two of anything else only a checked frame carries (a radio ID, a cipher, a position), or
+  some of each. Noise and speech don't pass those checks, and one stray message isn't enough.
+- Otherwise **analog FM** is, two seconds after the channel opened. A digital signal sounds like noise
+  in an FM receiver, so the wait is how analog is told from it.
+
+The call is then recorded as what it settled on: its JSON says `p25`, `dmr`, `nxdn48`, `nxdn96` or `fm`
+as for a channel of that mode, with the talkgroup, NAC, colour code or RAN the air named. The analog
+audio is the call's from its start; the recording just isn't handed on until the channel has settled,
+so a live listener hears an analog call about two seconds late. A key-up shorter than that settles
+when the carrier goes, and is kept.
+
+What it can't do:
+
+- It is one row to a frequency, with no tone, code, slot or **Match TG** (a second row, or a code, is
+  refused). To split a frequency by tone or NAC, give it that mode.
+- It doesn't cover AM, or P25 Phase 2.
+- It runs five receivers while a channel is open and undecided, where a channel of one mode runs one; a
+  busy band of auto channels costs noticeably more CPU, about the first two seconds of each
+  transmission. Give a channel known to be analog the mode `fm`.
+- It settles once per transmission: a different protocol arriving on the same carrier within the receiver's
+  half-second hang isn't noticed until the channel closes.
+- Its **Bandwidth** is its analog receiver's, as an `fm` channel's is: 16 kHz for GMRS's 20 kHz main and
+  repeater channels. The digital receivers hear the channel as wide as that; in noise they decode as on a
+  channel of their own mode (NXDN48, the narrowest, at 20 kHz too), but a neighbour closer than that gets in.
+  The Demodulation settings (de-emphasis, squelch open delay and hang) apply to its analog receiver, and the
+  FM receiver's squelch decides the carrier, as for an `fm` channel, once it has settled on analog.
+- Its tapes and **Record the next call** work as for any channel, and replay as auto.
+
 ## Airband (AM)
 
 Aircraft and air traffic control talk in AM: VHF airband from 118 to 137 MHz on 25 kHz channels
@@ -265,13 +282,13 @@ long call, cut into parts at **Longest call, s** if you have set one.
 
 ## Bandwidth
 
-An analog channel's **Bandwidth** is the width of the filter its audio and carrier meter come
+An analog channel's **Bandwidth** (an `auto` one's too: its analog receiver's) is the width of the filter its audio and carrier meter come
 through. Leave it at **Default** unless one of these applies:
 
 | Mode | Width | Use for |
 |---|---|---|
 | `fm` | 11 kHz (default) | Narrowband FM: 12.5 kHz channels, ±2.5 kHz deviation. Almost all US public safety and business radio since 2013 |
-| `fm` | 16 kHz | Wide FM: 25 kHz channels, ±5 kHz deviation. Older systems, some federal, and many outside the US. Loud voice distorts through the narrow filter |
+| `fm` | 16 kHz | Wide FM: 25 kHz channels, ±5 kHz deviation. Older systems, some federal, GMRS's main and repeater channels, and many outside the US. Loud voice distorts through the narrow filter |
 | `am` | 6 kHz | 8.33 kHz airband channels (Europe) |
 | `am` | 11 kHz (default below 225 MHz) | 25 kHz airband channels |
 | `am` | 16 kHz (default from 225 MHz) | UHF military air, a transmitter that is well off frequency, or offset-carrier sites |
@@ -283,7 +300,8 @@ share one bandwidth: changing it on one row in Setup changes them all.
 ## Demodulation settings
 
 Each conventional system's **Demodulation** group (in its card on the Conventional tab, shown
-when it has analog channels) applies to all of its FM and AM channels. Everything left at
+when it has analog or auto channels) applies to all of its FM and AM channels and its auto
+channels' analog receivers. Everything left at
 **Default** behaves as before. To use other settings for some channels, put them in a
 conventional system of their own.
 
@@ -311,7 +329,7 @@ The default of 8 dB suits most channels. The interface accepts 3 to 40.
 
 ### Where to set it
 
-- **For a whole system:** **Squelch, dB above noise** in the system's panel (`squelchDb` on the
+- **For a whole system:** **Squelch, dB** in the system's panel (`squelchDb` on the
   system in the config).
 - **For one channel:** the **Squelch** column in the table (`squelchDb` on the channel, or the
   `Squelch dB` CSV column). Leave it blank to use the system's.
@@ -373,29 +391,18 @@ saved. There is no separate log line for each detection.
 
 ### Messages that stop recording from starting
 
-| Message | Meaning |
-|---|---|
-| `Conventional channel(s) outside every source's bandwidth: ... MHz` | Move a source's center (or use Auto), add a source, or turn the channel off. |
-| `Conventional channel ... MHz is in both A and B` | A frequency can belong to only one conventional system. |
-| `Conventional channel ... MHz is listed with different modes` | Rows sharing a frequency need the same mode. |
-| `Conventional channel ... MHz is listed twice without a tone` (or NAC, or code) | Give each row its own code; one may have none. |
-| `Conventional channel ... MHz has two rows for ...` | Two rows ask for the same code (or two DCS codes that are the same signal). |
-| `A conventional channel has no frequency yet.` | A row was added and left empty. |
-| `Channel file ...: ...` | The linked CSV couldn't be read. |
+A channel outside every source, a frequency in two systems, rows sharing a frequency that clash,
+or a channel file that can't be read stops recording from starting, with a message naming the
+frequency or the file. Each message, and what to do, is in
+[Troubleshooting](../troubleshooting.md#start-is-greyed-out-or-not-started).
 
 ## Talkgroup names on digital channels
 
-P25, DMR and NXDN channels can carry a talkgroup number. A call's names are the row's it was
-recorded under, if the row has any; else the conventional system's own talkgroup file's
-(`<shortName>.talkgroups.csv` beside the config; Setup shows it on a conventional system with
-digital channels), looked up by the number the call is filed under. The Radio page names
-talkgroups the same way; a talkgroup filed under the air's number, on a row with names, is named
-once a call of it has been heard.
-
-Several P25 channels whose radios all send talkgroup 1 would all be filed under 1. Give each row
-its own **TG Number**: calls are filed and named under it, and the air's 1 stays in
-`talkgroup_ota`. A new talkgroup on the air within an open call still starts a new call, even when
-the row files both under the same number.
+P25, DMR and NXDN channels can carry a talkgroup number. A call's names are its row's, if the row
+has any; else the conventional system's own talkgroup file's (kept in the recorder's store; Setup
+shows it on a conventional system with digital channels, and downloads it as a CSV). Several P25
+channels whose radios all send talkgroup 1 are best given a **TG Number** each. See
+[Talkgroup numbers](../configuration/conventional.md#talkgroup-numbers).
 
 ## Coming from Trunk Recorder
 
@@ -409,7 +416,7 @@ the row files both under the same number.
   `Squelch` column isn't read; use `Squelch dB` instead. Add a `Mode` column to mix analog and
   digital in one file.
 - **System types merge.** `conventional`, `conventionalP25` and `conventionalDMR` systems become
-  conventional systems here, each channel with its own mode. **Import Trunk Recorder config…**
+  conventional systems here, each channel with its own mode. **Import…**
   brings them in with their short names, channels or channel files, rules and unit names; see
   [Migrating from Trunk Recorder](../migrating-from-trunk-recorder.md).
 - **Replaying captures.** `trunk-pro replay` takes conventional channels with `--fm`, `--p25`,

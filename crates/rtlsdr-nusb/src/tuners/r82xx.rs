@@ -1,9 +1,10 @@
 //! Rafael Micro R820T / R820T2 / R860 and R828D tuners (low IF, 3.57 MHz),
-//! the RTL-SDR Blog V4's HF upconverter, notches and input switching included.
+//! the RTL-SDR Blog V4's and V4L's HF upconverter and input switching, and
+//! the V4's notches, included.
 
 use super::i2c::{Reads, Registers};
 use super::registers::*;
-use super::{TunerKind, XTAL_HZ};
+use super::{Board, TunerKind, XTAL_HZ};
 use crate::{Error, GainConfig, Result, protocol::Com, usb::ControlBackend};
 
 /// The IF the tuner hands the demodulator.
@@ -12,7 +13,7 @@ pub(crate) const IF_HZ: u64 = 3_570_000;
 #[derive(Debug)]
 pub(crate) struct R82xx {
     pub kind: TunerKind,
-    pub blog_v4: bool,
+    pub board: Board,
     pub crystal_hz: u64,
     /// R5–R31 as written (the chip's status registers R0–R4 are read).
     pub(super) regs: Registers,
@@ -20,10 +21,10 @@ pub(crate) struct R82xx {
 }
 
 impl R82xx {
-    pub fn new(kind: TunerKind, blog_v4: bool) -> Self {
+    pub fn new(kind: TunerKind, board: Board) -> Self {
         Self {
             kind,
-            blog_v4,
+            board,
             crystal_hz: XTAL_HZ,
             regs: Registers::new(kind.address(), Reads::FromZeroReversed, &[]).holding(5, &INITIAL),
             input: None,
@@ -58,11 +59,12 @@ impl R82xx {
         }
     }
     pub async fn tune<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<u64> {
-        let upconvert = if self.blog_v4 && hz < XTAL_HZ { XTAL_HZ } else { 0 };
+        let hf = self.board.upconverter() && hz < XTAL_HZ;
+        let upconvert = if hf { XTAL_HZ } else { 0 };
         let lo = hz + upconvert + IF_HZ;
         let &(_, drain, filter, corner) = STANDARD_MUX.iter().rev().find(|row| row.0 <= lo).expect("table starts at zero");
         // V4 notch filters follow antenna RF, not the LO used by the mux.
-        let drain = if self.blog_v4 {
+        let drain = if self.board == Board::BlogV4 {
             match hz {
                 0..=2_200_000 | 85_000_000..=112_000_000 | 172_000_000..=242_000_000 => 0,
                 _ => 8,
@@ -72,28 +74,36 @@ impl R82xx {
         };
         self.regs.write_many(com, &[(0x17, drain, 8), (0x1a, filter, 0xc3), (0x1b, corner, 0xff), (0x10, 0, 0x0b), (0x08, 0, 0x3f), (0x09, 0, 0x3f)]).await?;
         let actual_lo = self.set_pll(com, lo).await?;
-        if self.kind == TunerKind::R828D {
-            let input = if self.blog_v4 { v4_input(hz) } else { u8::from(hz <= 345_000_000) };
-            // The HF upconverter path does not benefit from the tracking filter.
-            // Reapply the bypass on every tune because the mux resets it above.
-            if self.blog_v4 && input == 2 {
-                self.regs.write_many(com, &[(0x1a, 0x40, 0xc3), (0x1b, 0, 0xff)]).await?;
+        // The HF upconverter path does not benefit from the tracking filter.
+        // Reapply the bypass on every tune because the mux resets it above.
+        if hf {
+            self.regs.write_many(com, &[(0x1a, 0x40, 0xc3), (0x1b, 0, 0xff)]).await?;
+        }
+        let input = match self.board {
+            Board::BlogV4 => Some(v4_input(hz)),
+            // The V4L's R828S: cable 1 for HF, air-in above.
+            Board::BlogV4L => Some(u8::from(hf)),
+            Board::Generic => (self.kind == TunerKind::R828D).then(|| u8::from(hz <= 345_000_000)),
+        };
+        if let Some(input) = input
+            && self.input != Some(input)
+        {
+            if self.board == Board::BlogV4 {
+                self.regs.write(com, 0x06, if input == 2 { 8 } else { 0 }, 8).await?;
+                let mux = match input {
+                    0 => 0,
+                    1 => 0x60,
+                    _ => 0x20,
+                };
+                self.regs.write(com, 0x05, mux, 0x60).await?;
+            } else {
+                self.regs.write(com, 0x05, if input == 0 { 0 } else { 0x60 }, 0x60).await?;
             }
-            if self.input != Some(input) {
-                if self.blog_v4 {
-                    self.regs.write(com, 0x06, if input == 2 { 8 } else { 0 }, 8).await?;
-                    let mux = match input {
-                        0 => 0,
-                        1 => 0x60,
-                        _ => 0x20,
-                    };
-                    self.regs.write(com, 0x05, mux, 0x60).await?;
-                    com.gpio(5, input != 2).await?;
-                } else {
-                    self.regs.write(com, 0x05, if input == 0 { 0 } else { 0x60 }, 0x60).await?;
-                }
-                self.input = Some(input);
+            // The Blog boards' upconverter switch, on newer batches.
+            if self.board.upconverter() {
+                com.gpio(5, !hf).await?;
             }
+            self.input = Some(input);
         }
         Ok(actual_lo.saturating_sub(IF_HZ + upconvert))
     }
@@ -118,7 +128,8 @@ impl R82xx {
     pub(super) async fn set_pll<C: ControlBackend>(&mut self, com: &Com<'_, C>, hz: u64) -> Result<u64> {
         self.regs.write_many(com, &[(0x10, 0, 0x10), (0x1a, 0, 0x0c), (0x12, 0x80, 0xe0)]).await?;
         let fine = (self.regs.read_from_zero(com, 5).await?[4] >> 4) & 3;
-        let power_ref = if self.kind == TunerKind::R820T { 2 } else { 1 };
+        // The V4L's R828S answers as an R820T but takes the R828D's reference.
+        let power_ref = if self.kind == TunerKind::R828D || self.board == Board::BlogV4L { 1 } else { 2 };
         for shift in [0, -1, 1] {
             let Ok(plan) = pll(hz, self.crystal_hz, fine, power_ref, shift) else { continue };
             let sdm_zero = if plan.sdm == 0 { 8 } else { 0 };
@@ -148,10 +159,36 @@ pub(crate) fn v4_input(hz: u64) -> u8 {
         0
     }
 }
+/// librtlsdr's measured gain of each LNA and mixer step, tenths of a dB
+/// (`r82xx_lna_gain_steps`, `r82xx_mixer_gain_steps`): uneven, so a dB
+/// figure is a pair of steps only by this table.
+const LNA_STEPS: [i32; 16] = [0, 9, 13, 40, 38, 13, 31, 22, 26, 31, 26, 14, 19, 5, 35, 13];
+const MIXER_STEPS: [i32; 16] = [0, 5, 10, 10, 19, 9, 10, 25, 17, 10, 8, 16, 13, 6, 3, -8];
+/// The gains librtlsdr offers, tenths of a dB (`r82xx_gains`): what Trunk
+/// Recorder (through gr-osmosdr) takes the nearest of.
+pub(super) const GAINS: [i32; 29] = [0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480, 496];
+
+/// The offered gain nearest `db` (first of equals), tenths of a dB.
+pub(super) fn nearest_gain(db: f32) -> i32 {
+    let tenths = (db * 10.0).round() as i32;
+    GAINS.into_iter().min_by_key(|&g| (g - tenths).abs()).expect("a gain at least")
+}
+
+/// The LNA and mixer steps for the gain nearest `db`, as librtlsdr sets
+/// them: raising the LNA and then the mixer a step in turn until there.
 fn gain_steps(db: f32) -> (u8, u8) {
-    let full = (db / 3.5).floor().clamp(0.0, 15.0) as u8;
-    let half = u8::from(full < 15 && db - 3.5 * f32::from(full) >= 2.3);
-    (full + half, full)
+    let want = nearest_gain(db);
+    let (mut lna, mut mixer, mut total) = (0, 0, 0);
+    while total < want && mixer < 15 {
+        lna += 1;
+        total += LNA_STEPS[lna];
+        if total >= want {
+            break;
+        }
+        mixer += 1;
+        total += MIXER_STEPS[mixer];
+    }
+    (lna as u8, mixer as u8)
 }
 #[derive(Debug)]
 struct Pll {
@@ -206,7 +243,7 @@ mod tests {
     fn v4_hf_bypasses_tracking_filter_on_retunes_and_restores_it_above_hf() {
         let control = FakeTransport::default();
         control.state.tuner_address.store(0x74, Ordering::SeqCst);
-        let mut tuner = R82xx::new(TunerKind::R828D, true);
+        let mut tuner = R82xx::new(TunerKind::R828D, Board::BlogV4);
         for (hz, filter, corner) in [
             (7_100_000, 0x40, 0),
             (14_200_000, 0x40, 0),
@@ -228,7 +265,7 @@ mod tests {
     fn v4_notches_follow_rf_at_every_band_edge_and_retune() {
         let control = FakeTransport::default();
         control.state.tuner_address.store(0x74, Ordering::SeqCst);
-        let mut tuner = R82xx::new(TunerKind::R828D, true);
+        let mut tuner = R82xx::new(TunerKind::R828D, Board::BlogV4);
         for (hz, notch) in [
             (1_000_000, 0),
             (2_200_000, 0),
@@ -259,11 +296,49 @@ mod tests {
         for kind in [TunerKind::R820T, TunerKind::R828D] {
             let control = FakeTransport::default();
             control.state.tuner_address.store(kind.address(), Ordering::SeqCst);
-            let mut tuner = R82xx::new(kind, false);
+            let mut tuner = R82xx::new(kind, Board::Generic);
             for (hz, drain) in [(50_000_000, 8), (83_000_000, 0)] {
                 futures_lite::future::block_on(tuner.tune(&Com(&control), hz)).unwrap();
                 assert_eq!(tuner.regs.get(0x17).unwrap() & 8, drain);
             }
+        }
+    }
+    #[test]
+    fn v4l_upconverts_hf_and_switches_its_two_inputs_only_on_band_changes() {
+        let control = FakeTransport::default();
+        control.state.tuner_address.store(0x34, Ordering::SeqCst);
+        let mut tuner = R82xx::new(TunerKind::R820T, Board::BlogV4L);
+        for (hz, filter, corner, cable1, gpio5) in [
+            (7_100_000, 0x40, 0, true, false),
+            (14_200_000, 0x40, 0, true, false),
+            (28_800_000, 0x02, 0xdf, false, true),
+            (433_920_000, 0x41, 0, false, true),
+            (7_100_000, 0x40, 0, true, false),
+        ] {
+            let writes = control.state.control_out_requests.lock().unwrap().len();
+            let tuned = futures_lite::future::block_on(tuner.tune(&Com(&control), hz)).unwrap();
+            assert!(tuned.abs_diff(hz) < 1_000, "RF frequency {hz} tuned {tuned}");
+            let reg = |r| tuner.regs.get(r).unwrap();
+            assert_eq!(reg(0x1a) & 0xc3, filter, "RF frequency {hz}");
+            assert_eq!(reg(0x1b), corner, "RF frequency {hz}");
+            assert_eq!(reg(0x05) & 0x60, if cable1 { 0x60 } else { 0 }, "RF frequency {hz}");
+            assert_eq!(control.state.sys_registers.lock().unwrap()[&0x3001] & 0x20 != 0, gpio5, "RF frequency {hz}");
+            // A retune within the band leaves the inputs and the GPIO alone.
+            let gpio_writes = |from: usize| control.state.control_out_requests.lock().unwrap()[from..].iter().filter(|r| r.value == 0x3001).count();
+            assert!(gpio_writes(writes) <= 1);
+            if hz == 14_200_000 {
+                assert_eq!(gpio_writes(writes), 0);
+            }
+        }
+    }
+    #[test]
+    fn v4l_has_no_notches_so_open_drain_follows_mux() {
+        let control = FakeTransport::default();
+        control.state.tuner_address.store(0x34, Ordering::SeqCst);
+        let mut tuner = R82xx::new(TunerKind::R820T, Board::BlogV4L);
+        for (hz, drain) in [(50_000_000, 8), (83_000_000, 0), (100_000_000, 0)] {
+            futures_lite::future::block_on(tuner.tune(&Com(&control), hz)).unwrap();
+            assert_eq!(tuner.regs.get(0x17).unwrap() & 8, drain, "RF frequency {hz}");
         }
     }
     fn calibration_responses(codes: &[u8]) -> FakeTransport {
@@ -281,7 +356,7 @@ mod tests {
     fn calibration_keeps_first_valid_result() {
         for code in 1..15 {
             let control = calibration_responses(&[code, 0]);
-            let mut tuner = R82xx::new(TunerKind::R820T, false);
+            let mut tuner = R82xx::new(TunerKind::R820T, Board::Generic);
             assert_eq!(futures_lite::future::block_on(tuner.calibrate(&Com(&control))).unwrap(), code);
             assert_eq!(control.state.responses.lock().unwrap().len(), 3);
         }
@@ -291,7 +366,7 @@ mod tests {
         for invalid in [0, 15] {
             for second in [0, 7, 15] {
                 let control = calibration_responses(&[invalid, second]);
-                let mut tuner = R82xx::new(TunerKind::R820T, false);
+                let mut tuner = R82xx::new(TunerKind::R820T, Board::Generic);
                 assert_eq!(futures_lite::future::block_on(tuner.calibrate(&Com(&control))).unwrap(), if second == 15 { 0 } else { second });
                 assert!(control.state.responses.lock().unwrap().is_empty());
             }
@@ -301,7 +376,7 @@ mod tests {
     fn pll_reports_unlock_after_retry_instead_of_returning_a_frequency() {
         let control = FakeTransport::default();
         control.state.pll_locked.store(false, Ordering::SeqCst);
-        let mut tuner = R82xx::new(TunerKind::R820T, false);
+        let mut tuner = R82xx::new(TunerKind::R820T, Board::Generic);
         assert!(matches!(futures_lite::future::block_on(tuner.set_pll(&Com(&control), 103_570_000)), Err(Error::PllUnlocked)));
         let reads = control.state.control_in_requests.lock().unwrap();
         assert_eq!(reads.iter().filter(|r| r.index == 0x600 && r.length == 3).count(), 2);
@@ -320,9 +395,17 @@ mod tests {
     #[test]
     fn gain_and_v4_band_edges() {
         assert_eq!(gain_steps(0.0), (0, 0));
-        assert_eq!(gain_steps(2.3), (1, 0));
-        assert_eq!(gain_steps(3.5), (1, 1));
-        assert_eq!(gain_steps(52.5), (15, 15));
+        // (The top, 49.6 dB, is the mixer's 14th step: its 15th takes 0.8 dB off.)
+        assert_eq!(gain_steps(52.5), (15, 14));
+        // Each gain offered is its own pair of steps, adding up to it as librtlsdr measured them.
+        let measured = |(lna, mixer): (u8, u8)| LNA_STEPS[..=lna as usize].iter().sum::<i32>() + MIXER_STEPS[..=mixer as usize].iter().sum::<i32>();
+        for g in GAINS {
+            assert_eq!(measured(gain_steps(g as f32 / 10.0)), g, "{g}");
+        }
+        // Issue 163: what isn't offered goes to the nearest that is.
+        assert_eq!((nearest_gain(34.0), gain_steps(34.0)), (338, gain_steps(33.8)));
+        assert_eq!(nearest_gain(35.2), 364);
+        assert_eq!(nearest_gain(-3.0), 0);
         assert_eq!(v4_input(28_799_999), 2);
         assert_eq!(v4_input(28_800_000), 1);
         assert_eq!(v4_input(249_999_999), 1);

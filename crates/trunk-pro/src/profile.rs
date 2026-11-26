@@ -53,7 +53,7 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
                 break;
             }
             Ok(SourceMsg::End { .. }) | Err(RecvTimeoutError::Disconnected) => break,
-            Ok(SourceMsg::Tuned { .. }) => {}
+            Ok(SourceMsg::Tuned { .. } | SourceMsg::Gain { .. }) => {}
             Err(RecvTimeoutError::Timeout) if last.elapsed() > TIMEOUT => {
                 err = Some("the source sent nothing".into());
                 break;
@@ -78,8 +78,8 @@ pub fn cli(a: &crate::Args) {
     let center = a.num("center", 0.0);
     let guard_hz = crate::config::DEFAULT_GUARD_HZ;
     let src = match a.positional.first() {
-        Some(path) => Source { kind: crate::config::SourceKind::File { path: path.clone(), realtime: false, format: Some(crate::sample_format(path, a.get("format"))) }, center_hz: center, rate_hz: rate, ppm: 0.0, auto_tune: false, guard_hz },
-        None => Source { kind: crate::config::SourceKind::Rtlsdr { serial: a.get("serial").unwrap_or("").into(), gain_db: a.get("gain").and_then(|g| g.parse().ok()).unwrap_or(crate::config::RTL_DEFAULT_GAIN_DB), agc: false, buf_len: a.num("buflen", 0.0) as u32, buffers: a.num("buffers", 0.0) as u32 }, center_hz: center, rate_hz: rate, ppm: 0.0, auto_tune: false, guard_hz },
+        Some(path) => Source { kind: crate::config::SourceKind::File { path: path.clone(), realtime: false, format: Some(crate::sample_format(path, a.get("format"))) }, center_hz: center, rate_hz: rate, ppm: 0.0, auto_tune: false, guard_hz, name: String::new() },
+        None => Source { kind: crate::config::SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: a.get("serial").unwrap_or("").into(), gain_db: a.get("gain").and_then(|g| g.parse().ok()).unwrap_or(crate::config::RTL_DEFAULT_GAIN_DB), agc: false, buf_len: a.num("buflen", 0.0) as u32, buffers: a.num("buffers", 0.0) as u32 }, center_hz: center, rate_hz: rate, ppm: 0.0, auto_tune: false, guard_hz, name: String::new() },
     };
     let cfg = Config { sources: vec![src], ..Default::default() };
     let mut v = run(&cfg, &Request { source: 0, center_hz: center });

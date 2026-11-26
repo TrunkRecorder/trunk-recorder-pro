@@ -1,14 +1,14 @@
 # Other radios
 
-This page covers using radios other than a current RTL-SDR: USRPs, Airspy R2 / Mini, bladeRFs, anything with
+This page covers using radios other than a current RTL-SDR: USRPs, Airspy R2 / Mini, HydraSDR RFOnes, bladeRFs, anything with
 a SoapySDR module, and older RTL-SDR dongles. It explains which driver each needs, how Trunk
 Recorder Pro finds it, and how to check it worked. These radios only work in the desktop app, not
-in the [browser version](browser.md) or the [Docker image](docker.md). The exception is the
-[HackRF One](#hackrf-one), which needs no driver and works in Docker.
+in the [browser version](browser.md) or the [Docker image](docker.md). The exceptions are the
+[HackRF One](#hackrf-one), the [Airspy R2 / Mini](#airspy) and the [HydraSDR RFOne](#hydrasdr), which need no driver: all work in Docker.
 
 ## How drivers are found
 
-RTL-SDRs with an R820T, R828D or E4000 tuner, and HackRF Ones, need nothing: Trunk Recorder Pro has its
+RTL-SDRs with an R820T, R828D or E4000 tuner, HackRF Ones, Airspy R2 / Minis and HydraSDR RFOnes need nothing: Trunk Recorder Pro has its
 own driver for them. Every other radio uses its maker's driver library, which you install yourself. Trunk
 Recorder Pro isn't built against these libraries. It looks for each one when it starts, so the
 same download works with or without them:
@@ -16,7 +16,6 @@ same download works with or without them:
 | Radio | Driver library | Source type in Setup |
 |---|---|---|
 | USRP (Ettus / NI) | UHD (`libuhd`) | **USRP** |
-| Airspy R2, Airspy Mini | libairspy | **Airspy** |
 | bladeRF 2.0 micro xA4 / xA9, original bladeRF x40 / x115 | libbladeRF 2.x | **bladeRF** |
 | SDRplay, LimeSDR, PlutoSDR, Airspy HF+, older RTL-SDRs, ... | SoapySDR plus the device's module | **SoapySDR** |
 
@@ -29,7 +28,6 @@ Radios** says what's missing and how to install it.
 | | macOS (Homebrew) | Debian / Ubuntu / Raspberry Pi OS | Windows |
 |---|---|---|---|
 | USRP | `brew install uhd` | `sudo apt install libuhd-dev uhd-host` | Ettus's UHD installer (puts `uhd.dll` on the `PATH`) |
-| Airspy | `brew install airspy` | `sudo apt install libairspy0` | `airspy.dll` from the airspy-tools release, next to `trunk-pro.exe` |
 | bladeRF | `brew install libbladerf` | `sudo apt install libbladerf2 bladerf-fpga-hostedxa4` (xA9: `bladerf-fpga-hostedxa9`; or Nuand's PPA `ppa:nuandllc/bladerf`) | Nuand's bladeRF installer (`bladeRF.dll`) |
 | SoapySDR | `brew install soapysdr` and the device's module, e.g. `brew install soapyhackrf` | `sudo apt install libsoapysdr0.8` and the device's module, e.g. `soapysdr0.8-module-hackrf` (or `soapysdr0.8-module-all`) | PothosSDR or radioconda |
 
@@ -40,8 +38,8 @@ uhd_images_downloader          # sudo uhd_images_downloader on Linux
 ```
 
 On Linux, the udev rule from the [Linux](linux.md#dongle-access-udev) package already covers the
-Airspy R2 / Mini and the USB USRPs (B200, B210, B200mini, B206mini); UHD's and libairspy's own packages
-usually add rules for them as well. bladeRFs get theirs from the libbladeRF package
+Airspy R2 / Mini, the HydraSDR RFOne and the USB USRPs (B200, B210, B200mini, B206mini); UHD's own package
+usually adds rules for its radios as well. bladeRFs get theirs from the libbladeRF package
 (`88-nuand-bladerf*.rules`). Other SoapySDR devices need the udev rules their own packages
 install.
 
@@ -51,7 +49,7 @@ On macOS the app can load libraries installed by Homebrew (`/opt/homebrew/lib` o
 ### Checking what was found
 
 ```bash
-trunk-pro devices              # RTL-SDRs, Airspys, bladeRFs, which drivers were found, SoapySDR modules and devices
+trunk-pro devices              # RTL-SDRs, Airspys, HydraSDRs, bladeRFs, which drivers were found, SoapySDR modules and devices
 trunk-pro devices --usrp       # also search for USRPs (it can take a few seconds)
 ```
 
@@ -72,7 +70,6 @@ an environment variable:
 | Variable | For |
 |---|---|
 | `TRUNK_PRO_UHD` | UHD, e.g. `/opt/uhd/lib/libuhd.so.4.6.0` |
-| `TRUNK_PRO_AIRSPY` | libairspy |
 | `TRUNK_PRO_BLADERF` | libbladeRF |
 | `TRUNK_PRO_SOAPY` | SoapySDR |
 
@@ -111,9 +108,17 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
 
 ### Airspy
 
+An **Airspy** source is driven directly over USB, like an RTL-SDR: nothing to install. The Linux
+udev rule covers it, and on Windows an Airspy installs its own WinUSB driver when it's plugged in
+(no Zadig).
+
+On Windows, an Airspy whose driver was replaced with Zadig (libusbK or libusb-win32) can't be opened: switch it
+back to WinUSB. `trunk-pro devices` shows `Airspy: built in`. If an Airspy misbehaves,
+[tell us](https://github.com/TrunkRecorder/trunk-recorder-pro/issues).
+
 - **Airspy**: pick it from the list (blank is the first one found). Each is listed with its model
-  ("Airspy R2 · SN …"), asked once per run. One another program has open may be missing from the
-  list, and on some systems so may one that's recording (the source keeps its serial either way).
+  ("Airspy R2 · SN …"), asked once per run. One another program has open is listed too, without
+  its model.
 - **Sample rate**: 10 or 2.5 MSPS on the R2, 6 or 3 MSPS on the Mini. The list offers what the
   Airspy picked runs at, and moves to one of its rates when you pick a different Airspy. A rate it
   can't do is flagged here, and the source won't start at it ("this Airspy R2 runs at 10 / 2.5
@@ -122,6 +127,21 @@ listed in [Sources](../configuration/sources.md). What's particular to each:
   each a single step from 0 to 21, or **Each stage** to set the LNA (0–14), mixer (0–15) and VGA
   (0–15) yourself. With **Each stage**, **AGC** hands the LNA and mixer to the Airspy's AGC.
 - **Bias-T**: powers an LNA through the antenna cable. Leave it off unless you have one.
+
+### HydraSDR
+
+A **HydraSDR** source is driven directly over USB too, by the same built-in driver as an Airspy: nothing to install. The Linux udev rule covers it, and on Windows it uses the WinUSB driver it binds by itself (a Zadig libusbK or libusb-win32 driver can't be opened: switch it back to WinUSB). `trunk-pro devices` shows `HydraSDR: built in`. The RFOne support hasn't been tested on real hardware by us yet: if it misbehaves, please [open an issue](https://github.com/TrunkRecorder/trunk-recorder-pro/issues).
+
+- **HydraSDR**: pick it from the list (blank is the first one found), listed as
+  "HydraSDR RFOne · SN …". Either firmware works: the one RFOnes shipped with (v1.0.0-rc2)
+  enumerates with the Airspy's USB ID, `1d50:60a1`, and updated firmware (v1.0.2) with HydraSDR's
+  own, `38af:0001`. An RFOne is found by its own USB ids, serial and firmware, so an Airspy source never opens it.
+- **Sample rate**: 10, 5 or 2.5 MSPS.
+- **Gain**: as an Airspy's: **Linearity** or **Sensitivity** (one step, 0–21), or **Each stage**
+  (LNA 0–14, mixer 0–15, VGA 0–15, with **AGC** for the LNA and mixer).
+- **Input**: ANT, CABLE1 or CABLE2.
+- **Bias-T**: powers an LNA through the ANT port (4.5 V, up to 300 mA). It's on ANT only: with
+  another input picked, the source won't start until it's turned off.
 
 ### bladeRF
 
@@ -151,6 +171,23 @@ firmware 2021.03 or newer; an older one is refused when opened, with a message t
 
 A SoapySDR source with `driver=hackrf` still works, for a rad1o or a HackRF behind SoapyRemote.
 
+### Radios on the network: rtl_tcp and SpyServer
+
+An RTL-SDR behind **rtl_tcp**, or a **SpyServer**, is a radio on another machine, reached over TCP by its address: no driver, no
+SoapySDR, and nothing to find (a network can't be searched), so you type the **Server address** in Setup → Radios. Once it's saved,
+the recorder asks the server what it is (its tuner or receiver, rates and gain steps) and Setup shows it, or *Not answering*.
+
+- **rtl_tcp**: on the machine with the dongle, run `rtl_tcp -a 0.0.0.0` (port 1234; `-p` changes it), and open that port to this
+  machine. In Setup it's an **RTL-SDR** source with **Connection** set to **rtl_tcp**. The address is just the host when the server is on port 1234 (`pi.local`), and `host:port` when it isn't
+  (`pi.local:4321`). It serves one client at a time: a dongle another client has open doesn't answer a second, which shows as a source that
+  connects but says nothing.
+- **SpyServer**: on the machine with an Airspy (or an RTL-SDR), run Airspy's `spyserver` (port 5555). Any number of clients can
+  listen, but only the first can tune the receiver and set its gain. If a source is refused as out of reach, another client (SDR#,
+  SDR++) has the receiver on another frequency: close it, or put the source's center inside its window.
+
+A source that loses its server is retried every few seconds and starts again by itself, so a dongle's machine can reboot without
+restarting the recorder. Use a wired link for anything beyond 1 MSPS.
+
 ### SoapySDR
 
 - **Device**: SoapySDR device arguments, such as `driver=sdrplay,serial=...` or `driver=sdrplay,serial=...`.
@@ -166,7 +203,7 @@ A SoapySDR source with `driver=hackrf` still works, for a rad1o or a HackRF behi
 ## Older RTL-SDR dongles
 
 Trunk Recorder Pro's own RTL-SDR driver handles the **R820T** and **R828D** tuners, which are in
-nearly every dongle sold today, including the RTL-SDR Blog V3 and V4, and the older **E4000**.
+nearly every dongle sold today, including the RTL-SDR Blog V3, V4 and V4L, and the older **E4000**.
 Dongles with an **FC0012**, **FC0013** or **FC2580** tuner show up in the list but fail to open
 with a message that the tuner isn't supported natively.
 

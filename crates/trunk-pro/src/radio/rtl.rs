@@ -1,4 +1,5 @@
-//! RTL-SDR over USB (rtlsdr-nusb: pure Rust, no libusb/librtlsdr).
+//! RTL-SDR over USB (rtlsdr-nusb: pure Rust, no libusb/librtlsdr), or on another machine through its
+//! `rtl_tcp` server ([`super::rtltcp`]): one radio, set up the same either way.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,12 +9,14 @@ use std::time::{Duration, Instant};
 use rtlsdr_nusb::{Device, GainConfig, MaybeFuture, RawIq, RxBuffers, RxStream};
 
 use super::Deadline;
-use crate::sdr::{Applied, Control, Gain, Radio, Retuned, Sink, StreamCheck, Tunable, Wire};
+use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, StreamCheck, Tunable, Wire};
 
 #[derive(Clone, Debug)]
 pub struct RtlConfig {
     /// Serial number ("" = first dongle).
     pub serial: String,
+    /// Its `rtl_tcp` server, `host:port` ([`trunk_app::config::Source::server`]); none: on USB.
+    pub server: Option<String>,
     pub center_hz: u64,
     pub rate_hz: u32,
     /// None = tuner AGC.
@@ -23,6 +26,8 @@ pub struct RtlConfig {
     pub buf_len: u32,
     /// USB transfers in flight, 0 = enough for about 2 MiB.
     pub buffers: u32,
+    /// Power for an LNA on the antenna cable.
+    pub bias_tee: bool,
 }
 
 /// About this much is kept in flight when only the transfer size is set:
@@ -39,9 +44,14 @@ impl RtlConfig {
         RxBuffers { len, count }
     }
 
-    fn name(&self) -> String {
-        format!("RTL-SDR {}", if self.serial.is_empty() { "(first)" } else { &self.serial })
+    pub(super) fn name(&self) -> String {
+        if let Some(server) = &self.server {
+            format!("rtl_tcp {server}")
+        } else {
+            format!("RTL-SDR {}", if self.serial.is_empty() { "(first)" } else { &self.serial })
+        }
     }
+
 }
 
 /// Opening a dongle whose tuner rtlsdr-nusb doesn't drive (only R820T / R828D / E4000).
@@ -114,11 +124,18 @@ impl Radio for RtlConfig {
         match g {
             Gain::Agc => self.gain_db = None,
             Gain::Db(db) => self.gain_db = Some(db),
-            Gain::Stages(_) | Gain::Preset(..) => {}
+            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) => {}
         }
     }
+    fn gain(&self) -> Option<Gain> {
+        Some(self.gain_db.map_or(Gain::Agc, Gain::Db))
+    }
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
-        stream_once(self, sink, stop, ctl)
+        if let Some(server) = &self.server {
+            super::rtltcp::stream_once(self, server, sink, stop, ctl)
+        } else {
+            stream_once(self, sink, stop, ctl)
+        }
     }
 }
 
@@ -151,14 +168,21 @@ impl Tunable for Rtl<'_> {
         let gap = self.halted(|dev| dev.set_frequency_hz(hz.round() as u64).wait().map_err(|e| format!("tune {:.4} MHz: {e}", hz / 1e6)))?;
         Ok(Retuned { hz: self.dev.actual_frequency_hz() as f64, gap })
     }
-    fn set_gain(&mut self, g: Gain) -> Result<u64, String> {
+    fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
         let gain = match g {
             Gain::Agc => GainConfig::Auto,
             Gain::Db(db) => GainConfig::Manual(db),
-            Gain::Stages(_) | Gain::Preset(..) => return Ok(0),
+            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) => return Ok(Regained::LEFT_ALONE),
         };
-        self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))
+        let gap = self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))?;
+        Ok(Regained { gap, gain: Some(gain_set(self.dev)) })
     }
+}
+
+/// What the dongle's tuner is set to: its AGC, or a manual gain's nearest step
+/// (the tuner has steps: an R820T's 0, 0.9, 1.4 … 49.6 dB).
+fn gain_set(dev: &Device<RawIq>) -> Gain {
+    dev.gain_db().map_or(Gain::Agc, Gain::Db)
 }
 
 /// Keeps a dongle in [`OPEN`] while it streams.
@@ -172,9 +196,17 @@ impl Drop for Using {
     }
 }
 
+/// A block from the dongle as it arrives: checked ([`StreamCheck`]), then
+/// sent on. Err once the stream is stuck; false once nobody takes them.
+/// (`tool perf rtl` runs this on a capture.)
+pub(crate) fn take(check: &mut StreamCheck, sink: &mut Sink, raw: &[u8], dropped: u64, at: Instant) -> Result<bool, String> {
+    check.block(raw, at)?;
+    Ok(sink.bytes(Wire::Offset, raw, dropped, at))
+}
+
 fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<&Control>) -> Result<(), String> {
     let mut b = Device::builder().raw_iq().frequency_hz(cfg.center_hz).sample_rate_hz(cfg.rate_hz).correction_ppm(cfg.ppm.round() as i32);
-    b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual));
+    b = b.gain(cfg.gain_db.map_or(GainConfig::Auto, GainConfig::Manual)).bias_tee(cfg.bias_tee);
     if !cfg.serial.is_empty() {
         b = b.serial(cfg.serial.clone());
     }
@@ -196,6 +228,7 @@ fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<
         OPEN.lock().unwrap().insert(s.clone());
     }
     let _using = Using(serial);
+    sink.gained(cfg.gain(), Some(gain_set(&dev)));
     let mut rx = dev.rx_stream_with(cfg.rx_buffers()).map_err(|e| format!("{name} USB transfers: {e}"))?;
     rx.start().wait().map_err(|e| format!("{name}: {e}"))?;
     let mut check = StreamCheck::new(cfg.rate_hz as f64);
@@ -211,15 +244,11 @@ fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<
             }
         }
         match rx.next_block(Some(Duration::from_secs(2))).wait() {
-            Ok(Some(block)) => {
-                let at = Instant::now();
-                if let Err(e) = check.block(block.raw_bytes(), at) {
-                    break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in"));
-                }
-                if !sink.bytes(Wire::Offset, block.raw_bytes(), block.dropped_samples(), at) {
-                    break Ok(());
-                }
-            }
+            Ok(Some(block)) => match take(&mut check, sink, block.raw_bytes(), block.dropped_samples(), Instant::now()) {
+                Err(e) => break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in")),
+                Ok(false) => break Ok(()),
+                Ok(true) => {}
+            },
             Ok(None) => break Err(format!("{name}: no samples for 2 s")),
             Err(e) => break Err(format!("{name} USB: {e}")),
         }

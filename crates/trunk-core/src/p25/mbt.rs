@@ -35,17 +35,9 @@ pub fn blocks_to_follow(h: &Tsbk) -> usize {
     (h[6] & 0x7f) as usize
 }
 
-/// CRC-32 (x³²+x²⁶+x²³+x²²+x¹⁶+x¹²+x¹¹+x¹⁰+x⁸+x⁷+x⁵+x⁴+x²+x+1, init 0,
-/// inverted) of `data`, MSB first: a packet's CRC.
+/// A packet's CRC: [`crate::bits::crc32`] of `data`, inverted.
 pub fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0u32;
-    for &b in data {
-        crc ^= (b as u32) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 { crc << 1 ^ 0x04c1_1db7 } else { crc << 1 };
-        }
-    }
-    !crc
+    !crate::bits::crc32(data.iter().copied())
 }
 
 /// One AMBTC: the header block and the data blocks' octets, less their CRC.

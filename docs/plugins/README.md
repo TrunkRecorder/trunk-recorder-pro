@@ -42,20 +42,22 @@ Plugins only run while recording. With recording stopped, a plugin that's on sho
 
 ## Where plugins live
 
-Everything is kept beside the config file (on macOS `~/Library/Application Support/trunk-pro/`,
-on Linux `~/.config/trunk-pro/`, on Windows `%APPDATA%\trunk-pro\`, or the folder of the file you
-give with `--config`):
+Installed plugins are in `plugins/<id>/` beside the config file, and each plugin's own data (its
+saved upload queue, its working folder) in `plugin-data/<id>/`, kept across restarts, updates and
+uninstalls. See [Files kept beside the config](../configuration/README.md#files-kept-beside-the-config).
 
-| Path | What's in it |
-|---|---|
-| `plugins/<id>/` | An installed plugin: its executable `<id>` (`<id>.exe` on Windows), README and license |
-| `plugin-data/<id>/` | The plugin's own folder: its saved upload queue and any state. Kept across restarts, updates and uninstalls. The plugin runs with this as its working folder |
-| `plugin-registry.json` | The plugin list last fetched from the registry |
-| `config.json` | Which plugins are on, and their settings |
+So the user Trunk Recorder Pro runs as has to be able to write there. If it can't, Install says
+*Can't install into …* and names the folder: run Trunk Recorder Pro as the user who owns it, or give
+that user write access to it. On Windows, keep the config out of Program Files.
 
 ## Installing a plugin
 
 ### From the Plugins page
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/plugins-install-dark.png">
+  <img src="../img/shots/plugins-install-light.png" alt="The Install & settings tab of the Plugins page">
+</picture>
 
 1. Open **Plugins** in the sidebar and choose the **Install & settings** tab.
 2. Under **Find plugins** you'll see the plugins in the registry, each marked **Official**
@@ -102,16 +104,16 @@ trunk-pro plugin uninstall openmhz
 trunk-pro plugin list                   # what's installed, on or off, and the M4A encoder
 ```
 
-After upgrading the recorder to 0.2.0, update your plugins too: the store's plugins are rebuilt on
-plugin SDK 0.5.0 (OpenMHz 0.1.6, Broadcastify 0.1.6, Rdio Scanner 0.1.5, simplestream 0.1.5, Upload
-script 0.1.4, MQTT 0.1.7). Systems are numbered from 0 now, and an older plugin (MQTT especially)
-reads a call's fields wrongly. The Plugins page offers **Update to vX** for each.
-
 Add `--config path/to/config.json` if your config isn't in the usual place: plugins are installed
 beside it. A plugin installed this way is off; turn it on in Setup. See the
 [command-line reference](../command-line.md) for every option.
 
 ## Setting a plugin up
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../img/shots/setup-plugins-dark.png">
+  <img src="../img/shots/setup-plugins-light.png" alt="The Plugins tab of Setup">
+</picture>
 
 Plugins are set up in **Setup**, like the rest of the recorder, and their settings are saved in
 `config.json` as you type.
@@ -136,6 +138,28 @@ fields (API keys) are hidden; **Show** reveals them.
 Most per-system settings work as an on switch for that system: OpenMHz, for example, uploads only
 the systems you've given an API key, and skips the rest.
 
+### Per system and per site
+
+A plugin is on for every system and site until you turn it off for some.
+
+- **Systems.** On the plugin's card in Setup, a chip for each system: turn one off and nothing
+  about that system is sent to the plugin. Of `totals`, its sites' and channels' figures are left
+  out; the radios' stay.
+- **Sites.** On a multi-site system's card, a **Sites** row of chips under the plugin: turn a site
+  off and its radio activity and status aren't sent, nor a recorded call only it heard.
+- **Shared settings.** A plugin that lets a system set again some of its recorder-wide settings
+  (an uploader's server, say) has **<plugin> shared settings** on the system's card. Empty means
+  the recorder-wide setting. A setting the plugin doesn't let a system set shows under
+  **Ignored overrides** on the plugin's card, with **Remove**.
+- **Per-site settings.** A plugin that lets a site set some of a system's settings again (a site
+  that is a system of its own on the service) has a row for each site on the system's card.
+- **A second copy.** **+ Add plugin** on a system's card runs the plugin again for that system,
+  with settings of its own.
+
+In the config file these are `systemsOff` and `sitesOff` on the plugin's entry, and `override`,
+`perSite` and a list in place of one object in a system's entry: see
+[the plugins configuration reference](../configuration/plugins.md).
+
 ### Changes apply at once
 
 While recording, changing a plugin's settings, turning a plugin on or off, or changing the M4A
@@ -145,73 +169,26 @@ they've exited, so no calls are lost in between.
 
 ### In the config file
 
-If you'd rather edit `config.json`, a plugin's entry under `plugins` holds whether it's on and its
-settings for the whole recorder, and each system's `plugins` holds its settings for that system,
-by plugin id:
-
-```json
-{
-  "plugins": {
-    "openmhz": { "enabled": true, "settings": { "server": "https://api.openmhz.com" } }
-  },
-  "systems": [
-    {
-      "shortName": "dcfd",
-      "sites": [{ "controlChannelsHz": [857987500] }],
-      "plugins": { "openmhz": { "apiKey": "your-openmhz-api-key" } }
-    }
-  ]
-}
-```
-
-The keys inside `settings` and inside each system's entry are the plugin's own; each plugin's
-page lists them. The [plugins configuration reference](../configuration/plugins.md) has the rest.
+A plugin's entry under `plugins` holds whether it's on and its recorder-wide settings; each
+system's `plugins` holds its settings for that system. The keys and an example are in the
+[plugins configuration reference](../configuration/plugins.md); the keys inside `settings` are
+each plugin's own, on its page.
 
 Plugins know systems by their **short name**. If you rename a system, settings that choose a
 system from a menu (like a simplestream stream's **System**) follow the new name.
 
 ## M4A audio
 
-OpenMHz and Broadcastify Calls take compressed audio (M4A: AAC in an MP4 file), not WAV. Plugins
-that want it say so, and the recorder encodes each call once, however many plugins asked. It
-doesn't link an encoder in; it uses one already on the computer, trying in turn:
-
-1. **ffmpeg** (any platform; 16 kHz mono AAC, as Trunk Recorder makes)
-2. **afconvert** (built into macOS)
-3. **fdkaac**
-
-So on macOS there's nothing to install. On Linux and Windows, install ffmpeg (on Debian and
-Raspberry Pi OS: `sudo apt install ffmpeg`). The Docker image includes one.
-
-The settings are in Setup's **Recording** tab under **M4A audio**: **Encoder** (Automatic, one in
-particular, or **None: WAV only**) and **Bitrate, kbps** (8 to 320, 32 by default, as Trunk
-Recorder uses). In `config.json` they're `recording.m4a.encoder` and `recording.m4a.bitrateKbps`.
-
-Without an encoder, plugins that asked for M4A get WAV only, and the log says
-`No M4A encoder found (install ffmpeg): … get WAV only`. Some plugins can't work that way
-(OpenMHz and Broadcastify won't start, and say why); others send WAV instead (Rdio Scanner). If
-encoding falls behind or fails for a call, that call goes to the plugins as WAV, and the log says
-so.
-
-The M4A made for the plugins is deleted once they're done with it, unless you also keep M4As
-(**Keep .m4a**). See [Recordings](../guides/recordings.md).
+OpenMHz and Broadcastify Calls upload compressed audio (M4A), not WAV. The recorder encodes each
+call once, however many plugins asked, with an encoder already on the computer (ffmpeg, afconvert or
+fdkaac). Without one, OpenMHz and Broadcastify won't start, and say why; others send WAV instead
+(Rdio Scanner). Encoders, settings and what's kept are in [M4A files](../guides/recordings.md#m4a-files).
 
 ## What happens to the files
 
-Every plugin that takes recorded calls answers on each one: done, skipped or failed. Once all of
-them have answered, the recorder applies the **Archive** settings in Setup's **Recording** tab:
-
-| Setting | On | Off |
-|---|---|---|
-| **Keep .wav** | The WAV is kept once the plugins are done | It's deleted once the plugins are done |
-| **Keep .m4a** | An M4A is kept once the plugins are done | The M4A made for a plugin is deleted once the plugins are done |
-| **Keep call JSON** | The call JSON is kept | It's deleted once the plugins are done |
-| **Keep when a plugin fails** | If any plugin reports a failure, every file the call has is kept anyway | Failures change nothing |
-
-**Done and skipped count the same**: a plugin that skipped a call (a system it has no settings
-for, say) is finished with it, and the call's files go if the Keep settings say so. A plugin that
-hasn't answered within an hour counts as having failed. With no plugin taking calls, the Keep
-settings alone decide. The details are in
+Every plugin that takes recorded calls answers on each one: done, skipped or failed. **Done and
+skipped count the same**: the plugin is finished with the call. Once all of them have answered (or
+an hour has passed), the **Archive** settings on Setup's **Recording** tab decide what stays. See
 [The archive](../guides/recordings.md#the-archive-whats-kept-and-whats-deleted).
 
 ## Decrypted calls
@@ -263,12 +240,11 @@ A plugin's log lines (except debug ones) also go to the recorder's log, prefixed
   while calls are waiting
 - any figures of its own the plugin reports, such as simplestream's **Packets sent** and
   **Packets dropped**
-- when it last succeeded and failed, how long it has been up, how many times it was
-  **Restarted**, and how many events it **Fell behind** on
+- when it last succeeded and failed, how long it has been up, how many **Restarts** it had, and how many events it **Fell behind** on
 - **Last 24 h and log**: charts of sent, failed and waiting, and its log
 
 A change in a plugin's health (to a warning, to an error, or back to working) shows up as an
-event in the dashboard's event feed. See [The web interface](../guides/interface.md).
+event in the dashboard's event feed. See [Events](../guides/interface.md#events).
 
 ## Removing a plugin
 
@@ -279,23 +255,10 @@ it **Off** in Setup instead.
 
 ## Coming from Trunk Recorder
 
-**Import Trunk Recorder config…** in Setup brings over the settings of Trunk Recorder's uploaders
-and plugins that have a counterpart here:
-
-| Trunk Recorder | Plugin here |
-|---|---|
-| A system's `apiKey`, `openmhzSystemId`; `uploadServer`; an OpenMHz plugin entry | [OpenMHz](openmhz.md) |
-| A system's `broadcastifyApiKey`, `broadcastifySystemId`; `broadcastifyCallsServer`, `broadcastifySslVerifyDisable`; a Broadcastify plugin entry | [Broadcastify Calls](broadcastify.md) |
-| The `rdioscanner` plugin: `server`, each system's `apiKey` and `systemId` | [Rdio Scanner](rdioscanner.md) |
-| The `simplestream` plugin's `streams` | [simplestream](simplestream.md) |
-| A system's `uploadScript` | [Upload script](upload-script.md) |
-
-The settings land in the config whether or not the plugin is installed. Plugins that are already
-installed are turned on. For those that aren't, Setup's to-do list says *Its settings came over.
-Install … on the Plugins page, then turn it on here.* Other Trunk Recorder plugins have no
-counterpart; the import lists them under **Other plugins**. Each plugin's page says which settings
-map to what. The [migration guide](../migrating-from-trunk-recorder.md) covers the rest of the
-import.
+**Setup → Systems → Import…** brings over the settings of Trunk Recorder's uploaders and plugins
+that have a counterpart here (OpenMHz, Broadcastify Calls, Rdio Scanner, simplestream,
+`uploadScript`), installed or not. Each plugin's page says which settings map to what; the
+[migration guide](../migrating-from-trunk-recorder.md#uploads-and-streaming) has the whole table.
 
 ## Running a build of your own
 
@@ -358,5 +321,6 @@ subscribes to, and its settings.
 | [simplestream](simplestream.md) | Streams live call audio to other programs over UDP or TCP |
 | [Upload script](upload-script.md) | Runs a script of yours on each recorded call |
 | [MQTT](mqtt.md) | Publishes calls, radio activity and system status to an MQTT broker |
+| [Notifications](https://github.com/TrunkRecorder/trunk-plugin-notify) (`notify`) | Rules over what the recorder hears (signals, tones, emergencies, new talkgroups and radios), sent to webhooks (Discord, Slack, ntfy, JSON) and commands |
 
 To write your own, see [Writing plugins](writing-plugins.md).

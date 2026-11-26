@@ -235,14 +235,14 @@ impl E4000 {
 /// librtlsdr's E4000 gain steps, in tenths of a dB, with the GAIN1 LNA code
 /// and GAIN2 mixer bit each is: every LNA step with the mixer at 4 dB, then
 /// the top LNA step with it at 12 dB (-1 to 42 dB in all).
-fn gain_steps() -> impl Iterator<Item = (i32, u8, u8)> {
+pub(super) fn gain_steps() -> impl Iterator<Item = (i32, u8, u8)> {
     let (top, top_code) = LNA_GAIN[LNA_GAIN.len() - 1];
     LNA_GAIN.iter().map(|&(lna, code)| (lna + MIXER_TENTHS_DB[0], code, 0)).chain([(top + MIXER_TENTHS_DB[1], top_code, 1)])
 }
 
 /// The step nearest `db` (above 42 dB: 42 dB; first of equals, as librtlsdr):
 /// (tenths of a dB, GAIN1 LNA code, GAIN2 mixer bit).
-fn nearest_gain(db: f32) -> (i32, u8, u8) {
+pub(super) fn nearest_gain(db: f32) -> (i32, u8, u8) {
     let tenths = (db * 10.0).round() as i32;
     gain_steps().min_by_key(|&(g, ..)| (g - tenths).abs()).expect("a step at least")
 }

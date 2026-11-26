@@ -5,10 +5,11 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, newConventional, normalizeSystem } from "./config.ts";
+import { defaultConfig, newConventional, newSoapy, normalizeSystem } from "./config.ts";
 import { transport } from "./controller.ts";
-import type { Channel } from "./protocol.ts";
+import type { Channel, Config } from "./protocol.ts";
 import { ConventionalPanel, SystemCard } from "./Setup.tsx";
+import { shorten } from "./charts.tsx";
 
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 const row = (freqHz: number, mode: Channel["mode"], more: Partial<Channel> = {}): Channel => ({ freqHz, mode, name: "", enabled: true, ...more });
@@ -29,7 +30,7 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
       ],
     }),
   );
-  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service"] }] as const) {
+  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service"] }] as const) {
     transport.onMessage(m as never);
   }
   const html = renderToString(<ConventionalPanel c={c} k={0} />);
@@ -48,16 +49,31 @@ test("Setup's channels: each row's code, slot and talkgroup as chips, and what i
   assert.ok(html.includes('class="match-chip k-code bad"') && html.includes('class="rule-edit"'));
   assert.equal(html.match(/class="rule-edit"/g)?.length, 1, "the others' editors stay shut");
   assert.ok(html.includes('class="match-chip k-tg"') && html.includes('class="match-chip k-slot"') && html.includes('class="match-chip k-code"'));
-  assert.match(text(html), /Each row records tone \/ DCS NAC \/ colour code slot talkgroup everything else/);
+  assert.match(text(html), /Records tone \/ DCS NAC \/ colour code slot talkgroup everything else/);
   assert.match(text(html), /CSV format .* Match TG p25, dmr, nxdn: only transmissions naming this talkgroup/);
   // Names beside the alpha tag: shown under it, edited in the row's editor, the system's own offered.
   const meta = [...html.matchAll(/class="row-meta small"[^>]*>(.*?)<\/button>/g)].map((m) => text(m[1]).trim());
   assert.deepEqual(meta, ["Law Dispatch · Police"]);
   assert.equal(html.match(/title="Its codes, and its description, tag and category"/g)?.length, 7, "every row has an Edit");
   const editor = html.slice(html.indexOf('class="rule-edit"'));
-  assert.match(text(editor), /Records .* Names Description Tag Category/);
+  assert.match(text(editor), /Records .* Names .*Description Tag Category/);
   const tagList = editor.match(/list="([^"]+-tag)"/)?.[1];
   assert.ok(tagList && html.includes(`<datalist id="${tagList}"><option value="Law Dispatch"></option></datalist>`), "the system's tags offered");
+});
+
+test("Setup's channels: a tone on an FRS/GMRS channel shows its privacy code, Motorola's for DCS; elsewhere none", () => {
+  const c = defaultConfig();
+  c.conventional.push(
+    newConventional(c, {
+      shortName: "gmrs",
+      channels: [row(462_562_500, "fm", { code: "151.4", name: "GMRS 1" }), row(462_587_500, "fm", { code: "023 DPL", name: "GMRS 2" }), row(154_325_000, "fm", { code: "151.4", name: "County" })],
+    }),
+  );
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const html = renderToString(<ConventionalPanel c={c} k={0} />);
+  const chips = [...html.matchAll(/class="match-line[^"]*"[^>]*>(.*?)<\/button>/g)].map((m) => text(m[1]).trim());
+  assert.deepEqual(chips, ["151.4 Hz #24", "D023N Moto #39", "151.4 Hz"]);
+  assert.match(html, /title="Motorola&#x27;s FRS\/GMRS privacy code 39/, "says whose number it is");
 });
 
 test("Setup's channels: a digital row can correct its source's AutoTune; an analog row can't", () => {
@@ -78,9 +94,9 @@ test("Setup's channels: a digital row can correct its source's AutoTune; an anal
   assert.deepEqual(labels, ["AutoTune"], "the P25 row's, not the FM row's");
   const editors = html.split('class="rule-edit"').slice(1);
   assert.equal(editors.length, 2);
-  assert.match(text(editors[0]), /AutoTune Correct the source from its calls/);
+  assert.match(text(editors[0]), /AutoTune .*Tune the source/);
   assert.match(editors[0], /type="checkbox" checked=""/);
-  assert.doesNotMatch(text(editors[1]), /Correct the source/);
+  assert.doesNotMatch(text(editors[1]), /Tune the source/);
   assert.match(text(html), /AutoTune p25, dmr, nxdn: true lets its calls correct/);
 });
 
@@ -100,7 +116,7 @@ test("Setup's signals: a disclosure on the system's card, a row each with its ki
   transport.onMessage({ type: "config", config: c, version: 1 } as never);
   const html = renderToString(<ConventionalPanel c={c} k={0} />);
   const signals = html.slice(html.indexOf(">", html.indexOf('id="need-convsignals-town"')) + 1);
-  assert.match(text(signals), /^ ?Signals — 3/);
+  assert.match(text(signals), /^ ?Signals 3/);
   const lines = [...signals.matchAll(/<tr>(.*?)<\/tr>/g)].slice(1, 4).map((m) => text(m[1]).trim());
   assert.match(lines[0], /^COUNTY_A County A page Two-tone page 788\.5 → 879 Hz 1001 ▶ Edit Remove$/);
   assert.match(lines[1], /^ALERT Beep 1000 Hz any/, "a beep isn't a long tone");
@@ -125,25 +141,38 @@ test("a system with several sites: Conversations suggested off, in its own Recor
   assert.doesNotMatch(text(renderToString(<ConventionalPanel c={c} k={0} />)), /Conversations/, "conventional channels: not theirs");
 });
 
-test("Setup's channels: a stream row has an address and a stereo channel where a frequency has its frequency and bandwidth", () => {
+test("a system kept on a source: Setup offers the radios by name, and says the one it's received on — the recorder's choice, pins and all", () => {
   const c = defaultConfig();
-  c.conventional.push(
-    newConventional(c, {
-      shortName: "feed",
-      channels: [row(0, "stream", { url: "https://feed.example/live.mp3", stereo: "left", talkgroup: 7, name: "County Fire" }), row(154_325_000, "fm", { name: "Town" })],
-    }),
-  );
-  // (The desktop app: the browser version has no streams to add.)
-  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, surveyBands: [], capabilities: ["service", "drivers"] }] as const) {
-    transport.onMessage(m as never);
-  }
-  const html = renderToString(<ConventionalPanel c={c} k={0} />);
-  assert.match(html, /aria-label="Stream address"[^>]*value="https:\/\/feed.example\/live.mp3"|value="https:\/\/feed.example\/live.mp3"[^>]*aria-label="Stream address"/);
-  assert.match(html, /aria-label="Stereo channel"/);
-  assert.match(html, /<option value="left" selected="">Left<\/option>/);
-  assert.equal((html.match(/aria-label="Frequency, MHz"/g) ?? []).length, 1, "only the radio row has a frequency");
-  assert.equal((html.match(/aria-label="Bandwidth"/g) ?? []).length, 1);
-  assert.match(text(html), /Add a stream/);
-  const chips = [...html.matchAll(/class="match-line[^"]*"[^>]*>(.*?)<\/button>/g)].map((m) => text(m[1]).trim());
-  assert.deepEqual(chips, ["everything", "everything"]);
+  const rtl = (serial: string) => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 }) as Config["sources"][number];
+  c.sources = [rtl("1"), { ...rtl("2"), name: "Whip" }];
+  c.systems = [{ ...normalizeSystem({ shortName: "dc", type: "p25", controlChannelsHz: [851_012_500] } as never), receiveOn: ["RTL-SDR SN 2"] }];
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const card = renderToString(<SystemCard c={c} i={0} />);
+  // Both radios reach it; it's kept on SN 2 (named Whip: still pinned by its label), so that's the one.
+  assert.match(text(card), /CC → 2/);
+  assert.match(text(card), /Receive on Source 1 · RTL-SDR SN 1 Source 2 \(Whip\) · RTL-SDR SN 2 Only those ticked/);
+  assert.match(card, /<input type="checkbox" checked=""\/><span class="clip small" title="Source 2 \(Whip\) · RTL-SDR SN 2">Source 2 \(Whip\) · RTL-SDR SN 2/);
+  // SN 2 taken out: still named (to untick), and not received anywhere else.
+  const gone = { ...c, sources: [rtl("1")] };
+  transport.onMessage({ type: "config", config: gone, version: 2 } as never);
+  const page = text(renderToString(<SystemCard c={gone} i={0} />));
+  assert.match(page, /RTL-SDR SN 2 \(not a source now\)/);
+  assert.doesNotMatch(page, /CC → \d/);
+});
+
+test("#210: a SoapyRemote source's long label is cut off where it doesn't fit, the whole of it on hover; a channel's list shortens it in the middle", () => {
+  const c = defaultConfig();
+  const args = "driver=remote,remote=tcp://10.0.0.5:55132,remote:driver=rtlsdr,serial=00000102,remote:prot=tcp";
+  const soapy = (serial: string) => ({ ...newSoapy(), args: args.replace("00000102", serial), centerHz: 851_000_000, rateHz: 2_400_000 }) as Config["sources"][number];
+  c.sources = [soapy("00000101"), soapy("00000102")];
+  c.systems = [normalizeSystem({ shortName: "dmr", type: "dmr", controlChannelsHz: [851_012_500] } as never)];
+  c.conventional.push(newConventional(c, { shortName: "town", channels: [row(851_325_000, "fm", { name: "Town", receiveOn: [`SoapySDR ${args}`] })] }));
+  transport.onMessage({ type: "config", config: c, version: 1 } as never);
+  const label = `Source 2 · SoapySDR ${args}`;
+  assert.ok(renderToString(<SystemCard c={c} i={0} />).includes(`<span class="clip small" title="${label}">${label}</span>`));
+  const list = renderToString(<ConventionalPanel c={c} k={0} />);
+  const short = shorten(label);
+  assert.ok(short.length === 56 && short.startsWith("Source 2 · SoapySDR driver=remote") && short.endsWith("remote:prot=tcp"), short);
+  assert.ok(list.includes(`title="${label}"`) && list.includes(`>${short}</option>`), "the option: shortened, the whole on hover");
+  assert.equal(shorten("Source 1 · RTL-SDR SN 1"), "Source 1 · RTL-SDR SN 1", "a short one as it is");
 });

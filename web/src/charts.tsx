@@ -772,6 +772,26 @@ const OWN_CLICK = "a, button, input, select, textarea, label, summary, [role=but
  * A card: title, a status light and why, actions, and a body. `open` /
  * `onToggle`: a part that expands for detail (remembered per `id`).
  */
+/**
+ * Text that may be long with nowhere to break (a SoapySDR source's label is
+ * its device arguments): cut off with an ellipsis where it doesn't fit, the
+ * whole of it on hover (#210).
+ */
+export function Clip({ text, className }: { text: string; className?: string }) {
+  return (
+    <span className={`clip${className ? ` ${className}` : ""}`} title={text}>
+      {text}
+    </span>
+  );
+}
+
+/** `text` at most `max` characters, the middle cut (an option in a list can't be cut by CSS); the whole goes in its title. */
+export function shorten(text: string, max = 56): string {
+  if (text.length <= max) return text;
+  const head = Math.ceil((max - 1) * 0.6);
+  return `${text.slice(0, head)}…${text.slice(text.length - (max - 1 - head))}`;
+}
+
 export function Card(props: { title: ReactNode; level?: Level; why?: string; onWhy?: () => void; actions?: ReactNode; children?: ReactNode; className?: string; onTitle?: () => void; detail?: ReactNode; id?: string }) {
   const key = props.id ? `trp.card.${props.id}` : null;
   const [open, setOpen] = useState(() => {
@@ -805,10 +825,10 @@ export function Card(props: { title: ReactNode; level?: Level; why?: string; onW
           {props.level && props.level !== "idle" && <Light level={props.level} title={props.why} />}
           {props.onTitle ? (
             <button className="linkish" onClick={props.onTitle}>
-              <h3>{props.title}</h3>
+              <h3 title={typeof props.title === "string" ? props.title : undefined}>{props.title}</h3>
             </button>
           ) : (
-            <h3>{props.title}</h3>
+            <h3 title={typeof props.title === "string" ? props.title : undefined}>{props.title}</h3>
           )}
         </div>
         <div className="row">{props.actions}</div>
@@ -864,6 +884,60 @@ export function BackBar({ to, onBack, children }: { to: string; onBack: () => vo
       </button>
       {children}
     </div>
+  );
+}
+
+/**
+ * A number in a line of text, set apart from its words: the value bold and
+ * in text colour, the unit small and muted. `level` colours the value
+ * (a problem reads at a glance). Never write a figure into a sentence.
+ */
+export function Fig(props: { v: ReactNode; u?: string; level?: Level; title?: string }) {
+  return (
+    <span className={`fig${props.level && props.level !== "ok" && props.level !== "idle" ? ` fig-${props.level}` : ""}`} title={props.title}>
+      <b>{props.v}</b>
+      {props.u && <small>{props.u}</small>}
+    </span>
+  );
+}
+
+/**
+ * Figures side by side, each a short muted label over (or beside, `inline`)
+ * its value: the infographic way to say what a sentence would.
+ * `{ k: "AutoTune", v: "+0.47", u: "ppm" }`.
+ */
+export function Figs(props: { items: ({ k: string; v: ReactNode; u?: string; level?: Level; title?: string } | null | false | undefined)[]; inline?: boolean }) {
+  return (
+    <dl className={`figs${props.inline ? " inline" : ""}`}>
+      {props.items.filter((x): x is { k: string; v: ReactNode; u?: string; level?: Level; title?: string } => !!x).map((x) => (
+        <div key={x.k} title={x.title}>
+          <dt>{x.k}</dt>
+          <dd>
+            <Fig v={x.v} u={x.u} level={x.level} />
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/**
+ * The longer why behind a label, out of the way: an ⓘ that shows it on
+ * hover or focus. For the rare setting that can't be made obvious; first
+ * try a clearer label, a picture or a better control.
+ */
+export function Info({ children, label = "More" }: { children: ReactNode; label?: string }) {
+  return (
+    // (Inside a label, a click on it mustn't tick the label's checkbox.)
+    <span className="info" tabIndex={0} role="note" aria-label={label} onClick={(e) => e.preventDefault()}>
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M8 7v4.2M8 4.6v.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      </svg>
+      <span className="info-pop" role="tooltip">
+        {children}
+      </span>
+    </span>
   );
 }
 

@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-pro", "crates/trunk-web", "crates/trunk-recorder-plugin", "crates/rtlsdr-nusb"]
+members = ["crates/trunk-core", "crates/trunk-app", "crates/trunk-pro", "crates/trunk-web", "crates/trunk-recorder-plugin", "crates/rtlsdr-nusb", "crates/libairspy-rs"]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.5.1"
 edition = "2024"
 # The oldest Rust that builds the app (sdr-stream declares 1.99). The plugin SDK
 # sets its own, lower one.
@@ -26,7 +26,6 @@ serde_json = { version = "1", features = ["raw_value"] }
 # ~2x release and still debuggable.
 [profile.dev]
 opt-level = 1
-incremental = false
 
 [profile.release]
 opt-level = 3

@@ -1,8 +1,42 @@
-//! Bit helpers the protocols share: MSB-first bit fields and CRC-CCITT.
+//! Bit helpers the protocols share: MSB-first bit fields and CRCs.
 
 /// Bits `a..b` of `buf`, MSB first (bit 0 is the top bit of byte 0).
 pub fn field(buf: &[u8], a: usize, b: usize) -> u32 {
     (a..b).fold(0, |v, i| v << 1 | (buf[i / 8] >> (7 - i % 8) & 1) as u32)
+}
+
+/// A `width`-bit CRC of `bits` (MSB first, one bit per byte), the register preset to `preset`.
+pub fn crc(bits: &[u8], width: u32, poly: u32, preset: u32) -> u32 {
+    let mask = (1u32 << width) - 1;
+    let top = 1u32 << (width - 1);
+    let mut r = preset & mask;
+    for &b in bits {
+        let fb = (b as u32 & 1) ^ (r & top != 0) as u32;
+        r = (r << 1) & mask;
+        if fb != 0 {
+            r ^= poly;
+        }
+    }
+    r
+}
+
+/// CRC-32 (x³²+x²⁶+x²³+x²²+x¹⁶+x¹²+x¹¹+x¹⁰+x⁸+x⁷+x⁵+x⁴+x²+x+1, init 0, not inverted) of
+/// `data`, MSB first. A P25 packet's CRC is it inverted ([`crate::p25::mbt::crc32`]); a DMR
+/// packet's takes each pair of octets low one first ([`crate::dmr::data`]).
+pub fn crc32(data: impl IntoIterator<Item = u8>) -> u32 {
+    let mut crc = 0u32;
+    for b in data {
+        crc ^= (b as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 { crc << 1 ^ 0x04c1_1db7 } else { crc << 1 };
+        }
+    }
+    crc
+}
+
+/// Bytes as lowercase hex.
+pub fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// CRC-CCITT (x¹⁶+x¹²+x⁵+1, init 0, inverted: CRC-16/GSM) of `bits`, one bit per byte.

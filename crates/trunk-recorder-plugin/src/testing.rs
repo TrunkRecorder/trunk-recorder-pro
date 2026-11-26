@@ -76,6 +76,19 @@ impl Output {
             _ => None,
         })
     }
+    /// Its notices still standing at the end, by key.
+    pub fn notices(&self) -> std::collections::BTreeMap<String, (State, String)> {
+        let mut out = std::collections::BTreeMap::new();
+        for m in &self.messages {
+            if let PluginMessage::Notice { key, state, message } = m {
+                match state {
+                    Some(s) => out.insert(key.clone(), (*s, message.clone())),
+                    None => out.remove(key),
+                };
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone, Default)]
@@ -164,7 +177,7 @@ pub fn call(dir: &Path, short_name: &str, tg: u32) -> ConcludedCall {
     std::fs::create_dir_all(base.parent().unwrap()).expect("call dir");
     let record = json!({
         "call_num": tg, "short_name": short_name, "talkgroup": tg, "talkgroup_tag": format!("TG {tg}"),
-        "freq": 851012500u64, "start_time": start, "stop_time": start + 3, "call_length": 3,
+        "freq": 851012500u64, "start_time": start, "stop_time": start + 3, "call_length": 3, "call_length_ms": 3000,
         "emergency": 0, "encrypted": 0, "audio_type": "digital",
         "freqList": [{ "freq": 851012500u64, "time": start, "pos": 0, "len": 3, "error_count": 2, "spike_count": 0 }],
         "srcList": [{ "src": 1234, "time": start, "pos": 0, "emergency": 0, "signal_system": "", "tag": "", "tag_ota": "" }],

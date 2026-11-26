@@ -42,7 +42,7 @@ For the whole recorder (Setup > **Plugins**, or `plugins.rdioscanner.settings` i
 
 | Key | Required | Default | Type | Description |
 |---|---|---|---|---|
-| `server` | ✓ | | string (URL) | **Server.** Your Rdio Scanner's web address, the one you open it with. Calls go to `<server>/api/call-upload`. |
+| `server` | ✓ | | string (URL) | **Server.** Your Rdio Scanner's web address, the one you open it with. Calls go to `<server>/api/call-upload`. Required unless every system that uploads sets its own (below). |
 
 For each system (the system's card, or its `plugins.rdioscanner` in `config.json`):
 
@@ -67,7 +67,10 @@ For each system (the system's card, or its `plugins.rdioscanner` in `config.json
 }
 ```
 
-The plugin won't start without a server, without at least one system with an API key, with a
+A system can send to another Rdio Scanner: **Server** again, in **Rdio Scanner shared settings** on its
+card (`override` in its `plugins.rdioscanner` entry). Each server has its own queue and Health status.
+
+The plugin won't start without a server (for a system that uploads, its own or the recorder-wide one), without at least one system with an API key, with a
 system that has a key but no system ID, or with a talkgroup list entry that isn't a talkgroup, a
 range or a pattern. Ranges (`1000-1099`) and the menu are plugin 0.1.6 and later.
 
@@ -105,6 +108,6 @@ fails**): see
 
 ## Coming from Trunk Recorder
 
-**Import Trunk Recorder config…** brings over Trunk Recorder's `rdioscanner` plugin entry: its
+**Setup → Systems → Import…** brings over Trunk Recorder's `rdioscanner` plugin entry: its
 `server`, and each system's `apiKey`, `systemId`, `talkgroupAllow` and `talkgroupDeny` (matched
 by short name), with the **Talkgroups** menu set to match.

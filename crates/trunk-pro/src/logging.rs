@@ -9,7 +9,7 @@
 //! day and at 100 MB; with `syslogFriendly`, one `<dir>/trunk-pro.log`
 //! appended to, for logrotate (SIGHUP reopens it).
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, RwLock};
@@ -38,12 +38,17 @@ struct FileSink {
     written: u64,
     /// The day the file was opened (yyyymmdd).
     day: u32,
+    /// Its not opening has been said (on stderr: the log can't say it).
+    said: bool,
 }
 
 pub struct Logger {
     settings: RwLock<Settings>,
     file: Mutex<Option<FileSink>>,
     syslog: Mutex<Option<Syslog>>,
+    /// The plugins taking the `log` topic ([`tap`]), with its id.
+    tap: RwLock<Option<(u64, Tap)>>,
+    taps: std::sync::atomic::AtomicU64,
 }
 
 static LOGGER: OnceLock<Logger> = OnceLock::new();
@@ -61,6 +66,8 @@ fn logger() -> &'static Logger {
         }),
         file: Mutex::new(None),
         syslog: Mutex::new(None),
+        tap: RwLock::new(None),
+        taps: std::sync::atomic::AtomicU64::new(0),
     })
 }
 
@@ -137,7 +144,7 @@ pub fn configure(s: &LogSettings, config_dir: &Path) {
         if !s.file {
             *f = None;
         } else if !keep {
-            *f = Some(FileSink { dir, single: s.syslog_friendly, file: None, written: 0, day: 0 });
+            *f = Some(FileSink { dir, single: s.syslog_friendly, file: None, written: 0, day: 0, said: false });
         }
     }
     {
@@ -169,14 +176,65 @@ pub fn reopen() {
     }
 }
 
+/// A line logged, as the tap is handed it.
+pub struct Tapped<'a> {
+    /// When it was logged, Unix seconds: the time its `line` shows.
+    pub time: f64,
+    pub level: Level,
+    /// The system it's about (its short name).
+    pub system: Option<&'a str>,
+    /// The talkgroup of the call it's about.
+    pub talkgroup: Option<u32>,
+    /// The plugin whose note it is ([`plugin_note`]).
+    pub plugin: Option<&'a str>,
+    /// What it says, after the time and level.
+    pub text: &'a str,
+    /// The whole line, as the console prints it without colour.
+    pub line: &'a str,
+}
+
+/// What's handed every line logged, as one more of the log's sinks: the plugins that take
+/// the `log` topic.
+pub type Tap = std::sync::Arc<dyn Fn(&Tapped) + Send + Sync>;
+
+thread_local! {
+    /// This thread is handing a line to the tap: what's logged meanwhile (a plugin fallen
+    /// behind, say) isn't handed to it again.
+    static TAPPING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Hand every line logged from now on to `f` (in place of any before it). The id to [`untap`] it with.
+pub fn tap(f: Tap) -> u64 {
+    let l = logger();
+    let id = l.taps.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    *l.tap.write().unwrap() = Some((id, f));
+    id
+}
+
+/// Stop handing lines to tap `id` (if it's still the one).
+pub fn untap(id: u64) {
+    let mut t = logger().tap.write().unwrap();
+    if t.as_ref().is_some_and(|(i, _)| *i == id) {
+        *t = None;
+    }
+}
+
 /// Log a record from the session (or anywhere).
 pub fn record(r: &Record) {
+    record_from(r, None);
+}
+
+/// [`record`], of plugin `plugin`'s note (the tap is told whose: a plugin isn't sent its own).
+fn record_from(r: &Record, plugin: Option<&str>) {
     let l = logger();
     let s = l.settings.read().unwrap();
     if r.level < s.level {
         return;
     }
-    let time = Local::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+    let now = Local::now();
+    let time = now.format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+    let tapped = l.tap.read().unwrap().as_ref().map(|(_, f)| f.clone()).filter(|_| !TAPPING.with(|t| t.get()));
+    let tapped = tapped.map(|f| (f, trunk_app::log::line(r, &s.format, false), full_line(&time, r, &s.format, false)));
     if s.console {
         let _ = writeln!(std::io::stderr().lock(), "{}", full_line(&time, r, &s.format, s.console_color));
     }
@@ -191,6 +249,24 @@ pub fn record(r: &Record) {
             y.send(r.level, &trunk_app::log::line(r, &s.format, false));
         }
     }
+    drop(s);
+    // (No lock held: what it does may log.)
+    if let Some((f, text, line)) = tapped {
+        TAPPING.with(|t| t.set(true));
+        f(&Tapped { time: now.timestamp_micros() as f64 / 1e6, level: r.level, system: r.system.as_deref(), talkgroup: r.call.as_ref().map(|c| c.talkgroup), plugin, text: &text, line: &line });
+        TAPPING.with(|t| t.set(false));
+    }
+}
+
+/// Plugin `plugin`'s note ("" for the plugins as a whole), logged as "[its id] …": to the log
+/// and the browsers, as [`text`] (`kind` "plugin"), marked as its for the tap.
+pub fn plugin_note(plugin: &str, level: Level, note: &str) {
+    if level < logger().settings.read().unwrap().level {
+        return;
+    }
+    let line = if plugin.is_empty() { format!("Plugins: {note}") } else { format!("[{plugin}] {note}") };
+    to_browsers(level, if level >= Level::Warning { "error" } else { "plugin" }, &line);
+    record_from(&Record::text(level, None, line), Some(plugin).filter(|p| !p.is_empty()));
 }
 
 /// A plain message (what `log::info!` and friends make).
@@ -226,6 +302,13 @@ fn level_of(l: log::Level) -> Level {
 }
 
 impl FileSink {
+    /// The log file can't be written: said once until it can.
+    fn not_opened(&mut self, p: trunk_app::files::Problem) {
+        if !std::mem::replace(&mut self.said, true) {
+            eprintln!("The log file can't be written, so the log goes to the console only. {p}");
+        }
+    }
+
     fn write(&mut self, line: &str) {
         let now = Local::now();
         let day = now.year() as u32 * 10000 + now.month() * 100 + now.day();
@@ -242,8 +325,8 @@ impl FileSink {
 
     fn open(&mut self, now: &chrono::DateTime<Local>, day: u32) {
         self.file = None;
-        if std::fs::create_dir_all(&self.dir).is_err() {
-            return;
+        if let Err(p) = trunk_app::files::make_dir(&self.dir) {
+            return self.not_opened(p);
         }
         let path = if self.single {
             self.dir.join("trunk-pro.log")
@@ -252,7 +335,10 @@ impl FileSink {
             let stem = now.format("%m-%d-%Y_%H%M").to_string();
             (0..100).map(|n| self.dir.join(format!("{stem}_{n:02}.log"))).find(|p| !p.exists()).unwrap_or_else(|| self.dir.join(format!("{stem}_99.log")))
         };
-        self.file = OpenOptions::new().create(true).append(true).open(&path).ok();
+        match trunk_app::files::append(&path) {
+            Ok(f) => (self.file, self.said) = (Some(f), false),
+            Err(p) => return self.not_opened(p),
+        }
         self.written = self.file.as_ref().and_then(|f| f.metadata().ok()).map_or(0, |m| m.len());
         self.day = day;
     }
@@ -294,4 +380,35 @@ impl Syslog {
     }
     #[cfg(not(unix))]
     fn send(&self, _: Level, _: &str) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// Every line logged is handed to the tap, as the console has it; what the tap logs itself isn't
+    /// handed back to it; untapped, nothing more is.
+    #[test]
+    fn lines_logged_reach_the_tap_once() {
+        let seen: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let s2 = seen.clone();
+        let id = tap(Arc::new(move |t: &Tapped| {
+            if t.text.contains("tap-test") {
+                s2.lock().unwrap().push((format!("{} {} {}", t.level.as_str(), t.system.unwrap_or("-"), t.plugin.unwrap_or("-")), t.line.to_string()));
+                record(&Record::text(Level::Warning, None, "tap-test: from inside the tap"));
+            }
+        }));
+        record(&Record::text(Level::Info, Some("clmrn-I"), "tap-test: a line"));
+        record(&Record::text(Level::Debug, None, "tap-test: below the log's level"));
+        plugin_note("mqtt", Level::Info, "tap-test: a plugin's note");
+        untap(id);
+        record(&Record::text(Level::Info, None, "tap-test: after"));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(seen[0].0, "info clmrn-I -");
+        assert_eq!(seen[1].0, "info - mqtt", "whose note it is");
+        assert!(seen[1].1.ends_with("[mqtt] tap-test: a plugin's note"), "{}", seen[1].1);
+        assert!(seen[0].1.ends_with("(info)   [clmrn-I]\ttap-test: a line"), "{}", seen[0].1);
+    }
 }

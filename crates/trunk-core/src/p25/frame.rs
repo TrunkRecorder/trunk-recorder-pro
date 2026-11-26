@@ -272,7 +272,7 @@ pub struct Frame {
     pub complete: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FramerOptions {
     pub flywheel: bool,
     pub flywheel_errs: u32,
@@ -286,7 +286,8 @@ impl Default for FramerOptions {
     }
 }
 
-const SYNC: u64 = 0x5575_F5FF_77FF;
+/// Phase 1 frame sync, 48 bits.
+pub(crate) const SYNC: u64 = 0x5575_F5FF_77FF;
 const INV: u64 = 0xAAAA_AAAA_AAAA;
 pub(crate) static SYNC_BITS: [u8; 48] = [
     0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1,
