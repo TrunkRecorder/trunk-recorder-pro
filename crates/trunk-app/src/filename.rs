@@ -189,7 +189,7 @@ const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
 const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 /// strftime's common specifiers, `%f` (milliseconds) and the `iso` / `iso_ms` presets.
-fn strftime(f: &str, ms: i64, utc_offset_s: i32, utc: bool) -> String {
+pub(crate) fn strftime(f: &str, ms: i64, utc_offset_s: i32, utc: bool) -> String {
     let z = if utc { "Z" } else { "" };
     match f {
         "iso" => return strftime("%Y-%m-%dT%H:%M:%S", ms, utc_offset_s, utc) + z,

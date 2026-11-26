@@ -294,7 +294,7 @@ fn run_calls(a: &Args) {
         let mut files = super::host::files_on_disk(&base);
         if let Some((e, kbps)) = host.encoder_settings().filter(|_| files.m4a.is_none() && host.plugin_audio(system, &record, decrypted).m4a) {
             let to = PathBuf::from(format!("{}.m4a", base.display()));
-            if e.m4a(&std::fs::read(&files.wav).unwrap_or_default(), &to, *kbps).is_ok() {
+            if e.m4a(&std::fs::read(&files.wav).unwrap_or_default(), &to, *kbps, &trunk_app::tags::Tags::of(&record, crate::runtime::local_offset(record.start_time))).is_ok() {
                 files.m4a = Some(to);
             }
         }
