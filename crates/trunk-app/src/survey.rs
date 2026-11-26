@@ -16,7 +16,7 @@
 
 use serde_json::{json, Value};
 use trunk_core::sitecheck::{self, Site};
-use trunk_core::survey::{Command, GainState, Kind, Receivers, Stage, Survey, SurveyConfig, BANDS};
+use trunk_core::survey::{Command, GainState, Kind, Receivers, ScanRange, Stage, Survey, SurveyConfig, BANDS};
 
 use crate::config::{Config, SiteIdentity, Source, SourceKind};
 use crate::place::{busiest_window, Placing, Weighted};
@@ -40,7 +40,10 @@ pub struct Request {
     /// A radio that isn't one of the sources (a spare: it may scan while the
     /// others record), in place of `source`.
     pub radio: Option<Source>,
+    /// Band ids ([`BANDS`]) to scan.
     pub bands: Vec<String>,
+    /// Ranges of one's own to scan beside them, Hz (lo, hi); [`survey_config`] checks them.
+    pub ranges: Vec<(f64, f64)>,
     /// Step the gain while monitoring (RTL-SDR).
     pub find_gain: bool,
     pub look_for: Option<LookFor>,
@@ -103,11 +106,19 @@ impl LookFor {
 
 impl Request {
     pub fn from_json(v: &Value) -> Request {
-        let bands = v["bands"].as_array().map(|a| a.iter().filter_map(|b| b.as_str().map(str::to_string)).collect::<Vec<_>>());
+        let mut bands: Vec<String> = v["bands"].as_array().map(|a| a.iter().filter_map(|b| b.as_str().map(str::to_string)).collect()).unwrap_or_default();
+        // (Something that isn't a number: NaN, which survey_config refuses.)
+        let hz = |v: &Value| v.as_f64().unwrap_or(f64::NAN);
+        let ranges: Vec<(f64, f64)> = v["ranges"].as_array().map(|a| a.iter().map(|r| (hz(&r["loHz"]), hz(&r["hiHz"]))).collect()).unwrap_or_default();
+        // Nothing chosen: the bands scanned by default.
+        if bands.is_empty() && ranges.is_empty() {
+            bands = BANDS.iter().filter(|b| b.default_on).map(|b| b.id.to_string()).collect();
+        }
         Request {
             source: v["source"].as_u64().unwrap_or(0) as usize,
             radio: v.get("radio").filter(|r| r.is_object()).and_then(|r| serde_json::from_value(r.clone()).ok()),
-            bands: bands.filter(|b| !b.is_empty()).unwrap_or_else(|| BANDS.iter().filter(|b| b.default_on).map(|b| b.id.to_string()).collect()),
+            bands,
+            ranges,
             find_gain: v["findGain"].as_bool().unwrap_or(true),
             look_for: LookFor::from_json(&v["lookFor"]),
             threads: 1,
@@ -123,15 +134,38 @@ impl Request {
     }
 }
 
-/// The survey settings for the request's radio.
-pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String> {
-    let src = req.radio(cfg)?;
-    // (Looking for frequencies, the bands don't matter.)
-    if let Some(bad) = req.bands.iter().find(|id| !BANDS.iter().any(|b| b.id == id.as_str())).filter(|_| req.look_for.is_none()) {
+/// What a scan covers: the bands asked for, in [`BANDS`]' order, then the
+/// ranges of one's own as given (each once). An unknown band or a range that
+/// isn't one is an error.
+pub fn scan_ranges(bands: &[String], ranges: &[(f64, f64)]) -> Result<Vec<ScanRange>, String> {
+    if let Some(bad) = bands.iter().find(|id| ScanRange::band(id).is_none()) {
         let ids = BANDS.iter().map(|b| b.id).collect::<Vec<_>>().join(", ");
         return Err(format!("Not a band: \"{bad}\". Use one of {ids}."));
     }
-    let mut sc = SurveyConfig { rate_hz: src.rate_hz, bands: req.bands.clone(), threads: req.threads.max(1), ..Default::default() };
+    let mut out: Vec<ScanRange> = BANDS.iter().filter(|b| bands.iter().any(|id| id == b.id)).map(ScanRange::from).collect();
+    for &(lo, hi) in ranges {
+        let r = ScanRange::own(lo, hi).ok_or_else(|| match lo.is_finite() && hi.is_finite() {
+            true => format!("Not a range: {}–{} MHz. Its low end must be above 0, and below its high end.", lo / 1e6, hi / 1e6),
+            false => "Not a range: loHz and hiHz must both be numbers, Hz.".to_string(),
+        })?;
+        if !out.contains(&r) {
+            out.push(r);
+        }
+    }
+    if out.is_empty() {
+        return Err("Choose a band or a range to scan.".into());
+    }
+    Ok(out)
+}
+
+/// The survey settings for the request's radio.
+pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String> {
+    let src = req.radio(cfg)?;
+    let mut sc = SurveyConfig { rate_hz: src.rate_hz, threads: req.threads.max(1), ..Default::default() };
+    // (Looking for frequencies, the bands don't matter.)
+    if req.look_for.is_none() {
+        sc.ranges = scan_ranges(&req.bands, &req.ranges)?;
+    }
     if let Some(l) = &req.look_for {
         sc.targets = l.freqs_hz.clone();
         sc.probe_s = l.listen_s;
@@ -208,6 +242,7 @@ pub struct SurveySession {
     /// The source's guard band at each edge, Hz.
     guard_hz: f64,
     bands: Vec<String>,
+    ranges: Vec<(f64, f64)>,
     error: Option<String>,
     last_ms: f64,
     last_spec_ms: f64,
@@ -226,6 +261,7 @@ impl SurveySession {
             radio: src.clone(),
             guard_hz: src.guard_hz,
             bands: req.bands.clone(),
+            ranges: req.ranges.clone(),
             error: None,
             last_ms: f64::NEG_INFINITY,
             last_spec_ms: f64::NEG_INFINITY,
@@ -291,7 +327,7 @@ impl SurveySession {
             .filter(|c| c.target.is_some() || c.kind != Kind::Other || c.snr_db >= 6.0)
             .map(|c| {
                 json!({
-                    "freqHz": c.freq_hz.round(), "correctedHz": s.corrected(c.freq_hz).map(f64::round), "band": c.band, "snrDb": (c.snr_db * 10.0).round() / 10.0,
+                    "freqHz": c.freq_hz.round(), "correctedHz": s.corrected(c.freq_hz).map(f64::round), "band": range_json(c.band), "snrDb": (c.snr_db * 10.0).round() / 10.0,
                     "widthHz": c.width_hz.round(), "kind": c.kind.as_str(), "frames": c.frames, "good": c.good, "bad": c.bad,
                     "modulation": c.modulation, "identity": id(&c.identity),
                     "dmr": c.dmr.map(|d| json!({ "variant": d.variant.map(|v| v.name()), "colorCode": d.color_code })),
@@ -321,7 +357,7 @@ impl SurveySession {
                 })),
             })
         });
-        let progress = s.progress().map(|(hop, hops, band, center)| json!({ "hop": hop, "hops": hops, "band": band, "centerHz": center }));
+        let progress = s.progress().map(|(hop, hops, band, center)| json!({ "hop": hop, "hops": hops, "band": range_json(band), "centerHz": center }));
         json!({
             "type": "survey",
             "stage": match s.stage() { Stage::Scanning => "scanning", Stage::Monitoring => "monitoring", Stage::Done => "done" },
@@ -330,6 +366,7 @@ impl SurveySession {
             "lookFor": self.look_for.as_ref().map(|l| json!({ "freqs": l.freqs_hz.len(), "probed": s.probed().len(), "listenS": l.listen_s, "type": l.system_type })),
             "sites": self.sites(),
             "bands": self.bands,
+            "ranges": self.ranges.iter().map(|&(lo, hi)| json!({ "loHz": lo, "hiHz": hi })).collect::<Vec<_>>(),
             "message": s.message(),
             "error": self.error,
             "progress": progress,
@@ -388,6 +425,11 @@ impl SurveySession {
     }
 }
 
+/// A band or range scanned, for the interface: { id (a band's, or null), loHz, hiHz }; null: none.
+fn range_json(r: Option<ScanRange>) -> Value {
+    r.map_or(Value::Null, |r| json!({ "id": r.band, "loHz": r.lo_hz, "hiHz": r.hi_hz }))
+}
+
 /// A learned SmartNet band plan in the config's terms (Trunk Recorder's names).
 fn plan_json(p: &trunk_core::smartnet::plan::PlanConfig) -> Value {
     if p.name == "400_custom" {
@@ -433,15 +475,35 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_band_stops_the_scan() {
+    fn bands_and_ranges_make_one_list() {
         let cfg = Config { sources: vec![serde_json::from_value(json!({ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2_400_000 })).unwrap()], ..Default::default() };
-        let ok = Request::from_json(&json!({ "source": 0, "bands": ["uhf", "uhf-420"] }));
-        assert_eq!(survey_config(&cfg, &ok).unwrap().bands, ["uhf", "uhf-420"]);
-        let r = Request::from_json(&json!({ "source": 0, "bands": ["uhf", "uhf2"] }));
-        let e = survey_config(&cfg, &r).unwrap_err();
-        assert!(e.contains("\"uhf2\"") && e.contains("uhf-420"), "{e}");
+        let ranges = |v: Value| survey_config(&cfg, &Request::from_json(&v)).map(|sc| sc.ranges);
+        // Bands in their own order, then the ranges as given, each once.
+        let r = ranges(json!({ "source": 0, "bands": ["uhf", "800"], "ranges": [{ "loHz": 433e6, "hiHz": 435e6 }, { "loHz": 420e6, "hiHz": 450e6 }, { "loHz": 433e6, "hiHz": 435e6 }] })).unwrap();
+        let named: Vec<_> = r.iter().map(|x| x.band).collect();
+        assert_eq!(named, [Some("800"), Some("uhf"), None, None]);
+        assert_eq!((r[2].lo_hz, r[2].hi_hz, r[3].lo_hz, r[3].hi_hz), (433e6, 435e6, 420e6, 450e6));
+        // Ranges alone, no bands.
+        assert_eq!(ranges(json!({ "source": 0, "bands": [], "ranges": [{ "loHz": 420e6, "hiHz": 450e6 }] })).unwrap().len(), 1);
+        // Neither: the default bands.
+        assert!(ranges(json!({ "source": 0, "bands": [] })).unwrap().iter().all(|x| x.band.is_some()));
+        // Errors come from here.
+        let e = ranges(json!({ "source": 0, "bands": ["uhf", "uhf2"] })).unwrap_err();
+        // (Saying which ones there are.)
+        assert!(e.contains("Not a band") && e.contains("\"uhf2\"") && e.contains("uhf-420"), "{e}");
+        for bad in [json!({ "loHz": 450e6, "hiHz": 420e6 }), json!({ "loHz": 0, "hiHz": 1e6 }), json!({ "loHz": "420", "hiHz": 450e6 })] {
+            let e = ranges(json!({ "source": 0, "bands": ["uhf"], "ranges": [bad] })).unwrap_err();
+            assert!(e.contains("Not a range"), "{e}");
+        }
         // Looking for frequencies, the bands don't matter.
         let look = Request::from_json(&json!({ "source": 0, "bands": ["uhf2"], "lookFor": { "freqsHz": [440.0e6] } }));
         assert!(survey_config(&cfg, &look).is_ok());
+    }
+
+    #[test]
+    fn a_band_is_shown_by_its_numbers() {
+        assert_eq!(range_json(ScanRange::band("uhf")), json!({ "id": "uhf", "loHz": 450e6, "hiHz": 470e6 }));
+        assert_eq!(range_json(ScanRange::own(420e6, 450e6)), json!({ "id": null, "loHz": 420e6, "hiHz": 450e6 }));
+        assert_eq!(range_json(None), Value::Null);
     }
 }

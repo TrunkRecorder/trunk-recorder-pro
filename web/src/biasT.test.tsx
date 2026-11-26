@@ -64,7 +64,7 @@ test("a scan on a spare radio sends its bias-T to the recorder", () => {
   const sent = connected("running", RADIOS);
   const airspy = detectRadios([], RADIOS)[0].source;
   if (!hasBiasT(airspy)) throw new Error("an Airspy has a bias-T");
-  startSurvey({ ...airspy, biasTee: true }, ["800"], false);
+  startSurvey({ ...airspy, biasTee: true }, { bands: ["800"], ranges: [] }, false);
   const m = sent.findLast((x) => x.type === "surveyStart");
   assert.ok(m && m.type === "surveyStart" && m.radio && m.radio.type === "airspy" && m.radio.biasTee === true, JSON.stringify(m));
 });

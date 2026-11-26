@@ -12,7 +12,7 @@
 // each time.
 
 import init, * as wasm from "./web/pkg/trunk_web.js";
-import type { Channel, Config, FoundRadio, Origin, SignalDef, Site, Talkgroup, TapInfo, TalkgroupEdit, TonePatternKind, UnitName } from "./protocol.ts";
+import type { Channel, Config, FoundRadio, HzRange, Origin, SignalDef, Site, Talkgroup, TapInfo, TalkgroupEdit, TonePatternKind, UnitName } from "./protocol.ts";
 
 let ready = false;
 
@@ -438,4 +438,9 @@ export function sameChannel(a: Channel, b: Channel): boolean {
 /** A frequency as written (a field, a list, an imported config): Hz, from MHz under 10 000, else as given; undefined when not above 0. channels::hz_of. */
 export function hzOf(v: number): number | undefined {
   return rules().hzOf(v) ?? undefined;
+}
+
+/** Ranges of frequencies as typed ("420-450, 851000000-852000000"), commas between, each end read as hzOf reads it: the ranges (in order, each once), and the parts that aren't one. channels::ranges_of. */
+export function rangesOf(text: string): { ranges: HzRange[]; bad: string[] } {
+  return JSON.parse(rules().rangesOf(text)) as { ranges: HzRange[]; bad: string[] };
 }

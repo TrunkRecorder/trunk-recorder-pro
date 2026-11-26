@@ -108,7 +108,7 @@ test("each site's verdict; a system's sites not heard can be turned off, a bundl
   const c = defaultConfig();
   c.systems = [normalizeSystem({ shortName: "onevoice", type: "dmr", sites: [{ name: "a", controlChannelsHz: [452_100_000] }, { name: "b", controlChannelsHz: [452_200_000] }, { name: "c", controlChannelsHz: [452_300_000] }] })];
   const survey: FromRecorder = {
-    type: "survey", stage: "done", source: null, radio: "RTL-SDR SN 2", bands: [], message: "", error: null, progress: null, monitor: null, suggest: null, candidates: [],
+    type: "survey", stage: "done", source: null, radio: "RTL-SDR SN 2", bands: [], ranges: [], message: "", error: null, progress: null, monitor: null, suggest: null, candidates: [],
     lookFor: { freqs: 3, probed: 3, listenS: 60, type: "dmr" },
     sites: [
       { label: "a", verdict: "active", why: "DMR Connect Plus on 452.10000 MHz", freqHz: 452_100_000, quality: "good", snrDb: 24 },

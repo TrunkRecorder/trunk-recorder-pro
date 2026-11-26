@@ -3114,6 +3114,13 @@
                 "type": "string"
               }
             },
+            "ranges": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/HzRange"
+              },
+              "description": "Ranges of one's own, scanned beside the bands."
+            },
             "lookFor": {
               "anyOf": [
                 {
@@ -3189,7 +3196,14 @@
                       "type": "number"
                     },
                     "band": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "$ref": "#/definitions/ScanRange"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "centerHz": {
                       "type": "number"
@@ -3246,6 +3260,7 @@
             "message",
             "monitor",
             "progress",
+            "ranges",
             "source",
             "stage",
             "suggest",
@@ -4913,6 +4928,23 @@
       ],
       "additionalProperties": false,
       "description": "A code a conventional frequency carried (crates/trunk-app/src/heard.rs), in a row's Tone form (\"\" = none)."
+    },
+    "HzRange": {
+      "type": "object",
+      "properties": {
+        "loHz": {
+          "type": "number"
+        },
+        "hiHz": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "loHz",
+        "hiHz"
+      ],
+      "additionalProperties": false,
+      "description": "A range of frequencies, Hz."
     },
     "InterfaceInfo": {
       "type": "object",
@@ -7558,6 +7590,30 @@
       ],
       "description": "I/Q samples as bytes: 8-bit offset, 16-bit signed or 32-bit float (a capture file's, a SpyServer's on the link)."
     },
+    "ScanRange": {
+      "type": "object",
+      "properties": {
+        "loHz": {
+          "type": "number"
+        },
+        "hiHz": {
+          "type": "number"
+        },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "hiHz",
+        "id",
+        "loHz"
+      ],
+      "additionalProperties": false,
+      "description": "A band scanned (`id` one of the SurveyBand ids), or a range of one's own (`id` null)."
+    },
     "SeriesData": {
       "type": "object",
       "properties": {
@@ -9078,7 +9134,14 @@
           ]
         },
         "band": {
-          "type": "string"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScanRange"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "snrDb": {
           "type": "number"
@@ -9219,7 +9282,7 @@
         "identity"
       ],
       "additionalProperties": false,
-      "description": "A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known."
+      "description": "A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known. `band`: the hop's band or range; null: a frequency looked for outside every band."
     },
     "SurveyLicense": {
       "type": "object",
@@ -10658,6 +10721,12 @@
               "type": "array",
               "items": {
                 "type": "string"
+              }
+            },
+            "ranges": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/HzRange"
               }
             },
             "findGain": {

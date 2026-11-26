@@ -38,6 +38,7 @@ import {
   holdsRadios,
 } from "./controller.ts";
 import { findExisting, openImport, toFind } from "./directoryImport.tsx";
+import { scanRangeLabel, ScanPicker, useScanChoice } from "./scanChoice.tsx";
 import { defaultListenS, lookedFreqs, type LookingFor } from "./lookFor.ts";
 import type { Config, FccLicense, FccLicenses, SiteIdentity, Source, SurveyCandidate, SurveyMonitor, SurveySite, SurveySuggestion } from "./protocol.ts";
 import type { LicenseLookup } from "./controller.ts";
@@ -570,12 +571,13 @@ export function SurveyPanel(props: { c: Config }) {
   const sv = s.survey;
   const recording = holdsRadios(s.phase);
   const [open, setOpen] = useState(() => c.systems.length === 0);
-  const [picked, setPicked] = useState<string[] | null>(null);
+  const choice = useScanChoice(s.surveyBands);
   const [findGain, setFindGain] = useState(true);
   const [listenS, setListenS] = useState<number | null>(null);
   const lookingFor = s.surveyFor;
   const sought = lookingFor?.fcc ?? null;
-  const bands = picked ?? (lookingFor ? bandsHolding(lookedFreqs(lookingFor), s.surveyBands) : s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id));
+  // (Looking for a system: just its frequencies, the bands that hold them.)
+  const scan = lookingFor ? { bands: bandsHolding(lookedFreqs(lookingFor), s.surveyBands), ranges: [] } : choice.scan;
   // The radio: a source ("0", "1", …), or a spare one no source uses ("spare:…"), which may scan while recording.
   const spares = spareRadios(s);
   const [radioPick, setRadioPick] = useState<string | null>(null);
@@ -589,7 +591,6 @@ export function SurveyPanel(props: { c: Config }) {
   const src = spare ?? c.sources[source];
   const active = sv.stage !== "idle";
   const unsupported = !can("drivers") && !!src && desktopOnly(src);
-  const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
   const shown = !active && (open || !!lookingFor);
   // The radios plugged in now: which are spare.
   useEffect(() => {
@@ -706,28 +707,17 @@ export function SurveyPanel(props: { c: Config }) {
           {src?.type === "file" ? (
             <p className="muted small">Scans at its center: {src.centerHz ? <Fig v={formatMhz(src.centerHz, 4)} u="MHz" /> : "set it below"}</p>
           ) : !lookingFor && (
-            <fieldset className="bands">
-              <legend className="field-label">Bands to scan</legend>
-              {s.surveyBands.map((b) => (
-                <label key={b.id} className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={bands.includes(b.id)}
-                    onChange={(e) => setPicked(e.target.checked ? [...bands, b.id] : bands.filter((x) => x !== b.id))}
-                  />
-                  <span>
-                    {b.label} <span className="field-hint mono">{`${(b.loHz / 1e6).toFixed(0)}–${(b.hiHz / 1e6).toFixed(0)}`}</span>
-                  </span>
-                </label>
-              ))}
-            </fieldset>
+            <ScanPicker known={s.surveyBands} choice={choice} look="setup" />
           )}
           {unsupported && <p className="warn small">{SOURCE_KINDS[src.type].label} needs the desktop app.</p>}
           <div className="row">
             <button
               className="btn primary"
-              disabled={!s.connected || !src || (recording && !spare) || unsupported || (src.type !== "file" && !lookingFor && !bands.length)}
-              onClick={() => startSurvey(scanWith ?? source, bands, src?.type === "rtlsdr" && findGain, listenS ?? undefined)}
+              disabled={!s.connected || !src || (recording && !spare) || unsupported || (src.type !== "file" && !lookingFor && !choice.ready)}
+              onClick={() => {
+                if (!lookingFor) choice.remember();
+                startSurvey(scanWith ?? source, scan, src?.type === "rtlsdr" && findGain, listenS ?? undefined);
+              }}
             >
               Scan
             </button>
@@ -761,7 +751,7 @@ export function SurveyPanel(props: { c: Config }) {
                     </>
                   ) : (
                     <>
-                      Scanning <b>{bandLabel(sv.progress.band)}</b> · <Fig v={formatMhz(sv.progress.centerHz, 3)} u="MHz" />
+                      Scanning <b>{scanRangeLabel(sv.progress.band, s.surveyBands)}</b> · <Fig v={formatMhz(sv.progress.centerHz, 3)} u="MHz" />
                     </>
                   )}
                 </span>

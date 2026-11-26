@@ -168,6 +168,15 @@ pub fn hz_of(v: f64) -> Option<f64> {
     trunk_app::channels::hz_of(v)
 }
 
+/// Ranges of frequencies as typed ("420-450, 851000000-852000000"), each end read as [`hz_of`]
+/// reads it ([`trunk_app::channels::ranges_of`]): JSON `{ ranges: [{ loHz, hiHz }], bad: [text] }`.
+#[wasm_bindgen(js_name = rangesOf)]
+pub fn ranges_of(text: &str) -> String {
+    let (ranges, bad) = trunk_app::channels::ranges_of(text);
+    let ranges: Vec<_> = ranges.iter().map(|&(lo, hi)| serde_json::json!({ "loHz": lo, "hiHz": hi })).collect();
+    serde_json::json!({ "ranges": ranges, "bad": bad }).to_string()
+}
+
 /// Why `path` can't be a folder the recorder writes to (it must be a full path), or none:
 /// [`trunk_app::config::folder_problem`].
 #[wasm_bindgen(js_name = folderProblem)]

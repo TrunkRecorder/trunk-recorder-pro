@@ -92,15 +92,43 @@ pub const BANDS: &[Band] = &[
     Band { id: "t-band", label: "T-band", lo_hz: 470.0e6, hi_hz: 512.0e6, default_on: false },
 ];
 
-fn band_of(hz: f64) -> &'static str {
-    BANDS.iter().find(|b| hz >= b.lo_hz - 1e6 && hz <= b.hi_hz + 1e6).map_or("", |b| b.id)
+/// A stretch of spectrum to scan, Hz: one of [`BANDS`] (`band` its id), or a
+/// range of one's own (`band` None).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScanRange {
+    pub band: Option<&'static str>,
+    pub lo_hz: f64,
+    pub hi_hz: f64,
+}
+
+impl ScanRange {
+    /// Band `id` of [`BANDS`]; None if there's no such band.
+    pub fn band(id: &str) -> Option<ScanRange> {
+        BANDS.iter().find(|b| b.id == id).map(ScanRange::from)
+    }
+    /// A range of one's own, Hz; None unless both ends are above 0 and `lo_hz` below `hi_hz`.
+    pub fn own(lo_hz: f64, hi_hz: f64) -> Option<ScanRange> {
+        (lo_hz.is_finite() && hi_hz.is_finite() && lo_hz > 0.0 && hi_hz > lo_hz).then_some(ScanRange { band: None, lo_hz, hi_hz })
+    }
+}
+
+impl From<&Band> for ScanRange {
+    fn from(b: &Band) -> ScanRange {
+        ScanRange { band: Some(b.id), lo_hz: b.lo_hz, hi_hz: b.hi_hz }
+    }
+}
+
+/// The band `hz` is in (or within 1 MHz of), if any.
+fn band_of(hz: f64) -> Option<ScanRange> {
+    BANDS.iter().find(|b| hz >= b.lo_hz - 1e6 && hz <= b.hi_hz + 1e6).map(ScanRange::from)
 }
 
 #[derive(Clone, Debug)]
 pub struct SurveyConfig {
     pub rate_hz: f64,
-    /// Band ids ([`BANDS`]) to scan.
-    pub bands: Vec<String>,
+    /// What to scan, in order: where two overlap, the later one scans only
+    /// what the earlier ones leave.
+    pub ranges: Vec<ScanRange>,
     /// A source that can't be tuned (a capture file): one look at this centre.
     pub fixed_center_hz: Option<f64>,
     /// What the radio can tune.
@@ -130,7 +158,7 @@ impl Default for SurveyConfig {
     fn default() -> Self {
         SurveyConfig {
             rate_hz: 2_400_000.0,
-            bands: BANDS.iter().filter(|b| b.default_on).map(|b| b.id.to_string()).collect(),
+            ranges: BANDS.iter().filter(|b| b.default_on).map(ScanRange::from).collect(),
             fixed_center_hz: None,
             tune_range_hz: (24e6, 1766e6),
             ppm: 0.0,
@@ -197,7 +225,8 @@ impl Kind {
 pub struct Candidate {
     /// Where it was heard, in the radio's (uncorrected) frame.
     pub freq_hz: f64,
-    pub band: &'static str,
+    /// The band or range of the hop it was heard in (none: a frequency looked for outside every band).
+    pub band: Option<ScanRange>,
     pub snr_db: f64,
     pub width_hz: f64,
     pub kind: Kind,
@@ -661,7 +690,7 @@ impl Probe {
     }
 
     /// What the receivers made of it, `center` the hop's.
-    fn candidate(&self, center: f64, band: &'static str, rate: f64) -> Candidate {
+    fn candidate(&self, center: f64, band: Option<ScanRange>, rate: f64) -> Candidate {
         let p = self;
         // DMR: a continuous carrier frames ~33 bursts a second, most with a sync.
         let dmr_syncs = p.dmr.syncs(0);
@@ -890,7 +919,7 @@ const PROBE_BANK: BankConfig = BankConfig {
 /// channelizer fed the same samples.
 struct HopScan {
     center: f64,
-    band: &'static str,
+    band: Option<ScanRange>,
     /// The first share's channelizer makes the spectrum.
     parts: Vec<ProbePart>,
     row: Vec<f32>,
@@ -971,7 +1000,7 @@ impl ProbePart {
 }
 
 impl HopScan {
-    fn new(center: f64, band: &'static str, cfg: &SurveyConfig, targets: Vec<f64>) -> Self {
+    fn new(center: f64, band: Option<ScanRange>, cfg: &SurveyConfig, targets: Vec<f64>) -> Self {
         let rate = cfg.rate_hz;
         let chz = Channelizer::new(rate, MIN_CHANNEL_RATE, 0.01);
         // Cells of ~1 kHz or wider (a power of two dividing the FFT).
@@ -1526,42 +1555,42 @@ pub fn best_gain(steps: &[GainStep]) -> Option<f32> {
 #[derive(Clone, Debug)]
 struct Hop {
     center: f64,
-    band: &'static str,
+    band: Option<ScanRange>,
     /// The targets it covers.
     targets: Vec<f64>,
 }
 
-/// Hop centres covering the chosen bands (in [`BANDS`] order), each hop's
-/// searched width overlapping the next by 25 kHz.
-fn plan(bands: &[String], rate: f64, range: (f64, f64)) -> Vec<Hop> {
+/// Hop centres covering `ranges` in their order, each hop's searched width
+/// overlapping the next by 25 kHz.
+fn plan(ranges: &[ScanRange], rate: f64, range: (f64, f64)) -> Vec<Hop> {
     let span = rate * USABLE;
     let step = span - 25_000.0;
     let round = |f: f64| (f / 1000.0).round() * 1000.0;
     let mut hops = Vec::new();
-    // Overlapping bands (business UHF inside UHF, …) are scanned once: each
-    // band's range less what the bands before it cover.
+    // Overlapping ones (business UHF inside UHF, …) are scanned once: each
+    // one's range less what the ones before it cover.
     let mut done: Vec<(f64, f64)> = Vec::new();
-    let mut ranges: Vec<(f64, f64, &'static str)> = Vec::new();
-    for b in BANDS.iter().filter(|b| bands.iter().any(|id| id == b.id)) {
-        let mut parts = vec![(b.lo_hz.max(range.0), b.hi_hz.min(range.1))];
+    let mut parts: Vec<(f64, f64, ScanRange)> = Vec::new();
+    for r in ranges {
+        let mut left = vec![(r.lo_hz.max(range.0), r.hi_hz.min(range.1))];
         for &(dl, dh) in &done {
-            parts = parts.into_iter().flat_map(|(l, h)| [(l, h.min(dl)), (l.max(dh), h)]).filter(|&(l, h)| h > l).collect();
+            left = left.into_iter().flat_map(|(l, h)| [(l, h.min(dl)), (l.max(dh), h)]).filter(|&(l, h)| h > l).collect();
         }
-        done.push((b.lo_hz, b.hi_hz));
-        ranges.extend(parts.into_iter().map(|(l, h)| (l, h, b.id)));
+        done.push((r.lo_hz, r.hi_hz));
+        parts.extend(left.into_iter().map(|(l, h)| (l, h, *r)));
     }
-    for (lo, hi, id) in ranges {
-        let b = Band { id, ..BANDS[0] };
+    for (lo, hi, r) in parts {
         if hi <= lo {
             continue;
         }
+        let band = Some(r);
         if hi - lo <= span - 25_000.0 {
-            hops.push(Hop { center: round((lo + hi) / 2.0), band: b.id, targets: vec![] });
+            hops.push(Hop { center: round((lo + hi) / 2.0), band, targets: vec![] });
             continue;
         }
         let mut c = lo + span / 2.0 - 12_500.0;
         loop {
-            hops.push(Hop { center: round(c), band: b.id, targets: vec![] });
+            hops.push(Hop { center: round(c), band, targets: vec![] });
             if c + span / 2.0 >= hi {
                 break;
             }
@@ -1670,7 +1699,7 @@ impl Survey {
             (Some(c), true) => target_plan(&self.cfg.targets, self.cfg.rate_hz, (c - half, c + half)).into_iter().take(1).map(|h| Hop { center: c, band: band_of(c), targets: h.targets }).collect(),
             (Some(c), false) => vec![Hop { center: c, band: band_of(c), targets: vec![] }],
             (None, true) => target_plan(&self.cfg.targets, self.cfg.rate_hz, self.cfg.tune_range_hz),
-            (None, false) => plan(&self.cfg.bands, self.cfg.rate_hz, self.cfg.tune_range_hz),
+            (None, false) => plan(&self.cfg.ranges, self.cfg.rate_hz, self.cfg.tune_range_hz),
         };
         if self.hops.is_empty() {
             self.stage = Stage::Done;
@@ -1890,8 +1919,8 @@ impl Survey {
     pub fn candidates(&self) -> &[Candidate] {
         &self.candidates
     }
-    /// (hop, hops, band id, centre) while scanning: hop counts from 1.
-    pub fn progress(&self) -> Option<(usize, usize, &'static str, f64)> {
+    /// (hop, hops, its band or range, centre) while scanning: hop counts from 1.
+    pub fn progress(&self) -> Option<(usize, usize, Option<ScanRange>, f64)> {
         (self.stage == Stage::Scanning && !self.hops.is_empty()).then(|| {
             let h = &self.hops[self.hop];
             (self.hop + 1, self.hops.len(), h.band, h.center)
@@ -2122,10 +2151,18 @@ mod tests {
         assert_eq!(hops.len(), 3);
     }
 
+    /// Bands by id.
+    fn bands(ids: &[&str]) -> Vec<ScanRange> {
+        ids.iter().map(|id| ScanRange::band(id).unwrap()).collect()
+    }
+    fn in_band(h: &Hop, id: &str) -> bool {
+        h.band.and_then(|b| b.band) == Some(id)
+    }
+
     #[test]
     fn hops_cover_the_bands() {
         let rate = 2_400_000.0;
-        let hops = plan(&["800".into(), "700".into()], rate, (24e6, 1766e6));
+        let hops = plan(&bands(&["800", "700"]), rate, (24e6, 1766e6));
         let half = rate * USABLE / 2.0;
         for b in &BANDS[..2] {
             let mut f = b.lo_hz;
@@ -2134,21 +2171,21 @@ mod tests {
                 f += 5000.0;
             }
         }
-        assert_eq!(hops.iter().filter(|h| h.band == "700").count(), 3);
-        assert!(hops.iter().filter(|h| h.band == "800").count() <= 10);
+        assert_eq!(hops.iter().filter(|h| in_band(h, "700")).count(), 3);
+        assert!(hops.iter().filter(|h| in_band(h, "800")).count() <= 10);
         // A radio that can't reach a band skips it.
-        assert!(plan(&["800".into()], rate, (24e6, 500e6)).is_empty());
+        assert!(plan(&bands(&["800"]), rate, (24e6, 500e6)).is_empty());
     }
 
     #[test]
     fn overlapping_bands_are_scanned_once() {
         let rate = 2_400_000.0;
-        let uhf = plan(&["uhf".into()], rate, (24e6, 1766e6));
-        let both = plan(&["uhf".into(), "biz-uhf".into()], rate, (24e6, 1766e6));
+        let uhf = plan(&bands(&["uhf"]), rate, (24e6, 1766e6));
+        let both = plan(&bands(&["uhf", "biz-uhf"]), rate, (24e6, 1766e6));
         assert_eq!(both.len(), uhf.len());
         // Business alone covers its own range.
-        let biz = plan(&["biz-uhf".into()], rate, (24e6, 1766e6));
-        assert!(!biz.is_empty() && biz.iter().all(|h| h.band == "biz-uhf"));
+        let biz = plan(&bands(&["biz-uhf"]), rate, (24e6, 1766e6));
+        assert!(!biz.is_empty() && biz.iter().all(|h| in_band(h, "biz-uhf")));
         assert!(biz.len() <= uhf.len());
     }
 
@@ -2156,8 +2193,8 @@ mod tests {
     fn uhf_420_fills_the_gap_below_uhf() {
         let rate = 2_400_000.0;
         let half = rate * USABLE / 2.0;
-        let hops = plan(&["uhf-420".into()], rate, (24e6, 1766e6));
-        assert!(!hops.is_empty() && hops.iter().all(|h| h.band == "uhf-420"));
+        let hops = plan(&bands(&["uhf-420"]), rate, (24e6, 1766e6));
+        assert!(!hops.is_empty() && hops.iter().all(|h| in_band(h, "uhf-420")));
         let mut f = 420.0e6;
         while f <= 450.0e6 {
             assert!(hops.iter().any(|h| (f - h.center).abs() <= half), "{f} uncovered");
@@ -2165,7 +2202,7 @@ mod tests {
         }
         // Off by default, and named for what it holds.
         assert!(!BANDS.iter().find(|b| b.id == "uhf-420").unwrap().default_on);
-        assert_eq!(band_of(440.0e6), "uhf-420");
+        assert_eq!(band_of(440.0e6).and_then(|b| b.band), Some("uhf-420"));
     }
 
     #[test]
@@ -2173,15 +2210,48 @@ mod tests {
         // UHF federal, UHF 420–450 and UHF meet end to end: 380–470 MHz, each part once.
         let rate = 2_400_000.0;
         let half = rate * USABLE / 2.0;
-        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let all = plan(&ids(&["uhf-fed", "uhf-420", "uhf"]), rate, (24e6, 1766e6));
-        let each: usize = ["uhf-fed", "uhf-420", "uhf"].iter().map(|b| plan(&ids(&[b]), rate, (24e6, 1766e6)).len()).sum();
+        let all = plan(&bands(&["uhf-fed", "uhf-420", "uhf"]), rate, (24e6, 1766e6));
+        let each: usize = ["uhf-fed", "uhf-420", "uhf"].iter().map(|b| plan(&bands(&[b]), rate, (24e6, 1766e6)).len()).sum();
         assert_eq!(all.len(), each);
         let mut f = 380.0e6;
         while f <= 470.0e6 {
             assert!(all.iter().any(|h| (f - h.center).abs() <= half), "{f} uncovered");
             f += 5000.0;
         }
+    }
+
+    #[test]
+    fn a_range_of_ones_own_must_be_one() {
+        assert_eq!(ScanRange::band("uhf"), Some(ScanRange { band: Some("uhf"), lo_hz: 450.0e6, hi_hz: 470.0e6 }));
+        assert_eq!(ScanRange::band("uhf2"), None);
+        assert_eq!(ScanRange::own(420.0e6, 450.0e6), Some(ScanRange { band: None, lo_hz: 420.0e6, hi_hz: 450.0e6 }));
+        for (lo, hi) in [(450.0e6, 420.0e6), (440.0e6, 440.0e6), (0.0, 10.0e6), (-5.0e6, 10.0e6), (f64::NAN, 1.0e6), (1.0e6, f64::INFINITY)] {
+            assert_eq!(ScanRange::own(lo, hi), None, "{lo}-{hi}");
+        }
+    }
+
+    #[test]
+    fn a_range_of_ones_own_is_scanned() {
+        let rate = 2_400_000.0;
+        let half = rate * USABLE / 2.0;
+        let own = |lo: f64, hi: f64| ScanRange::own(lo * 1e6, hi * 1e6).unwrap();
+        let r = own(430.0, 436.5);
+        let hops = plan(&[r], rate, (24e6, 1766e6));
+        assert!(!hops.is_empty() && hops.iter().all(|h| h.band == Some(r)));
+        let mut f = 430.0e6;
+        while f <= 436.5e6 {
+            assert!(hops.iter().any(|h| (f - h.center).abs() <= half), "{f} uncovered");
+            f += 5000.0;
+        }
+        // One that overlaps a named band adds only what that band leaves.
+        let uhf = plan(&bands(&["uhf"]), rate, (24e6, 1766e6));
+        let wide = own(455.0, 475.0);
+        let mut both_in = bands(&["uhf"]);
+        both_in.push(wide);
+        let both = plan(&both_in, rate, (24e6, 1766e6));
+        let rest = plan(&[own(470.0, 475.0)], rate, (24e6, 1766e6));
+        assert_eq!(both.len(), uhf.len() + rest.len());
+        assert!(both.iter().filter(|h| h.band == Some(wide)).all(|h| h.center > 470.0e6));
     }
 
     #[test]

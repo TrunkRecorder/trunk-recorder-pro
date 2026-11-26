@@ -8,6 +8,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Find my system scans 420–450 MHz** (#257, thanks @drfruct). A **UHF 420–450** band (`uhf-420`), off by default,
   fills the gap between UHF federal and UHF: amateur in the US, but trunked DMR is often there elsewhere. A band id
   the scan doesn't know (`--bands uhf2`) now stops it with *Not a band* instead of being left out.
+- **Find my system scans ranges of your own.** Under the bands, **Other ranges, MHz** takes ranges such as
+  `420-450, 433.05-434.79`, scanned beside the bands ticked; each end is read as every frequency field reads one (MHz
+  under 10 000, else Hz). Setup and the setup guide share the one picker, and remember the bands and ranges a scan
+  last started with. On the command line: `--ranges 420-450,433.05-434.79`; to the recorder, `surveyStart`'s
+  `ranges` (`[{ loHz, hiHz }]`), and each band reported (`progress.band`, a candidate's `band`, and so `band` in
+  `trunk-pro survey`'s `found` lines) is now `{ id, loHz, hiHz }` rather than the band's id, `id` null for a range
+  of one's own.
 - **Apps sign in by way of the browser** (#255). An app such as Trunk Monitor opens the recorder's own page; you sign
   in there as you always do (a token, a passkey, the proxy in front) and click **Allow**, and the app gets a token of
   its own, for 30 days. It never sees yours. The page says which app, who, what it may do (an Admin picks **Admin** or

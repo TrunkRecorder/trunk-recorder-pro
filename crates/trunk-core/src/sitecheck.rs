@@ -266,7 +266,7 @@ mod tests {
     fn heard(target: f64, kind: Kind, f: impl FnOnce(&mut Candidate)) -> Candidate {
         let mut c = Candidate {
             freq_hz: target,
-            band: "",
+            band: None,
             snr_db: 20.0,
             width_hz: 0.0,
             kind,

@@ -64,6 +64,17 @@ Where ticked bands overlap, the overlap is scanned once. Bands outside the radio
 are skipped; if none is left, the scan stops with *None of the chosen bands is in this radio's
 tuning range.*
 
+### Ranges of your own
+
+For anything the bands don't cover, type ranges under **Other ranges, MHz**, separated by
+commas: `420-450, 433.05-434.79`. Each end is read as any frequency field reads one: under
+10 000 it is MHz, otherwise Hz (`851000000-852000000` is 851–852 MHz). They are scanned after
+the bands ticked, in the order given, less any part a band ticked already covers, and each
+signal found in one lists the range (*433.05–434.79 MHz*) as its band. Something that isn't a
+range is named under the field, and the scan waits until it is fixed. The browser remembers the
+bands and ranges a scan last started with, on Setup and in the setup guide alike. On the command
+line: `--ranges 420-450,433.05-434.79`.
+
 ## How it finds control channels
 
 A control channel never stops transmitting. Voice channels key up and down; a control channel
@@ -379,7 +390,8 @@ Every option (the bands, gain, a radio other than an RTL-SDR, `--freqs` to check
 frequencies, `--identify`) is in [Command line: survey](../command-line.md#survey).
 
 Progress goes to stderr (`survey: scanning`, `survey: monitoring`, source errors). Stdout gets one
-`{"found": {...}}` line per signal as it's found, with its `freqHz`, `correctedHz`, `band`,
+`{"found": {...}}` line per signal as it's found, with its `freqHz`, `correctedHz`, `band`
+(`{"id", "loHz", "hiHz"}`: the band or range it was found in, `id` null for a range of your own),
 `snrDb`, `widthHz`, `kind` (`control`, `smartnet`, `edacs`, `dmrControl`, `nxdnControl`, `p25`,
 `dmr`, `nxdn`, `other`), `modulation`, `identity` and decode counts. With `--freqs`, each
 frequency's line has `targetHz` (the frequency asked for) and `up` (the share of the time its
@@ -404,7 +416,7 @@ carrier was up). The last line holds the system:
   rest. Try the default, then a few dB either way.
 - **Add more bands.** Federal systems are often in **UHF federal**, trunked DMR outside the US often in
   **UHF 420–450**, some city systems in **T-band**, many DMR and NXDN systems in the business bands.
-  None of those are scanned by default.
+  None of those are scanned by default; anything no band covers, scan as a range of your own.
 - **Scan again.** A busy step, or a fade, can hide a control channel for a moment.
 - **Look it up.** Find the control channel on [RadioReference](https://www.radioreference.com/db/)
   and enter it by hand: **Add a system** on the **Systems** tab, or **I know the control channel**
