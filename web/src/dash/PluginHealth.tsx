@@ -8,6 +8,7 @@ import { pluginOn, setView, useApp, type AppState } from "../controller.ts";
 import { Card, Choice, Fig, Figs, LiveSpark, Light, Stat, StackedBars, TimeSeries } from "../charts.tsx";
 import { ago, bytes, compact, dur, ms, num, pct } from "../fmt.ts";
 import type { PluginInfo, SeriesData } from "../protocol.ts";
+import { pluginCounted, sinceLabel } from "./counts.ts";
 import { ENDPOINT_LEVEL, K, perIn, perLive, pluginHealth, recentAvg, total, useHistory } from "./data.ts";
 
 /** "packetsSent" → "Packets sent", "bytes_out" → "Bytes out". */
@@ -61,7 +62,10 @@ function useDelivery(id: string) {
   };
 }
 
-function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
+function PluginCard({ s, p: plugin }: { s: AppState; p: PluginInfo }) {
+  // Its results this run, or since this browser's Reset counts.
+  const p = pluginCounted(s, plugin);
+  const counted = s.countsReset ? sinceLabel(s) : "This run";
   const on = pluginOn(s.config, p.id);
   const h = pluginHealth(p, on);
   const r = p.runtime;
@@ -96,7 +100,7 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
       ) : (
         <>
           <div className="src-grid">
-            <Stat label="Sent" value={compact(r.ok)} sub={<Figs inline items={[{ k: "Skipped", v: compact(r.skipped) }, !!m?.bytesSent && { k: "Data", v: bytes(m.bytesSent) }]} />} hint="This run" />
+            <Stat label="Sent" value={compact(r.ok)} sub={<Figs inline items={[{ k: "Skipped", v: compact(r.skipped) }, !!m?.bytesSent && { k: "Data", v: bytes(m.bytesSent) }]} />} hint={counted} />
             <Stat
               label="Failed"
               value={compact(r.failed)}
@@ -144,7 +148,7 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
             const of = o === "failed" ? r.failed : r.skipped;
             return rows.length > 0 && (
               <div key={o} className="reasons">
-                <span className="muted small">{o === "failed" ? "Why failed" : "Why skipped"}, this run</span>
+                <span className="muted small">{o === "failed" ? "Why failed" : "Why skipped"}, {counted.toLowerCase()}</span>
                 <ul className="line-list">
                   {rows.map((x) => (
                     <li key={x.reason}>

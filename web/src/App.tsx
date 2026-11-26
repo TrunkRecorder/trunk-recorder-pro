@@ -4,7 +4,8 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { startProblem } from "./config.ts";
 import { ARRIVED_TO_IMPORT, DirectoryImport } from "./directoryImport.tsx";
-import { isRecording, can, closeGuide, dismissError, mayEdit, openGuide, quitApp, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
+import { isRecording, can, clearCountsReset, closeGuide, dismissError, mayEdit, openGuide, quitApp, resetCounts, setNotice, setView, start, stop, useApp, useSelect, web, type View } from "./controller.ts";
+import { clockAt } from "./fmt.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { PluginPage, PluginsPage, usePluginPages } from "./Plugins.tsx";
@@ -126,6 +127,7 @@ export function App() {
     access: x.access,
     user: x.user,
     signingIn: x.signingIn,
+    countsReset: x.countsReset,
   }));
   const s = { ...s0, view: shownView(s0.view) };
   const edit = mayEdit();
@@ -201,6 +203,7 @@ export function App() {
                 Setup guide
               </button>
             )}
+            {s.connected && (running || s.countsReset) && <CountsReset at={s.countsReset?.at ?? null} />}
             <span className={`pill pill-${s.phase}`}>
               {!s.connected ? "Disconnected" : s.phase === "running" ? (liveDongle ? "Recording" : "Replaying") : s.phase === "idle" ? "Stopped" : s.phase === "starting" ? "Starting…" : "Stopping…"}
             </span>
@@ -267,5 +270,24 @@ export function App() {
         </main>
       </div>
     </div>
+  );
+}
+
+/** Reset counts: the since-start totals (dropped samples, errors, calls, plugins' results) counted from now, in this browser only. `at`: the last reset's (Unix s). */
+function CountsReset({ at }: { at: number | null }) {
+  const why = "Count dropped samples, errors, calls and plugins' results from now, in this browser (the recorder and everyone else's view are unchanged)";
+  return at !== null ? (
+    <span className="counts-reset">
+      <button className="btn ghost small" onClick={resetCounts} title={`Reset again. ${why}`}>
+        Counting since {clockAt(at)}
+      </button>
+      <button className="btn ghost small" onClick={clearCountsReset} title="Count since start again" aria-label="Count since start again">
+        ✕
+      </button>
+    </span>
+  ) : (
+    <button className="btn ghost small" onClick={resetCounts} title={why}>
+      Reset counts
+    </button>
   );
 }

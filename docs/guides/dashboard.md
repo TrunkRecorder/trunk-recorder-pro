@@ -17,6 +17,16 @@ Several numbers are compared with **the usual**: that series' average over the l
 The shaded band on a chart is its usual range, and an arrow shows how far today is above or below
 it. This is how the dashboard tells "the system is quiet tonight" from "reception got worse".
 
+### Reset counts
+
+Some numbers are totals since Start: a radio's dropped samples and errors, the calls concluded, a plugin's sent,
+skipped and failed (and why), its restarts and events it fell behind on, and the RAM spool's overflows and
+deletions. **Reset counts**, in the top bar while recording, counts them from now: they read **Since 14:05** in
+place of **Since start**, so a single dropped sample after a fix stands out. Only this browser counts from the
+reset; the recorder, its history and everyone else's view don't change. Press it again to count from a later
+time, or **✕** to go back to since start. A new run (Stop, then Start) starts its totals at nothing, so they
+are then all since the reset. Trunk Monitor has a reset of its own.
+
 ## Overview
 
 <picture>

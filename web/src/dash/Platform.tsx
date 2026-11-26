@@ -14,6 +14,7 @@ import { FOLDER_LABEL, connections, connectionsSummary, folderWhy, platformHealt
 import { Field, NumberInput, TextArea, TextInput, Toggle } from "../inputs.tsx";
 import { Switch } from "../SetupLayout.tsx";
 import { StorageView } from "./Storage.tsx";
+import { diskCounted } from "./counts.ts";
 
 const PRESSURE = ["normal", "warning", "critical"];
 
@@ -180,7 +181,9 @@ export function PlatformPage() {
           <p className="empty">{missing("disk") ?? "No disks found."}</p>
         ) : (
           <div className="disk-list">
-            {p.disks.map((d) => {
+            {p.disks.map((disk) => {
+              // (The RAM spool's overflows and deletions since this browser's Reset counts.)
+              const d = diskCounted(s, disk);
               const used = 100 - (100 * d.freeBytes) / Math.max(1, d.totalBytes);
               const days = d.name === "recordings" && audioPerDay ? d.freeBytes / audioPerDay : null;
               const spool = d.name === "spool";

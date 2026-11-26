@@ -1582,3 +1582,4 @@ table.taps tr.auto td { color: var(--muted); }
 .src-tune .chip { font-size: 12.5px; }
 .src-facts { gap: 6px 18px; margin-top: 10px; font-size: 14px; }
 .line-list li .figs.inline { gap: 4px 12px; font-size: 13.5px; }
+.counts-reset { display: inline-flex; gap: 2px; }
