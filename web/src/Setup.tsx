@@ -32,6 +32,7 @@ import {
   receiverOf,
   sourceLabels,
   sourceNames,
+  newStream,
   systemColor,
   usableHalfWidth,
   siteLockFields,
@@ -88,7 +89,7 @@ import { SystemDelays } from "./Delays.tsx";
 import { SignalTaps } from "./Taps.tsx";
 import { SystemSignals } from "./Signals.tsx";
 import { IconAntenna, IconDongle, IconDatabase, IconFolder, IconLock, IconPuzzle, IconTower } from "./Onboarding.tsx";
-import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, SampleFormat, StorageSettings, System } from "./protocol.ts";
+import type { AirspyGainMode, Channel, Config, Conventional, Demod, Device, FccLicenses, HeardCode, LockableKeys, LogSettings, Recording, RecordingOverride, RecordingRules, Site, SiteIdentity, SoapyState, Source, SampleFormat, Stereo, StorageSettings, System } from "./protocol.ts";
 import { DEFAULT_FORMAT, FilenameEditor } from "./FilenameEditor.tsx";
 import { GuardBand } from "./Rolloff.tsx";
 import { SurveyPanel } from "./Survey.tsx";
@@ -107,7 +108,7 @@ import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldTe
 import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
 import { openTodos } from "./todo.ts";
 import { allModes, modeInfo } from "./modes.ts";
-import { folderProblem, parseAccess, sameAccess, toneLabel, type AccessParts, type ToneLabel } from "./rules.ts";
+import { folderProblem, parseAccess, sameAccess, sameChannel, toneLabel, type AccessParts, type ToneLabel } from "./rules.ts";
 import { PrivacyCode, ToneName } from "./ToneName.tsx";
 
 /** Each card's key (the controller's `cardKey`), seeded from what its entry is now; `all`: its list. */
@@ -233,8 +234,9 @@ function KeyContainer(props: { k: LockableKeys }) {
 }
 
 /** A conventional channel's modes, as the mode menus list them. */
-const modeOptions = () =>
-  allModes().map((m) => (
+/** The modes a row may have; a stream's: the analog ones (its audio is demodulated already). */
+const modeOptions = (stream = false) =>
+  allModes().filter((m) => !stream || m.analog).map((m) => (
     <option key={m.mode} value={m.mode}>
       {m.label}
     </option>
@@ -1037,6 +1039,8 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
 
   const kindLabel = SOURCE_KINDS[src.type].label;
   const tuned = src.centerHz || auto;
+  // A stream: audio, no band, gain or crystal to set.
+  const audio = !!SOURCE_KINDS[src.type].audio;
 
   return (
     <Card
@@ -1050,7 +1054,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
             <h3>{sourceTitle(c, i)}</h3>
             <span className="set-card-sub">
               {kindLabel}
-              {tuned ? ` · ${formatMhz(tuned, 3)} MHz` : ""} · {(src.rateHz / 1e6).toFixed(src.rateHz % 1e5 ? 3 : 1)} MSPS
+              {audio ? "" : `${tuned ? ` · ${formatMhz(tuned, 3)} MHz` : ""} · ${(src.rateHz / 1e6).toFixed(src.rateHz % 1e5 ? 3 : 1)} MSPS`}
             </span>
           </div>
           {needs && <span className="chip warn">to finish</span>}
@@ -1336,7 +1340,13 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           </Field>
         )}
         {src.type === "file" && <Toggle label="Real-time pace" hint="Off: as fast as it decodes" checked={src.realtime} onChange={(v) => edit((x) => x.type === "file" && void (x.realtime = v))} />}
+        {src.type === "stream" && (
+          <Field label="Address" hint="MP3 or WAV, http:// or https://" info="A scanner feed's address (Broadcastify's and the like). A login may go in it (https://user:password@host/feed): it is sent, never shown. Its conventional rows are the ones with no frequency; each records the stream's left channel, its right, or both mixed." wide>
+            <TextInput className="mono" value={src.url} placeholder="https://…" onChange={(v) => edit((x) => x.type === "stream" && void (x.url = v.trim()))} />
+          </Field>
+        )}
       </Group>
+      {!audio && (
       <Group title="Tuning" hint="What falls in the band is recorded">
         <Field
           label="Center frequency, MHz"
@@ -1397,7 +1407,8 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           }
         />
       </Group>
-      {src.type !== "file" && (
+      )}
+      {src.type !== "file" && !audio && (
         <Group
           title="Gain"
           hint={
@@ -1459,7 +1470,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
           )}
         </Group>
       )}
-      {src.type !== "spyserver" && (
+      {src.type !== "spyserver" && !audio && (
         <Group title="Frequency correction" hint={<>Crystal error<Info>Its crystal&apos;s error, corrected so channels land where they should.</Info></>}>
           {src.type !== "file" && <PpmField src={src} edit={edit} />}
           <AutoTune c={c} src={src} i={i} edit={edit} />
@@ -1559,6 +1570,15 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
   const multi = c.sources.length > 1;
   const name = conv.shortName;
   const dupName = c.conventional.some((x, j) => j !== k && x.shortName === name);
+  // A row with no frequency on a stream source (its receiveOn's, else any) is the stream's: the source it's on.
+  const named = sourceNames(c);
+  const streamOf = (ch: Channel): number | undefined => {
+    if (ch.freqHz > 0) return undefined;
+    const at = c.sources.findIndex((x, i) => x.type === "stream" && (!ch.receiveOn?.length || ch.receiveOn.includes(named[i].label)));
+    return at < 0 ? undefined : at;
+  };
+  // Adding a stream: its address, as it's typed (null: not adding one).
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
   // Stable row keys (each edit clones the config; a frequency input keeps its own text).
   const ids = useRef<number[]>([]);
   if (ids.current.length !== chans.length) ids.current = chans.map(() => nextRowId++);
@@ -1592,7 +1612,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
       return n;
     });
   /** The last row on row i's frequency. */
-  const lastOfFreq = (i: number) => chans.reduce((at, o, k) => (Math.abs(o.freqHz - chans[i].freqHz) < 1 ? Math.max(at, k) : at), i);
+  const lastOfFreq = (i: number) => chans.reduce((at, o, k) => (sameChannel(o, chans[i]) ? Math.max(at, k) : at), i);
   /** Another row on row i's frequency (after the last of them), for another code — `access` when it is known. */
   const addRule = (i: number, access: AccessParts = { code: "" }) => {
     const ch = chans[i];
@@ -1610,10 +1630,22 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
     edit((x) => void x.channels.splice(at + 1, 0, row));
   };
   const talkgroups = defaultTalkgroups(chans);
-  const shared = (i: number) => chans.some((o, k) => k !== i && Math.abs(o.freqHz - chans[i].freqHz) < 1);
+  const shared = (i: number) => chans.some((o, k) => k !== i && sameChannel(o, chans[i]));
   const add = (list: Channel[]) => {
     ids.current.push(...list.map(() => nextRowId++));
     edit((x) => void x.channels.push(...list));
+  };
+  /** A stream at `url`, as a source, and a row recording it (under the next number no row uses: it has no frequency to be filed under). */
+  const addStream = (url: string) => {
+    ids.current.push(nextRowId++);
+    updateConfig((x) => {
+      x.sources.push(newStream(url));
+      const label = sourceLabels(x)[x.sources.length - 1];
+      const v = x.conventional[k];
+      const talkgroup = Math.max(0, ...v.channels.map((ch) => ch.talkgroup ?? 0)) + 1;
+      v.channels.push({ freqHz: 0, mode: "fm", name: "", enabled: true, talkgroup, receiveOn: [label] });
+    });
+    setStreamUrl(null);
   };
   const replaceAll = (list: Channel[]) => {
     ids.current = list.map(() => nextRowId++);
@@ -1724,6 +1756,11 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
             <button className="btn ghost small" disabled={!chans.length} onClick={exportCsv}>
               Export CSV
             </button>
+            {!linked && can("drivers") && (
+              <button className="btn ghost small" title="An internet feed (MP3 or WAV): added as a source, with a row recording it" onClick={() => setStreamUrl("")}>
+                Add a stream
+              </button>
+            )}
             {!linked && (
               <button className="btn small" onClick={() => add([{ freqHz: 0, mode: bulkMode, name: "", enabled: true }])}>
                 Add a channel
@@ -1732,6 +1769,21 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
           </>
         }
       >
+        {streamUrl !== null && (
+          <div className="banner">
+            <Field label="Stream address" hint="MP3 or WAV, http:// or https://; a login may go in it (user:password@)" wide>
+              <TextInput className="mono" value={streamUrl} placeholder="https://…" onChange={(v) => setStreamUrl(v.trim())} />
+            </Field>
+            <div className="row">
+              <button className="btn primary" disabled={!/^https?:\/\/./i.test(streamUrl)} onClick={() => addStream(streamUrl)}>
+                Add
+              </button>
+              <button className="btn ghost" onClick={() => setStreamUrl(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
         {pending && (
           <div className="banner">
             <div>
@@ -1829,7 +1881,15 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                         <input type="checkbox" disabled={linked} checked={ch.enabled} aria-label="Record this channel" onChange={(e) => editRow(i, (x) => void (x.enabled = e.target.checked))} />
                       </td>
                       <td>
-                        {linked ? <span className="mono">{mhzCell(ch.freqHz)}</span> : <DraftInput className="mono" codec={mhz} value={ch.freqHz} placeholder="MHz" aria-label="Frequency, MHz" onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />}
+                        {streamOf(ch) !== undefined ? (
+                          <span className="mono" title={`${named[streamOf(ch)!].title}: its audio, demodulated already (no frequency)`}>
+                            {shorten(named[streamOf(ch)!].label)}
+                          </span>
+                        ) : linked ? (
+                          <span className="mono">{mhzCell(ch.freqHz)}</span>
+                        ) : (
+                          <DraftInput className="mono" codec={mhz} value={ch.freqHz} placeholder="MHz" aria-label="Frequency, MHz" onChange={(hz) => editRow(i, (x) => void (x.freqHz = hz))} />
+                        )}
                       </td>
                       <td>
                         <select
@@ -1848,23 +1908,39 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                             })
                           }
                         >
-                          {modeOptions()}
+                          {modeOptions(streamOf(ch) !== undefined)}
                         </select>
                       </td>
                       <td>
+                        {streamOf(ch) !== undefined ? (
+                          <StereoSelect
+                            value={ch.stereo}
+                            disabled={linked}
+                            onChange={(v) =>
+                              edit((x) => {
+                                // (Rows on one side of it are one channel: they move together.)
+                                for (const r of x.channels.filter((o) => sameChannel(o, ch))) {
+                                  if (v === "mix") delete r.stereo;
+                                  else r.stereo = v;
+                                }
+                              })
+                            }
+                          />
+                        ) : (
                         <BandwidthSelect
                           ch={ch}
                           disabled={linked}
                           onChange={(khz) =>
                             edit((x) => {
                               // Rows sharing the frequency share it.
-                              for (const r of x.channels.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)) {
+                              for (const r of x.channels.filter((o) => sameChannel(o, ch))) {
                                 if (khz === undefined) delete r.bandwidthKhz;
                                 else r.bandwidthKhz = khz;
                               }
                             })
                           }
                         />
+                        )}
                       </td>
                       <td>
                         <MatchLine
@@ -1892,7 +1968,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           narrow
                           disabled={linked}
                           value={ch.talkgroup}
-                          placeholder={ch.freqHz ? (modeInfo(ch.mode).airNamesTalkgroup ? "air's" : String(talkgroups[i])) : "auto"}
+                          placeholder={ch.freqHz ? (modeInfo(ch.mode).airNamesTalkgroup ? "air's" : String(talkgroups[i])) : streamOf(ch) !== undefined ? "needed" : "auto"}
                           label={
                             modeInfo(ch.mode).airNamesTalkgroup
                               ? `TG Number: calls are filed under it; empty: the talkgroup the air names (${ch.freqHz ? talkgroups[i] : "the frequency in kHz"} when it names none)`
@@ -1929,7 +2005,7 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                             onChange={(on) =>
                               edit((x) => {
                                 // Rows sharing the frequency share them.
-                                for (const r of x.channels.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)) {
+                                for (const r of x.channels.filter((o) => sameChannel(o, ch))) {
                                   if (on === undefined) delete r.receiveOn;
                                   else r.receiveOn = on;
                                 }
@@ -1981,9 +2057,9 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                           span={multi ? 9 : 8}
                         />
                       )}
-                      {lastOfFreq(i) === i && heard[String(Math.round(ch.freqHz))] && (
+                      {ch.freqHz > 0 && lastOfFreq(i) === i && heard[String(Math.round(ch.freqHz))] && (
                         <HeardRow
-                          rows={chans.filter((o) => Math.abs(o.freqHz - ch.freqHz) < 1)}
+                          rows={chans.filter((o) => sameChannel(o, ch))}
                           heard={heard[String(Math.round(ch.freqHz))]}
                           linked={linked}
                           onAdd={(p) => addRule(i, p)}
@@ -2133,6 +2209,17 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
 }
 
 /** An analog channel's filter width: the mode's default, or a preset (or what a file set). */
+/** A stream's row: which of its audio it records. */
+function StereoSelect(props: { value: Stereo | undefined; disabled: boolean; onChange: (v: Stereo) => void }) {
+  return (
+    <select value={props.value ?? "mix"} disabled={props.disabled} aria-label="Stereo" title="A stereo stream may carry a channel on each side: which this row records" onChange={(e) => props.onChange(e.target.value as Stereo)}>
+      <option value="mix">Both, mixed</option>
+      <option value="left">Left</option>
+      <option value="right">Right</option>
+    </select>
+  );
+}
+
 function BandwidthSelect(props: { ch: Channel; disabled: boolean; onChange: (khz: number | undefined) => void }) {
   const { ch } = props;
   // (Its analog receiver's: an auto channel's is FM's.)

@@ -113,7 +113,7 @@ impl ChannelFilter {
 /// steeper but rings at the band edge (MDC1200 / FleetSync decode less often),
 /// and a linear-phase FIR's pre-ring smears voice into an unkey burst.
 /// Sections as [b0, b1, b2, a1, a2] (scipy.signal.cheby2(13, 50, 256, 'high', fs=8000)).
-const HPF_SOS: [[f64; 5]; 7] = [
+pub(crate) const HPF_SOS: [[f64; 5]; 7] = [
     [0.649971201753611, -0.649971201753611, 0.0, -0.9009186289848935, 0.0],
     [1.0, -1.9976703966479996, 0.9999999999999998, -1.804773049479563, 0.8167223030504506],
     [1.0, -1.9912294244377715, 1.0, -1.813831989552296, 0.8317473057395659],
@@ -283,6 +283,11 @@ impl DataBurst {
 }
 
 impl Nbfm {
+    /// How far behind the air its audio comes out, s ([`Gate::delay_s`]).
+    pub fn delay_s(&self) -> f64 {
+        self.gate.delay_s()
+    }
+
     /// Narrowband, 750 µs de-emphasis, the default squelch timing.
     pub fn new(rate: f64) -> Self {
         Self::with(rate, &AnalogTuning::default())

@@ -17,6 +17,29 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     between done and skipped. The Broadcastify plugin uses it for `SKIPPED` and unit-to-unit answers
     (0.2.2).
 
+- **Internet audio streams** (#111, thanks @steve-horvath). A scanner feed on the internet (an MP3 or WAV address,
+  Broadcastify's and the like) can be recorded as a conventional channel: Setup's **Add a stream**, in a conventional
+  system's channel table, adds the stream as a source and a row recording it. Its calls are made as a frequency's are
+  (the system's call timeout, longest call, pre-roll, plugins, signals and names), its squelch dB above the feed's own
+  quiet, and an FM row hears the tones and unit IDs in it, so rows on one stream can be split by CTCSS tone. A stereo
+  feed's left and right can be two rows. Decoded by the recorder itself (nothing to install); it connects again when
+  it drops, and shows on the RF page with its errors, as a radio does. See
+  [Sources](docs/configuration/sources.md#type-stream) and [A stream's rows](docs/configuration/conventional.md#a-streams-rows).
+- **Analog calls start where their audio does.** An FM or AM call's start is taken back by the time its audio spends
+  in the squelch gate (about 17 ms, more with a long `squelchHangMs`).
+
+- **A call's WAV and M4A are tagged** (#196, thanks @Xer0n). Title (the talkgroup's alpha tag or number), artist
+  (the system), date and genre (the talkgroup's group), as players show them, with a comment and fields for scripts:
+  `TALKGROUP`, `UNITS` (the radio IDs that talked; absent when none was identified), `FREQUENCY`, `EMERGENCY`,
+  `ENCRYPTED`. The WAV has an ID3v2.4 tag; the M4A has iTunes tags, the same whichever encoder made it.
+  [Recordings](docs/guides/recordings.md#tags-in-the-audio-files) has the list and a Python example.
+- **SmartNet's emergency button is reported** (#253). A site's emergency alarm acknowledgement and an emergency
+  PTT come out as `emergency_alarm` unit events, as P25's emergency alarms do. Emergency calls were already flagged.
+- **"Running hot" no longer comes from an unconnected motherboard sensor.** The computer's temperature is the hottest
+  sensor's, and a motherboard monitoring chip's spare thermistor inputs (a Nuvoton nct67xx chip's AUXTIN0–3) count
+  among them. On many boards nothing is wired to some of them, and they read whatever the open input gives: 110 °C on
+  an ASRock X299 board whose CPU was at 45 °C, so the dashboard warned "Running hot" all the time. Those inputs
+  are left out now; the CPU, drives, GPU and the chip's SYSTIN / CPUTIN still count, so a real overheat still shows.
 - **Weak P25 CQPSK simulcast keeps more of its voice** (#228, thanks @samborcia). 0.5.1's fix for a carrier
   estimate a quarter turn out followed the carrier across that edge only while it was steady, and at 5 to 7 dB over
   the noise it isn't: on the reported weak dispatch, 610 clean voice frames (of 828). It's now followed whenever frames

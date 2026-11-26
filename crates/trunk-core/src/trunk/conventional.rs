@@ -24,6 +24,14 @@
 //! been gone for CLOSE_HANG_S with no call.
 //! ```
 //!
+//! A row with no frequency is a stream's (an internet feed: someone else's
+//! receiver, demodulated already), heard on a source of audio
+//! ([`crate::dsp::audio_in`]) as a frequency is on a radio: its audio's level
+//! against its quiet floor stands in for band power against the noise, its
+//! recent audio is the pre-roll, and its receiver is FM's or AM's with the
+//! demodulator left out (the squelch gate, the voice high-pass, the tones).
+//! Everything after that is the same.
+//!
 //! Several rows on one frequency are one channel, each row with its own
 //! access code ([`Access`]: a CTCSS tone or DCS code, a P25 NAC / talkgroup,
 //! a DMR colour code / slot / talkgroup, an NXDN RAN / talkgroup), at most
@@ -55,7 +63,7 @@ use std::sync::Arc;
 use num_complex::Complex32;
 
 use super::calls::{Call, CallConfig, CallEnd, CallEvent, CallIds, CallManager, CallSource, CarriesOn, Flags, Policy, Voice};
-use super::engine::{Event, LiveAudio, Pins, SystemConfig, Tuning};
+use super::engine::{Event, LiveAudio, Pins, SourceConfig, SystemConfig, Tuning};
 use super::inband::InBandSpec;
 use super::record::RecordedOn;
 use super::recorded::Recorded;
@@ -70,8 +78,10 @@ use super::frames::VoiceFrame;
 use crate::dsp::am;
 use crate::dsp::fm::{self, ChannelFilter};
 use crate::dsp::inband::subaudible::{Tone, ToneDetector};
-use crate::dsp::channelizer::{floor_slice, floor_slices};
-use crate::dsp::{AnalogTuning, Channelizer, HeadId};
+use crate::dsp::audio_in::Stereo;
+use crate::dsp::channelizer::floor_slice;
+use crate::dsp::front;
+use crate::dsp::{AnalogTuning, Front, HeadId};
 use crate::mbe;
 use crate::nxdn::Rate;
 use crate::alias::Alias;
@@ -281,6 +291,8 @@ pub struct ConvChannel {
     pub tune_ref: bool,
     /// The sources it may be received on. Rows sharing a frequency share them.
     pub pins: Pins,
+    /// A stream's row (no frequency, [`ConvChannel::on_stream`]): which of its audio channels.
+    pub stereo: Stereo,
 }
 
 /// How a row picks its transmissions out of a frequency's (the channel's
@@ -502,7 +514,45 @@ impl ConvChannel {
     pub fn new(freq_hz: f64, mode: ConvMode) -> Self {
         let analog = if mode == ConvMode::Am { AnalogTuning::am(freq_hz) } else { AnalogTuning::default() };
         let default_talkgroup = Self::default_talkgroup(freq_hz);
-        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog, tune_ref: false, pins: Pins::any() }
+        ConvChannel { freq_hz, mode, talkgroup: None, default_talkgroup, info: None, squelch_db: None, access: None, system: 0, analog, tune_ref: false, pins: Pins::any(), stereo: Stereo::Mix }
+    }
+
+    /// A row with no frequency: a stream's, heard on a source of audio ([`SourceConfig::audio`]).
+    pub fn on_stream(&self) -> bool {
+        self.freq_hz <= 0.0
+    }
+
+    /// Whether `source` can hear it: a radio whose band (tuned to `center_hz`) reaches its
+    /// frequency, or a source of audio, for a row with none.
+    pub fn heard_on(&self, source: &SourceConfig) -> bool {
+        match self.on_stream() {
+            true => source.audio,
+            false => !source.audio && (self.freq_hz - source.center_hz).abs() <= source.usable_half_width(),
+        }
+    }
+
+    /// Whether it and `other` are one channel: on one frequency, or the same audio of a stream.
+    fn shares(&self, other: &ConvChannel) -> bool {
+        self.same_place(other) && (!self.on_stream() || self.pins == other.pins)
+    }
+
+    /// Whether it and `other` are in one place, the sources aside: one frequency, or a stream's
+    /// same side (rows on one stream share one when they're on the same sources too: [`ConvChannel::shares`]).
+    pub fn same_place(&self, other: &ConvChannel) -> bool {
+        match (self.on_stream(), other.on_stream()) {
+            (false, false) => (self.freq_hz - other.freq_hz).abs() < 1.0,
+            (true, true) => self.stereo == other.stereo,
+            _ => false,
+        }
+    }
+
+    /// Where it is, as a message says: "154.43000 MHz", "a stream", "a stream's left channel".
+    pub fn place(&self) -> String {
+        match (self.on_stream(), self.stereo) {
+            (false, _) => format!("{:.5} MHz", self.freq_hz / 1e6),
+            (true, Stereo::Mix) => "on a stream".into(),
+            (true, side) => format!("on a stream's {} channel", side.as_str()),
+        }
     }
 
     /// Its names, when the number they go with is known before a call is
@@ -664,7 +714,8 @@ struct Live {
 struct Open {
     /// What it received ([`super::engine::EngineConfig::tapes`]).
     tape: Option<VoiceTape>,
-    head: HeadId,
+    /// Its head in the channelizer (a stream's channel has none: its audio is its source's).
+    head: Option<HeadId>,
     /// Its decoder ([`super::voice`]: the same as trunked calls').
     voice: Box<dyn VoiceDecoder>,
     /// Digital: the carrier meter (FM: the decoder's squelch tells).
@@ -708,6 +759,21 @@ impl Open {
     }
 }
 
+/// A channel's samples for a block: a radio's IQ (its head's), or a stream's audio.
+enum Samples {
+    Iq(Vec<Complex32>),
+    Audio(Vec<f32>),
+}
+
+impl Samples {
+    fn len(&self) -> usize {
+        match self {
+            Samples::Iq(v) => v.len(),
+            Samples::Audio(v) => v.len(),
+        }
+    }
+}
+
 /// A channel that closed: its tape to the host.
 fn keep_tape(sink: &Tapes, o: &mut Open) {
     sink.keep(o.tape.take());
@@ -716,6 +782,8 @@ fn keep_tape(sink: &Tapes, o: &mut Open) {
 /// A conventional frequency as the dashboard shows it ([`Conventional::channels`]).
 pub struct ConvNow<'a> {
     pub freq_hz: f64,
+    /// A stream's channel (no frequency): which of its audio.
+    pub pick: Option<Stereo>,
     pub system: usize,
     pub mode: ConvMode,
     /// The source it is received on (its position in the engine's sources).
@@ -765,6 +833,8 @@ struct Chan {
     /// Its calls score the source's AutoTune: a digital row asks it.
     tune_ref: bool,
     offset_hz: f64,
+    /// A stream's channel: which of its audio (None: a frequency's).
+    pick: Option<Stereo>,
     slice: usize,
     power: f64,
     /// AM: its carrier detector, and the spurs it has learned (as the open decoder last heard of them).
@@ -868,14 +938,14 @@ impl<'a> CallRules<'a> {
 }
 
 impl Conventional {
-    /// `sources`: (centre, rate, usable half-width) of each source. Channels
-    /// outside every source are an error.
-    pub fn new(channels: &[ConvChannel], sources: &[(f64, f64, f64)], cfg: ConvConfig, bank_cfg: BankConfig) -> Result<Self, String> {
+    /// `sources`: the engine's. A channel no source can hear ([`ConvChannel::heard_on`]) is an error.
+    pub fn new(channels: &[ConvChannel], sources: &[SourceConfig], cfg: ConvConfig, bank_cfg: BankConfig) -> Result<Self, String> {
         let mut chans = Vec::new();
         let mut outside = Vec::new();
+        let mut unheard = false;
         let mut groups: Vec<Vec<ConvChannel>> = Vec::new();
         for c in channels {
-            match groups.iter_mut().find(|g| (g[0].freq_hz - c.freq_hz).abs() < 1.0) {
+            match groups.iter_mut().find(|g| g[0].shares(c)) {
                 Some(g) => g.push(c.clone()),
                 None => groups.push(vec![c.clone()]),
             }
@@ -885,27 +955,35 @@ impl Conventional {
             let c = &rows[0];
             let squelch_db = rows.iter().filter_map(|r| r.squelch_db).reduce(f64::min);
             let routed = rows.len() > 1 || c.access.is_some();
-            let Some(src) = c.pins.first(sources.len(), |i| (c.freq_hz - sources[i].0).abs() <= sources[i].2) else {
-                outside.push(format!("{:.5}", c.freq_hz / 1e6));
+            let Some(src) = c.pins.first(sources.len(), |i| c.heard_on(&sources[i])) else {
+                match c.on_stream() {
+                    true => unheard = true,
+                    false => outside.push(format!("{:.5}", c.freq_hz / 1e6)),
+                }
                 continue;
             };
-            let (center, rate, _) = sources[src];
-            let tuning = Tuning { center_hz: center, ppm: 0.0 };
-            let offset_hz = tuning.offset(c.freq_hz);
-            let n = floor_slices(rate);
-            let slice = floor_slice(n, rate, offset_hz);
+            let s = &sources[src];
+            let tuning = Tuning { center_hz: s.center_hz, ppm: 0.0 };
+            let pick = c.on_stream().then_some(c.stereo);
+            let offset_hz = if pick.is_some() { 0.0 } else { tuning.offset(c.freq_hz) };
+            let n = front::slices(s.audio, s.rate_hz);
+            let slice = pick.map_or_else(|| floor_slice(n, s.rate_hz, offset_hz), |p| p as usize);
             let bar = squelch_db.unwrap_or(cfg.squelch_db);
             let (freq_hz, mode, system, analog, shape) = (c.freq_hz, c.mode, c.system, c.analog, ChannelShape::of(c.mode, &c.analog));
             let tune_ref = !mode.analog() && rows.iter().any(|r| r.tune_ref);
-            chans.push(Chan { freq_hz, chosen: mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], tally: CopyTally::default(), source: src, tuning, tune_ref, offset_hz, slice, power: 0.0, watch: (mode == ConvMode::Am).then(am::LineWatch::default), ignored: Vec::new(), bar_db: bar, raised: false, open: None });
+            let watch = (mode == ConvMode::Am && pick.is_none()).then(am::LineWatch::default);
+            chans.push(Chan { freq_hz, chosen: mode, system, analog, shape, squelch_db, rows, routed, skipped: [None, None], tally: CopyTally::default(), source: src, tuning, tune_ref, offset_hz, pick, slice, power: 0.0, watch, ignored: Vec::new(), bar_db: bar, raised: false, open: None });
         }
         if !outside.is_empty() {
             return Err(format!("Conventional channel(s) outside every source's bandwidth: {} MHz — move a center frequency or disable them.", outside.join(", ")));
         }
+        if unheard {
+            return Err("A conventional channel with no frequency is a stream's, and there's no stream source for it to be received on — add one, or give the channel a frequency.".into());
+        }
         let floors = sources
             .iter()
-            .map(|&(_, rate, _)| {
-                let n = floor_slices(rate);
+            .map(|s| {
+                let n = front::slices(s.audio, s.rate_hz);
                 Floor { slices: vec![0.0; n], scratch: vec![0.0; n], next_s: 0.0, primed: false }
             })
             .collect();
@@ -915,11 +993,9 @@ impl Conventional {
     /// Whether `channels` can run together: rows on one frequency have one
     /// mode, and no two are for the same code (or none).
     pub fn check(channels: &[ConvChannel]) -> Result<(), String> {
-        let mut freqs: Vec<f64> = Vec::new();
-        for c in channels {
-            if !freqs.iter().any(|f| (f - c.freq_hz).abs() < 1.0) {
-                freqs.push(c.freq_hz);
-                let rows: Vec<ConvChannel> = channels.iter().filter(|r| (r.freq_hz - c.freq_hz).abs() < 1.0).cloned().collect();
+        for (i, c) in channels.iter().enumerate() {
+            if !channels[..i].iter().any(|r| r.shares(c)) {
+                let rows: Vec<ConvChannel> = channels.iter().filter(|r| r.shares(c)).cloned().collect();
                 Self::check_rows(&rows)?;
             }
         }
@@ -927,22 +1003,25 @@ impl Conventional {
     }
 
     fn check_rows(rows: &[ConvChannel]) -> Result<(), String> {
-        let mhz = format!("{:.5}", rows[0].freq_hz / 1e6);
+        let at = rows[0].place();
         if rows.iter().any(|r| r.system != rows[0].system) {
-            return Err(format!("Conventional channel {mhz} MHz is in two conventional systems — a frequency belongs to one."));
+            return Err(format!("Conventional channel {at} is in two conventional systems — a frequency belongs to one."));
         }
         if rows.iter().any(|r| r.mode != rows[0].mode) {
-            return Err(format!("Conventional channel {mhz} MHz is listed with different modes — rows sharing a frequency need the same one."));
+            return Err(format!("Conventional channel {at} is listed with different modes — rows sharing a frequency need the same one."));
         }
         if rows.iter().any(|r| r.pins != rows[0].pins) {
-            return Err(format!("Conventional channel {mhz} MHz is listed with different sources — rows sharing a frequency need the same ones."));
+            return Err(format!("Conventional channel {at} is listed with different sources — rows sharing a frequency need the same ones."));
         }
         if rows.iter().any(|r| r.analog.half_bw_hz != rows[0].analog.half_bw_hz) {
-            return Err(format!("Conventional channel {mhz} MHz is listed with different bandwidths — rows sharing a frequency need the same one."));
+            return Err(format!("Conventional channel {at} is listed with different bandwidths — rows sharing a frequency need the same one."));
+        }
+        if rows[0].on_stream() && !rows[0].mode.analog() {
+            return Err(format!("Conventional channel {at} is {} — a stream's audio is demodulated already: FM or AM.", rows[0].mode.name()));
         }
         let Some(what) = rows[0].mode.code_name() else {
             if rows.len() > 1 || rows[0].access.is_some() {
-                return Err(format!("Conventional channel {mhz} MHz is {} — it has no tone or code to split a frequency by, so it is one row without one.", rows[0].mode.name()));
+                return Err(format!("Conventional channel {at} is {} — it has no tone or code to split a frequency by, so it is one row without one.", rows[0].mode.name()));
             }
             return Ok(());
         };
@@ -950,11 +1029,11 @@ impl Conventional {
             for b in &rows[..i] {
                 match (a.access, b.access) {
                     (None, None) => {
-                        return Err(format!("Conventional channel {mhz} MHz is listed twice without a {what} — give each row its own (one may have none)."));
+                        return Err(format!("Conventional channel {at} is listed twice without a {what} — give each row its own (one may have none)."));
                     }
                     (Some(x), Some(y)) if x.same(y) => {
                         let same = if x == y { format!("{x}") } else { format!("{y} and {x} (the same signal)") };
-                        return Err(format!("Conventional channel {mhz} MHz has two rows for {same}."));
+                        return Err(format!("Conventional channel {at} has two rows for {same}."));
                     }
                     _ => {}
                 }
@@ -994,6 +1073,7 @@ impl Conventional {
             let access = first.filter(|a| c.rows.iter().all(|r| r.access.as_ref() == Some(a))).map(|a| a.report_label());
             ConvNow {
                 freq_hz: c.freq_hz,
+                pick: c.pick,
                 system: c.system,
                 mode: c.mode(),
                 source: c.source,
@@ -1010,7 +1090,9 @@ impl Conventional {
 
     /// Copy `c` of a call on one of its channels ended, having decoded `frames` ([`CopyTally::copy_end`]).
     pub fn copy_end(&mut self, c: &Call, frames: FrameCount) {
-        if let Some(ch) = self.chans.iter_mut().find(|h| h.system == c.system as usize && h.freq_hz.round() as u64 == c.freq_hz) {
+        // (A stream's channels, which have no frequency, by their rows' talkgroups.)
+        let on = |h: &Chan| h.freq_hz.round() as u64 == c.freq_hz && (h.pick.is_none() || h.rows.iter().any(|r| r.talkgroup == Some(c.talkgroup)));
+        if let Some(ch) = self.chans.iter_mut().find(|h| h.system == c.system as usize && on(h)) {
             ch.tally.copy_end(c, frames);
         }
     }
@@ -1027,19 +1109,19 @@ impl Conventional {
     /// and the noise floor is left as it was. `tuning`: where the source
     /// puts channels now, which a channel takes up between calls.
     #[allow(clippy::too_many_arguments)]
-    pub fn on_block<'s>(&mut self, source: usize, chz: &mut Channelizer, now_s: f64, gap: bool, tuning: Tuning, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
+    pub fn on_block<'s>(&mut self, source: usize, front: &mut Front, now_s: f64, gap: bool, tuning: Tuning, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
         if !self.chans.iter().any(|c| c.source == source) {
             return;
         }
         let n = self.floors[source].slices.len();
-        for ch in self.chans.iter_mut().filter(|c| c.source == source && c.open.is_none() && c.tuning != tuning) {
+        for ch in self.chans.iter_mut().filter(|c| c.source == source && c.pick.is_none() && c.open.is_none() && c.tuning != tuning) {
             ch.tuning = tuning;
             ch.offset_hz = tuning.offset(ch.freq_hz);
-            ch.slice = floor_slice(n, chz.fs(), ch.offset_hz);
+            ch.slice = floor_slice(n, front.fs(), ch.offset_hz);
         }
         let fl = &mut self.floors[source];
         if now_s >= fl.next_s && !gap {
-            chz.noise_profile(&mut fl.scratch);
+            front.noise_profile(&mut fl.scratch);
             if fl.primed {
                 for (s, v) in fl.slices.iter_mut().zip(&fl.scratch) {
                     *s += FLOOR_ALPHA * (v - *s);
@@ -1050,7 +1132,7 @@ impl Conventional {
             }
             fl.next_s = now_s + FLOOR_EVERY_S;
         }
-        let a = 1.0 - (-chz.block_seconds() / DETECT_TAU_S).exp();
+        let a = 1.0 - (-front.block_seconds() / DETECT_TAU_S).exp();
         let dflt = self.cfg.squelch_db;
         let mut bins = Vec::new();
         for (idx, ch) in self.chans.iter_mut().enumerate() {
@@ -1059,31 +1141,44 @@ impl Conventional {
             }
             let rules = &CallRules::of(system(ch.system));
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
-            let bp = chz.band_power(ch.offset_hz, ch.shape.detect_half_bw);
+            // (A stream's channel: its audio's power.)
+            let bp = match (&*front, ch.pick) {
+                (Front::Audio(a), Some(pick)) => a.power(pick),
+                (Front::Air(chz), _) => chz.band_power(ch.offset_hz, ch.shape.detect_half_bw),
+                _ => continue,
+            };
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
-            let snr_db = if gap {
-                f64::NEG_INFINITY
-            } else if let Some(w) = &mut ch.watch {
+            let snr_db = match (&mut ch.watch, &*front) {
+                _ if gap => f64::NEG_INFINITY,
                 // AM: its carrier's line, above where noise alone puts the strongest bins
                 // (steady lines left out), or its band power, whichever is the stronger.
-                let first = chz.band_bins(ch.offset_hz, ch.shape.detect_half_bw, &mut bins);
-                w.update(&bins, first, chz.bin_hz(), floor, chz.block_seconds(), a).max(10.0 * (ch.power / floor).log10())
-            } else {
-                10.0 * (ch.power / floor).log10()
+                (Some(w), Front::Air(chz)) => {
+                    let first = chz.band_bins(ch.offset_hz, ch.shape.detect_half_bw, &mut bins);
+                    w.update(&bins, first, chz.bin_hz(), floor, chz.block_seconds(), a).max(10.0 * (ch.power / floor).log10())
+                }
+                _ => 10.0 * (ch.power / floor).log10(),
             };
             let base = ch.base_db(dflt);
-            let meter_thr = chz.threshold(floor, ch.shape.meter_bw, (base - CLOSE_BELOW_DB).max(3.0));
+            let meter_thr = front.threshold(floor, ch.shape.meter_bw, (base - CLOSE_BELOW_DB).max(3.0));
             if ch.open.is_none() {
                 if ch.raised && snr_db < base {
                     ch.raised = false;
                     ch.bar_db = base;
                 }
                 if snr_db >= ch.bar_db {
-                    Self::open(ch, chz, now_s, self.cfg.preroll_s, self.tape_sink.on(), self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
+                    Self::open(ch, front, now_s, self.cfg.preroll_s, self.tape_sink.on(), self.bank_cfg, self.cfg.vocoder, meter_thr, idx as u32, ids, rules, out);
                 }
                 continue;
             }
-            let Some(iq) = chz.output(ch.open.as_ref().unwrap().head).map(|v| v.to_vec()) else { continue };
+            let o = ch.open.as_ref().unwrap();
+            let samples = match (&*front, o.head, ch.pick) {
+                (Front::Air(chz), Some(head), _) => match chz.output(head) {
+                    Some(iq) => Samples::Iq(iq.to_vec()),
+                    None => continue,
+                },
+                (Front::Audio(a), _, Some(pick)) => Samples::Audio(a.output(pick).to_vec()),
+                _ => continue,
+            };
             if let Some(w) = &ch.watch {
                 // A spur learned while it's open isn't listened to either.
                 let ignore = w.ignored();
@@ -1092,11 +1187,11 @@ impl Conventional {
                     ch.ignored = ignore;
                 }
             }
-            Self::run(ch, &iq, now_s, meter_thr, idx as u32, ids, rules, out);
+            Self::run(ch, &samples, now_s, meter_thr, idx as u32, ids, rules, out);
             // Reception: the channel's power while its carrier is up, against the floor (both as a channel's head would see them).
             if snr_db >= base {
                 let bw = ch.shape.meter_bw;
-                let (sig, noise) = (chz.noise_in_band(ch.power, bw), chz.noise_in_band(floor, bw));
+                let (sig, noise) = (front.noise_in_band(ch.power, bw), front.noise_in_band(floor, bw));
                 for l in ch.open.as_mut().unwrap().live.iter_mut().flatten() {
                     if now_s - l.call.last_audio_s < 0.5 {
                         l.rec.reception.signal(sig);
@@ -1130,7 +1225,9 @@ impl Conventional {
                     }
                 }
                 let mut o = ch.open.take().unwrap();
-                chz.remove_head(o.head);
+                if let (Some(head), Some(chz)) = (o.head, front.air_mut()) {
+                    chz.remove_head(head);
+                }
                 o.tapped(None, now_s, out);
                 keep_tape(&self.tape_sink, &mut o);
             }
@@ -1150,18 +1247,29 @@ impl Conventional {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn open(ch: &mut Chan, chz: &mut Channelizer, now_s: f64, preroll_s: f64, tapes: bool, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    fn open(ch: &mut Chan, front: &mut Front, now_s: f64, preroll_s: f64, tapes: bool, bank_cfg: BankConfig, vocoder: mbe::Profile, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
         if let Some(w) = &ch.watch {
             ch.ignored = w.ignored();
         }
-        let (head, pre, start_sample) = chz.add_head(ch.offset_hz, ch.shape.head_cutoff_hz, preroll_s);
-        let rate = chz.output_rate();
+        // A frequency: a head in the channelizer, replaying its air from before; a stream's channel: its audio from before.
+        let (head, pre, start_sample) = match (&mut *front, ch.pick) {
+            (Front::Audio(a), Some(pick)) => {
+                let (pre, start) = a.preroll(pick, preroll_s);
+                (None, Samples::Audio(pre), start)
+            }
+            (Front::Air(chz), _) => {
+                let (head, pre, start) = chz.add_head(ch.offset_hz, ch.shape.head_cutoff_hz, preroll_s);
+                (Some(head), Samples::Iq(pre), start)
+            }
+            _ => return,
+        };
+        let (rate, fs) = (front.output_rate(), front.fs());
         let kind = ch.mode().kind();
         let spec = VoiceSpec {
             kind,
             rate,
             // (On the engine's clock: `now_s` is this source's, offset included.)
-            t0: start_sample as f64 / chz.fs() + (now_s - chz.sample_position() as f64 / chz.fs()),
+            t0: start_sample as f64 / fs + (now_s - front.sample_position() as f64 / fs),
             seed: ch.freq_hz as u32,
             vocoder,
             bank: bank_cfg,
@@ -1170,30 +1278,41 @@ impl Conventional {
             // For the tone detector.
             subaudible: ch.mode().has_fm(),
             analog: ch.analog,
+            audio: ch.pick.is_some(),
             ignore_hz: ch.ignored.clone(),
             keys: rules.keys.cloned(),
             taps: rules.taps,
         };
         let voice = voice::build(&spec);
-        let tape = tapes.then(|| VoiceTape::new(spec, ch.freq_hz));
+        // (A tape is of the air: a stream's audio is kept as its calls are.)
+        let tape = (tapes && head.is_some()).then(|| VoiceTape::new(spec, ch.freq_hz));
         let meter = (!ch.mode().analog()).then(|| ChannelFilter::new(rate));
         ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], held_until_s: 0.0, tx: None, cipher_ahead: [None; 2], streams: Streams::new(rules.taps, ch.system as u16, ch.freq_hz, rate) });
         Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, out);
     }
 
-    /// Run the open channel's receiver over `iq` (air up to `now_s`).
+    /// Run the open channel's receiver over `samples` (air up to `now_s`).
     #[allow(clippy::too_many_arguments)]
-    fn run(ch: &mut Chan, iq: &[Complex32], now_s: f64, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
+    fn run(ch: &mut Chan, samples: &Samples, now_s: f64, meter_thr: f32, num: u32, ids: &CallIds, rules: &CallRules, out: &mut Vec<ConvOut>) {
         let o = ch.open.as_mut().unwrap();
-        // Digital: the carrier by the meter; analog: by the decoder's squelch, at the same threshold.
-        let metered = o.meter.as_mut().map(|m| m.meter(iq) > meter_thr);
-        let slots = o.live.each_ref().map(|l| l.is_some());
-        if let Some(t) = &mut o.tape {
-            t.run(iq, VoiceParams::default(), slots, meter_thr);
-        }
         o.voice.set_squelch(meter_thr);
         let mut vout = Vec::new();
-        o.voice.push(iq, &mut vout);
+        let metered = match samples {
+            Samples::Iq(iq) => {
+                // Digital: the carrier by the meter; analog: by the decoder's squelch, at the same threshold.
+                let metered = o.meter.as_mut().map(|m| m.meter(iq) > meter_thr);
+                let slots = o.live.each_ref().map(|l| l.is_some());
+                if let Some(t) = &mut o.tape {
+                    t.run(iq, VoiceParams::default(), slots, meter_thr);
+                }
+                o.voice.push(iq, &mut vout);
+                metered
+            }
+            Samples::Audio(audio) => {
+                o.voice.push_audio(audio, &mut vout);
+                None
+            }
+        };
         // (A decoder that can tell says; auto's analog receiver does, its digital ones leave it to the meter.)
         let carrier = o.voice.carrier().or(metered).unwrap_or(false);
         // Its calls' frequency error, while the carrier is up and the receiver can tell.
@@ -1210,7 +1329,7 @@ impl Conventional {
         for (slot, h) in heard.into_iter().enumerate() {
             Self::slot_call(ch, slot, h, now_s, num, ids, rules, out);
         }
-        ch.open.as_mut().unwrap().tapped(Some(iq.len()), now_s, out);
+        ch.open.as_mut().unwrap().tapped(Some(samples.len()), now_s, out);
     }
 
     /// What the channel's receiver put out, gathered for each slot's call
@@ -1422,7 +1541,8 @@ impl Conventional {
         let tg = row.talkgroup.or(air_tg).unwrap_or(row.default_talkgroup);
         let dur = h.audio.len() as f64 / fm::AUDIO_RATE;
         // When what's heard began: on the air, or (analog) its audio's length ago.
-        let from_s = h.air.map_or_else(|| (now_s - dur).max(o.opened_s - 0.05), |a| a.0);
+        // (Analog audio comes out its squelch gate's line late: [`VoiceDecoder::delay_s`].)
+        let from_s = h.air.map_or_else(|| (now_s - dur - o.voice.delay_s()).max(o.opened_s - 0.05), |a| a.0);
         if let Some(l) = o.live[slot].as_mut() {
             // A different talkgroup on the air, or another row's
             // transmission, is a new call (digital traffic that hasn't named
@@ -1647,7 +1767,7 @@ mod tests {
     fn run_on(sources: usize, fs: f64, secs: f64, txs: &mut [Tx], channels: Vec<ConvChannel>, systems: Vec<SystemConfig>, mut gap: Option<(f64, f64)>) -> Run {
         let center = 155_000_000.0;
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }; sources],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }; sources],
             conventional: channels,
             systems,
             ..Default::default()
@@ -1760,7 +1880,7 @@ mod tests {
         keys.add(ALGID_AES_256, Some(0x4319), key, vec![]).unwrap();
         let sys = SystemConfig { keys: Some(Arc::new(keys)), ..conv_system("conv") };
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             conventional: vec![ConvChannel::new(freq, ConvMode::P25)],
             systems: vec![sys],
             ..Default::default()
@@ -1807,7 +1927,7 @@ mod tests {
         }
         crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             conventional: vec![ch],
             systems: vec![sys],
             ..Default::default()
@@ -1909,7 +2029,7 @@ mod tests {
     #[test]
     fn an_auto_channel_is_auto_until_it_settles() {
         let ch = ConvChannel::new(155_100_000.0, ConvMode::Auto);
-        let c = Conventional::new(&[ch], &[(155_000_000.0, 1_200_000.0, 500_000.0)], ConvConfig::default(), BankConfig::default()).unwrap();
+        let c = Conventional::new(&[ch], &[SourceConfig { center_hz: 155_000_000.0, rate_hz: 1_200_000.0, guard_hz: 100_000.0, ..Default::default() }], ConvConfig::default(), BankConfig::default()).unwrap();
         assert_eq!(c.channels().map(|n| n.mode).collect::<Vec<_>>(), [ConvMode::Auto]);
         // (Nothing is known of what its calls will be until it has heard one: no talkgroup names are assumed.)
         assert!(ConvChannel::new(155_100_000.0, ConvMode::Auto).names_ahead().is_none());
@@ -1980,7 +2100,7 @@ mod tests {
     #[test]
     fn a_channel_is_received_on_the_sources_it_is_pinned_to() {
         // Two sources overlap around 155.1 MHz.
-        let spans = [(155.0e6, 2.4e6, 1.0e6), (155.2e6, 2.4e6, 1.0e6)];
+        let spans = [155.0e6, 155.2e6].map(|center_hz| SourceConfig { center_hz, rate_hz: 2.4e6, guard_hz: 200_000.0, ..Default::default() });
         let new = |channels: &[ConvChannel]| Conventional::new(channels, &spans, ConvConfig::default(), BankConfig::default());
         let on = |channels: &[ConvChannel]| new(channels).unwrap().channels().map(|c| c.source).collect::<Vec<_>>();
         assert_eq!(on(&[fm(155.1e6, 1), fm(155.15e6, 2)]), [0, 0], "unpinned: the first that covers it");
@@ -2374,7 +2494,7 @@ mod tests {
             crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
             let row = ConvChannel { talkgroup: Some(1), tune_ref, ..ConvChannel::new(freq, ConvMode::P25) };
             let cfg = EngineConfig {
-                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: true, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+                sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: true, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
                 conventional: vec![row],
                 systems: vec![conv_system("conv")],
                 ..Default::default()
@@ -2428,7 +2548,7 @@ mod tests {
         }
         crate::nxdn::synth::add_noise(&mut iq, 0.003, &mut 9);
         let cfg = EngineConfig {
-            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ }],
+            sources: vec![SourceConfig { center_hz: center, rate_hz: fs, auto_tune: false, guard_hz: crate::trunk::DEFAULT_GUARD_HZ, audio: false }],
             conventional: rows.into_iter().map(|r| ConvChannel { freq_hz: freq, ..r }).collect(),
             systems: vec![SystemConfig { talkgroups, ..conv_system("conv") }],
             ..Default::default()

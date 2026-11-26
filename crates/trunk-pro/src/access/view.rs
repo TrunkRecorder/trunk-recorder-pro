@@ -8,7 +8,7 @@
 //! decided, so a new secret is never sent because nobody thought of it.
 //! What's withheld is sent as its default.
 
-use trunk_app::config::{Channel, Config, Conventional, Diagnostics, LogSettings, MonitorSettings, RamSpool, Recording, Server, SignalDef, Site, Source, StorageSettings, System};
+use trunk_app::config::{Channel, Config, Conventional, Diagnostics, LogSettings, MonitorSettings, RamSpool, Recording, Server, SignalDef, Site, Source, SourceKind, StorageSettings, System};
 
 /// `$v` (a `$T`) with the fields listed first as they are and those
 /// `withheld` as their defaults; a field in neither list is a compile error.
@@ -29,7 +29,7 @@ pub fn listen_config(c: &Config) -> Config {
     // sources, and what the config has that the recorder doesn't know.
     let mut c = shown!(c.clone(), Config { sources, systems, conventional, next_system_id, next_site_id, recording, server, log, storage, monitor, diagnostics }
         withheld { plugins, plugin_delays, keys, other, notes, numbered });
-    c.sources = c.sources.into_iter().map(|s| shown!(s, Source { kind, center_hz, rate_hz, ppm, auto_tune, guard_hz, name })).collect();
+    c.sources = c.sources.into_iter().map(|s| shown!(s, Source { kind, center_hz, rate_hz, ppm, auto_tune, guard_hz, name })).map(source).collect();
     c.systems = c.systems.into_iter().map(system).collect();
     c.conventional = c.conventional.into_iter().map(conventional).collect();
     c.recording = recording(c.recording);
@@ -46,6 +46,14 @@ pub fn listen_config(c: &Config) -> Config {
     c
 }
 
+/// A stream's address can hold its login: withheld (its label, which the pages show, has none).
+fn source(mut s: Source) -> Source {
+    if let SourceKind::Stream { url } = &mut s.kind {
+        url.clear();
+    }
+    s
+}
+
 fn system(s: System) -> System {
     let mut s = shown!(s, System { id, short_name, name, receive_on, fcc, share, directory, kind, enabled, unit_names, recording, default_mode, nxdn_type, signals, preferred_site, sites }
         withheld { keys, plugins, plugin_delays, other });
@@ -58,7 +66,7 @@ fn system(s: System) -> System {
 fn conventional(v: Conventional) -> Conventional {
     let mut v = shown!(v, Conventional { id, short_name, name, fcc, enabled, squelch_db, demod, channels, signals, recording, unit_names }
         withheld { channel_file, channel_file_status, plugins, plugin_delays, keys, other });
-    v.channels = v.channels.into_iter().map(|x| shown!(x, Channel { freq_hz, mode, name, talkgroup, code, slot, match_talkgroup, description, tag, group, squelch_db, bandwidth_khz, enabled, receive_on, auto_tune })).collect();
+    v.channels = v.channels.into_iter().map(|x| shown!(x, Channel { freq_hz, mode, name, talkgroup, code, slot, match_talkgroup, description, tag, group, squelch_db, bandwidth_khz, enabled, receive_on, auto_tune, stereo })).collect();
     v.signals = v.signals.into_iter().map(signal).collect();
     v
 }
@@ -84,7 +92,7 @@ mod tests {
     #[test]
     fn listen_is_sent_what_its_pages_show_and_no_more() {
         let full: Config = serde_json::from_value(json!({
-            "sources": [{ "type": "rtlsdr", "serial": "201", "centerHz": 855e6, "rateHz": 2.4e6 }],
+            "sources": [{ "type": "rtlsdr", "serial": "201", "centerHz": 855e6, "rateHz": 2.4e6 }, { "type": "stream", "url": "https://user:MARK-streampw@feeds.example.com/1" }],
             "plugins": { "openmhz": { "enabled": true, "settings": { "apiKey": "MARK-plugin" } } },
             "pluginDelays": [{ "plugins": ["MARK-delay"], "delayS": 30 }],
             "keys": { "a": { "file": "MARK-keys.json", "passwordFile": "MARK-pass" } },
@@ -104,7 +112,7 @@ mod tests {
         }))
         .unwrap();
         let marks = serde_json::to_string(&full).unwrap().matches("MARK-").count();
-        assert_eq!(marks, 26, "the config kept what the test marked: {marks}");
+        assert_eq!(marks, 27, "the config kept what the test marked: {marks}");
         let sent = serde_json::to_value(listen_config(&full)).unwrap();
         assert!(!sent.to_string().contains("MARK-"), "{sent}");
         for gone in ["plugins", "keys", "pluginDelays"] {

@@ -173,6 +173,7 @@ pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String
             sc.tune_range_hz = (1e6, 6e9);
             sc.settle_s = 0.2;
         }
+        SourceKind::Stream { .. } => return Err("A stream is audio, not a band of the radio spectrum: there's nothing on it to scan.".into()),
         SourceKind::File { .. } => {
             let c = if req.radio.is_some() { src.center_hz } else { cfg.resolved_centers().get(req.source).copied().unwrap_or(0.0) };
             if c <= 0.0 {

@@ -8,6 +8,7 @@
 //! uploaded never has its WAV written at all.
 
 use crate::config::M4aEncoder;
+use trunk_app::tags::Tags;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -41,8 +42,8 @@ impl Encoder {
         })
     }
 
-    /// Encode `wav` (a WAV file's bytes) to `out` (written whole, or not at all) at `kbps`.
-    pub fn m4a(&self, wav: &[u8], out: &Path, kbps: u32) -> Result<(), String> {
+    /// Encode `wav` (a WAV file's bytes) to `out` (written whole, or not at all) at `kbps`, tagged with `tags`.
+    pub fn m4a(&self, wav: &[u8], out: &Path, kbps: u32, tags: &Tags) -> Result<(), String> {
         let tmp = out.with_extension("m4a.part");
         let mut c;
         match self {
@@ -58,7 +59,7 @@ impl Encoder {
                 c.args(["-f", "m4af", "-d", "aac@16000", "-c", "1", "-b", &(kbps * 1000).to_string()]).arg(&file).arg(&tmp);
                 let r = run(c, None, Duration::from_secs(60));
                 let _ = std::fs::remove_file(&file);
-                return self.done(r, &tmp, out);
+                return self.done(r, &tmp, out, tags);
             }
             Encoder::Fdkaac(p) => {
                 c = Command::new(p);
@@ -66,10 +67,21 @@ impl Encoder {
             }
         }
         let r = run(c, Some(wav), Duration::from_secs(60));
-        self.done(r, &tmp, out)
+        self.done(r, &tmp, out, tags)
     }
 
-    fn done(&self, r: Result<(), String>, tmp: &Path, out: &Path) -> Result<(), String> {
+    /// The encoder's file, tagged (as it came, should its layout be one the tags can't go into), moved to `out`.
+    fn done(&self, r: Result<(), String>, tmp: &Path, out: &Path, tags: &Tags) -> Result<(), String> {
+        let r = r.and_then(|_| {
+            let tagged = std::fs::read(tmp).ok().and_then(|b| tags.onto_mp4(&b));
+            match tagged {
+                Some(b) => trunk_app::files::write(tmp, &b).map_err(String::from),
+                None => {
+                    log::debug!("{}: {} left untagged", self.name(), out.display());
+                    Ok(())
+                }
+            }
+        });
         let r = r.and_then(|_| trunk_app::files::rename(tmp, out).map_err(String::from));
         if r.is_err() {
             let _ = std::fs::remove_file(tmp);
@@ -130,7 +142,7 @@ pub fn which(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// Every encoder this machine has makes a playable file from a WAV (in memory), and nothing else.
+    /// Every encoder this machine has makes a playable, tagged file from a WAV (in memory), and nothing else.
     #[test]
     fn encoders_on_this_machine() {
         let dir = std::env::temp_dir().join(format!("trunk-pro-encode-{}", std::process::id()));
@@ -138,15 +150,22 @@ mod tests {
         // Two minutes: more than a pipe holds, so the encoder has to read as it goes.
         let tone: Vec<f32> = (0..8000 * 120).map(|i| (i as f32 * 0.3).sin() * 0.5).collect();
         let wav = trunk_core::wav::encode(&tone, 8000);
+        let tags = Tags { title: "Fire Disp".into(), ..Default::default() };
         for choice in [M4aEncoder::Ffmpeg, M4aEncoder::Afconvert, M4aEncoder::Fdkaac] {
             let name = choice.name();
             let Some(e) = Encoder::find(choice) else {
                 continue;
             };
             let out = dir.join(format!("{name}.m4a"));
-            e.m4a(&wav, &out, 32).unwrap();
+            e.m4a(&wav, &out, 32, &tags).unwrap();
             let b = std::fs::read(&out).unwrap();
             assert!(b.len() > 100_000 && &b[4..8] == b"ftyp", "{name}: not an MP4 of the whole call");
+            assert!(b.windows(9).any(|w| w == b"Fire Disp"), "{name}: not tagged");
+            // Tagging moved the audio: it still decodes, whole and without an error.
+            if let Some(ffmpeg) = which("ffmpeg") {
+                let o = Command::new(ffmpeg).args(["-v", "error", "-i"]).arg(&out).args(["-f", "null", "-"]).output().unwrap();
+                assert!(o.status.success() && o.stderr.is_empty(), "{name}: {}", String::from_utf8_lossy(&o.stderr));
+            }
         }
         let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         left.sort();

@@ -39,6 +39,9 @@
 //! - `Enable`: `false` / `no` / `0` switches a channel off; empty = on.
 //! - `AutoTune`: `true` / `yes` / `1` — a digital row's calls score its
 //!   source's AutoTune (a repeater output to trust); empty = off.
+//! - `Stereo`: a stream's row (written only when a row is one): `mix`
+//!   (empty), `left` or `right` — which of its audio it records. In a file
+//!   with this column, a row with no frequency is a stream's.
 //! - Commas, semicolons or tabs (from the header row); a UTF-8 byte-order
 //!   mark and decimal commas (with semicolons) are accepted, as Excel
 //!   writes them in some locales. Blank rows and `#` comments are skipped.
@@ -46,10 +49,12 @@
 use trunk_core::nxdn::Rate;
 use trunk_core::trunk::{Access, ConvMode};
 
-use crate::config::Channel;
+use crate::config::{Channel, Stereo};
 
 /// The columns [`write`] produces.
 pub const HEADER: &str = "TG Number,Frequency,Code,Slot,Match TG,Mode,Alpha Tag,Description,Tag,Category,Squelch dB,Bandwidth kHz,Enable,AutoTune";
+/// And when a row is a stream's.
+pub const STREAM_COLUMN: &str = ",Stereo";
 
 /// What a CSV held: its channels and anything worth telling the user.
 #[derive(Debug, Default)]
@@ -134,6 +139,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     let c_tone = c_code.or(col(&["tone"]));
     let c_slot = col(&["slot", "ts"]);
     let c_mtg = col(&["match tg", "matchtalkgroup", "match talkgroup"]);
+    let c_stereo = col(&["stereo"]);
 
     let mut out = Parsed::default();
     let (mut bad_freq, mut bad_mode, mut bad_tg, mut bad_sq, mut bad_bw) = (vec![], vec![], vec![], vec![], vec![]);
@@ -141,7 +147,13 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
     for &(row, line) in &lines[1..] {
         let f = split(line, delim);
         let at = |c: Option<usize>| c.and_then(|i| f.get(i)).map(String::as_str).unwrap_or("");
-        let Some(freq_hz) = freq(at(Some(c_freq)), decimal_comma) else {
+        // (A stream's row: no frequency, in a file with a Stereo column.)
+        let stereo = Stereo::parse(at(c_stereo));
+        let Some(freq_hz) = freq(at(Some(c_freq)), decimal_comma).or_else(|| (c_stereo.is_some() && at(Some(c_freq)).trim().is_empty()).then_some(0.0)) else {
+            bad_freq.push(row);
+            continue;
+        };
+        let Some(stereo) = stereo else {
             bad_freq.push(row);
             continue;
         };
@@ -222,6 +234,7 @@ pub fn parse(text: &str) -> Result<Parsed, String> {
             enabled,
             auto_tune,
             receive_on: Vec::new(),
+            stereo,
         });
     }
     if old {
@@ -275,12 +288,16 @@ fn cell(s: &str) -> String {
 
 /// The channels as CSV ([`HEADER`]'s columns), which [`parse`] reads back unchanged.
 pub fn write(channels: &[Channel]) -> String {
+    let streams = channels.iter().any(|c| c.freq_hz <= 0.0);
     let mut out = String::from(HEADER);
+    if streams {
+        out.push_str(STREAM_COLUMN);
+    }
     out.push('\n');
     for c in channels {
-        let row = [
+        let mut row = vec![
             c.talkgroup.map_or(String::new(), |t| t.to_string()),
-            mhz(c.freq_hz),
+            if c.freq_hz > 0.0 { mhz(c.freq_hz) } else { String::new() },
             cell(&c.code),
             c.slot.map_or(String::new(), |s| s.to_string()),
             c.match_talkgroup.map_or(String::new(), |t| t.to_string()),
@@ -294,6 +311,9 @@ pub fn write(channels: &[Channel]) -> String {
             c.enabled.to_string(),
             if c.auto_tune { "true".into() } else { String::new() },
         ];
+        if streams {
+            row.push(if c.stereo.is_mix() { String::new() } else { c.stereo.as_str().into() });
+        }
         out.push_str(&row.join(","));
         out.push('\n');
     }
@@ -303,6 +323,19 @@ pub fn write(channels: &[Channel]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stream's rows go out with a Stereo column and no frequency, and read back so; a file
+    /// without the column reads a row with no frequency as before (skipped).
+    #[test]
+    fn stream_rows_round_trip() {
+        let rows = vec![Channel { talkgroup: Some(7), stereo: Stereo::Left, ..Channel::new(0.0, ConvMode::Fm) }, Channel { talkgroup: Some(8), ..Channel::new(154_430_000.0, ConvMode::Fm) }];
+        let text = write(&rows);
+        assert!(text.lines().next().unwrap().ends_with(",Stereo"), "{text}");
+        let back = parse(&text).unwrap().channels;
+        assert_eq!(back.iter().map(|c| (c.freq_hz, c.stereo, c.talkgroup)).collect::<Vec<_>>(), [(0.0, Stereo::Left, Some(7)), (154_430_000.0, Stereo::Mix, Some(8))]);
+        assert!(!write(&rows[1..]).contains("Stereo"), "only with a stream's row");
+        assert!(parse("TG Number,Frequency\n7,\n").unwrap().channels.is_empty());
+    }
 
     /// One rule for a frequency as written, wherever: MHz under 10 000, else Hz (#195).
     #[test]
@@ -356,7 +389,7 @@ mod tests {
                 code: "D023N".into(),
                 slot: None,
                 match_talkgroup: None,
-                enabled: true, auto_tune: false, receive_on: Vec::new(),
+                enabled: true, auto_tune: false, receive_on: Vec::new(), stereo: Default::default(),
             },
             Channel {
                 freq_hz: 460_125_000.0,
@@ -371,7 +404,7 @@ mod tests {
                 code: "293".into(),
                 slot: None,
                 match_talkgroup: Some(1),
-                enabled: false, auto_tune: false, receive_on: Vec::new(),
+                enabled: false, auto_tune: false, receive_on: Vec::new(), stereo: Default::default(),
             },
             Channel {
                 freq_hz: 451_500_000.0,
@@ -386,7 +419,7 @@ mod tests {
                 code: "1".into(),
                 slot: Some(1),
                 match_talkgroup: Some(1),
-                enabled: true, auto_tune: false, receive_on: Vec::new(),
+                enabled: true, auto_tune: false, receive_on: Vec::new(), stereo: Default::default(),
             },
         ];
         let csv = write(&chans);

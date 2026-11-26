@@ -71,7 +71,7 @@ fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
         SourceMsg::Samples { block: Block::U8(b), .. } => session.survey().push_u8(&b),
         SourceMsg::Samples { block: Block::Iq(b), .. } => session.survey().push_iq(&b),
         // (The callers' inbox makes these I/Q.)
-        SourceMsg::Samples { block: Block::Real16(_), .. } => {}
+        SourceMsg::Samples { block: Block::Real16(_) | Block::Audio { .. }, .. } => {}
         SourceMsg::Tuned { center_hz, .. } => session.survey().tuned(center_hz),
         SourceMsg::Gain { .. } => {}
         SourceMsg::Error { error, .. } => session.source_error(&error),

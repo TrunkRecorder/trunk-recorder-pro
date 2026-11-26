@@ -5,7 +5,7 @@
 // time.
 
 import { useState } from "react";
-import { autoTuneOn, configIndex, formatGain, formatMhz, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
+import { autoTuneOn, configIndex, formatGain, formatMhz, placeText, SOURCE_KINDS, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
 import { can, mayEdit, setView, tuneGain, tuneStop, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, Hint, Info, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, dur, mhz, num, signed } from "../fmt.ts";
@@ -44,6 +44,8 @@ function gainText(c: Source | undefined): string {
       return c.agc ? "AGC" : c.gainDb !== null ? `${formatGain(c.gainDb)} dB` : Object.entries(c.gains ?? {}).map(([k, v]) => `${k} ${formatGain(v)}`).join(" · ") || "default";
     case "file":
       return "capture file";
+    case "stream":
+      return "none (a stream)";
   }
 }
 
@@ -57,16 +59,19 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
   const peak = val(s, K.src(src.label, "peak"));
   const clip = val(s, K.src(src.label, "clipPct"));
   const drops = recentAvg(K.src(src.label, "dropped"), 60) ?? 0;
+  // A stream: audio, demodulated already — no band, gain, crystal or ADC to show.
+  const audio = !!SOURCE_KINDS[src.settings.type]?.audio;
   return (
-    <Card title={k >= 0 ? `${sourceTitle(s.config!, k)} · ${src.label}` : src.label} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{mhz(src.centerHz, 3)} MHz · {num(src.rateHz / 1e6, 2)} MS/s</span>}>
+    <Card title={k >= 0 ? `${sourceTitle(s.config!, k)} · ${src.label}` : src.label} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{audio ? `Audio · ${num(src.rateHz / 1e3, 0)} kHz` : `${mhz(src.centerHz, 3)} MHz · ${num(src.rateHz / 1e6, 2)} MS/s`}</span>}>
       <div className={small ? "src-grid small" : "src-grid"}>
         <Stat
-          label="Noise floor"
+          label={audio ? "Quiet floor" : "Noise floor"}
           value={num(noise)}
           unit="dBFS"
-          spark={<LiveSpark k={K.src(src.label, "noise")} color="var(--series-1)" minSpan={6} title="Noise floor, last 10 min" />}
-          hint="Median power per FFT bin; rises with gain or interference."
+          spark={<LiveSpark k={K.src(src.label, "noise")} color="var(--series-1)" minSpan={6} title={`${audio ? "Quiet floor" : "Noise floor"}, last 10 min`} />}
+          hint={audio ? "Its audio's level between calls: a call opens when its rows' audio rises the squelch above it." : "Median power per FFT bin; rises with gain or interference."}
         />
+        {!audio && (
         <div className="stat stat-kpi">
           <div className="stat-label">Headroom</div>
           <div className="stat-value">
@@ -76,6 +81,8 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           <Meter value={peak === null ? null : peak + 60} max={60} zones={[54, 59]} title={`Peaks at ${num(peak)} dBFS`} label="peak level" />
           <div className="stat-sub">{clip ? <Figs inline items={[{ k: "Clipping", v: num(clip, 2), u: "%", level: clip > 0.5 ? "warn" : undefined }]} /> : "No clipping"}</div>
         </div>
+        )}
+        {!audio && (
         <Stat
           label="Frequency error"
           value={src.errorPpm == null ? "—" : signed(src.errorPpm, 2)}
@@ -95,6 +102,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           spark={small ? undefined : <LiveSpark k={K.src(src.label, "ppm")} color="var(--series-2)" minSpan={1} title="Measured error, last 10 min" />}
           hint="Median of the last 20 measurements on control channels and digital calls. Steady: set ppm; drifting: temperature."
         />
+        )}
         <Stat
           label="Dropped"
           value={compact(drops)}
@@ -117,15 +125,17 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           <span className="muted">{off.why}</span>
         </div>
       )}
-      {k >= 0 && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
+      {k >= 0 && !audio && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
       {!small && (
         <div className="row src-facts">
           {/* (Gain: Setup's — the desktop recorder takes a new gain while recording.) */}
           <Figs
             inline
             items={[
-              { k: "Gain", v: gainLine(k >= 0 ? s.config!.sources[k] : src.settings, src.gainSet) },
-              { k: "Rate", v: num(src.rateMeasured / 1e6, 3), u: `of ${num(src.rateHz / 1e6, 3)} MS/s`, level: src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05 ? "warn" : undefined },
+              !audio && { k: "Gain", v: gainLine(k >= 0 ? s.config!.sources[k] : src.settings, src.gainSet) },
+              audio
+                ? { k: "Rate", v: num(src.rateMeasured / 1e3, 2), u: `of ${num(src.rateHz / 1e3, 0)} kS/s`, level: src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05 ? "warn" : undefined }
+                : { k: "Rate", v: num(src.rateMeasured / 1e6, 3), u: `of ${num(src.rateHz / 1e6, 3)} MS/s`, level: src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05 ? "warn" : undefined },
               src.errors > 0 && { k: "Errors", v: src.errors, level: "bad", title: src.lastError ?? undefined },
             ]}
           />
@@ -471,7 +481,7 @@ function SourceDetail({ s, i }: { s: AppState; i: number }) {
               <tbody>
                 {d.channels.map((c) => (
                   <tr key={`${c.system}${c.freqHz}`}>
-                    <td className="mono">{formatMhz(c.freqHz)}</td>
+                    <td className="mono">{placeText(c.freqHz)}</td>
                     <td className="sys-name">
                       <span className="sys-dot" style={{ background: color(c.system) }} />
                       {c.system}

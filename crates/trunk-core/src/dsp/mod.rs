@@ -2,10 +2,12 @@
 //! analog FM and AM.
 
 pub mod am;
+pub mod audio_in;
 pub mod c4fm;
 pub mod channelizer;
 pub mod cqpsk;
 pub mod filters;
+pub mod front;
 pub mod fm;
 pub mod inband;
 pub mod levels;
@@ -15,6 +17,7 @@ pub mod rolloff;
 pub mod squelch;
 
 pub use channelizer::{Channelizer, HeadId};
+pub use front::Front;
 pub use squelch::SquelchTiming;
 
 /// How an analog channel is demodulated (a conventional system and its

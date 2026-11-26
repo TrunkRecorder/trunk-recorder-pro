@@ -188,6 +188,11 @@ impl Gate {
         &mut self.line[(self.pos + n - k) % n]
     }
 
+    /// How far behind the air its audio comes out, s: the line's length.
+    pub fn delay_s(&self) -> f64 {
+        self.line.len() as f64 / AUDIO_RATE
+    }
+
     /// One 8 kHz sample (`raw`: the same before the demod's last filters),
     /// as the gate stands. What leaves the line, if the gate let it through,
     /// goes to `out` (and `raw` to `low`).

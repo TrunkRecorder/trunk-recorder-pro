@@ -1,7 +1,7 @@
 # Recordings
 
 This page covers what Trunk Recorder Pro saves for each call: where the files go and how they are
-named, what is in the call JSON, how the audio is processed, M4A files, which files are kept or
+named, what is in the call JSON, how the audio is processed, M4A files, the tags in the audio files, which files are kept or
 deleted once plugins have uploaded them, the RAM spool, and the rules that decide which calls are
 kept at all. Capturing what the radios receive (IQ captures) is on [Captures](captures.md).
 
@@ -189,6 +189,47 @@ way, a call whose M4A is to be kept but couldn't be made keeps its WAV in its pl
 
 The WAV is fed to the encoder from memory. If the call's WAV isn't being kept, it is never written
 to disk at all.
+
+## Tags in the audio files
+
+Every call's WAV and M4A carry tags, so a music player shows what the call was and a script can
+read it without opening the call JSON:
+
+| Tag | ID3 frame (WAV) | MP4 atom (M4A) | Value |
+|---|---|---|---|
+| Title | `TIT2` | `©nam` | The talkgroup's alpha tag, or its number |
+| Artist | `TPE1` | `©ART` | The system's short name |
+| Date | `TDRC` | `©day` | The start, local time: `2026-11-25T14:03:11` |
+| Genre | `TCON` | `©gen` | The talkgroup's group (left out when there is none) |
+| Comment | `COMM` | `©cmt` | For people: `TG 101 · 851.0125 MHz · Units 1234 (Engine 5), 5678 · Emergency` |
+| `TALKGROUP` | `TXXX` | `----` | The talkgroup number |
+| `UNITS` | `TXXX` | `----` | The radio IDs that talked, in order: `1234, 5678`. Left out when no radio was identified |
+| `FREQUENCY` | `TXXX` | `----` | Hz |
+| `EMERGENCY` | `TXXX` | `----` | `1`, only on an emergency call |
+| `ENCRYPTED` | `TXXX` | `----` | `1`, only on an encrypted call |
+
+Title, artist and date are the three tags Trunk Recorder writes. The WAV's tags are an ID3v2.4 tag
+in an `id3 ` chunk after the audio. The M4A's are iTunes-style tags, with the last five as
+`com.apple.iTunes` freeform atoms, and they are the same whichever encoder made the file.
+
+In Python, [mutagen](https://mutagen.readthedocs.io/) reads both. This finds calls on which no
+radio was identified:
+
+```python
+from mutagen.wave import WAVE
+from mutagen.mp4 import MP4
+
+def units(path):
+    if path.endswith(".wav"):
+        frame = (WAVE(path).tags or {}).get("TXXX:UNITS")
+        return frame.text[0] if frame else ""
+    value = (MP4(path).tags or {}).get("----:com.apple.iTunes:UNITS")
+    return value[0].decode() if value else ""
+```
+
+The `{source_num}` file name token is the number of the radio *source* (the SDR) that recorded the
+call, as in Trunk Recorder, not the talking radio's ID. The talking radios are in the `UNITS` tag
+and in the call JSON's `srcList`.
 
 ## The archive: what's kept and what's deleted
 
