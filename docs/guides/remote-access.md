@@ -278,9 +278,10 @@ Install it on the recorder's computer and on each device, signed in to the same 
 recorder then has a second address (`100.x.y.z`, and with MagicDNS a name, `radiobox`) that
 answers from any of them, at home and away. Either of these puts the recorder on it:
 
-- **Listen on every address.** Start with `--bind 0.0.0.0` (or `server.bind`) and open
-  `http://radiobox:8080`. Tailscale encrypts what crosses it, so plain HTTP is fine there; the
-  port answers on your own network too.
+- **Listen on every address.** Choose **Other devices too** in Setup → **Access** (or start with
+  `--bind 0.0.0.0`); **Reachable at** then lists a **Tailnet** row, `http://radiobox:8080`.
+  Tailscale encrypts what crosses it, so plain HTTP is fine there; the port answers on your own
+  network too.
 - **Tailscale Serve.** Leave `bind` at `127.0.0.1`, so nothing but Tailscale reaches the port, and
   have Tailscale serve it over HTTPS with a certificate of its own:
 
@@ -292,7 +293,7 @@ answers from any of them, at home and away. Either of these puts the recorder on
   "server": { "bind": "127.0.0.1", "port": 8080, "hostname": "radiobox.tail1234.ts.net" }
   ```
 
-  Then open `https://radiobox.tail1234.ts.net`. Without `hostname` the recorder refuses the
+  Then open `https://radiobox.tail1234.ts.net` (the **Tailscale Serve** row). Without `hostname` the recorder refuses the
   requests ("this server only answers to localhost"). [Passkeys](#passkeys) work at that name, and
   Serve says who's asking, so the recorder can
   [take its word](#behind-a-proxy-that-signs-people-in) and nobody signs in twice.

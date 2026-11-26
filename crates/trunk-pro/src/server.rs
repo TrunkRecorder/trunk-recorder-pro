@@ -2149,7 +2149,7 @@ mod tests {
         // A token sent says who as well: a program allows an app of its own.
         let (code, _, to) = http(addr, "POST", "/api/app/approve", &[("authorization", &format!("Bearer {luke}"))], Some(&ask)).await;
         assert_eq!(code, 200);
-        let (_, _, got) = redeem(code_of(&json(&to)["to"].as_str().unwrap().to_string()), verifier).await;
+        let (_, _, got) = redeem(code_of(json(&to)["to"].as_str().unwrap()), verifier).await;
         let session = json(&got)["cookie"].as_str().unwrap().to_string();
         assert_eq!(http(addr, "GET", "/api/v1/export/calls", &[("cookie", &session)], None).await.0, 200, "luke's: control");
         ctx.config.lock().unwrap().server.auth.users.get_mut("luke").unwrap().token = None;
