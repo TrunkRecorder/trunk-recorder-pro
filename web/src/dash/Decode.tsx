@@ -12,6 +12,7 @@ import type { ChannelSnapshot, DmrSiteStatus, FreqRow, SeriesData, SiteStatus } 
 import { modeInfo } from "../modes.ts";
 import { change, coverage, dashSystems, K, KIND_LABEL, recentAvg, recentSum, running, runningSites, siteHealth, sumSeries, systemHealth, useHistory, useRanges, useUsual, val, voiceKeys, type DashSite, type DashSystem, type Usual } from "./data.ts";
 import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
+import { callsCounted, sinceLabel } from "./counts.ts";
 
 /** `a / b` step by step (errors per frame from the two rates). */
 function ratio(a: SeriesData | undefined, b: SeriesData | undefined, mul = 1): SeriesData | null {
@@ -193,8 +194,8 @@ function DecodeCard({ s, x, site, usual, freqs }: { s: AppState; x: DashSystem; 
         )}
         {x.kind === "conventional" && (
           <Stat
-            label="Calls since start"
-            value={x.status ? compact(x.status.callsConcluded) : "—"}
+            label={`Calls ${sinceLabel(s).toLowerCase()}`}
+            value={x.status ? compact(callsCounted(s, x.status)) : "—"}
             spark={<LiveSpark k={k("calls")} mul={60} lo={0} title="Calls a minute, last 10 min" />}
             sub={x.status ? <Figs inline items={[{ k: "On air", v: x.status.activeCalls }, { k: "Rate", v: num((recentAvg(k("calls"), 600) ?? 0) * 60, 1), u: "/min" }]} /> : "Not recording"}
           />
@@ -262,7 +263,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
       </BackBar>
       <DecodeCard s={s} x={x} site={site} usual={usual[cc("good")]} freqs={rows} />
       {(st || (x.kind === "conventional" && x.status)) && (
-        <SiteIdentityLine kind={x.kind} st={st ?? null} dmr={here.find((y) => y.dmr)?.dmr ?? null} calls={x.status?.callsConcluded ?? 0} active={x.status?.activeCalls ?? 0} />
+        <SiteIdentityLine kind={x.kind} st={st ?? null} dmr={here.find((y) => y.dmr)?.dmr ?? null} calls={x.status ? callsCounted(s, x.status) : 0} since={sinceLabel(s).toLowerCase()} active={x.status?.activeCalls ?? 0} />
       )}
       {live && live.channels.length > 0 && (
         <Card title="Channels now">
@@ -439,7 +440,7 @@ export function DecodePage() {
 
 /** Under the graphs: what the site says it is (its identity, as each protocol states it; a DMR
  *  Tier III / Capacity Max site also its System Identity Code's model and category), its calls. */
-export function SiteIdentityLine(props: { kind: DashSystem["kind"]; st: SiteStatus | null; dmr: DmrSiteStatus | null; calls: number; active: number }) {
+export function SiteIdentityLine(props: { kind: DashSystem["kind"]; st: SiteStatus | null; dmr: DmrSiteStatus | null; calls: number; since?: string; active: number }) {
   const { kind, st, dmr } = props;
   const id = st?.identity;
   const code = dmr?.sysCode;
@@ -490,7 +491,7 @@ export function SiteIdentityLine(props: { kind: DashSystem["kind"]; st: SiteStat
           ))}
         </span>
       )}
-      <span title="Calls saved since start">
+      <span title={`Calls saved ${props.since ?? "since start"}`}>
         Calls <b>{props.calls}</b>
       </span>
       <span>

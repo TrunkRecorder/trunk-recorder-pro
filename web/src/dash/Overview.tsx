@@ -11,6 +11,7 @@ import { FOLDER_LABEL, change, connections, connectionsSummary, gainFix, goTo, r
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
+import { callsCounted, pluginCounted, sinceLabel } from "./counts.ts";
 
 // ── today ────────────────────────────────────────────────────────────────────
 
@@ -163,8 +164,8 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
       ) : (
         <div className="sys-main">
           <Stat
-            label="Calls since start"
-            value={x.status ? compact(x.status.callsConcluded) : "—"}
+            label={`Calls ${sinceLabel(s).toLowerCase()}`}
+            value={x.status ? compact(callsCounted(s, x.status)) : "—"}
             spark={<LiveSpark k={K.sys(x.name, "calls")} mul={60} lo={0} title="Calls a minute, 10 min" />}
             sub={<Figs inline items={[{ k: "24 h", v: dayCalls === null ? "—" : compact(dayCalls) }, { k: "Channels", v: channels }, !!x.status?.conventionalOpen && { k: "Open", v: x.status.conventionalOpen, title: "A signal on them now" }]} />}
           />
@@ -344,7 +345,8 @@ function PluginsLine({ s }: { s: AppState }) {
         <p className="empty">No plugins on.</p>
       ) : (
         <ul className="line-list">
-          {on.map((p) => {
+          {on.map((plugin) => {
+            const p = pluginCounted(s, plugin);
             const h = pluginHealth(p, true);
             const m = p.runtime.metrics;
             return (
