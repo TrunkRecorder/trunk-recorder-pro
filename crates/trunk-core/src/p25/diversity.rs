@@ -355,12 +355,21 @@ impl<F: Framing> Bank<F> {
         self.release(true, out);
     }
 
-    /// How far above the channel the carrier is, Hz, from whichever receiver measures it.
+    /// How far above the channel the carrier is, Hz, from whichever receiver
+    /// measures it, of the kind decoding best so far ([`Detect`]'s NID
+    /// corrections): one kind's receiver on the other's signal measures it
+    /// wrong (C4FM through the CQPSK receiver sits on its quarter-turn edge).
     pub fn offset_hz(&self) -> Option<f32> {
-        self.rx.iter().filter(|r| self.running(r)).find_map(|r| match &r.demod {
+        let best = self.detect.as_ref().filter(|d| d.slots > 0).map(|d| if d.errs[CQPSK_KIND] <= d.errs[C4FM_KIND] { CQPSK_KIND } else { C4FM_KIND });
+        let read = |r: &Rx<F>| match &r.demod {
             Demod::Cqpsk(c) => c.offset_hz(),
             Demod::Other(d) => d.offset_hz(),
-        })
+        };
+        let running = || self.rx.iter().filter(|r| self.running(r));
+        match best {
+            Some(k) => running().filter(|r| Self::kind(r) == k).find_map(read).or_else(|| running().find_map(read)),
+            None => running().find_map(read),
+        }
     }
 
     /// Frames found per receiver (CQPSK, CQPSK + EQ, C4FM, as configured).
