@@ -411,7 +411,7 @@ impl Platform {
                     Some(json!({ "name": w.name, "path": w.path.display().to_string(), "mount": d.mount_point().display().to_string(), "totalBytes": d.total_space(), "freeBytes": d.available_space() }))
                 })
                 .collect();
-            self.temp = self.comps.list().iter().filter_map(|c| c.temperature()).filter(|t| t.is_finite() && *t > 0.0).map(|t| t as f64).reduce(f64::max);
+            self.temp = hottest(self.comps.list().iter().filter_map(|c| Some((c.label(), c.temperature()?))));
         }
         for d in &self.disk_rows {
             let (total, free) = (d["totalBytes"].as_f64().unwrap_or(0.0), d["freeBytes"].as_f64().unwrap_or(0.0));
@@ -445,6 +445,16 @@ impl Platform {
             "unavailable": unavailable,
         })
     }
+}
+
+/// The hottest of the sensors' readings (`label`, °C), as the computer's temperature: those that read nothing
+/// (0, or not a number) left out, and a motherboard monitoring chip's spare thermistor inputs. A Nuvoton (nct67xx)
+/// chip's AUXTIN0–3 (`nct6791 AUXTIN1`) is wired to whatever the board maker chose, often nothing, and then reads
+/// whatever the open input gives: 110 °C on an ASRock X299 board with its CPU at 45 °C. The CPU, the drives, the
+/// GPU and the chip's own SYSTIN / CPUTIN still count.
+fn hottest<'a>(readings: impl IntoIterator<Item = (&'a str, f32)>) -> Option<f64> {
+    let spare = |label: &str| label.split_whitespace().any(|w| w.starts_with("AUXTIN"));
+    readings.into_iter().filter(|(l, t)| t.is_finite() && *t > 0.0 && !spare(l)).map(|(_, t)| t as f64).reduce(f64::max)
 }
 
 #[cfg(test)]
@@ -523,5 +533,26 @@ mod tests {
         assert!(k.0.contains(&"plat/mem".to_string()));
         assert!(v["cores"].as_u64().unwrap() >= 1);
         assert!(v["perCore"].is_array());
+    }
+
+    #[test]
+    fn an_unconnected_auxtin_isnt_the_computers_temperature() {
+        // rdio's sensors (ASRock X299): AUXTIN1 reads 110 °C with nothing on it.
+        let r = [
+            ("nvme Composite", 32.9),
+            ("nct6791 SYSTIN", 30.0),
+            ("nct6791 CPUTIN", 35.0),
+            ("nct6791 AUXTIN0", 22.0),
+            ("nct6791 AUXTIN1", 110.0),
+            ("nct6791 PCH_CHIP_TEMP", 0.0),
+            ("amdgpu edge", 30.0),
+            ("r8169 MAC Temperature", 51.9),
+            ("coretemp Package id 0", 45.0),
+            ("acpitz temp1", f32::NAN),
+        ];
+        assert_eq!(hottest(r), Some(51.900001525878906));
+        // A real overheat still shows.
+        assert_eq!(hottest([("coretemp Package id 0", 98.0), ("nct6791 AUXTIN1", 110.0)]), Some(98.0));
+        assert_eq!(hottest([("nct6791 AUXTIN1", 110.0)]), None);
     }
 }
