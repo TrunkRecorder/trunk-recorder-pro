@@ -5,7 +5,7 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **Reset counts.** The totals since Start (a radio's dropped samples and errors, calls, a plugin's sent, skipped,
+- **Reset counts** (#262). The totals since Start (a radio's dropped samples and errors, calls, a plugin's sent, skipped,
   failed and restarts, the RAM spool's overflows) can be counted from now: **Reset counts** in the top bar, and
   they read **Since 14:05** in place of **Since start**. It's this browser's alone: the recorder, its history and
   everyone else's view are as they were, and **✕** goes back. See
