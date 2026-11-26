@@ -100,7 +100,7 @@ import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField, UnitNamesField } from "./TalkgroupsField.tsx";
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "./NameFields.tsx";
-import { ManageData, RemoveSystem } from "./DataTools.tsx";
+import { ConfirmRemove, ManageData, RemoveSystem } from "./DataTools.tsx";
 import { FolderCheck } from "./FolderCheck.tsx";
 import { AccessSection } from "./Access.tsx";
 import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
@@ -1041,6 +1041,7 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
   const tuned = src.centerHz || auto;
   // A stream: audio, no band, gain or crystal to set.
   const audio = !!SOURCE_KINDS[src.type].audio;
+  const [removing, setRemoving] = useState(false);
 
   return (
     <Card
@@ -1062,15 +1063,22 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
       }
       actions={
         c.sources.length > 1 && (
-          <button
-            className="btn ghost small"
-            onClick={() => {
-              web?.removeFile(i);
-              updateConfig((x) => void x.sources.splice(i, 1));
-            }}
-          >
-            Remove
-          </button>
+          <>
+            <button className="btn ghost small" onClick={() => setRemoving(true)}>
+              Remove
+            </button>
+            {removing && (
+              <ConfirmRemove
+                title={`Remove ${sourceTitle(c, i)}?`}
+                question="Its settings go with it."
+                onRemove={() => {
+                  web?.removeFile(i);
+                  updateConfig((x) => void x.sources.splice(i, 1));
+                }}
+                onClose={() => setRemoving(false)}
+              />
+            )}
+          </>
         )
       }
       note={needs && <div className="field-needs set-card-needs">{needs}</div>}
@@ -2624,15 +2632,14 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
   const at = `${sys.shortName}-${k}`;
   const todo = openTodos(useApp()).filter((t) => t.target === `site-${at}` || t.target === `cc-${at}`).length;
   const typeD = sys.type === "nxdn" && sys.nxdnType === "typeD";
-  const remove = () => {
-    if (sys.sites.length === 1) return props.onRemoveSystem();
-    if (!confirm(`Remove the site ${name} from ${sys.shortName}?`)) return;
+  const [removing, setRemoving] = useState(false);
+  const remove = () => (sys.sites.length === 1 ? props.onRemoveSystem() : setRemoving(true));
+  const removed = () =>
     updateConfig((x) => {
       const s = x.systems[i];
       if (s.preferredSite?.toLowerCase() === name.toLowerCase()) delete s.preferredSite;
       s.sites.splice(k, 1);
     });
-  };
   return (
     <Card
       cardKey={siteKey(sys, site)}
@@ -2660,6 +2667,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
           <button className="btn ghost small" onClick={remove}>
             Remove
           </button>
+          {removing && <ConfirmRemove title={`Remove the site ${name} from ${sys.shortName}?`} onRemove={removed} onClose={() => setRemoving(false)} />}
         </>
       }
     >

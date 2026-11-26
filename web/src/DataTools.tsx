@@ -245,10 +245,34 @@ export function RemoveSystem(props: { name: string; question: string; id: number
       )}
       <div className="row">
         <span className="spacer" />
-        <button className="btn ghost" onClick={props.onClose}>
+        <button className="btn ghost" onClick={props.onClose} autoFocus>
           Cancel
         </button>
-        <button className="btn danger" onClick={go} autoFocus>
+        <button className="btn danger" onClick={go}>
+          Remove
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Asks before something is removed: Remove or Cancel, Cancel the default (Enter, Escape or a click outside). */
+export function ConfirmRemove(props: { title: string; question?: string; onRemove: () => void; onClose: () => void }) {
+  return (
+    <Modal title={props.title} onClose={props.onClose}>
+      {props.question && <p>{props.question}</p>}
+      <div className="row">
+        <span className="spacer" />
+        <button className="btn ghost" onClick={props.onClose} autoFocus>
+          Cancel
+        </button>
+        <button
+          className="btn danger"
+          onClick={() => {
+            props.onClose();
+            props.onRemove();
+          }}
+        >
           Remove
         </button>
       </div>
