@@ -45,7 +45,7 @@ export function newAirspy(): Source {
 export function newHydrasdr(): Source {
   return { type: "hydrasdr", serial: "", centerHz: 0, rateHz: 5_000_000, gainMode: "linearity", gainStep: 14, lnaStep: 10, mixerStep: 10, vgaStep: 10, agc: false, biasTee: false, packing: true, rfPort: 0, ppm: 0 };
 }
-/** A source whose gain is set as an Airspy's ([`AirspyGains`]): libairspy's tables, or its three stages (an Airspy, a HydraSDR). */
+/** A source whose gain is set as an Airspy's ([`AirspyGains`]): its linearity and sensitivity tables, or its three stages (an Airspy, a HydraSDR). */
 export const airspyGains = (x: Source): x is Extract<Source, { type: "airspy" | "hydrasdr" }> => x.type === "airspy" || x.type === "hydrasdr";
 /** The kinds whose radio is picked by serial from those its driver found. */
 export type SerialKind = "airspy" | "hydrasdr" | "bladerf" | "hackrf";
@@ -78,7 +78,7 @@ export type Os = "windows" | "macos" | "linux";
 
 /** A driver library a kind of radio needs (desktop app), and how to install it. */
 export interface Driver {
-  /** "libhydrasdr", "UHD". */
+  /** "libbladeRF 2.x", "UHD". */
   name: string;
   /** Install commands, and what to do on Windows. */
   macos: string;
@@ -154,14 +154,9 @@ export const SOURCE_KINDS: Record<Source["type"], SourceKind> = {
     label: "HydraSDR",
     fresh: newHydrasdr,
     get rates() { return sourceRates("hydrasdr"); },
-    rateHint: "RFOne: 10, 5 or 2.5 (lower ones decimated)",
+    rateHint: "RFOne: 10, 5 or 2.5",
     device: "serial",
-    driver: {
-      name: "libhydrasdr 1.1+",
-      macos: "libhydrasdr.1.dylib from the hydrasdr-host release",
-      linux: "the hydrasdr-host-tools package from the hydrasdr-host release",
-      windows: "put hydrasdr.dll and libusb-1.0.dll (from the hydrasdr-host release) next to trunk-pro.exe",
-    },
+    native: true,
     soapyDriver: "hydrasdr",
     biasT: "Powers an LNA via the ANT port (4.5 V, up to 300 mA)",
     liveAgc: true,
@@ -1169,7 +1164,7 @@ export function importTrunkRecorderConfig(
       } as const;
       imported.push(hydra ? { type: "hydrasdr", ...gains, rfPort: 0 } : { type: "airspy", ...gains });
       notes.push(
-        `${hydra ? "HydraSDR" : "Airspy"} source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): ${hydra ? "it needs libhydrasdr installed on this computer" : "its driver is built in"}.`,
+        `${hydra ? "HydraSDR" : "Airspy"} source imported (${manual ? "its LNA, mixer and VGA stages" : agc ? "AGC" : "gain as the linearity step 0–21"}): its driver is built in.`,
       );
       continue;
     }

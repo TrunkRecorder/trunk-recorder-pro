@@ -62,8 +62,8 @@ pub fn of_kind(kind: &str) -> &'static [u32] {
         "usrp" => &[2_400_000, 4_000_000, 5_000_000, 6_400_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000],
         // Airspy R2: 10 / 2.5; Mini: 6 / 3 (and 10 with newer firmware).
         "airspy" => &[10_000_000, 6_000_000, 3_000_000, 2_500_000],
-        // HydraSDR RFOne: 10 / 5 / 2.5, and below that decimated by libhydrasdr (the radio lists them).
-        "hydrasdr" => &[10_000_000, 5_000_000, 2_500_000, 1_250_000],
+        // HydraSDR RFOne: its firmware's rates (the radio lists them).
+        "hydrasdr" => &[10_000_000, 5_000_000, 2_500_000],
         // (Up to 61.44 can be typed; past ~40 MSPS needs USB 3 and a fast CPU.)
         "bladerf" => &[2_400_000, 4_000_000, 5_000_000, 6_000_000, 8_000_000, 10_000_000, 12_500_000, 16_000_000, 20_000_000, 25_000_000, 30_720_000],
         "hackrf" => &[8_000_000, 10_000_000, 4_000_000, 2_000_000, 16_000_000, 20_000_000],

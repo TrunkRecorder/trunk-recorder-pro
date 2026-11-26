@@ -64,7 +64,7 @@ runs in a desktop process and in a Web Worker and gives bit-identical calls on t
 
 | Thread | Count | What it does |
 |---|---|---|
-| `source-N` | one per source | Runs the radio (`sdr::run_with` over a `Radio`, or `runtime::run_file`) and sends `SourceMsg` blocks into its own queue. An Airspy's USB transfers are read on the driver's `airspy-reader` thread and taken here (through libairspy, where that's what opened it, they arrive on its callback thread). |
+| `source-N` | one per source | Runs the radio (`sdr::run_with` over a `Radio`, or `runtime::run_file`) and sends `SourceMsg` blocks into its own queue. An Airspy's USB transfers are read on the driver's `airspy-reader` thread and taken here (an RFOne's the same way). |
 | `dsp-N` | one per source | The source's decoding thread (`runtime::feed_source`, a `Feeder`): pushes each block into the engine, which decodes it under the source's own lock and then follows it under the engine's. **The DSP runs here**, each source on a core of its own. |
 | `engine` | one | Owns the `Session`. Waits on its one `EngineCmd` channel (20 ms timeout), then `poll` → `deliver`; saves band plans, aliases, AutoTune scores and the radio registry from time to time. |
 | `finish-N` | 1–3 | The finish pool: writes every file of a call's plan (.json, .wav, .m4a, frames), sends `concluded`, hands calls to the plugin host and the Archive. |
@@ -143,14 +143,11 @@ Stages in order. Thread in brackets.
    - USRP (`radio/uhd.rs`, UHD loaded at run time): about 10 ms per block, float IQ
      (`Block::Iq`). Adds `num_recv_frames=1024` to the device args; picks the wire format from the
      USB link speed (`radio/usb_speed.rs`); doubles a B2xx's master clock when UHD would run it at the rate.
-   - Airspy (`radio/airspy/native.rs`, the driver built in: `crates/libairspy-rs`; `radio/airspy.rs` through libairspy
-     when that can't open it): a USB transfer's worth; by default real samples
-     (`Block::Real16`), turned into IQ by the `Inbox` on the thread that takes them.
-   - HydraSDR (`radio/airspy.rs` too, `Lib::Hydrasdr`; libhydrasdr is libairspy's fork, and what
-     only it has, its device-info block and one gain call, is in `radio/airspy/hydrasdr.rs`):
-     libhydrasdr 1.1's float IQ (`Block::Iq`), converted and decimated on its own thread, apart
-     from the one draining the USB. Its `dropped_samples` is a running total; the driver passes on
-     the difference per buffer.
+   - Airspy and HydraSDR RFOne (`radio/airspy.rs`, one driver built in: `crates/libairspy-rs`, pure Rust over
+     USB; an RFOne is found by its own USB ids, serial and firmware, an Airspy by its own): a USB
+     transfer's worth of real samples (`Block::Real16`), turned into IQ by the `Inbox` on the thread
+     that takes them. The RFOne's `dropped_samples` is a running total; the driver passes on the
+     difference per buffer.
 
    What every radio shares lives in `sdr.rs` and `radio/mod.rs`. A radio sends through a `Sink`,
    which never blocks a live radio: if the queue to the decoding thread is full, the block is

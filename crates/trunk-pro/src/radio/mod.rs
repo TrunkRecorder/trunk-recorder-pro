@@ -1,9 +1,9 @@
-//! Radios whose drivers are vendor C libraries — USRP (UHD), Airspy (libairspy: behind the
-//! driver built in, [`airspy`]), HydraSDR (libhydrasdr), bladeRF (libbladeRF) and anything with a SoapySDR module.
-//! Nothing links against them: each library is looked for at run time, so the same binary records
-//! from RTL-SDRs out of the box and from these once their driver is
-//! installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_AIRSPY` / `TRUNK_PRO_HYDRASDR` / `TRUNK_PRO_BLADERF` /
-//! `TRUNK_PRO_SOAPY` name a library file to use instead of searching.
+//! Radios. Some have a driver built in (RTL-SDR, HackRF, and [`airspy`]: Airspy and HydraSDR);
+//! the others' drivers are vendor C libraries — USRP (UHD), bladeRF (libbladeRF) and anything
+//! with a SoapySDR module. Nothing links against those: each library is looked for at run
+//! time, so the same binary records from the built-in radios out of the box and from these
+//! once their driver is installed. `TRUNK_PRO_UHD` / `TRUNK_PRO_BLADERF` / `TRUNK_PRO_SOAPY`
+//! name a library file to use instead of searching.
 //! An RTL-SDR on another machine (through `rtl_tcp`, [`rtl`]) and a SpyServer ([`spyserver`]) are
 //! radios on the network, over plain TCP ([`net`]): nothing to install either.
 
@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
-/// Held while a radio opens, and while a driver searches for radios. libairspy,
+/// Held while a radio opens, and while a driver searches for radios. The Airspy driver,
 /// librtlsdr and libhackrf find a radio by opening every one of theirs to read its
 /// serial and skip any they can't open (on macOS an open is exclusive), so a
 /// search or an open beside another radio's open could miss it: "not found" until
@@ -215,7 +215,7 @@ use libloading::Library;
 /// install folders (`lib<stem>.so.<version>`, highest first). `global`: its
 /// symbols resolve the plug-ins it loads itself (SoapySDR's modules).
 /// `win_needs`: what it needs beside it on Windows, said when it's there but
-/// one of those isn't (" (airspy.dll needs libusb-1.0.dll …)").
+/// one of those isn't (": bladeRF.dll needs libusb-1.0.dll beside it").
 pub fn load(env: &str, names: &[&str], stem: &str, global: bool, win_needs: &str) -> Result<(Library, String), String> {
     let try_one = |p: &str| -> Result<Library, String> {
         // SAFETY: loading a vendor driver runs its initialisers; that is the point.
@@ -446,19 +446,19 @@ mod tests {
     /// #219: a Windows DLL that's there but won't load says why, not only "LoadLibraryExW failed".
     #[test]
     fn a_driver_that_wont_load_says_why() {
-        let airspy = ": airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it";
-        assert_eq!(windows_hint(126, airspy), " — a DLL it needs is missing: airspy.dll needs libusb-1.0.dll and pthreadVC2.dll beside it");
-        assert_eq!(windows_hint(193, airspy), " — it isn't a 64-bit Windows DLL: take the x64 one");
-        assert_eq!(windows_hint(5, airspy), "");
+        let needs = ": bladeRF.dll needs libusb-1.0.dll and pthreadVC2.dll beside it";
+        assert_eq!(windows_hint(126, needs), " — a DLL it needs is missing: bladeRF.dll needs libusb-1.0.dll and pthreadVC2.dll beside it");
+        assert_eq!(windows_hint(193, needs), " — it isn't a 64-bit Windows DLL: take the x64 one");
+        assert_eq!(windows_hint(5, needs), "");
         // A library that isn't there at all: not found, with where it was looked for.
-        let e = load("TRUNK_PRO_TEST_NONE", &["libtrunk-pro-none.so.0"], "trunk-pro-none", false, airspy).err().unwrap();
+        let e = load("TRUNK_PRO_TEST_NONE", &["libtrunk-pro-none.so.0"], "trunk-pro-none", false, needs).err().unwrap();
         assert!(e.starts_with("not found (looked for libtrunk-pro-none.so.0"), "{e}");
         // One that's there but isn't a library: refused, with the system's reason.
         let dir = std::env::temp_dir().join(format!("trp-load-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let bad = dir.join("libbad.so.0");
         std::fs::write(&bad, b"not a library").unwrap();
-        let e = load("TRUNK_PRO_TEST_NONE", &[bad.to_str().unwrap()], "bad", false, airspy).err().unwrap();
+        let e = load("TRUNK_PRO_TEST_NONE", &[bad.to_str().unwrap()], "bad", false, needs).err().unwrap();
         assert!(e.starts_with("found but couldn't be loaded: ") && e.len() > "found but couldn't be loaded: ".len() + 10, "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
