@@ -259,7 +259,7 @@ fn dmr_voice(frames: &[VoiceFrame], head: MsgHead, slot: u8) -> Vec<u8> {
     with_tail(rec, frames)
 }
 
-/// A call's frames (the kept ones, in order) as an `.sdr` file; None when
+/// A transmission's frames, in order, as an `.sdr` file; None when
 /// they aren't all of one codec, or the mode has no layout.
 pub fn call_sdr(mode: SdrMode, frames: &[VoiceFrame], info: &SdrInfo) -> Option<Vec<u8>> {
     let codec = if mode == SdrMode::P25Fdma { Codec::Imbe } else { Codec::Ambe };

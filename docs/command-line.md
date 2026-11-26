@@ -260,7 +260,7 @@ called `conv`.
 | `--transmissions` | off | Conversation mode off: each transmission is a call of its own (`conversationMode`) |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
 | `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](developer/tools.md#tool-channel) |
-| `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
+| `--taps` | none | Signal taps to save beside the calls, by id (`fm.discriminator,voice.air,voice.frames`): see [`taps`](configuration/recording.md#taps) |
 | `--messages` | off | Print every control channel message |
 | `--summary file` | | Also write each site's control channel blocks, good and bad, as JSON: over all of it and, for one of our captures, over the part its live figures (`trp:live`) cover |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
@@ -469,7 +469,7 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool nxdnscan` | Every NXDN carrier in a capture |
 | `tool nxdn` | One NXDN channel's messages |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
-| `tool sdr` | A saved `.sdr` call's metadata, or its frames |
+| `tool sdr` | A saved `.sdr` file's metadata, or its frames |
 | `tool tones` | The in-band tones in saved calls, or the patterns they make up |
 
 The tools for testing and measuring the decoders (`p25synth`, `dmrsynth`, `nxdnsynth`, `perf`,
@@ -542,29 +542,30 @@ NXDN capture, see [`tool nxdnsynth`](developer/tools.md#tool-nxdnsynth).
 ### tool revoice
 
 ```bash
-trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
+trunk-pro tool revoice <frames.sdr | frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
                        [--seed 1] [--hard-fec] [--s16]
 ```
 
-Runs a call's saved vocoder frames through the vocoder again, for example to hear it with another
-vocoder (`enhanced` unless `--profile` says otherwise; recording's own default is `fixed`). The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
-`replay --capture-frames`). `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
+Runs a transmission's saved vocoder frames through the vocoder again, for example to hear it with another
+vocoder (`enhanced` unless `--profile` says otherwise; recording's own default is `fixed`). The frames are those the
+[`voice.frames` signal tap](configuration/recording.md#taps) saves (Setup → Recording → Advanced → Signal taps, or
+`replay --taps voice.frames`): its `.sdr` or its `.jsonl`. `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
 16-bit samples instead of a WAV.
 
 ### tool sdr
 
 ```bash
-trunk-pro tool sdr <call.sdr> [--frames]
+trunk-pro tool sdr <frames.sdr> [--frames]
 ```
 
-Prints a saved `.sdr` call's metadata as JSON, as MimoSDR reads it, or with `--frames` its vocoder
+Prints a saved `.sdr` file's metadata as JSON, as MimoSDR reads it, or with `--frames` its vocoder
 frames as JSON lines (one frame per line: `codec`, `bits` in hex, `e0`, `errs`, `erased`, and `out`,
 what the vocoder made of it).
 
 ### tool tones
 
 ```bash
-trunk-pro tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]
+trunk-pro tool tones <frames.sdr | frames.jsonl | call.wav>… [--patterns]
 ```
 
 Finds the in-band tones in saved calls as a call's are found while recording: DTMF, KNOX, call

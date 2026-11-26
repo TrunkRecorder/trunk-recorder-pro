@@ -442,7 +442,7 @@ mod tests {
 
     /// `good` clean frames then `bad` repeated ones, `errs` bit errors each.
     fn held(id: CallId, site: u16, good: usize, bad: usize, errs: u32) -> Held {
-        let mut rec = Recorded::new(false, InBandSpec::default());
+        let mut rec = Recorded::new(InBandSpec::default());
         for k in 0..good + bad {
             let kind = if k < good { Kind::Voice } else { Kind::Repeat };
             rec.frames.push(&VoiceFrame { codec: Codec::Imbe, bits: vec![0; 88], e0: 0, errs, erased: false, kind, tone: None });

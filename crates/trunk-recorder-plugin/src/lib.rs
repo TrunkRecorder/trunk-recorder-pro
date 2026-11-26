@@ -36,6 +36,7 @@ pub mod health;
 pub mod http;
 mod multipart;
 pub mod protocol;
+pub mod tap;
 #[cfg(feature = "sdk")]
 mod queue;
 #[cfg(feature = "sdk")]
@@ -50,5 +51,6 @@ pub use queue::{Attempt, CallQueue, QueueOptions};
 
 pub use multipart::Multipart;
 pub use protocol::*;
+pub use tap::{AirFrame, Carries, FrameErrors, Tap, TapChunk, TapData, TapInfo, TapNote, TapSet, TAPS, TAP_TOPIC};
 #[cfg(feature = "sdk")]
 pub use sdk::*;

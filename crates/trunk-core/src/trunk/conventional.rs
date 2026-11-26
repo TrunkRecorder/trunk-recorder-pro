@@ -61,6 +61,7 @@ use super::record::RecordedOn;
 use super::recorded::Recorded;
 use super::tally::{CopyTally, FrameCount};
 use super::tape::{Tapes, VoiceTape};
+use super::taps::{OnAir, Streams, TapSet};
 use super::voice::CipherId;
 use super::talkgroups::{Talkgroup, Talkgroups};
 use super::voice::TrackerOut;
@@ -681,6 +682,30 @@ struct Open {
     /// Per slot: a cipher heard ahead of any voice (a P25 HDU in a run of
     /// its own), for the voice that follows it.
     cipher_ahead: [Option<CipherId>; 2],
+    /// Its signal taps' streams.
+    streams: Streams,
+}
+
+impl Open {
+    /// What its taps' streams came to over `n` more samples (None: the channel is closing, and they end).
+    fn tapped(&mut self, n: Option<usize>, now_s: f64, out: &mut Vec<ConvOut>) {
+        let Open { streams, live, voice, .. } = self;
+        let who = |slot: u8| {
+            let call = live[slot as usize & 1].as_ref().map(|l| &l.call);
+            OnAir {
+                call_id: call.map(|c| c.id),
+                talkgroup: call.map(|c| c.talkgroup).or_else(|| voice.air(slot & 1).talkgroup),
+                unit: call.and_then(|c| c.talker()).map(|s| s.src).filter(|&u| u != 0),
+                voice_mode: voice.resolved().map_or("", VoiceKind::name),
+            }
+        };
+        let mut chunks = Vec::new();
+        match n {
+            Some(n) => streams.flush(n, who, &mut chunks),
+            None => streams.close(who, &mut chunks),
+        }
+        out.extend(chunks.into_iter().map(|chunk| ConvOut::Event(Event::Tap { time_s: now_s, chunk })));
+    }
 }
 
 /// A channel that closed: its tape to the host.
@@ -782,8 +807,6 @@ pub struct Conventional {
     pub(super) tape_sink: Tapes,
     cfg: ConvConfig,
     bank_cfg: BankConfig,
-    /// Keep each call's vocoder frames (see [`super::frames`]).
-    capture_frames: bool,
     chans: Vec<Chan>,
     floors: Vec<Floor>,
 }
@@ -825,17 +848,17 @@ struct CallRules<'a> {
     /// When a call is over, split, a transmission of its own, and recorded
     /// at all: the system's, as its trunked calls' ([`CallConfig::quiet`], [`CallConfig::gate`]).
     calls: &'a CallConfig,
-    /// Keep each call's vocoder frames (see [`super::frames`]).
-    capture_frames: bool,
     /// The system's talkgroup names.
     talkgroups: &'a Talkgroups,
     /// Its encryption keys.
     keys: Option<&'a Arc<Keyring>>,
+    /// Its signal taps.
+    taps: TapSet,
 }
 
 impl<'a> CallRules<'a> {
-    fn of(sys: &'a SystemConfig, capture_frames: bool) -> Self {
-        CallRules { calls: &sys.calls, capture_frames, talkgroups: &sys.talkgroups, keys: sys.keys.as_ref() }
+    fn of(sys: &'a SystemConfig) -> Self {
+        CallRules { calls: &sys.calls, talkgroups: &sys.talkgroups, keys: sys.keys.as_ref(), taps: sys.taps }
     }
 
     /// What its calls are recorded by ([`CallConfig::gate`]).
@@ -847,7 +870,7 @@ impl<'a> CallRules<'a> {
 impl Conventional {
     /// `sources`: (centre, rate, usable half-width) of each source. Channels
     /// outside every source are an error.
-    pub fn new(channels: &[ConvChannel], sources: &[(f64, f64, f64)], cfg: ConvConfig, bank_cfg: BankConfig, capture_frames: bool) -> Result<Self, String> {
+    pub fn new(channels: &[ConvChannel], sources: &[(f64, f64, f64)], cfg: ConvConfig, bank_cfg: BankConfig) -> Result<Self, String> {
         let mut chans = Vec::new();
         let mut outside = Vec::new();
         let mut groups: Vec<Vec<ConvChannel>> = Vec::new();
@@ -886,7 +909,7 @@ impl Conventional {
                 Floor { slices: vec![0.0; n], scratch: vec![0.0; n], next_s: 0.0, primed: false }
             })
             .collect();
-        Ok(Conventional { cfg, bank_cfg, capture_frames, chans, floors, tape_sink: Tapes::default() })
+        Ok(Conventional { cfg, bank_cfg, chans, floors, tape_sink: Tapes::default() })
     }
 
     /// Whether `channels` can run together: rows on one frequency have one
@@ -1034,7 +1057,7 @@ impl Conventional {
             if ch.source != source {
                 continue;
             }
-            let rules = &CallRules::of(system(ch.system), self.capture_frames);
+            let rules = &CallRules::of(system(ch.system));
             let floor = self.floors[source].slices[ch.slice].max(1e-30);
             let bp = chz.band_power(ch.offset_hz, ch.shape.detect_half_bw);
             ch.power = if ch.power == 0.0 { bp } else { ch.power + a * (bp - ch.power) };
@@ -1108,6 +1131,7 @@ impl Conventional {
                 }
                 let mut o = ch.open.take().unwrap();
                 chz.remove_head(o.head);
+                o.tapped(None, now_s, out);
                 keep_tape(&self.tape_sink, &mut o);
             }
         }
@@ -1122,6 +1146,7 @@ impl Conventional {
         for (slot, h) in heard.into_iter().enumerate() {
             Self::slot_call(ch, slot, h, now_s, num, ids, rules, out);
         }
+        ch.open.as_mut().unwrap().tapped(Some(0), now_s, out);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1147,11 +1172,12 @@ impl Conventional {
             analog: ch.analog,
             ignore_hz: ch.ignored.clone(),
             keys: rules.keys.cloned(),
+            taps: rules.taps,
         };
         let voice = voice::build(&spec);
         let tape = tapes.then(|| VoiceTape::new(spec, ch.freq_hz));
         let meter = (!ch.mode().analog()).then(|| ChannelFilter::new(rate));
-        ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], held_until_s: 0.0, tx: None, cipher_ahead: [None; 2] });
+        ch.open = Some(Open { tape, head, voice, meter, opened_s: now_s, carrier_seen: false, last_carrier_s: now_s, live: [None, None], held_until_s: 0.0, tx: None, cipher_ahead: [None; 2], streams: Streams::new(rules.taps, ch.system as u16, ch.freq_hz, rate) });
         Self::run(ch, &pre, now_s, meter_thr, num, ids, rules, out);
     }
 
@@ -1184,6 +1210,7 @@ impl Conventional {
         for (slot, h) in heard.into_iter().enumerate() {
             Self::slot_call(ch, slot, h, now_s, num, ids, rules, out);
         }
+        ch.open.as_mut().unwrap().tapped(Some(iq.len()), now_s, out);
     }
 
     /// What the channel's receiver put out, gathered for each slot's call
@@ -1196,7 +1223,9 @@ impl Conventional {
         let mut heard: [Heard; 2] = Default::default();
         for v in vout {
             let h = &mut heard[v.slot as usize & 1];
-            match v.out {
+            // (A tap's piece goes to its stream.)
+            let Some(vo) = o.streams.sift(v.slot as usize, v.out) else { continue };
+            match vo {
                 TrackerOut::Audio(a, f) => {
                     h.audio.extend_from_slice(&a);
                     h.frames.push(f);
@@ -1211,7 +1240,7 @@ impl Conventional {
                 TrackerOut::WrongKey(c) => out.push(ConvOut::WrongKey(ch.system as u16, c)),
                 TrackerOut::Ended => h.ended = true,
                 // (A conventional channel has no grants: the air's talkgroup is its own.)
-                TrackerOut::AliasLc(_) | TrackerOut::Talkgroup(_) => {}
+                TrackerOut::AliasLc(_) | TrackerOut::Talkgroup(_) | TrackerOut::Tap(_) => {}
                 TrackerOut::BaseStationId(call_sign) => out.push(ConvOut::Event(Event::CallSign { system: ch.system as u16, freq_hz: ch.freq_hz.round() as u64, call_sign })),
             }
         }
@@ -1419,7 +1448,7 @@ impl Conventional {
                 };
                 let next = carry_on.filter(|_| !(new_tg || new_row)).map(|(talking, how)| {
                     let call = Call { recording: l.call.recording, reason: l.call.reason, ..l.call.continued(ids.next(), from_s, talking, how) };
-                    Live { rec: Recorded::new(rules.capture_frames, spec), call, row: l.row }
+                    Live { rec: Recorded::new(spec), call, row: l.row }
                 });
                 Self::end(l, why, on, tune, out);
                 if let Some(n) = next {
@@ -1458,7 +1487,7 @@ impl Conventional {
             // Recorded as a trunked call is: not an ignored talkgroup, nor (asked so) an unknown or encrypted one.
             CallManager::admit(&mut call, rules.calls, rules.policy(), &mut Channel);
             out.push(ConvOut::Call(CallEvent::Start(call.clone())));
-            o.live[slot] = Some(Live { call, rec: Recorded::new(rules.capture_frames, spec), row: r });
+            o.live[slot] = Some(Live { call, rec: Recorded::new(spec), row: r });
         }
         let l = o.live[slot].as_mut().unwrap();
         l.call.last_update_s = now_s;
@@ -1551,9 +1580,10 @@ impl Conventional {
             if ch.open.is_none() {
                 continue;
             }
-            let rules = &CallRules::of(system(ch.system), self.capture_frames);
+            let rules = &CallRules::of(system(ch.system));
             Self::flush_open(ch, now_s, idx as u32, ids, rules, out);
             let mut o = ch.open.take().unwrap();
+            o.tapped(None, now_s, out);
             keep_tape(&self.tape_sink, &mut o);
             for l in o.live.into_iter().flatten() {
                 Self::end(l, CallEnd::Stopped, ch.on(idx), ch.tune_ref, out);
@@ -1879,7 +1909,7 @@ mod tests {
     #[test]
     fn an_auto_channel_is_auto_until_it_settles() {
         let ch = ConvChannel::new(155_100_000.0, ConvMode::Auto);
-        let c = Conventional::new(&[ch], &[(155_000_000.0, 1_200_000.0, 500_000.0)], ConvConfig::default(), BankConfig::default(), false).unwrap();
+        let c = Conventional::new(&[ch], &[(155_000_000.0, 1_200_000.0, 500_000.0)], ConvConfig::default(), BankConfig::default()).unwrap();
         assert_eq!(c.channels().map(|n| n.mode).collect::<Vec<_>>(), [ConvMode::Auto]);
         // (Nothing is known of what its calls will be until it has heard one: no talkgroup names are assumed.)
         assert!(ConvChannel::new(155_100_000.0, ConvMode::Auto).names_ahead().is_none());
@@ -1951,7 +1981,7 @@ mod tests {
     fn a_channel_is_received_on_the_sources_it_is_pinned_to() {
         // Two sources overlap around 155.1 MHz.
         let spans = [(155.0e6, 2.4e6, 1.0e6), (155.2e6, 2.4e6, 1.0e6)];
-        let new = |channels: &[ConvChannel]| Conventional::new(channels, &spans, ConvConfig::default(), BankConfig::default(), false);
+        let new = |channels: &[ConvChannel]| Conventional::new(channels, &spans, ConvConfig::default(), BankConfig::default());
         let on = |channels: &[ConvChannel]| new(channels).unwrap().channels().map(|c| c.source).collect::<Vec<_>>();
         assert_eq!(on(&[fm(155.1e6, 1), fm(155.15e6, 2)]), [0, 0], "unpinned: the first that covers it");
         let pinned = |hz, pins: Vec<usize>| ConvChannel { pins: Pins::only(pins), ..fm(hz, 3) };

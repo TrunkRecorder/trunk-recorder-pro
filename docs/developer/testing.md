@@ -117,9 +117,10 @@ captures/regress.sh /tmp/after
 captures/compare.sh captures/reference/bugfix-output /tmp/after    # IDENTICAL, or what differs
 ```
 
-It keeps every call's WAV, JSON and vocoder frames, every control message and the log, counts each
-scenario's instructions (`<out>.instructions`, with `perf/gate.py`), and last plays every call's
-`.sdr` through MimoSDR's own player (`crates/trunk-core/tests/mimosdr.rs`), printing
+It keeps every call's WAV and JSON, every transmission's vocoder frames (the `voice.frames` tap),
+every control message and the log, counts each scenario's instructions (`<out>.instructions`, with
+`perf/gate.py`), and last plays every `.sdr` through MimoSDR's own player
+(`crates/trunk-core/tests/mimosdr.rs`), printing
 `mimosdr: ok` or `FAILED`.
 
 ## The corpus

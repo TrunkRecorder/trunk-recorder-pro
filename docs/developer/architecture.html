@@ -1669,7 +1669,7 @@ const OBJ = [
   ["Channel", "core", "trunk-core/src/trunk/engine.rs", "An open voice channel, in its source's SourceRx (internal to the engine).", [
     ["site · head", "u16 · HeadId", "the site whose grant opened it"], ["calls", "[Option<OnSlot { id, talkgroup }>; 2]", "one per slot"], ["voice", "Box<dyn VoiceDecoder>", "built by voice::build"], ["freq_hz", "f64", ""], ["tune_ppm", "f64", "AutoTune at open"], ["meter · noise", "", "reception meter, noise floor"]]],
   ["Recording", "core", "trunk-core/src/trunk/engine.rs", "A recorder: what is kept for one call (internal).", [
-    ["audio", "Vec<f32>", "8 kHz"], ["frames", "CallFrames", "error intervals; vocoder frames if captureFrames"], ["recorder_num", "u32", "the JSON's recorder_num"], ["tx", "Transmissions", "transmission boundaries, encrypted flags"], ["freq_error", "(f64, u32)", "sum and count"], ["source", "usize", "AutoTune"], ["reception", "Reception", "signal, noise, SNR, clean voice"], ["decrypted", "bool", ""]]],
+    ["audio", "Vec<f32>", "8 kHz"], ["frames", "CallFrames", "error intervals"], ["recorder_num", "u32", "the JSON's recorder_num"], ["tx", "Transmissions", "transmission boundaries, encrypted flags"], ["freq_error", "(f64, u32)", "sum and count"], ["source", "usize", "AutoTune"], ["reception", "Reception", "signal, noise, SNR, clean voice"], ["decrypted", "bool", ""]]],
   ["VoiceOut", "core", "trunk-core/src/trunk/voice.rs", "One output of a voice decoder, routed to its call and queued in radio.pending; applied at the site's control channel clock.", [
     ["slot", "u8", ""], ["out", "TrackerOut", "Audio(Vec<f32>, VoiceFrame) · Info { source, flags } · Cipher · Decrypted · WrongKey · AnalogAudio · Subaudible · Alias · AliasLc · Position"]]],
   ["VoiceFrame", "core", "trunk-core/src/trunk/frames.rs", "One vocoder frame.", [
@@ -1826,7 +1826,6 @@ const CFG = {
   "recording.minCallS": ["seconds", "0", "Per system. Shorter calls aren't saved."],
   "recording.maxCallS": ["seconds", "0", "Per system. Longer calls are split; 0 splits at 600 s."],
   "recording.minTransmissionS": ["seconds", "0", "Per system. Shorter transmissions are cut out."],
-  "recording.captureFrames": ["bool", "false", "Also save vocoder frames as .sdr."],
   "recording.normalizeAudio": ["bool", "true", "Per system. Loudness to −12 dBFS speech."],
   "recording.digitalLevelDb": ["dB", "0", "Per system. ±40."],
   "recording.analogLevelDb": ["dB", "0", "Per system. ±40."],

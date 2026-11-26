@@ -12,7 +12,7 @@
 // each time.
 
 import init, * as wasm from "./web/pkg/trunk_web.js";
-import type { Channel, Config, FoundRadio, Origin, SignalDef, Site, Talkgroup, TalkgroupEdit, TonePatternKind, UnitName } from "./protocol.ts";
+import type { Channel, Config, FoundRadio, Origin, SignalDef, Site, Talkgroup, TapInfo, TalkgroupEdit, TonePatternKind, UnitName } from "./protocol.ts";
 
 let ready = false;
 
@@ -35,6 +35,11 @@ function rules(): typeof wasm {
   // (The worker loads the module itself before it reads a config.)
   ready = true;
   return wasm;
+}
+
+/** Every signal tap, in the order of the receive chain: the recorder's own list. */
+export function signalTaps(): TapInfo[] {
+  return JSON.parse(rules().signalTaps()) as TapInfo[];
 }
 
 /** The talkgroup files an older config's JSON holds, as JSON by short name (migrate.ts). */

@@ -130,7 +130,7 @@ pub enum Message {
     /// (0 clear, 1 scrambler, 2 DES, 3 AES).
     VCall { head: CallHead, cipher: u8, key_id: u8 },
     /// DES / AES initialization vector.
-    VCallIv,
+    VCallIv { iv: [u8; 8] },
     /// End of a transmission.
     TxRel { head: CallHead },
     /// The traffic channel is released (trunked).
@@ -238,7 +238,7 @@ impl Message {
         };
         match (Self::kind(o), ctx) {
             (VCALL, Context::Traffic) => Message::VCall { head, cipher: o[7] >> 6, key_id: o[7] & 0x3f },
-            (VCALL_IV, Context::Traffic) => Message::VCallIv,
+            (VCALL_IV, Context::Traffic) => Message::VCallIv { iv: o[1..9].try_into().unwrap() },
             (TX_REL, _) => Message::TxRel { head },
             (TX_REL_EX, _) => Message::TxRelEx { head },
             (VCALL_ASSGN, _) => Message::VCallAssgn { head, timer: o[7] >> 2, channel: channel() },
@@ -281,7 +281,7 @@ impl Message {
     pub fn name(&self) -> &'static str {
         match self {
             Message::VCall { .. } => "VCALL",
-            Message::VCallIv => "VCALL_IV",
+            Message::VCallIv { .. } => "VCALL_IV",
             Message::TxRel { .. } => "TX_REL",
             Message::TxRelEx { .. } => "TX_REL_EX",
             Message::VCallAssgn { .. } => "VCALL_ASSGN",

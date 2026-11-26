@@ -903,7 +903,7 @@ calls have none.
  "frames":[{"codec":"imbe","bits":"a1b2c3d4e5f60718293a4b","e0":0,"errs":2,"erased":false,"kind":"voice"}]}}
 ```
 
-Each frame (`VoiceFrame`, a line of a call's `.frames.jsonl` too) is 20 ms:
+Each frame (`VoiceFrame`, a line of the `voice.frames` signal tap's sidecar too) is 20 ms:
 `codec` (`imbe`: P25 Phase 1, ProVoice, 88 bits; `ambe`: AMBE+2 half rate,
 P25 Phase 2, DMR, NXDN, 49 bits), its information `bits` after FEC as hex
 (MSB first, the last byte zero-padded), the bit errors corrected (`errs`,

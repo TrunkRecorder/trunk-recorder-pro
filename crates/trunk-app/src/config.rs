@@ -14,6 +14,7 @@ use trunk_core::trunk::{
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, SiteId, SystemId, DEFAULT_GUARD_HZ};
+use trunk_core::trunk::{Tap, TapSet};
 use crate::place::{advise, coverage, place_sources, receiver, Advice, Choices, Coverage, Group, Placing, Targets, Weighted};
 use trunk_core::trunk::Pins;
 
@@ -1693,6 +1694,25 @@ impl Channel {
 /// itself (`per_system`) make [`RecordingOverride`] and [`Recording::with`]
 /// too (protocol.ts: `RecordingRules`, of which `RecordingOverride` is a
 /// `Partial`).
+/// A signal tap ([`trunk_core::trunk::taps`]) saved to files: each of its streams — a
+/// transmission on a channel — under the recordings folder, with a sidecar of what's known
+/// about it. (A plugin takes a tap by subscribing to its topic; it needs no row.)
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TapRoute {
+    pub tap: Tap,
+    /// The systems whose channels it's taken from; none: every system's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub systems: Vec<SystemId>,
+}
+
+impl Recording {
+    /// The taps saved to files for system `system`.
+    pub fn saved_taps(&self, system: SystemId) -> TapSet {
+        TapSet::of(self.taps.iter().filter(|r| r.systems.is_empty() || r.systems.contains(&system)).map(|r| r.tap))
+    }
+}
+
 macro_rules! recording {
     (
         $(#[$sm:meta])*
@@ -1780,8 +1800,9 @@ recording! {
         pub capture_dir: String,
         pub preroll_s: f64,
         pub max_recorders: usize,
-        /// Save each call's vocoder frames next to its audio, for diagnosis.
-        pub capture_frames: bool,
+        /// Signal taps saved to files ([`TapRoute`]).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub taps: Vec<TapRoute>,
         /// A call heard on several sites of one system: save only the best copy
         /// (each is recorded; the one decoded most cleanly, or the talkgroup's
         /// preferred site, is kept). Trunk Recorder's multiSite.
@@ -1913,7 +1934,7 @@ impl Default for Recording {
             min_call_s: 0.0,
             max_call_s: 0.0,
             min_transmission_s: 0.0,
-            capture_frames: false,
+            taps: Vec::new(),
             normalize_audio: true,
             digital_level_db: 0.0,
             analog_level_db: 0.0,
@@ -3647,7 +3668,6 @@ impl Config {
             bank: BankConfig::default(),
             conventional: self.engine_channels(),
             conv: ConvConfig::default(),
-            capture_frames: self.recording.capture_frames,
             tapes: self.diagnostics.needs_tapes(),
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: self.recording.vocoder.engine(),

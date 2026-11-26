@@ -16,8 +16,7 @@
 //! calls there's nothing to wait for: the two Keep settings alone decide
 //! ([`plan`] writes nothing that won't be kept). One kind of audio kept and
 //! not there (no .m4a could be made), the other is kept in its place: a
-//! call whose audio is to be kept never loses it all. The frames file
-//! (captureFrames) stays with any audio kept.
+//! call whose audio is to be kept never loses it all.
 //!
 //! With a RAM spool ([`crate::spool`]), the files that may be deleted wait
 //! there: those kept after all (a failure) move to the recordings folder.
@@ -92,12 +91,11 @@ pub struct Plan {
     pub keep_wav: bool,
     pub keep_m4a: bool,
     pub keep_json: bool,
-    /// Some audio is kept (and the frames file with it).
+    /// Some audio is kept.
     pub keep_audio: bool,
     /// Written at all: what's kept, and what the plugins have.
     pub write_wav: bool,
     pub write_json: bool,
-    pub write_frames: bool,
     /// An .m4a is encoded: to keep (archiveM4a), or for a plugin that wants
     /// one. Should that fail, the WAV is written instead, when it wasn't.
     pub make_m4a: bool,
@@ -132,7 +130,6 @@ pub fn plan(rules: FileRules, plugins: PluginAudio, encoder: bool) -> Plan {
         // (With no .m4a to be made, the WAV in its place: kept, or for a plugin that wants one.)
         write_wav: keep_wav || (keep_m4a && !encoder) || (to_plugins && (plugins.wav || (plugins.m4a && !encoder))),
         write_json: keep_json || to_plugins,
-        write_frames: keep_audio || to_plugins,
         make_m4a: encoder && (keep_m4a || (to_plugins && plugins.m4a)),
         spool: to_plugins && !rules.keeps_all(),
     }
@@ -330,7 +327,7 @@ fn settle(x: &Pending, folder: Option<&crate::folder::Folder>) -> (bool, bool) {
     let (keep_wav, keep_m4a) = (r.archive_wav || keep_all || (r.archive_m4a && !m4a), r.archive_m4a || keep_all || (r.archive_wav && !wav));
     let audio = r.archive_wav || r.archive_m4a || keep_all;
     let json = r.call_log || keep_all;
-    let keep = [("wav", keep_wav), ("sdr", audio), ("frames.jsonl", audio), ("m4a", keep_m4a), ("json", json)];
+    let keep = [("wav", keep_wav), ("m4a", keep_m4a), ("json", json)];
     for (ext, kept) in keep {
         if !kept {
             for p in places(ext) {
@@ -371,7 +368,7 @@ mod tests {
         }
     }
     fn left(base: &Path) -> Vec<&'static str> {
-        ["wav", "sdr", "m4a", "json"].into_iter().filter(|e| Path::new(&format!("{}.{e}", base.display())).exists()).collect()
+        ["wav", "m4a", "json"].into_iter().filter(|e| Path::new(&format!("{}.{e}", base.display())).exists()).collect()
     }
     fn rules(wav: bool, m4a: bool, json: bool, on_failure: bool) -> FileRules {
         FileRules { archive_wav: wav, archive_m4a: m4a, call_log: json, archive_files_on_failure: on_failure }
@@ -426,7 +423,7 @@ mod tests {
         (r.archive_wav || rescue, r.archive_m4a || rescue, r.call_log || rescue)
     }
 
-    /// Run a call with the WAV, frames, M4A and JSON written past every
+    /// Run a call with the WAV, M4A and JSON written past every
     /// pattern of answers, for every combination of the settings: what's
     /// left is what the table says, and the history is told the same.
     #[test]
@@ -439,7 +436,7 @@ mod tests {
                 n += 1;
                 let rel = format!("c{n}");
                 let base = dir.join(&rel);
-                write(&base, &["wav", "sdr", "m4a", "json"]);
+                write(&base, &["wav", "m4a", "json"]);
                 let a = Archive::default();
                 let told = std::sync::Arc::new(Mutex::new(None));
                 let t = told.clone();
@@ -455,7 +452,7 @@ mod tests {
                     a.expect("next", 0, rules(true, true, true, true), &dir.join("next"), None, None, None);
                 }
                 let (keep_wav, keep_m4a, keep_json) = kept(r, failed);
-                let want: Vec<&str> = [("wav", keep_wav), ("sdr", keep_wav || keep_m4a), ("m4a", keep_m4a), ("json", keep_json)].into_iter().filter(|x| x.1).map(|x| x.0).collect();
+                let want: Vec<&str> = [("wav", keep_wav), ("m4a", keep_m4a), ("json", keep_json)].into_iter().filter(|x| x.1).map(|x| x.0).collect();
                 let case = format!("wav {wav} m4a {m4a} json {json} keep-on-failure {on_failure}, answers {answers:?}");
                 assert_eq!(left(&base), want, "{case}");
                 assert_eq!(*told.lock().unwrap(), Some((keep_wav || keep_m4a, keep_json)), "{case}");
@@ -531,7 +528,7 @@ mod tests {
             assert!(a.pending.lock().unwrap().is_empty());
             for (wav, m4a, encoder) in [(false, false, false), (true, true, true), (false, true, true)] {
                 let p = plan(r, PluginAudio { takers: 0, wav, m4a }, encoder);
-                assert_eq!((p.write_wav, p.write_json, p.write_frames, p.make_m4a, p.spool), (audio, json, audio, false, false));
+                assert_eq!((p.write_wav, p.write_json, p.make_m4a, p.spool), (audio, json, false, false));
             }
         }
         let _ = std::fs::remove_dir_all(&dir);
@@ -540,8 +537,7 @@ mod tests {
     /// What's written, and where, before the plugins have the call: the
     /// Keep settings exactly (the WAV for an M4A that can't be made); with
     /// plugins, also what they take (the JSON, the WAV or an M4A made for
-    /// them) and the frames, which a failure may keep; the spool only when
-    /// something may be deleted.
+    /// them); the spool only when something may be deleted.
     #[test]
     fn the_plan_for_every_case() {
         for (wav, m4a, json, on_failure) in BOOLS.iter().flat_map(|&w| BOOLS.iter().flat_map(move |&m| BOOLS.iter().flat_map(move |&j| BOOLS.map(|f| (w, m, j, f))))) {
@@ -555,7 +551,6 @@ mod tests {
                     // The WAV: kept, in place of an M4A that can't be made, or a plugin's.
                     assert_eq!(p.write_wav, wav || (m4a && !encoder) || (plugins && (takes_wav || (wants_m4a && !encoder))), "{case}");
                     assert_eq!(p.write_json, json || plugins, "{case}");
-                    assert_eq!(p.write_frames, wav || m4a || plugins, "{case}");
                     assert_eq!(p.make_m4a, encoder && (m4a || (plugins && wants_m4a)), "{case}");
                     assert_eq!(p.spool, plugins && !(wav && m4a && json), "{case}");
                 }
