@@ -28,7 +28,7 @@ test("Sign-in page: a passkey here only at the origin the recorder says; elsewhe
   assert.equal(passkeysAt({ passkeys: false, passkeyOrigin: dash }, "https://radio.example.com:8081"), "there", "an interface's port: the dashboard's page");
   assert.equal(passkeysAt({ passkeys: true, passkeyOrigin: "http://localhost:8080" }, "http://localhost:9000"), "there", "a tunnel's port: where they work");
   assert.equal(passkeysAt({ passkeys: false }, "http://192.168.1.5:8080"), null, "none");
-  assert.match(script, /pl\.href = s\.passkeyOrigin \+ "\/signin"/);
+  assert.match(script, /pl\.href = s\.passkeyOrigin \+ \(location\.pathname === "\/app\/sign-in" \? location\.pathname \+ location\.search : "\/signin"\)/, "an app's sign-in is carried over, its ask with it");
   assert.match(script, /if \(at === "there"\) \{[\s\S]*?return;\s*\}\s*if \(at !== "here"/, "a link there, and no ceremony");
   assert.match(script, /if \(!\(await answers\(s\.passkeyOrigin\)\)\) return;\s*pl\.href/, "no link where nothing answers");
   assert.match(script, /const answers = [\s\S]*?"\/api\/version", \{ mode: "no-cors"[\s\S]*?AbortSignal\.timeout\(3000\)/);

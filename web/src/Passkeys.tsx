@@ -1,11 +1,15 @@
 // Passkeys, as a signed-in user sees their own: listed (the session's,
 // any role), and one added for this browser. Setup → Access shows everyone's; the top bar, by the signed-in
 // name, the user's own (any role: the server lets each add their own), and Sign out everywhere.
+// Apps signed in by way of the browser (/app/sign-in) are listed beside them, and removed.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { addPasskey, passkeyName, signOut, signOutEverywhere, useSelect } from "./controller.ts";
+import { addPasskey, passkeyName, removeApp, signOut, signOutEverywhere, useSelect, type SignedInApp } from "./controller.ts";
 import { Field } from "./inputs.tsx";
-import type { AuthPasskey } from "./protocol.ts";
+import type { ApiAccess, AuthPasskey } from "./protocol.ts";
+
+/** What a role is called here. */
+const role = (a: ApiAccess) => (a === "control" ? "Admin" : "View");
 
 /** A day from a Unix time, as this browser writes dates ("—": none). */
 export const day = (t?: number) => (t ? new Date(t * 1000).toLocaleDateString() : "—");
@@ -17,6 +21,22 @@ export function PasskeyChip(props: { p: Pick<AuthPasskey, "name" | "created">; c
       {props.p.name}
       <span className="small">{day(props.p.created)}</span>
       {props.children}
+    </span>
+  );
+}
+
+/** An app signed in by way of the browser: its name, what it may do, and Remove (its token stops working). */
+export function AppChip(props: { a: SignedInApp }) {
+  const [problem, setProblem] = useState<string | null>(null);
+  const a = props.a;
+  return (
+    <span className="chip" title={problem ?? `Signed in ${day(a.created)} · Ends ${day(a.until)}`}>
+      {a.name}
+      <span className="small">{role(a.access)}</span>
+      <button type="button" className="btn ghost small danger" title="Remove" aria-label={`Remove ${a.user}'s app ${a.name}`} onClick={async () => setProblem(await removeApp(a.id))}>
+        ×
+      </button>
+      {problem && <span className="bad-text small">!</span>}
     </span>
   );
 }
@@ -82,7 +102,7 @@ export function AddPasskey() {
 function SignOutEverywhere() {
   const [problem, setProblem] = useState<string | null>(null);
   const go = async () => {
-    if (!confirm("Sign out everywhere? Every browser signed in as you signs in again, this one too. Access tokens keep working.")) return;
+    if (!confirm("Sign out everywhere? Every browser and app signed in as you signs in again, this one too. Access tokens keep working.")) return;
     setProblem(await signOutEverywhere());
   };
   return (
@@ -95,9 +115,11 @@ function SignOutEverywhere() {
   );
 }
 
-/** What the signed-in name opens: where passkeys work, the user's passkeys (as the session lists them) and Add passkey; Sign out everywhere (not when the proxy signed them in). */
+/** What the signed-in name opens: where passkeys work, the user's passkeys (as the session lists them) and Add passkey; their apps, if any; Sign out everywhere (not when the proxy signed them in). */
 export function UserPasskeys(props: { passkeys: boolean; proxied: boolean }) {
   const keys = useSelect((x) => x.ownPasskeys);
+  const user = useSelect((x) => x.user);
+  const apps = useSelect((x) => x.apps).filter((a) => a.user === user);
   return (
     <div className="user-pop" role="dialog" aria-label="Your sign-in">
       {props.passkeys && (
@@ -119,6 +141,16 @@ export function UserPasskeys(props: { passkeys: boolean; proxied: boolean }) {
           </div>
         </>
       )}
+      {!!apps.length && (
+        <>
+          <span className="field-label">Apps</span>
+          <div className="row wrap">
+            {apps.map((a) => (
+              <AppChip key={a.id} a={a} />
+            ))}
+          </div>
+        </>
+      )}
       {!props.proxied && <SignOutEverywhere />}
     </div>
   );
@@ -127,10 +159,10 @@ export function UserPasskeys(props: { passkeys: boolean; proxied: boolean }) {
 /**
  * The top bar's signed-in name, its Sign out beside it (not when the proxy in
  * front signed them in: that's the proxy's), and the name opens the user's
- * passkeys (where passkeys work) and Sign out everywhere (not the proxy's).
+ * passkeys (where passkeys work), their apps, and Sign out everywhere (not the proxy's).
  */
 export function SignedInAs() {
-  const s = useSelect((x) => ({ user: x.user, proxied: x.proxied, passkeys: x.passkeys }));
+  const s = useSelect((x) => ({ user: x.user, proxied: x.proxied, passkeys: x.passkeys, apps: x.apps.some((a) => a.user === x.user) }));
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLSpanElement>(null);
   useEffect(() => {
@@ -146,7 +178,7 @@ export function SignedInAs() {
   }, [open]);
   if (!s.user) return null;
   const title = s.proxied ? "Signed in by the proxy" : "Signed in as";
-  const opens = s.passkeys || !s.proxied;
+  const opens = s.passkeys || !s.proxied || s.apps;
   return (
     <span className="row user-menu" aria-label="Signed in" ref={box}>
       {opens ? (
