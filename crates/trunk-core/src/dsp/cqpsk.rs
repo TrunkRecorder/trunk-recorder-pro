@@ -99,9 +99,6 @@ pub struct Cqpsk {
     // detection
     dprev: Complex32,
     q4: Complex32,
-    /// [`Cqpsk::q4`]'s weights summed alike: |q4| over this is how steady
-    /// the 4th-power angle is, 1 for a clean signal, near 0 for noise.
-    q4_weight: f32,
     /// The 4th-power angle at the last symbol, and the quarter turns
     /// a symbol the residual turn stands beyond what that angle alone gives
     /// ([`Cqpsk::residual_turn`]).
@@ -166,7 +163,6 @@ impl Cqpsk {
             pos_n: 0,
             dprev: Complex32::default(),
             q4: Complex32::default(),
-            q4_weight: 0.0,
             q4_arg: 0.0,
             quarter: 0,
             perr: 0.0,
@@ -322,7 +318,6 @@ impl Cqpsk {
             let u = d / m;
             let u2 = u * u;
             self.q4 = self.q4 * 0.995 + u2 * u2 * m;
-            self.q4_weight = self.q4_weight * 0.995 + m;
         }
         let theta = if self.opt.coherent { 0.0 } else { self.residual_turn() };
         let r = d * Complex32::from_polar(1.0, -theta);
@@ -379,12 +374,11 @@ impl Cqpsk {
     /// samples, reads hundreds of Hz high or low on a linear signal whose
     /// 135° steps go round the long way (simulcast overlap): past 600 Hz
     /// every dibit comes out turned and no frame syncs. So while frames sync
-    /// a sync word found turned ([`turned`]) sets the quarter, and a steady
-    /// angle is followed across the quarter's edge: one sitting on it (#228's
-    /// tape B, coherence ~0.7) would otherwise flip a quarter at each crossing.
-    /// Not an unsteady one: C4FM through this receiver sits on the edge too,
-    /// at coherence ≤ 0.05, and following it settled on one side and read its
-    /// offset a quarter out. Only a small step across ±π is the angle going
+    /// a sync word found turned ([`turned`]) sets the quarter, and the angle
+    /// is followed across the quarter's edge: one sitting on it (#228's tape
+    /// B) would otherwise flip a quarter at each crossing. Weak or strong
+    /// (#228's tape C, 5 to 7 dB, gained 10 % clean frames over following only
+    /// a steady angle). Only a small step across ±π is the angle going
     /// round. Two voice frames (1728 symbols) without a sync, the
     /// transmission is over: the plain estimate again, before noise walks
     /// the angle about.
@@ -392,12 +386,11 @@ impl Cqpsk {
         let a = (-self.q4.im).atan2(-self.q4.re);
         if !self.opt.coherent {
             let synced = self.syncs > 0 && self.symbols - self.last_sync <= 1728;
-            let steady = self.q4.norm() > 0.3 * self.q4_weight;
             if !synced {
                 self.quarter = 0;
-            } else if steady && a - self.q4_arg > 1.5 * PI32 {
+            } else if a - self.q4_arg > 1.5 * PI32 {
                 self.quarter = self.quarter.rem_euclid(4) - 1;
-            } else if steady && a - self.q4_arg < -1.5 * PI32 {
+            } else if a - self.q4_arg < -1.5 * PI32 {
                 self.quarter = (self.quarter + 2).rem_euclid(4) - 1;
             }
             self.q4_arg = a;

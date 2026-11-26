@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Weak P25 CQPSK simulcast keeps more of its voice** (#228, thanks @samborcia). 0.5.1's fix for a carrier
+  estimate a quarter turn out followed the carrier across that edge only while it was steady, and at 5 to 7 dB over
+  the noise it isn't: on the reported weak dispatch, 610 clean voice frames (of 828). It's now followed whenever frames
+  sync: 670 (of 864). The frequency error a call reports comes from the receiver that decodes the signal best (C4FM or CQPSK),
+  not the first one.
 - **HydraSDR RFOne: a driver built in, and libairspy and libhydrasdr are no longer used.** An RFOne now works
   with nothing installed, like an Airspy: no hydrasdr-host package, and on Windows no `hydrasdr.dll` or
   `libusb-1.0.dll`. It speaks an Airspy's USB protocol with a handful of differences, so the Airspy's built-in
@@ -68,6 +73,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     `Airspy: built in, and libairspy 1.0.10`.
   - `TRUNK_PRO_AIRSPY_NATIVE=0` goes back to libairspy alone. Please report anything that needs it.
   - HydraSDR RFOnes are unchanged (libhydrasdr).
+- **P25 CQPSK simulcast that decoded nothing, or calls cut short, now decodes** (#228, #233, #234, thanks
+  @samborcia for the analysis, the patch and the recordings). On simulcast whose phase steps take the long way
+  round, the receiver's carrier estimate read hundreds of Hz out with the carrier on frequency; past ±600 Hz
+  (Phase 1; ±750 Hz Phase 2) every symbol came out a quarter turn off and no frame synced, with the signal 16 to
+  22 dB over the noise. The receiver now also finds the sync word turned a quarter, a half or three quarters and
+  corrects, as OP25 does, and follows a steady carrier across that edge. On the reported dispatches: 2.0 s of 27 s
+  recorded → all of it, and 8.8 s of 21 s → all of it; weak dispatches (5 to 7 dB over the noise) that decoded
+  nothing or a sixth now decode. The reported frequency error reads true (it said 460 to 630 Hz). The tapes are
+  regression tests.
+  - **DMR on spectrally inverted IQ decodes.** It never locked: DMR's voice syncs inverted are its data syncs, so
+    the polarity is read from each burst's slot type or EMB instead.
+
 - **Conversation mode off: a transmission ends on its terminator, and multi-site copies are judged by their audio**
   (#240, #231, thanks @VoltTech21).
   - **Ends on its terminator.** With `conversationMode` off a call is one transmission, but it ended only once the
