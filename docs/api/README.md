@@ -28,10 +28,12 @@ every other interface's ([Serving your interface](#serving-your-interface)):
 | `GET /api/protocol.ts` | Every message, as TypeScript types with comments: **the definition** |
 | `GET /api/schema` | The same as JSON Schema (draft-07): `definitions.FromRecorder` / `definitions.ToRecorder` |
 | `GET /api/version` | `{"app": "trunk-pro", "version": "…", "api": 1}` (`api`: the interface API version). Always open, signed in or not |
-| `GET /api/session` | `{ auth, access, user, proxy, passkeys, passkeyOrigin, ownPasskeys }`: whether signing in is on, what this request may do, whether (and where) passkeys work, and the user's own passkeys ([Signing in](#signing-in)) |
+| `GET /api/session` | `{ auth, access, user, proxy, passkeys, passkeyOrigin, ownPasskeys, appSignIn, apps, app }`: whether signing in is on, what this request may do, whether (and where) passkeys work, the user's own passkeys, whether an app signs in by way of the browser here, and the apps signed in ([Signing in](#signing-in)) |
 | `POST /api/login`, `POST /api/logout` | Sign a browser in with an access token (a session cookie; answers `{ access, user }`), and out (`{"all": true}`: everywhere) |
 | `POST /api/passkey/login/…`, `/api/passkey/register/…` | Sign a browser in with a passkey, and add one ([Passkeys](#passkeys)) |
 | `GET /signin` | The sign-in page, on every port, whether or not a page needs it |
+| `GET /app/sign-in`, `POST /api/app/token`, `POST /api/app/revoke`, `GET /api/apps` | Sign an app in by way of the browser (OAuth 2.0 with PKCE), sign it out, and list the apps signed in ([Apps](#apps)) |
+| `GET /.well-known/oauth-authorization-server` | Where an OAuth library finds those (RFC 8414), on the built-in interface's port |
 | `WS /api/ws` | The connection: JSON messages both ways, plus binary live audio |
 | `GET /calls/<path>.wav` / `.json` | A recorded call's audio and details |
 
@@ -454,8 +456,8 @@ through such a proxy signs in at the proxy; a token works there as ever.
 proxy's.
 
 **What you get** is the lower of the port's access and the user's role.
-`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "proxy": true | false, "passkeys": true | false, "passkeyOrigin": "https://radio.example.com", "ownPasskeys": [{ "id": "…", "name": "Laptop", "created": 1767225600 }] }`
-for the request it's asked with (`proxy`: the proxy in front signed it in; `passkeys`: whether they work on this port, the built-in interface's, for the host it asked at; `passkeyOrigin`, from any port: the one origin they work at, left out where there's none; a page at another origin links there; `ownPasskeys`: the user's own passkeys, never their keys, left out when there are none or it isn't signed in as a user), and `hello` carries `access` and `user`.
+`GET /api/session` answers `{ "auth": true, "access": "listen" | "control" | null, "user": "kiosk" | null, "proxy": true | false, "passkeys": true | false, "passkeyOrigin": "https://radio.example.com", "ownPasskeys": [{ "id": "…", "name": "Laptop", "created": 1767225600 }], "appSignIn": true | false, "apps": [{ "id": "…", "name": "Trunk Monitor on Luke's Mac", "user": "luke", "access": "listen", "created": 1767225600, "until": 1769817600 }], "app": { "id": "…", "name": "…", "until": 1769817600 } }`
+for the request it's asked with (`proxy`: the proxy in front signed it in; `passkeys`: whether they work on this port, the built-in interface's, for the host it asked at; `passkeyOrigin`, from any port: the one origin they work at, left out where there's none; a page at another origin links there; `ownPasskeys`: the user's own passkeys, never their keys, left out when there are none or it isn't signed in as a user; `appSignIn`: an app signs in by way of the browser here, the built-in interface's port with signing in on, see [Apps](#apps); `apps`: the apps signed in as the user, every user's for one with control access on the built-in interface's port, left out when there are none; `app`: the app asking, when it's one, with when its token ends), and `hello` carries `access` and `user`.
 `POST /api/login` answers `{ "access": "listen" | "control", "user": "kiosk" }`
 (the user's role and name, whatever the port; signing in on or off) with the
 cookie, or 401. When the owner changes access (a user removed, a role or an
@@ -517,6 +519,126 @@ minutes for its finish, and signs in once (a sign-in's `id` is the waiting
 state itself, signed by the recorder: nothing's kept for it until it
 finishes). A session signed in with a passkey ends when the passkey is
 removed from the config.
+
+### Apps
+
+An app (Trunk Monitor, a script with a browser to hand, another site's
+page) signs in by way of the browser, so it's never handed the user's
+token and needs no passkey of its own: the user signs in on the recorder's
+page, as they always do, and allows the app there. It's OAuth 2.0's
+authorization code flow with PKCE, as native apps use it (RFC 8252), so an
+OAuth library does all of it; `GET /.well-known/oauth-authorization-server`
+on the built-in interface's port names the endpoints. Nothing is
+registered beforehand: `client_id` is the name the user is shown, and
+there's no client secret. `GET /api/session` says whether a recorder does
+this (`appSignIn`: the built-in interface's port, signing in on).
+
+1. The app makes a secret, the **verifier** (32 random bytes as base64url
+   will do), and opens this in the browser, on the built-in interface's
+   port (on a Mac or iPhone, in a web authentication session):
+
+   ```
+   /app/sign-in?response_type=code&client_id=<name>&redirect_uri=<return link>
+       &code_challenge=<challenge>&code_challenge_method=S256&scope=listen&state=<anything>
+   ```
+
+   | Parameter | |
+   |---|---|
+   | `client_id` | What the page, the log and the Users table call the app ("Trunk Monitor on Luke's Mac"), 64 characters at most |
+   | `redirect_uri` | Where the browser takes the code: see below. Left out: the page shows the code, to copy into the app |
+   | `code_challenge` | The SHA-256 of the verifier, base64url, no padding (43 characters). `code_challenge_method`: `S256`, the only one |
+   | `scope` | The most the app wants: `listen` (the default) or `control`. It never gets more than the user's role, and the user may allow less |
+   | `state` | Handed back as it came, for the app to tell its own request by |
+   | `response_type` | `code`, or left out |
+
+2. The user signs in if they aren't (a token, a passkey, or the proxy in
+   front), and the page asks whether to allow the app, naming it, them,
+   what it may do and where it returns. **Allow** sends the browser to
+   `<redirect_uri>?code=<code>&state=<state>`; **Cancel** to
+   `<redirect_uri>?error=access_denied&state=<state>`.
+3. The app posts `{ "code": "…", "code_verifier": "…" }` (JSON, or a form
+   as OAuth libraries send it, `grant_type=authorization_code` and
+   `redirect_uri` checked if sent) to `POST /api/app/token`, within two
+   minutes, and is answered
+
+   ```json
+   { "access_token": "trpa_…", "token_type": "Bearer", "expires_in": 2592000, "scope": "listen",
+     "user": "luke", "access": "listen", "until": 1769817600, "id": "9f2c…" }
+   ```
+
+   or 400 `{ "error": "invalid_grant", "error_description": "…" }`: not a
+   code for that verifier, used already, too old, or the user signed out
+   everywhere since. A code works once.
+4. It sends the token as an access token goes: `Authorization: Bearer
+   trpa_…` with every request, `?token=` on the WebSocket where a header
+   can't go.
+
+**Where the code may go** (`redirect_uri`), with nothing registered:
+
+| Return link | For | |
+|---|---|---|
+| `com.example.app:/signin` | An app on a Mac, iPhone, Android or Windows | A scheme of the app's own: a domain name backwards (it has a dot), so it can't be `javascript:`, `file:` or another app's short name |
+| `http://127.0.0.1:<port>/…`, `http://[::1]:…`, `http://localhost:…` | A program or script on a computer | The program listens there until the browser arrives. On the device the browser is on, wherever the recorder is |
+| `https://site.example/…` | Another site's page | Only an origin in `server.allowedOrigins`, by name (not `*`): the recorder's owner let that site in |
+| none | A device with no browser, a terminal over SSH | The page shows the code and a **Copy** button |
+
+Anything else, and the page says why instead of asking. The page says
+which it is before the user clicks (**This device**, the other site's
+name, or **Copy a code**).
+
+**What the app holds** is a token of its own, not the user's and not a
+browser's session: good until `until` (Unix seconds, 30 days on; then the
+app signs in again), for what the user allowed and never more than their
+role is now. It's the user, less what's theirs alone: an app's token
+doesn't allow another app, add a passkey, make an access token, or change
+who signs in (`server.auth`). `GET /api/session` asked with it carries
+`app: { id, name, until }`.
+
+**Ending it.** The app signs itself out with `POST /api/app/revoke
+{ "token": "trpa_…" }` (RFC 7009; 200 whether it was one or not), or
+`POST /api/logout` with its token. Its user removes it in the dashboard
+(the top bar's key, or Setup → **Access**), which is `POST /api/app/revoke
+{ "id": "…" }`; a user with control access removes anyone's, on the
+built-in interface's port. It ends too when its user is removed or
+[signed out everywhere](#signing-in), or the token or passkey they allowed
+it with is made again or removed. Then its connection closes and its
+requests answer 401. `GET /api/apps` lists `[{ id, name, user, access,
+created, until }]`: an app's own, a user's, or everyone's for control on
+the built-in port. Never the tokens: the recorder keeps their SHA-256,
+beside the config with the rest of the sign-in state.
+
+The log names each app as it's signed in and removed (`User luke: app
+"Trunk Monitor on Luke's Mac" signed in, View (allowed by them, with a
+passkey "Laptop")`), and what an app changes says so (`User luke (app
+"…")`).
+
+**Why it's safe to leave open.** The code is nothing without the
+verifier, so another program that sees the return link gets nothing for
+it; it's sealed by the recorder, good for two minutes and once. The page
+that allows is the recorder's own, on the built-in interface's port:
+`POST /api/app/approve` answers 403 from an interface's port or another
+origin, the page isn't shown in a frame, and only a person signed in
+allows (not an app, not an anonymous visitor). The return link is checked
+when the page opens, again when the user allows, and the code carries it:
+a token request that names another is refused.
+
+**The server on one computer, the browser and app on another** is the
+ordinary case: nothing in the flow is the recorder's address but the page
+the app opens. Two things to know. Passkeys work at one origin
+(`passkeyOrigin`); opened anywhere else, the sign-in page's passkey link
+goes there with the app's request intact, and the app trades the code at
+the address it was given. And over plain HTTP the page says
+**Unencrypted**: the code and the token cross the network in the clear, as
+everything else does there, so give the app an HTTPS or VPN address
+([Remote access](../guides/remote-access.md)).
+
+**Behind a proxy that signs people in**, whoever the proxy says is at the
+browser allows the app, as they'd do anything else; the app's token then
+ends with the user (removed, signed out everywhere). The app's own
+requests still have to get through the proxy: `tailscale serve` passes
+them; Cloudflare Access wants a service token's `CF-Access-Client-Id` and
+`CF-Access-Client-Secret` headers, which let a program through and sign
+nobody in.
 
 ### curl
 

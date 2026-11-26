@@ -11,7 +11,7 @@ import { renderToString } from "react-dom/server";
 import { App } from "./App.tsx";
 import { AccessSection, enableWith, unencrypted } from "./Access.tsx";
 import { defaultConfig, newSystem } from "./config.ts";
-import { mayEdit, passkeyName, passkeysHere, type OwnPasskey, setSetupTab, setView, snapshot, transport, type View } from "./controller.ts";
+import { mayEdit, passkeyName, passkeysHere, type OwnPasskey, type SignedInApp, setSetupTab, setView, snapshot, transport, type View } from "./controller.ts";
 import { IgnoreToggle, NameButton } from "./dash/Radio.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { UserPasskeys } from "./Passkeys.tsx";
@@ -193,9 +193,9 @@ test("Access: each user's passkeys by name, to remove; Add passkey for this brow
 });
 
 /** `hello` with `access` as `user` (none: not signed in), the session saying whether passkeys work here and whether the proxy signed them in. */
-async function helloSession(c: Config, access: ApiAccess, user: string | null, passkeys: boolean, proxy = false, ownPasskeys?: OwnPasskey[]): Promise<void> {
+async function helloSession(c: Config, access: ApiAccess, user: string | null, passkeys: boolean, proxy = false, ownPasskeys?: OwnPasskey[], apps?: SignedInApp[]): Promise<void> {
   const fetch0 = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify({ auth: true, access, user, passkeys, proxy, ...(passkeys ? { passkeyOrigin: location.origin } : {}), ...(ownPasskeys ? { ownPasskeys } : {}) }), { status: 200 })) as typeof fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ auth: true, access, user, passkeys, proxy, ...(passkeys ? { passkeyOrigin: location.origin } : {}), ...(ownPasskeys ? { ownPasskeys } : {}), ...(apps ? { apps } : {}) }), { status: 200 })) as typeof fetch;
   try {
     hello(c, access, user ?? undefined);
     await new Promise((r) => setTimeout(r, 20));
@@ -252,6 +252,30 @@ test("Top bar: the signed-in name opens their passkeys where passkeys work, any 
   assert.equal(NAME_BUTTON.exec(html)?.[2], "luke");
   pop = text(renderToString(<UserPasskeys passkeys proxied={false} />));
   assert.equal(pop.trim(), `Passkeys Mac Safari ${added} Add passkey Sign out everywhere`);
+});
+
+test("Apps signed in by way of the browser: a user's own by their name in the top bar, every user's in the Users table, each with Remove", async () => {
+  setView("overview");
+  const app = (id: string, user: string, name: string, access: ApiAccess): SignedInApp => ({ id, user, name, access, created: 1_763_200_000, until: 1_765_792_000 });
+  const apps = [app("a1", "kiosk", "Trunk Monitor", "listen"), app("a2", "luke", "Script", "control")];
+  // A View user, where passkeys don't work: the name still opens, on their own app alone.
+  await helloSession(redacted(), "listen", "kiosk", false, false, undefined, [apps[0]]);
+  assert.equal(text(renderToString(<UserPasskeys passkeys={false} proxied={false} />)).trim(), "Apps Trunk Monitor View × Sign out everywhere");
+  // Signed in by the proxy: nothing else to open, but their apps.
+  await helloSession(redacted(), "listen", "kiosk", false, true, undefined, [apps[0]]);
+  assert.equal(NAME_BUTTON.exec(renderToString(<App />))?.[1], "by the proxy");
+  assert.equal(text(renderToString(<UserPasskeys passkeys={false} proxied />)).trim(), "Apps Trunk Monitor View ×");
+  // An Admin: their own by their name; everyone's in the table, removable.
+  await helloSession(full(), "control", "luke", false, false, undefined, apps);
+  const pop = renderToString(<UserPasskeys passkeys={false} proxied={false} />);
+  assert.match(pop, /aria-label="Remove luke&#x27;s app Script"/);
+  assert.doesNotMatch(pop, /Trunk Monitor/);
+  const table = renderToString(<AccessSection c={full()} />);
+  assert.match(text(table), /Passkeys Apps/);
+  assert.match(table, /aria-label="Remove luke&#x27;s app Script"/);
+  // None: no column.
+  await helloSession(full(), "control", "luke", false);
+  assert.doesNotMatch(text(renderToString(<AccessSection c={full()} />)), /Apps/);
 });
 
 test("Access: the proxy in front, set up with its addresses and header; then From, Header, Others and how many names are mapped", () => {

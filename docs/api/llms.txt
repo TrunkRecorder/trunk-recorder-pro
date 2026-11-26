@@ -80,7 +80,34 @@ built-in interface's port only; POST /api/passkey/login/… and
 /register/…, same origin only; 403 on an interface's port), passkeyOrigin
 (the one origin passkeys work at, from any port: link to its /signin),
 ownPasskeys ([{ id, name, created }]: the user's own passkeys, never their keys;
-absent when none) }.
+absent when none), appSignIn (an app signs in by way of the browser here),
+apps ([{ id, name, user, access, created, until }]: apps signed in as the
+user; absent when none), app ({ id, name, until }: the app asking) }.
+An app (not a page of the recorder's): OAuth 2.0 authorization code + PKCE
+(S256), no registration, no client secret; GET
+/.well-known/oauth-authorization-server on the built-in port names the
+endpoints. Make a random verifier, open
+/app/sign-in?response_type=code&client_id=<app name>&redirect_uri=<return>
+&code_challenge=<base64url SHA-256 of it>&code_challenge_method=S256
+&scope=listen|control&state=<any> on the built-in port in the browser; the
+user signs in and allows it; the browser goes to
+<redirect_uri>?code=<code>&state=… (or ?error=access_denied). redirect_uri:
+the app's own scheme, a domain backwards (com.example.app:/signin);
+http://127.0.0.1:<port>/… (or localhost, [::1]); an https origin listed in
+server.allowedOrigins; or none: the page shows the code to copy. POST
+/api/app/token {code, code_verifier} (JSON or form) within two minutes,
+once → { access_token ("trpa_…"), token_type, expires_in, scope, user,
+access, until, id }, or 400 { error: "invalid_grant", error_description }.
+Send Authorization: Bearer <access_token> with every request (?token= on
+the WebSocket) until `until` (Unix s, 30 days), then sign in again. The
+token is the app's own: never more than the user's role now, and it can't
+allow apps, add passkeys, make tokens or change server.auth. POST
+/api/app/revoke {token} signs it out (or {id}, by its user or control on
+the built-in port); GET /api/apps lists them. It ends too with its user:
+removed, signed out everywhere, or what they allowed it with gone. Behind
+a proxy's sign-in the proxy's user allows it the same way; the app's
+requests need the proxy's own headers for programs (Cloudflare Access: a
+service token's).
 POST /api/logout {"all": true} (built-in port): every browser session of the
 user ends (another user's with "user": name, control only); tokens don't.
 Without access: 401 (a browser page: the sign-in page). Access is the lower

@@ -100,8 +100,9 @@
       const at = passkeysAt(s, location.origin);
       if (at === "there") {
         // Only if something answers there (nothing serving HTTPS on the host name: no link to nowhere).
+        // (An app's sign-in keeps its page there, and what the app asked with it.)
         if (!(await answers(s.passkeyOrigin))) return;
-        pl.href = s.passkeyOrigin + "/signin";
+        pl.href = s.passkeyOrigin + (location.pathname === "/app/sign-in" ? location.pathname + location.search : "/signin");
         pl.title = s.passkeyOrigin;
         pl.hidden = document.getElementById("or").hidden = false;
         return;
