@@ -1284,7 +1284,7 @@ impl Session {
                 let watched = self.meas.topics.has(UNIT);
                 if self.plugin_topics.units || watched {
                     if let Some(kind) = unit_kind(m.kind) {
-                        let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup);
+                        let talkgroup = matches!(kind, "affiliation" | "location" | "answer_request" | "call_alert" | "emergency_alarm").then_some(m.talkgroup).filter(|&tg| tg != 0);
                         if m.source >= 0 {
                             let unit = m.source as u32;
                             let (tag, alpha_tag) = (self.unit_tag(system, unit), talkgroup.map(|tg| self.alpha_tag(system, tg)).unwrap_or_default());
