@@ -28,6 +28,7 @@ pub mod session;
 pub mod share;
 pub mod stats;
 pub mod survey;
+pub mod tags;
 pub mod taps;
 pub mod tune;
 
