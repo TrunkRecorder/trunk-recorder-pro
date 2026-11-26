@@ -5,6 +5,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+## [0.5.2] — 2026-11-26
+
 - **Reset counts** (#262). The totals since Start (a radio's dropped samples and errors, calls, a plugin's sent, skipped,
   failed and restarts, the RAM spool's overflows) can be counted from now: **Reset counts** in the top bar, and
   they read **Since 14:05** in place of **Since start**. It's this browser's alone: the recorder, its history and
