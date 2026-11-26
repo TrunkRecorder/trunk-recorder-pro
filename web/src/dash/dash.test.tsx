@@ -578,27 +578,35 @@ test("Plugins: a plugin that doesn't say its upload time gives the age alone", (
   assert.match(html, /doesn&#x27;t say its own upload time/);
 });
 
-test("Plugins: why calls were skipped, when every one was", () => {
+test("Plugins: why calls were skipped and failed, by what the plugin said", () => {
   const c = defaultConfig();
   c.plugins = { broadcastify: { enabled: true, settings: {} } } as Config["plugins"];
   running(c, []);
-  const reasons = [
-    { reason: "Broadcastify already has this call: another node on the system sent it first, so this one is a backup", calls: 460 },
-    { reason: "encrypted", calls: 6 },
-  ];
-  const p: PluginInfo = {
-    id: "broadcastify", path: "/plugins/broadcastify/broadcastify", custom: false, problem: null,
-    manifest: { id: "broadcastify", name: "Broadcastify Calls", version: "0.2.2", description: "", api: 1, subscribe: ["call.concluded"], audio_formats: [] },
-    runtime: { state: "ok", message: "", ok: 0, skipped: 466, failed: 0, lastFailure: "", skipReasons: reasons, log: [] },
+  const show = (runtime: Partial<PluginInfo["runtime"]>) => {
+    const p: PluginInfo = {
+      id: "broadcastify", path: "/plugins/broadcastify/broadcastify", custom: false, problem: null,
+      manifest: { id: "broadcastify", name: "Broadcastify Calls", version: "0.2.2", description: "", api: 1, subscribe: ["call.concluded"], audio_formats: [] },
+      runtime: { state: "ok", message: "", ok: 0, skipped: 0, failed: 0, lastFailure: "", log: [], ...runtime },
+    };
+    transport.onMessage({ type: "plugins", encoderFound: null, plugins: [p] });
+    setView("plugins");
+    return text(renderToString(<PluginHealthPage manage={null} />));
   };
-  transport.onMessage({ type: "plugins", encoderFound: null, plugins: [p] });
-  setView("plugins");
-  const page = text(renderToString(<PluginHealthPage manage={null} />));
-  assert.match(page, /Why calls were skipped, this run\s*460\s*Broadcastify already has this call: another node .* backup\s*99%\s*6\s*encrypted\s*1\.3%/);
+  // A backup node: every call already received.
+  const skips = [
+    { outcome: "skipped" as const, reason: "already received", calls: 460 },
+    { outcome: "skipped" as const, reason: "encrypted", calls: 6 },
+  ];
+  let page = show({ skipped: 466, reasons: skips });
+  assert.match(page, /Why skipped, this run\s*460\s*already received\s*99%\s*6\s*encrypted\s*1\.3%/);
   assert.match(page, /Failed\s*0\s*none failed/, "466 tried and skipped: not \"none tried yet\"");
-  // Nothing skipped: nothing said of it.
+  assert.doesNotMatch(page, /Why failed/);
+  // Failures get their own list, by their own share.
+  page = show({ ok: 10, skipped: 466, failed: 4, reasons: [...skips, { outcome: "failed", reason: "gave up after 4 tries: audio upload: HTTP 503", calls: 4 }] });
+  assert.match(page, /Why failed, this run\s*4\s*gave up after 4 tries: audio upload: HTTP 503\s*100%/);
+  // Nothing skipped or failed: nothing said of it.
   uploader("broadcastify");
-  assert.doesNotMatch(text(renderToString(<PluginHealthPage manage={null} />)), /Why calls were skipped/);
+  assert.doesNotMatch(text(renderToString(<PluginHealthPage manage={null} />)), /Why (skipped|failed)/);
 });
 
 test("A chart of one line says what it is and in what unit, as one of several does", () => {

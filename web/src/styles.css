@@ -1134,7 +1134,7 @@ table.calls tr.ignored td { opacity: 0.55; }
 .chplot { width: 100%; height: 190px; display: block; }
 .floor-bar { fill: color-mix(in srgb, var(--series-1) 30%, transparent); }
 .minutes { display: flex; flex-direction: column; gap: 2px; }
-.skip-reasons { display: flex; flex-direction: column; gap: 4px; }
+.reasons { display: flex; flex-direction: column; gap: 4px; }
 .cores { margin-top: 10px; display: flex; flex-direction: column; gap: 3px; }
 .disk-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
 .disk .meter { height: 10px; }

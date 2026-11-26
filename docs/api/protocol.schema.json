@@ -6745,11 +6745,18 @@
         "lastFailure": {
           "type": "string"
         },
-        "skipReasons": {
+        "reasons": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "skipped",
+                  "failed"
+                ]
+              },
               "reason": {
                 "type": "string"
               },
@@ -6758,12 +6765,13 @@
               }
             },
             "required": [
+              "outcome",
               "reason",
               "calls"
             ],
             "additionalProperties": false
           },
-          "description": "Why calls were skipped (what the plugin said, numbers standing alone as `#`), most first."
+          "description": "Why calls were skipped or failed (what the plugin said of each), most first."
         },
         "log": {
           "type": "array",

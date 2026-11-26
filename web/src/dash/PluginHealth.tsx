@@ -139,20 +139,24 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
             <StackedBars parts={minutes} colors={["var(--good)", "var(--muted-mark)", "var(--critical)"]} labels={["sent", "skipped", "failed"]} h={44} titles={minutes.map((c, i) => `${60 - i} min ago: ${c[0]} sent, ${c[1]} skipped, ${c[2]} failed`)} />
             <span className="muted small">last hour, per minute</span>
           </div>
-          {r.skipReasons && r.skipReasons.length > 0 && (
-            <div className="skip-reasons">
-              <span className="muted small">Why calls were skipped, this run</span>
-              <ul className="line-list">
-                {r.skipReasons.map((x) => (
-                  <li key={x.reason}>
-                    <Fig v={compact(x.calls)} />
-                    <span>{x.reason}</span>
-                    {r.skipped > 0 && <span className="muted small">{pct((100 * x.calls) / r.skipped, 0)}</span>}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {(["failed", "skipped"] as const).map((o) => {
+            const rows = (r.reasons ?? []).filter((x) => x.outcome === o);
+            const of = o === "failed" ? r.failed : r.skipped;
+            return rows.length > 0 && (
+              <div key={o} className="reasons">
+                <span className="muted small">{o === "failed" ? "Why failed" : "Why skipped"}, this run</span>
+                <ul className="line-list">
+                  {rows.map((x) => (
+                    <li key={x.reason}>
+                      <Fig v={compact(x.calls)} level={o === "failed" ? "warn" : undefined} />
+                      <span>{x.reason}</span>
+                      {of > 0 && <span className="muted small">{pct((100 * x.calls) / of, 0)}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
           {m?.endpoints && m.endpoints.length > 0 && (
             <ul className="line-list">
               {m.endpoints.map((e) => (

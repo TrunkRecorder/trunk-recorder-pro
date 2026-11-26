@@ -207,6 +207,11 @@ Your upload function decides what each outcome means:
 | `Attempt::Wait(why, wait)` | The service is busy and said how long to wait (a 429 or 503 with `Retry-After`) | Retried no sooner than `wait` (at most an hour) |
 | `Attempt::Fail(why)` | It won't work: a wrong key, an unknown system, a file it refuses | Reported `failed`, now |
 
+`why` is the call's reason on the plugin's card, which counts skipped and failed calls by it:
+keep it short and the same each time it's so ("talkgroup filter", "already received", "API key
+refused"). A talkgroup number, a file path or a server's error text would make each call a reason
+of its own; log those with `host.warn` instead.
+
 Getting this right is most of what makes an uploader good. Retrying a wrong key an hour later
 helps nobody. Failing a call because of a moment's network trouble loses it.
 

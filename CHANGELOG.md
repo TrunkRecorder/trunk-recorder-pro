@@ -5,17 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
-- **A plugin's card says why calls were skipped.** A Broadcastify node on a site another node already uploads
-  showed Sent 0, Skipped 466, **Failed 0, none tried yet** and Broadcastify Calls **unknown**: every call was
-  answered `SKIPPED---ALREADY-RECEIVED-THIS-CALL` (it's a backup, and nothing is wrong), but nothing said so
-  (forum thread 505184). The reason a plugin gives for each skip was dropped; the card now counts skips by it,
-  under **Why calls were skipped, this run**, most first, with numbers standing alone (a talkgroup's) as `#` so
-  a talkgroup filter is one reason. **Failed** says **none failed** when calls were tried and skipped.
-  - **To plugins** (SDK 0.17.0): `Attempt::Declined(why)`, for a call the service answered and turned away as
-    it means to (it has it already, or doesn't take that kind). It's reported skipped, with `why`, and the
-    service counts as answering, so its status is **up**, not **unknown**. `Attempt::together` ranks it
-    between done and skipped. The Broadcastify plugin uses it for `SKIPPED` and unit-to-unit answers
-    (0.2.2).
+- **A plugin's card says why calls failed and were skipped.** A Broadcastify node on a site another node already
+  uploads showed Sent 0, Skipped 466, **Failed 0, none tried yet** and Broadcastify Calls **unknown**: every call was
+  answered `SKIPPED---ALREADY-RECEIVED-THIS-CALL` (it's a backup, and nothing is wrong), but nothing said so (forum
+  thread 505184, thanks @blantonl). The reason a plugin gives with each result was dropped; the card now counts
+  calls by it, **Why failed** and **Why skipped**, this run, most first. **Failed** says **none failed** when calls
+  were tried and skipped.
+  - **To plugins** (SDK 0.17.0): a `call.result`'s `message` is its reason on the card, counted as it is, so keep
+    it short and the same each time (`talkgroup filter`, not `talkgroup 101 filtered out`); a call's own details go
+    in a log line. `Attempt::Declined(why)` is for a call the service answered and turned away as it means to (it
+    has it already, or doesn't take that kind): it's reported skipped, and the service counts as answering, so its
+    status is **up**, not **unknown**. `Attempt::together` ranks it between done and skipped. The Broadcastify
+    plugin uses it for `SKIPPED` and unit-to-unit answers (0.2.2).
 
 - **Apps sign in by way of the browser** (#255). An app such as Trunk Monitor opens the recorder's own page; you sign
   in there as you always do (a token, a passkey, the proxy in front) and click **Allow**, and the app gets a token of
