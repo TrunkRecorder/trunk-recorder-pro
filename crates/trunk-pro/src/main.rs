@@ -62,7 +62,7 @@
 //! trunk-pro survey [--radio '{"type":"bladerf",…}'] --freqs 851.0125,852.5 [--type p25|smartnet|edacs|dmr|nxdn] [--listen s]
 //!     either: [--identify lat,lon[,km]] [--api URL] (FCC licenses near there, from trunkrecorder.pro)
 //!     Find P25, SmartNet, trunked DMR and NXDN systems: scan the bands (800,
-//!     700, 900, uhf, vhf, uhf-fed, biz-uhf, biz-vhf, t-band; or look at a
+//!     700, 900, uhf, vhf, uhf-fed, uhf-420, biz-uhf, biz-vhf, t-band; or look at a
 //!     capture), then listen to the best control channel; JSON lines of what
 //!     was found, then the system (IDs, band plan, alternates, neighbours,
 //!     voice channels, ppm). --no-gain: keep the default gain rather than
@@ -263,7 +263,7 @@ usage:
       the frequency error measured on the control channel), --messages
       (print every control channel message), --summary file (each site's
       control channel blocks as JSON), --quiet.
-  trunk-pro survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,biz-uhf,biz-vhf,t-band] [--gain dB | --no-gain] [--ppm 0] [--rate Hz] [--seconds 30]
+  trunk-pro survey [--serial S] [--bands 800,700,900,uhf,vhf,uhf-fed,uhf-420,biz-uhf,biz-vhf,t-band] [--gain dB | --no-gain] [--ppm 0] [--rate Hz] [--seconds 30]
   trunk-pro survey <capture> --center Hz --rate Hz [--format cu8|cs16|cf32]
   trunk-pro survey [--radio '{\"type\":\"bladerf\",…}'] --freqs 851.0125,852.5 [--type p25|smartnet|edacs|dmr|nxdn] [--listen s]
                    (just these frequencies, MHz: which of a system's sites are heard here)

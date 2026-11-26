@@ -180,7 +180,7 @@ pub fn cli(a: &crate::Args) {
     } else {
         cfg.sources = vec![Source { kind: crate::config::SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: a.get("serial").unwrap_or("").into(), gain_db: a.get("gain").and_then(|g| g.parse().ok()).unwrap_or(crate::config::RTL_DEFAULT_GAIN_DB), agc: a.get("gain").is_none(), buf_len: a.num("buflen", 0.0) as u32, buffers: a.num("buffers", 0.0) as u32 }, center_hz: 0.0, rate_hz: rate, ppm: a.num("ppm", 0.0), auto_tune: false, guard_hz: crate::config::DEFAULT_GUARD_HZ, name: String::new() }];
     }
-    let bands = a.get("bands").map(|b| json!(b.split(',').collect::<Vec<_>>())).unwrap_or(Value::Null);
+    let bands = a.get("bands").map(|b| json!(b.split(',').map(str::trim).collect::<Vec<_>>())).unwrap_or(Value::Null);
     let freqs: Vec<f64> = a.get("freqs").map(|f| f.split(',').filter_map(|x| x.trim().parse::<f64>().ok()).map(|m| (m * 1e6).round()).collect()).unwrap_or_default();
     let look_for = (!freqs.is_empty()).then(|| json!({ "freqsHz": freqs, "type": a.get("type"), "listenS": a.get("listen").and_then(|s| s.parse::<f64>().ok()) }));
     let mut req = Request::from_json(&json!({ "source": 0, "bands": bands, "findGain": a.get("gain").is_none() && !a.flag("no-gain"), "lookFor": look_for }));
