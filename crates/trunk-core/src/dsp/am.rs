@@ -302,6 +302,11 @@ impl Am {
     }
 
     /// The steady lines changed ([`LineWatch::ignored`]).
+    /// How far behind the air its audio comes out, s ([`Gate::delay_s`]).
+    pub fn delay_s(&self) -> f64 {
+        self.gate.delay_s()
+    }
+
     pub fn set_ignore(&mut self, ignore: &[(f64, f64)]) {
         self.line.set_ignore(ignore);
     }

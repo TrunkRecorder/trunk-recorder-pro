@@ -17,6 +17,7 @@ pub mod rtltcp;
 mod sdrplay;
 pub mod soapy;
 pub mod spyserver;
+pub mod stream;
 pub mod uhd;
 mod usb_speed;
 

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, newConventional, newSoapy, normalizeSystem } from "./config.ts";
+import { defaultConfig, newConventional, newSoapy, newStream, normalizeSystem } from "./config.ts";
 import { transport } from "./controller.ts";
 import type { Channel, Config } from "./protocol.ts";
 import { ConventionalPanel, SystemCard } from "./Setup.tsx";
@@ -175,4 +175,27 @@ test("#210: a SoapyRemote source's long label is cut off where it doesn't fit, t
   assert.ok(short.length === 56 && short.startsWith("Source 2 · SoapySDR driver=remote") && short.endsWith("remote:prot=tcp"), short);
   assert.ok(list.includes(`title="${label}"`) && list.includes(`>${short}</option>`), "the option: shortened, the whole on hover");
   assert.equal(shorten("Source 1 · RTL-SDR SN 1"), "Source 1 · RTL-SDR SN 1", "a short one as it is");
+});
+
+test("Setup's channels: a stream's row shows its stream, a stereo choice and only analog modes; Add a stream on the desktop", () => {
+  const c = defaultConfig();
+  c.sources.push(newStream("https://user:pw@feeds.example.com/live/123?key=x"));
+  c.conventional.push(
+    newConventional(c, {
+      shortName: "feed",
+      channels: [row(0, "fm", { talkgroup: 7, name: "Fire", stereo: "left", receiveOn: ["stream feeds.example.com/live/123"] }), row(154_430_000, "fm", { name: "Dispatch" })],
+    }),
+  );
+  for (const m of [{ type: "config", config: c, version: 1 }, { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers"] }] as const) {
+    transport.onMessage(m as never);
+  }
+  const html = renderToString(<ConventionalPanel c={c} k={0} />);
+  const t = text(html);
+  assert.match(t, /stream feeds\.example\.com\/live\/123/, "the stream where a frequency goes");
+  assert.ok(!t.includes("pw") && !t.includes("key=x"), "never its login or query");
+  assert.match(html, /aria-label="Stereo"[^>]*>.*<option value="left" selected="">Left<\/option>/s);
+  const modes = html.slice(html.indexOf('aria-label="Mode"'), html.indexOf("</select>", html.indexOf('aria-label="Mode"')));
+  assert.ok(modes.includes('value="fm"') && modes.includes('value="am"') && !modes.includes('value="p25"'), "a stream's row: FM or AM");
+  assert.equal(html.match(/aria-label="Frequency, MHz"/g)?.length, 1, "the other row has its frequency");
+  assert.match(t, /Add a stream/);
 });

@@ -321,6 +321,7 @@ impl GainPlan {
                 )
             }
             SourceKind::File { .. } => return Err("a capture file has no gain".into()),
+            SourceKind::Stream { .. } => return Err("a stream has no gain".into()),
         };
         if let SourceKind::Soapy { gain_db: None, .. } = &src.kind {
             return Err("this SoapySDR radio has no overall gain set (its gain is left as the device has it): set one in Setup first".into());

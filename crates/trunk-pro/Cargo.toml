@@ -40,7 +40,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 log = { version = "0.4", features = ["std"] }
 # The plugin store (plugins/store.rs): the registry and release downloads,
 # over rustls so builds still cross-compile; checksums; .tar.gz and .zip.
-ureq = "3"
+ureq = "3.5"
+# Internet audio streams (radio/stream.rs): a login in the address sent as Basic authorization;
+# MP3 and WAV decoded natively (no ffmpeg).
+percent-encoding = "2"
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm"] }
 # HTTPS (tls.rs): over the rustls (and ring) ureq has, pure Rust, no OpenSSL.
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12"] }
 sha2 = "0.11"

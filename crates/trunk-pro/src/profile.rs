@@ -44,7 +44,7 @@ fn measure(cfg: &Config, req: &Request) -> Result<Value, String> {
                 match &block {
                     crate::sdr::Block::U8(b) => p.push_u8(b),
                     crate::sdr::Block::Iq(b) => p.push_iq(b),
-                    crate::sdr::Block::Real16(_) => {}
+                    crate::sdr::Block::Real16(_) | crate::sdr::Block::Audio { .. } => {}
                 }
                 last = Instant::now();
             }

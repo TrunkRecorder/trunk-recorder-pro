@@ -8,7 +8,7 @@ use trunk_core::metrics;
 use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus, SystemId, TapSet};
 
 use crate::filename;
-use sdr_core::clock::{ClockEvent, SampleClock};
+use sdr_core::clock::{ClockConfig, ClockEvent, SampleClock};
 use crate::log::{Body, CallState, CallTag, Level, Record};
 use crate::heard::HeardCodes;
 use crate::saving::Saved;
@@ -194,6 +194,10 @@ struct ClockFit {
     /// Whether the wall clock means anything for it (not a capture played
     /// as fast as it can be).
     live: bool,
+    /// Its samples come over a link that loses none and delivers them in bursts, as they come to
+    /// its server (a stream's): fitted loosely ([`BURSTY`]), and a step is the link's delay, not
+    /// samples lost.
+    bursty: bool,
     /// Samples fed, silence filled in for gaps included.
     samples: u64,
     /// From the first samples.
@@ -205,16 +209,21 @@ struct ClockFit {
     unreported: u64,
 }
 
+/// A bursty link's clock fit ([`ClockFit::bursty`]): a stream's server sends what it has as it has
+/// it, a second's buffering either way being nothing out of the way.
+const BURSTY: ClockConfig = ClockConfig { window_s: 5.0, tau_min_s: 30.0, tau_max_s: 600.0, step_threshold_s: 1.0, step_windows: 3 };
+
 impl ClockFit {
     /// The samples so far ended at `at_ms` on the wall clock.
     fn observe(&mut self, at_ms: f64, epoch_ms: f64, rate: f64) {
         if !self.live {
             return;
         }
-        let clock = self.clock.get_or_insert_with(|| SampleClock::new(rate));
+        let bursty = self.bursty;
+        let clock = self.clock.get_or_insert_with(|| if bursty { SampleClock::with_config(rate, BURSTY) } else { SampleClock::new(rate) });
         if let Some(ClockEvent::Step { offset_s, .. }) = clock.observe(self.samples, (at_ms - epoch_ms) / 1000.0) {
             self.stepped = true;
-            if offset_s > 0.0 {
+            if offset_s > 0.0 && !bursty {
                 self.unreported += (offset_s * rate).round() as u64;
             }
         }
@@ -274,6 +283,16 @@ impl Feeder {
         self.engine.push_iq(self.source, iq);
         self.meter.lock().unwrap().iq(iq);
         self.fed(iq.len() as u64, at_ms);
+        self.busy_us.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// A stream's audio ([`Source::audio`]), `channels` interleaved; as [`Feeder::push_iq`]. (A
+    /// stream has no sample meter: that is of a radio's IQ.)
+    pub fn push_audio(&self, audio: &[f32], channels: usize, dropped: u64, at_ms: f64) {
+        let t = Instant::now();
+        self.gap(dropped);
+        self.engine.push_audio(self.source, audio, channels);
+        self.fed((audio.len() / channels.max(1)) as u64, at_ms);
         self.busy_us.fetch_add(t.elapsed().as_micros() as u64, Ordering::Relaxed);
     }
 
@@ -456,7 +475,7 @@ impl Session {
         let stats = cfg
             .sources
             .iter()
-            .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s.kind, SourceKind::File { realtime: false, .. }), ..Default::default() }, ..Default::default() })))
+            .map(|s| Arc::new(Mutex::new(SourceStats { clock: ClockFit { live: !matches!(s.kind, SourceKind::File { realtime: false, .. }), bursty: s.audio(), ..Default::default() }, ..Default::default() })))
             .collect();
         let recordings = cfg.recordings();
         let meas = Stats::new(&cfg, Shared::new(), local_offset);

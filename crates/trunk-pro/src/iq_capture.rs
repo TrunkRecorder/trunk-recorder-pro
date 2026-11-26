@@ -161,6 +161,7 @@ impl Chunk {
             Block::U8(b) => Chunk::Bytes(b[..keep * 2].to_vec()),
             Block::Iq(b) => Chunk::Iq(b[..keep].to_vec()),
             Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
+            Block::Audio { .. } => unreachable!("a stream's audio isn't captured: Tap::samples"),
         }
     }
 }
@@ -169,7 +170,8 @@ impl Tap {
     /// A block from the source, the samples lost just before it, and when it arrived.
     #[inline]
     pub fn samples(&self, block: &Block, dropped: u64, at: Instant) {
-        if self.armed.load(Ordering::Relaxed) {
+        // (A stream's audio isn't I/Q: an IQ capture keeps none of it.)
+        if self.armed.load(Ordering::Relaxed) && !matches!(block, Block::Audio { .. }) {
             self.take(block, dropped, at);
         }
     }

@@ -1,6 +1,6 @@
 # Sources
 
-Each entry in `sources` is one radio, or one capture file to replay. This page lists every source
+Each entry in `sources` is one radio, one capture file to replay, or one internet audio stream. This page lists every source
 type's keys. For choosing a sample rate, setting gain and ppm, profiling the guard band and running
 several radios, see the [radios guide](../guides/radios.md).
 
@@ -12,7 +12,7 @@ several radios, see the [radios guide](../guides/radios.md).
 ```
 
 A source receives a block of spectrum `rateHz` wide, centered on `centerHz`. Every source has a
-`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"hydrasdr"`, `"bladerf"`, `"hackrf"`, `"spyserver"`, `"soapy"` or `"file"` (any case). Any other
+`type`, one of `"rtlsdr"`, `"usrp"`, `"airspy"`, `"hydrasdr"`, `"bladerf"`, `"hackrf"`, `"spyserver"`, `"soapy"`, `"file"` or `"stream"` (any case). Any other
 `type`, or none, makes the file unreadable.
 
 The fixed choices below (`gainMode`, `format`) are read in any case, and an empty string is the default.
@@ -341,3 +341,31 @@ A `file` source has no gain or `ppm`. In the browser version, the file is chosen
 
 `trunk-pro replay` plays a capture without changing the config; see
 [command-line.md](../command-line.md).
+
+## `"type": "stream"`
+
+An internet audio stream: the address of an MP3 or WAV feed (a scanner feed, Broadcastify's and the like),
+someone else's receiver with its audio demodulated already. It needs nothing installed (the audio is decoded
+by the recorder itself) and the desktop app.
+
+```json
+"sources": [ { "type": "stream", "url": "https://feeds.example.com/12345" } ]
+```
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `type` | ✓ | | string | `"stream"` |
+| `url` | ✓ | | string | Its address, `http://` or `https://`. A login may go in it (`https://user:password@host/feed`): it is sent as the server asks, and never shown — its label (`stream host/path`) leaves out the login and anything after a `?` |
+| `name` | | `""` | string | A name for it, as any source's |
+
+A stream has no band, gain, `ppm` or AutoTune, and no centre or rate to set (its audio is 8 kHz, the rate every
+channel's audio is). What it records are the [conventional rows with no frequency](conventional.md#a-streams-rows):
+each takes its left channel, its right, or both mixed. Setup's **Add a stream** (in a conventional system's
+channel table) adds the stream and a row for it at once.
+
+A stream is a source like a radio: it connects when recording starts, connects again 2 s after it drops (or
+when nothing has come for 10 s), and its errors show on the RF page and in the log. Its clock is its audio, as
+a radio's is its samples: the time it was away goes by as silence, so a call in progress then ends. The RF page
+shows its **quiet floor** (its audio's level between calls) where a radio shows its noise floor.
+
+Respect a feed's terms: many don't allow recording or sharing what they carry.

@@ -4,7 +4,7 @@
 // so a bad channel, a band edge or a source's ppm shows up as a pattern.
 
 import { Fragment, useState, type ReactNode } from "react";
-import { formatMhz, siteNumber } from "../config.ts";
+import { formatMhz, placeText, siteNumber } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
@@ -281,7 +281,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
               <tbody>
                 {live.channels.map((c) => (
                   <tr key={c.freqHz}>
-                    <td className="mono">{formatMhz(c.freqHz)}</td>
+                    <td className="mono">{placeText(c.freqHz)}</td>
                     <td>{channelWhat(c)}</td>
                     <td className="mono">
                       <span className={`snr ${c.snrDb >= 15 ? "ok" : c.snrDb >= 8 ? "warn" : "bad"}`}>{num(c.snrDb, 0)} dB</span>
@@ -383,7 +383,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
                   const p = coverage(s, r.freqHz);
                   return (
                     <tr key={r.freqHz}>
-                      <td className="mono">{formatMhz(r.freqHz)}</td>
+                      <td className="mono">{placeText(r.freqHz)}</td>
                       <td className="small">{p?.src.label ?? "—"}</td>
                       <td className="mono">{p ? `${Math.round(p.depth * 100)}%` : "—"}</td>
                       <td className="mono">{r.calls}</td>

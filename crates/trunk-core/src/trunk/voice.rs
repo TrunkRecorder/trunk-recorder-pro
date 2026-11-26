@@ -30,6 +30,7 @@ use crate::position::Position;
 use crate::dmr::voice::{DmrVoice, VOICE_BURST_S};
 use crate::dsp::c4fm::C4fm;
 use crate::dsp::am::Am;
+use crate::dsp::audio_in::AudioGate;
 use crate::dsp::fm::Nbfm;
 use crate::dsp::{AnalogTuning, Receiver, Symbol};
 use crate::mbe;
@@ -427,6 +428,10 @@ pub struct VoiceSpec {
     pub subaudible: bool,
     /// Analog: bandwidth, de-emphasis, AM level, squelch timing.
     pub analog: AnalogTuning,
+    /// Analog: its channel gives audio, demodulated already (an internet stream's: [`crate::dsp::audio_in`]),
+    /// which [`VoiceDecoder::push_audio`] takes; `rate` is the audio's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio: bool,
     /// AM: bands (Hz from the centre) with a steady line in them (a spur),
     /// which its squelch doesn't listen to.
     pub ignore_hz: Vec<(f64, f64)>,
@@ -445,6 +450,9 @@ pub trait VoiceDecoder: Send {
     fn kind(&self) -> VoiceKind;
     /// Decode `iq`; outputs go to `out` in the order they were heard.
     fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>);
+    /// Analog, built for a channel of audio ([`VoiceSpec::audio`]): decode `audio`, demodulated
+    /// already, as `push` does a channel's IQ.
+    fn push_audio(&mut self, _audio: &[f32], _out: &mut Vec<VoiceOut>) {}
     /// End of input: decode what the receivers still hold.
     fn flush(&mut self, _out: &mut Vec<VoiceOut>) {}
     /// The talkgroup (or radio) each slot's call was granted for; None: no
@@ -468,6 +476,11 @@ pub trait VoiceDecoder: Send {
     /// the call's `freq_error`, and AutoTune. (No default: each decoder says,
     /// so one that forgets doesn't report 0 for every call.)
     fn offset_hz(&self) -> Option<f32>;
+    /// Analog: how far behind the air its audio comes out, s (its squelch gate's line), which a
+    /// call's start is taken back by. (Digital: its frames say when they were heard: 0.)
+    fn delay_s(&self) -> f64 {
+        0.0
+    }
     /// Analog: whether the carrier was up during the last push (digital
     /// decoders don't tell: None).
     fn carrier(&self) -> Option<bool> {
@@ -512,7 +525,16 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
         }
         VoiceKind::Dmr => Box::new(Dmr { rx: C4fm::dmr(spec.rate), voice: Box::new(DmrVoice::new(spec.seed).tapped(spec.taps)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, air: [None; 2] }),
         VoiceKind::Nxdn(r) => Box::new(Nxdn { rx: r.receiver(spec.rate), voice: Box::new(NxdnVoice::new(spec.seed).tapped(spec.taps)), syms: Vec::new(), t0: spec.t0, rate: spec.rate, nxdn: r, air: None }),
+        VoiceKind::Analog | VoiceKind::Am if spec.audio => Box::new(Analog {
+            kind: spec.kind,
+            demod: Demod::Audio(AudioGate::new(spec.analog.squelch)),
+            squelch: spec.squelch,
+            subaudible: spec.subaudible,
+            carrier: false,
+            ending: Ending::new(spec.rate),
+        }),
         VoiceKind::Analog => Box::new(Analog {
+            kind: VoiceKind::Analog,
             demod: Demod::Fm(Nbfm::with(spec.rate, &spec.analog).tapped(spec.taps.has(Tap::FmDiscriminator).then_some(DISCRIMINATOR_RATE))),
             squelch: spec.squelch,
             subaudible: spec.subaudible,
@@ -520,7 +542,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             ending: Ending::new(spec.rate),
         }),
         VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder).tapped(spec.taps), t0: spec.t0, air: None }),
-        VoiceKind::Am => Box::new(Analog { demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false, ending: Ending::new(spec.rate) }),
+        VoiceKind::Am => Box::new(Analog { kind: VoiceKind::Am, demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false, ending: Ending::new(spec.rate) }),
         VoiceKind::Auto => Auto::new(spec),
     }
 }
@@ -673,6 +695,10 @@ impl VoiceDecoder for Auto {
     }
     fn set_ignore(&mut self, ignore: &[(f64, f64)]) {
         self.each(|c| c.set_ignore(ignore));
+    }
+    /// The settled receiver's.
+    fn delay_s(&self) -> f64 {
+        self.settled().map_or(0.0, |c| c.delay_s())
     }
     /// Once settled, the receiver's; before, analog's (the one that can say).
     fn carrier(&self) -> Option<bool> {
@@ -959,11 +985,14 @@ impl VoiceDecoder for ProVoice {
 enum Demod {
     Fm(Nbfm),
     Am(Am),
+    /// Neither: its channel's audio was demodulated before it came ([`VoiceSpec::audio`]).
+    Audio(AudioGate),
 }
 
 /// Analog FM or AM, squelched. (The unit IDs and tones in its audio are
 /// found with the call's: [`super::inband`].)
 struct Analog {
+    kind: VoiceKind,
     demod: Demod,
     squelch: f32,
     subaudible: bool,
@@ -1000,21 +1029,10 @@ impl Ending {
     }
 }
 
-impl VoiceDecoder for Analog {
-    fn kind(&self) -> VoiceKind {
-        match self.demod {
-            Demod::Fm(_) => VoiceKind::Analog,
-            Demod::Am(_) => VoiceKind::Am,
-        }
-    }
-    fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
-        let mut audio = Vec::new();
-        let mut low = Vec::new();
-        self.carrier = match &mut self.demod {
-            Demod::Fm(fm) => fm.push_low(iq, self.squelch, &mut audio, self.subaudible.then_some(&mut low)),
-            Demod::Am(am) => am.push(iq, self.squelch, &mut audio),
-        };
-        let ended = self.ending.after(iq.len(), !audio.is_empty());
+impl Analog {
+    /// What a push came to: `n` samples in, `audio` (and `low`) out of them.
+    fn heard(&mut self, n: usize, audio: Vec<f32>, low: Vec<f32>, out: &mut Vec<VoiceOut>) {
+        let ended = self.ending.after(n, !audio.is_empty());
         if let Demod::Fm(fm) = &mut self.demod {
             let samples = fm.take_tapped();
             if !samples.is_empty() {
@@ -1031,6 +1049,30 @@ impl VoiceDecoder for Analog {
             out.push(VoiceOut { slot: 0, out: TrackerOut::Ended });
         }
     }
+}
+
+impl VoiceDecoder for Analog {
+    fn kind(&self) -> VoiceKind {
+        self.kind
+    }
+    fn push(&mut self, iq: &[Complex32], out: &mut Vec<VoiceOut>) {
+        let mut audio = Vec::new();
+        let mut low = Vec::new();
+        self.carrier = match &mut self.demod {
+            Demod::Fm(fm) => fm.push_low(iq, self.squelch, &mut audio, self.subaudible.then_some(&mut low)),
+            Demod::Am(am) => am.push(iq, self.squelch, &mut audio),
+            // (Given audio: push_audio.)
+            Demod::Audio(_) => return,
+        };
+        self.heard(iq.len(), audio, low, out);
+    }
+    fn push_audio(&mut self, samples: &[f32], out: &mut Vec<VoiceOut>) {
+        let Demod::Audio(gate) = &mut self.demod else { return };
+        let mut audio = Vec::new();
+        let mut low = Vec::new();
+        self.carrier = gate.push(samples, self.squelch, &mut audio, self.subaudible.then_some(&mut low));
+        self.heard(samples.len(), audio, low, out);
+    }
     fn set_squelch(&mut self, open_power: f32) {
         self.squelch = open_power;
     }
@@ -1041,6 +1083,13 @@ impl VoiceDecoder for Analog {
     }
     fn carrier(&self) -> Option<bool> {
         Some(self.carrier)
+    }
+    fn delay_s(&self) -> f64 {
+        match &self.demod {
+            Demod::Fm(fm) => fm.delay_s(),
+            Demod::Am(am) => am.delay_s(),
+            Demod::Audio(gate) => gate.delay_s(),
+        }
     }
     /// (Its demodulators don't measure the carrier's offset, or an eye opening.)
     fn offset_hz(&self) -> Option<f32> {
