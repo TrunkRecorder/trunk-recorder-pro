@@ -126,6 +126,11 @@ impl Request {
 /// The survey settings for the request's radio.
 pub fn survey_config(cfg: &Config, req: &Request) -> Result<SurveyConfig, String> {
     let src = req.radio(cfg)?;
+    // (Looking for frequencies, the bands don't matter.)
+    if let Some(bad) = req.bands.iter().find(|id| !BANDS.iter().any(|b| b.id == id.as_str())).filter(|_| req.look_for.is_none()) {
+        let ids = BANDS.iter().map(|b| b.id).collect::<Vec<_>>().join(", ");
+        return Err(format!("Not a band: \"{bad}\". Use one of {ids}."));
+    }
     let mut sc = SurveyConfig { rate_hz: src.rate_hz, bands: req.bands.clone(), threads: req.threads.max(1), ..Default::default() };
     if let Some(l) = &req.look_for {
         sc.targets = l.freqs_hz.clone();
@@ -425,5 +430,18 @@ mod tests {
         assert_eq!(r.source, 1);
         assert!(r.bands.contains(&"800".to_string()) && !r.bands.contains(&"t-band".to_string()));
         assert!(r.find_gain);
+    }
+
+    #[test]
+    fn an_unknown_band_stops_the_scan() {
+        let cfg = Config { sources: vec![serde_json::from_value(json!({ "type": "rtlsdr", "serial": "", "centerHz": 0, "rateHz": 2_400_000 })).unwrap()], ..Default::default() };
+        let ok = Request::from_json(&json!({ "source": 0, "bands": ["uhf", "uhf-420"] }));
+        assert_eq!(survey_config(&cfg, &ok).unwrap().bands, ["uhf", "uhf-420"]);
+        let r = Request::from_json(&json!({ "source": 0, "bands": ["uhf", "uhf2"] }));
+        let e = survey_config(&cfg, &r).unwrap_err();
+        assert!(e.contains("\"uhf2\"") && e.contains("uhf-420"), "{e}");
+        // Looking for frequencies, the bands don't matter.
+        let look = Request::from_json(&json!({ "source": 0, "bands": ["uhf2"], "lookFor": { "freqsHz": [440.0e6] } }));
+        assert!(survey_config(&cfg, &look).is_ok());
     }
 }

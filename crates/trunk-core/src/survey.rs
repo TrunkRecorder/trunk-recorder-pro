@@ -82,6 +82,9 @@ pub const BANDS: &[Band] = &[
     Band { id: "uhf", label: "UHF", lo_hz: 450.0e6, hi_hz: 470.0e6, default_on: true },
     Band { id: "vhf", label: "VHF", lo_hz: 136.0e6, hi_hz: 174.0e6, default_on: true },
     Band { id: "uhf-fed", label: "UHF federal", lo_hz: 380.0e6, hi_hz: 420.0e6, default_on: false },
+    // Between UHF federal and UHF: amateur in the US, but trunked DMR and
+    // others elsewhere (Russia, much of Europe and Asia).
+    Band { id: "uhf-420", label: "UHF 420–450", lo_hz: 420.0e6, hi_hz: 450.0e6, default_on: false },
     // Business / industrial (where DMR systems mostly are): inside UHF and VHF,
     // listed on their own for a scan of just them. Overlaps are scanned once.
     Band { id: "biz-uhf", label: "Business UHF", lo_hz: 451.0e6, hi_hz: 470.0e6, default_on: false },
@@ -2147,6 +2150,38 @@ mod tests {
         let biz = plan(&["biz-uhf".into()], rate, (24e6, 1766e6));
         assert!(!biz.is_empty() && biz.iter().all(|h| h.band == "biz-uhf"));
         assert!(biz.len() <= uhf.len());
+    }
+
+    #[test]
+    fn uhf_420_fills_the_gap_below_uhf() {
+        let rate = 2_400_000.0;
+        let half = rate * USABLE / 2.0;
+        let hops = plan(&["uhf-420".into()], rate, (24e6, 1766e6));
+        assert!(!hops.is_empty() && hops.iter().all(|h| h.band == "uhf-420"));
+        let mut f = 420.0e6;
+        while f <= 450.0e6 {
+            assert!(hops.iter().any(|h| (f - h.center).abs() <= half), "{f} uncovered");
+            f += 5000.0;
+        }
+        // Off by default, and named for what it holds.
+        assert!(!BANDS.iter().find(|b| b.id == "uhf-420").unwrap().default_on);
+        assert_eq!(band_of(440.0e6), "uhf-420");
+    }
+
+    #[test]
+    fn neighbouring_bands_join_without_a_gap_or_a_second_look() {
+        // UHF federal, UHF 420–450 and UHF meet end to end: 380–470 MHz, each part once.
+        let rate = 2_400_000.0;
+        let half = rate * USABLE / 2.0;
+        let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let all = plan(&ids(&["uhf-fed", "uhf-420", "uhf"]), rate, (24e6, 1766e6));
+        let each: usize = ["uhf-fed", "uhf-420", "uhf"].iter().map(|b| plan(&ids(&[b]), rate, (24e6, 1766e6)).len()).sum();
+        assert_eq!(all.len(), each);
+        let mut f = 380.0e6;
+        while f <= 470.0e6 {
+            assert!(all.iter().any(|h| (f - h.center).abs() <= half), "{f} uncovered");
+            f += 5000.0;
+        }
     }
 
     #[test]
