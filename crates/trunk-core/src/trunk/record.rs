@@ -4,15 +4,13 @@
 
 pub use trunk_recorder_plugin::{CallRecord, ErrorInterval, FreqEntry, SiteRef, SrcEntry, ToneEntry, TonePattern};
 
-use super::calls::{Call, Voice};
+use super::calls::Call;
 use crate::dsp::inband::signal::{matching, Signal};
 use crate::dsp::inband::{self, ToneSeg};
 use crate::dsp::inband::subaudible::Tone;
 use super::frames::FrameErrors;
-use super::frames::VoiceFrame;
 use super::multisite::Held;
 use super::recorded::Recorded;
-use super::sdr::{call_sdr, SdrInfo, SdrMode};
 use super::units::{UnitAliases, UnitTags};
 use crate::{loudness, mbe};
 
@@ -382,6 +380,7 @@ pub fn tone_pattern(p: &inband::pattern::Pattern, src: u32, signals: Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::calls::Voice;
 
     #[test]
     fn tones_are_written_with_their_sender() {
@@ -542,18 +541,6 @@ pub struct Concluded {
     pub base_name: String,
     /// 8 kHz mono in [−1, 1].
     pub audio: Vec<f32>,
-    /// With [`EngineConfig::capture_frames`]: the vocoder frames behind
-    /// `audio` (None for analog: there are none).
-    pub frames: Option<Capture>,
-}
-
-/// A call's frame capture: an `.sdr` file ([`super::sdr`]), or JSON lines
-/// ([`VoiceFrame::to_jsonl`]) for NXDN, which `.sdr` has no layout for.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Capture {
-    /// The file's extension: `sdr` or `frames.jsonl`.
-    pub ext: &'static str,
-    pub bytes: Vec<u8>,
 }
 
 /// What saving a call needs from its system.
@@ -577,10 +564,6 @@ pub struct SaveContext<'a> {
     /// Its radios' talker aliases, and its unit names file.
     pub units: Option<&'a UnitAliases>,
     pub unit_tags: Option<&'a UnitTags>,
-    /// Its P25 identity, as far as the control channel told it (for the `.sdr` header).
-    pub wacn: Option<u32>,
-    pub sys_id: Option<u32>,
-    pub nac: Option<u16>,
     /// The system's signals: its calls' tone patterns are named by them.
     pub signals: &'a [Signal],
     /// When the first of its copies began (multi-site; None: its own start).
@@ -589,45 +572,6 @@ pub struct SaveContext<'a> {
     pub call_num: Option<super::CallId>,
     /// The talker its `transmission_id` names ([`ConcludeInfo::first_talker`]).
     pub first_talker: Option<u32>,
-}
-
-/// The frames as an `.sdr` file when the call's mode has a layout there, else JSON lines.
-fn capture(call: &Call, frames: &[VoiceFrame], audio_len: usize, freq_error_hz: Option<f64>, reception: &Reception, cx: &SaveContext) -> Capture {
-    let mode = match call.voice {
-        Voice::Nxdn(_) | Voice::ProVoice => None,
-        Voice::Dmr { .. } => Some(SdrMode::Dmr),
-        Voice::P25Tdma { .. } => Some(SdrMode::P25Tdma),
-        Voice::P25 | Voice::Fm | Voice::Am => Some(SdrMode::P25Fdma),
-    };
-    let (first, last) = (call.sources.first().map_or(0, |s| s.src), call.talker().map_or(0, |s| s.src));
-    let info = SdrInfo {
-        start_us: ((cx.epoch_ms_at_zero + call.start_s * 1000.0) * 1000.0).round().max(0.0) as u64,
-        duration_ms: (audio_len as f64 * 1000.0 / mbe::SAMPLE_RATE as f64).round() as u32,
-        hz: call.freq_hz as u32,
-        nac: call.voice.color_code().map(u16::from).or(call.nac).or(cx.nac).unwrap_or(0),
-        wacn: cx.wacn.unwrap_or(0),
-        sysid: cx.sys_id.unwrap_or(0) as u16,
-        system: match (cx.wacn, cx.sys_id) {
-            (Some(w), Some(s)) => format!("{w:05X}{s:03X}"),
-            _ => cx.short_name.to_string(),
-        },
-        conventional: call.site.is_none(),
-        slot: call.voice.slot().unwrap_or(0),
-        tg: call.talkgroup,
-        first_src: first,
-        src: last,
-        encrypted: call.encrypted,
-        emergency: call.emergency,
-        signal_db: reception.signal_db().map(|v| v as f32),
-        floor_db: reception.noise_db().map(|v| v as f32),
-        offset_hz: freq_error_hz.map(|e| e.round() as i32),
-        alias: cx.units.and_then(|u| u.get(last)).unwrap_or("").to_string(),
-        alphatag: call.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
-    };
-    match mode.and_then(|m| call_sdr(m, frames, &info)) {
-        Some(bytes) => Capture { ext: "sdr", bytes },
-        None => Capture { ext: "frames.jsonl", bytes: VoiceFrame::to_jsonl(frames).into_bytes() },
-    }
 }
 
 /// Where a call was recorded: its recorder (the call JSON's `recorder_num`:
@@ -702,6 +646,5 @@ pub fn save_call(mut h: Held, cx: &SaveContext) -> Result<Concluded, Unsaved> {
             first_talker: cx.first_talker,
         },
     );
-    let frames = frames.captured.filter(|f| !audio.is_empty() && !f.is_empty()).map(|f| capture(&call, &f, audio.len(), freq_error_hz, &reception, cx));
-    Ok(Concluded { call, record, short_name: cx.short_name.to_string(), site: cx.site.to_string(), base_name, audio, frames })
+    Ok(Concluded { call, record, short_name: cx.short_name.to_string(), site: cx.site.to_string(), base_name, audio })
 }

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use crate::commands::{Command, ReceiverMode, SampleType};
 use crate::conversion::{Samples, Scratch, convert_block};
-use crate::device::Device;
+use crate::device::{Device, Family};
 use crate::error::{Error, Result};
 use crate::transfer::NO_WINDEX;
 
@@ -506,8 +506,18 @@ impl Device {
         // reader claims the endpoint (issue #75, finding #3). C ignores
         // clear_halt's result and so do we — a halt-clear failure must not
         // block a start that would otherwise succeed.
-        let _ = self.usb_handle().clear_halt(BULK_ENDPOINT);
+        //
+        // An RFOne's is cleared after the receiver is on, "after firmware
+        // has enabled it" (hydrasdr_generic_start_rx: OFF → RX →
+        // clear_halt → threads); still before the reader claims it.
+        let rfone = self.family() == Family::Rfone;
+        if !rfone {
+            let _ = self.usb_handle().clear_halt(BULK_ENDPOINT);
+        }
         self.set_receiver_mode(ReceiverMode::Rx)?;
+        if rfone {
+            let _ = self.usb_handle().clear_halt(BULK_ENDPOINT);
+        }
 
         let shared = Arc::new(StreamShared::new(SampleQueue::for_streaming(
             packing_enabled,
@@ -1042,6 +1052,38 @@ mod tests {
                 (wire::RECEIVER_MODE, wire::RECEIVER_MODE_OFF),
                 (wire::CLEAR_HALT_MARKER, 0),
                 (wire::RECEIVER_MODE, wire::RECEIVER_MODE_RX),
+                (wire::RECEIVER_MODE, wire::RECEIVER_MODE_OFF),
+            ]
+        );
+    }
+
+    #[test]
+    fn rfone_clears_halt_after_the_receiver_is_on() {
+        use crate::commands::SampleType;
+        use crate::device::{Device, Family};
+        use crate::transport::mock::{BulkRead, MockTransport, wire};
+
+        // hydrasdr_generic_start_rx order: receiver OFF -> receiver RX ->
+        // clear_halt -> threads.
+        let transport = Arc::new(MockTransport::default());
+        transport.script_bulk(vec![BulkRead::Fill(0x11)]);
+        let mut device = Device::from_transport_as(Family::Rfone, Arc::clone(&transport) as Arc<_>);
+        device.set_sample_type(SampleType::Raw).expect("set type");
+        device.start_rx(|_| true).expect("start_rx");
+        device.stop_rx().expect("stop");
+
+        let seq: Vec<(u8, u16)> = transport
+            .take_recorded()
+            .into_iter()
+            .filter(|c| c.request == wire::RECEIVER_MODE || c.request == wire::CLEAR_HALT_MARKER)
+            .map(|c| (c.request, c.value))
+            .collect();
+        assert_eq!(
+            seq,
+            vec![
+                (wire::RECEIVER_MODE, wire::RECEIVER_MODE_OFF),
+                (wire::RECEIVER_MODE, wire::RECEIVER_MODE_RX),
+                (wire::CLEAR_HALT_MARKER, 0),
                 (wire::RECEIVER_MODE, wire::RECEIVER_MODE_OFF),
             ]
         );

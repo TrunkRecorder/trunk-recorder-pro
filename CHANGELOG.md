@@ -10,6 +10,49 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   the noise it isn't: on the reported weak dispatch, 610 clean voice frames (of 828). It's now followed whenever frames
   sync: 670 (of 864). The frequency error a call reports comes from the receiver that decodes the signal best (C4FM or CQPSK),
   not the first one.
+- **HydraSDR RFOne: a driver built in, and libairspy and libhydrasdr are no longer used.** An RFOne now works
+  with nothing installed, like an Airspy: no hydrasdr-host package, and on Windows no `hydrasdr.dll` or
+  `libusb-1.0.dll`. It speaks an Airspy's USB protocol with a handful of differences, so the Airspy's built-in
+  driver (`crates/libairspy-rs`) now drives both. **Not yet tested on a real RFOne: please report how it goes.**
+  - **RFOne sample rates are 10, 5 or 2.5 MSPS.** The lower ones libhydrasdr decimated to (1.25 MSPS and below)
+    are gone: a source set to one is refused at Start with the rates it can run at. Pick 2.5.
+  - An RFOne is listed without being opened, so one that's recording stays in Setup's list; and an Airspy source on
+    **First available** no longer opens an RFOne (nor the other way), whichever firmware the RFOne has.
+  - The libairspy fallback for Airspys is removed, as the built-in driver has held up. On Windows an Airspy given
+    a libusbK or libusb-win32 driver with Zadig has to go back to WinUSB.
+  - `TRUNK_PRO_AIRSPY`, `TRUNK_PRO_AIRSPY_NATIVE`, `TRUNK_PRO_AIRSPY_LIBRARY_IQ` and `TRUNK_PRO_HYDRASDR` do
+    nothing now. `trunk-pro devices` shows `Airspy: built in` and `HydraSDR: built in`.
+  - The Docker image no longer carries libairspy, and an RFOne works in it.
+- **Signal taps: data from part-way through a channel's receiver, to files and to plugins** (#136, #212, thanks
+  @steve-horvath and @connorjfarrell). One way out for everything a voice channel makes on the way to a call's
+  audio, with whatever is known about it beside it:
+  - `fm.discriminator`: an analog FM channel's demodulated signal before de-emphasis and the voice filters, 16-bit
+    at 22,050 Hz, for `multimon-ng` and other pager and data decoders (POCSAG, FLEX).
+  - `voice.air`: each digital voice frame (P25 Phase 1 and 2, DMR, NXDN, EDACS ProVoice) as it came off the air,
+    error-corrected and not decrypted, with its place in the superframe, its errors and the encryption it is under
+    (P25's ALGID, key ID and MI; DMR's privacy header; NXDN's cipher, key and IV).
+  - `voice.frames`: each digital voice frame the vocoder was given, after error correction and decryption, with
+    its errors and what the vocoder made of it: to hear a transmission through another vocoder
+    (`trunk-pro tool revoice`) or in MimoSDR.
+  - `voice.errors`: no data, only each voice frame's corrected errors and what the vocoder made of it.
+  - **To files**: **Setup → Recording → Advanced → Signal taps** (`recording.taps`), for every system or some.
+    Each transmission is a file of its own beside the system's calls: a `.wav` for samples, and a `.jsonl`
+    sidecar for every tap (the stream, then a line for each frame or note).
+  - **Save vocoder frames is now the `voice.frames` tap** (breaking). The `recording.captureFrames` setting, its
+    switch in Setup → Recording and `replay --capture-frames` are gone: add the tap instead (`replay --taps
+    voice.frames`). A config that still has `captureFrames` is read as before and the key ignored. What changes:
+    a file per **transmission** rather than per call, named as every tap's is
+    (`<start>_<freq>-tap_<n>.voice.frames.sdr` and `.jsonl`) and not tied to the call's archive rules; every frame
+    vocoded is there, for calls the recorder didn't keep too; the `.jsonl` sidecar is written for every mode
+    (NXDN and ProVoice included) and its lines are the frames `tool revoice`, `tool tones` and `tool p25synth
+    --voice` read; the `.sdr` (P25 and DMR) no longer names the NAC, WACN, system ID or talkgroup alias in its
+    header. Voice decrypted with your keys is marked `decrypted` and reaches only plugins allowed decrypted calls.
+  - **To plugins** (SDK 0.17.0, additive): a plugin subscribes to `tap.<id>` and that turns the tap on; nothing
+    to set up. `Plugin::tap(TapChunk)`, with `TapData`, `TapNote`, `AirFrame`, `FrameErrors`, `TAPS`; a chunk says its
+    call, who is talking, its `voice_mode` and whether it is `decrypted`. Setup lists
+    the taps plugins take beside the saved ones.
+  - Off, a tap costs nothing, and calls are recorded as before either way. More taps can be added without new
+    plumbing (`docs/developer/architecture.md` §4.10).
 
 ## [0.5.1] — 2026-11-25
 

@@ -8,10 +8,12 @@ score them, and build a blind listening page.
     ./shootout.py stats INPUT...              voicing statistics of the encoded speech
 
 INPUT is a file or a directory (searched recursively) of IMBE frames:
-  *.sdr           trunk-pro's vocoder frame capture (Recording → "Save vocoder frames"),
-                  with the call's .json record beside it for talkgroup names; read
-                  with trunk-pro (tool sdr --frames)
-  *.frames.jsonl  the same capture as older trunk-pro versions saved it
+  *.sdr           trunk-pro's vocoder frames: the voice.frames signal tap's file, a
+                  transmission each (Setup → Recording → Advanced → Signal taps), with its
+                  .jsonl sidecar beside it for the talkgroup; read with trunk-pro
+                  (tool sdr --frames)
+  *.frames.jsonl  the tap's sidecar alone, or a call's frames as older trunk-pro versions
+                  saved them (with the call's .json record beside it)
   *.hex           one frame per line: 22 hex digits (u0..u7), optionally followed by E0 and ET
   *.imbe          raw 11-byte frames (u0..u7 packed MSB first)
 
@@ -231,12 +233,14 @@ def find_inputs(paths):
             files.append(p)
         else:
             die(f"{p}: no such file or directory")
-    return sorted(set(files))
+    # (The voice.frames tap saves a transmission as both an .sdr and its sidecar: once.)
+    files = set(files)
+    return sorted(f for f in files if not (f.endswith(".jsonl") and f[: -len(".jsonl")] + ".sdr" in files))
 
 
 def call_name(path):
     b = os.path.basename(path)
-    for ext in (".sdr", ".frames.jsonl", ".hex", ".imbe"):
+    for ext in (".voice.frames.sdr", ".voice.frames.jsonl", ".sdr", ".frames.jsonl", ".hex", ".imbe"):
         if b.endswith(ext):
             return b[: -len(ext)]
     return os.path.splitext(b)[0]
@@ -273,6 +277,19 @@ def normalise(path, dst):
                  "erased": r.get("erased", False), "out": r.get("out", "voice")}
             f.write(json.dumps(r, separators=(",", ":")) + "\n")
     meta = {"name": call_name(path), "desc": "", "tag": ""}
+    # A voice.frames tap's stream: its sidecar's first line says what it was of.
+    side = path[: -len(".sdr")] + ".jsonl" if path.endswith(".sdr") else path
+    if side.endswith(".voice.frames.jsonl") and os.path.exists(side):
+        try:
+            h = json.loads(open(side).readline())
+            if "talkgroup" in h:
+                meta["name"] = f"TG {h['talkgroup']}"
+            bits = [h["short_name"]] if h.get("short_name") else []
+            if h.get("freq_hz"):
+                bits.append(f"{h['freq_hz'] / 1e6:.4f} MHz")
+            meta["tag"] = " · ".join(bits)
+        except ValueError:
+            pass
     rec = next((path[: -len(e)] + ".json" for e in (".sdr", ".frames.jsonl") if path.endswith(e)), None)
     if rec and os.path.exists(rec):
         try:

@@ -14,6 +14,7 @@ use trunk_core::trunk::{
     SiteConfig, SystemConfig, Talkgroup, UnitTags, UnitTagsMode,
 };
 pub use trunk_core::trunk::{usable_half_width, SiteId, SystemId, DEFAULT_GUARD_HZ};
+use trunk_core::trunk::{Tap, TapSet};
 use crate::place::{advise, coverage, place_sources, receiver, Advice, Choices, Coverage, Group, Placing, Targets, Weighted};
 use trunk_core::trunk::Pins;
 
@@ -92,8 +93,7 @@ pub enum SourceKind {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         wire_format: String,
     },
-    /// An Airspy R2 / Mini, by the driver built in (libairspy, where installed, is loaded
-    /// at run time). `serial` hex, "" = the first.
+    /// An Airspy R2 / Mini, by the driver built in. `serial` hex, "" = the first.
     #[serde(rename_all = "camelCase")]
     Airspy {
         #[serde(default)]
@@ -107,8 +107,8 @@ pub enum SourceKind {
         #[serde(default = "yes")]
         packing: bool,
     },
-    /// A HydraSDR RFOne through libhydrasdr (installed separately; loaded at
-    /// run time). Its tuner and gain stages are an Airspy R2's, so its gain is
+    /// A HydraSDR RFOne, by the driver built in (the Airspy's: the same USB
+    /// protocol). Its tuner and gain stages are an Airspy R2's, so its gain is
     /// an Airspy's. `rf_port`: which input, 0 ANT (the one with the bias-T),
     /// 1 CABLE1, 2 CABLE2.
     #[serde(rename_all = "camelCase")]
@@ -730,15 +730,15 @@ fn engine_signals(defs: &[SignalDef]) -> Vec<trunk_core::dsp::inband::signal::Si
 }
 
 /// A radio of kind `kind` named `id` (a serial, or device arguments; "" = the first found), as
-/// radios are compared: its family (libairspy opens an RFOne as "the first" when it comes first,
-/// so an Airspy's and a HydraSDR's are one) and the id as its driver matches it (hex serials in
-/// any case). None: not a radio a driver finds.
+/// radios are compared: its family and the id as its driver matches it (hex serials in any case;
+/// an Airspy source never opens a HydraSDR, nor the other way: each is a family of its own). None: not a radio a driver finds.
 fn radio_id(kind: &str, id: &str) -> Option<(u8, String)> {
     let id = id.trim();
     Some(match kind {
         "rtlsdr" => (0, id.to_string()),
         "usrp" => (1, id.to_string()),
-        "airspy" | "hydrasdr" => (2, id.to_lowercase()),
+        "airspy" => (2, id.to_lowercase()),
+        "hydrasdr" => (8, id.to_lowercase()),
         "bladerf" => (3, id.to_lowercase()),
         "soapy" => (4, id.to_string()),
         "hackrf" => (5, id.to_lowercase()),
@@ -1693,6 +1693,25 @@ impl Channel {
 /// itself (`per_system`) make [`RecordingOverride`] and [`Recording::with`]
 /// too (protocol.ts: `RecordingRules`, of which `RecordingOverride` is a
 /// `Partial`).
+/// A signal tap ([`trunk_core::trunk::taps`]) saved to files: each of its streams — a
+/// transmission on a channel — under the recordings folder, with a sidecar of what's known
+/// about it. (A plugin takes a tap by subscribing to its topic; it needs no row.)
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TapRoute {
+    pub tap: Tap,
+    /// The systems whose channels it's taken from; none: every system's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub systems: Vec<SystemId>,
+}
+
+impl Recording {
+    /// The taps saved to files for system `system`.
+    pub fn saved_taps(&self, system: SystemId) -> TapSet {
+        TapSet::of(self.taps.iter().filter(|r| r.systems.is_empty() || r.systems.contains(&system)).map(|r| r.tap))
+    }
+}
+
 macro_rules! recording {
     (
         $(#[$sm:meta])*
@@ -1780,8 +1799,9 @@ recording! {
         pub capture_dir: String,
         pub preroll_s: f64,
         pub max_recorders: usize,
-        /// Save each call's vocoder frames next to its audio, for diagnosis.
-        pub capture_frames: bool,
+        /// Signal taps saved to files ([`TapRoute`]).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        pub taps: Vec<TapRoute>,
         /// A call heard on several sites of one system: save only the best copy
         /// (each is recorded; the one decoded most cleanly, or the talkgroup's
         /// preferred site, is kept). Trunk Recorder's multiSite.
@@ -1913,7 +1933,7 @@ impl Default for Recording {
             min_call_s: 0.0,
             max_call_s: 0.0,
             min_transmission_s: 0.0,
-            capture_frames: false,
+            taps: Vec::new(),
             normalize_audio: true,
             digital_level_db: 0.0,
             analog_level_db: 0.0,
@@ -3647,7 +3667,6 @@ impl Config {
             bank: BankConfig::default(),
             conventional: self.engine_channels(),
             conv: ConvConfig::default(),
-            capture_frames: self.recording.capture_frames,
             tapes: self.diagnostics.needs_tapes(),
             drop_duplicates: self.recording.drop_duplicate_calls,
             vocoder: self.recording.vocoder.engine(),
@@ -4268,8 +4287,8 @@ mod tests {
         assert_eq!((rtl.settable_ppm(2.0 - 3.6), airspy.settable_ppm(2.0 - 3.614)), (-2.0, -1.61));
     }
 
-    /// A HydraSDR source reads with an Airspy's gain defaults and the ANT input; it may be the
-    /// radio an Airspy source opens as "the first" (libairspy opens an RFOne), not one by another serial.
+    /// A HydraSDR source reads with an Airspy's gain defaults and the ANT input; it's never the
+    /// radio an Airspy source opens (each is found by its own serial string and firmware).
     #[test]
     fn a_hydrasdr_source() {
         let src = |v: serde_json::Value| -> Source { serde_json::from_value(v).unwrap() };
@@ -4301,8 +4320,9 @@ mod tests {
         assert!(problem(1, true).unwrap().contains("bias-T is on ANT only, not CABLE1"), "{:?}", problem(1, true));
         assert!(problem(3, false).unwrap().contains("input is ANT, CABLE1, CABLE2"), "{:?}", problem(3, false));
         let airspy = |serial: &str| src(serde_json::json!({ "type": "airspy", "serial": serial, "centerHz": 0, "rateHz": 10000000 }));
-        assert!(h.may_be(&airspy("")) && h.may_be(&airspy("1a2b3c4d5e6f7081")));
-        assert!(!h.may_be(&airspy("735863DC2F650AE3")));
+        assert!(!h.may_be(&airspy("")) && !h.may_be(&airspy("1a2b3c4d5e6f7081")));
+        let other = src(serde_json::json!({ "type": "hydrasdr", "serial": "", "centerHz": 0, "rateHz": 5000000 }));
+        assert!(h.may_be(&other) && h.may_be(&h.clone()));
     }
 
     /// Found radios as a source picks them, every kind alike: one with no serial, or another's,
@@ -4335,8 +4355,8 @@ mod tests {
         let first = |t: Option<usize>| Some(Unpickable::SameSerial { twin: t });
         assert_eq!(why(&same), [first(None), first(Some(0)), first(None), first(Some(2)), None], "each with the first of its twins");
         assert_eq!(same.free_serial.as_deref(), Some("00000002"));
-        // An Airspy and an RFOne are one family: the RFOne with no serial can't be told from the Airspy.
-        assert_eq!(why(&c.radio_picks(None, &[f("airspy", "1a2b"), f("hydrasdr", "")]))[1], Some(Unpickable::NoSerial { twin: None }));
+        // An Airspy and an RFOne are each their own family: the lone RFOne with no serial is the first found of its.
+        assert_eq!(why(&c.radio_picks(None, &[f("airspy", "1a2b"), f("hydrasdr", "")]))[1], None);
         assert_eq!(why(&c.radio_picks(None, &[f("rtlsdr", ""), f("rtlsdr", "")])), [Some(Unpickable::NoSerial { twin: None }), Some(Unpickable::NoSerial { twin: Some(0) })]);
         let fine = c.radio_picks(Some(1), &[f("rtlsdr", "00000002"), f("rtlsdr", "00000003")]);
         assert_eq!((why(&fine), fine.free_serial), (vec![None, None], None));

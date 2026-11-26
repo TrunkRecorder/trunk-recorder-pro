@@ -28,6 +28,7 @@ pub mod session;
 pub mod share;
 pub mod stats;
 pub mod survey;
+pub mod taps;
 pub mod tune;
 
 pub use config::Config;

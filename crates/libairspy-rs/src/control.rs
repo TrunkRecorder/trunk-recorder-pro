@@ -1,7 +1,7 @@
 //! Device control-surface setters, ported from `airspy.c`.
 
 use crate::commands::{Command, GpioPin, GpioPort, SampleType};
-use crate::device::Device;
+use crate::device::{Device, Family};
 use crate::error::{Error, Result};
 use crate::stream::BULK_ENDPOINT;
 use crate::transfer::{NO_WINDEX, NO_WVALUE};
@@ -51,13 +51,24 @@ impl Device {
     /// The C header documents 24 MHz – 1.75 GHz as the valid range but
     /// the library does not enforce it, and neither does this port —
     /// the firmware is the authority.
+    ///
+    /// An RFOne takes it as 8 bytes (`hydrasdr_generic_set_freq`'s
+    /// `uint64_t`, hydrasdr_shared.c).
     pub fn set_freq(&self, freq_hz: u32) -> Result<()> {
-        self.out_setter(
-            Command::SetFreq,
-            NO_WVALUE,
-            NO_WINDEX,
-            &freq_hz.to_le_bytes(),
-        )
+        match self.family() {
+            Family::Airspy => self.out_setter(
+                Command::SetFreq,
+                NO_WVALUE,
+                NO_WINDEX,
+                &freq_hz.to_le_bytes(),
+            ),
+            Family::Rfone => self.out_setter(
+                Command::SetFreq,
+                NO_WVALUE,
+                NO_WINDEX,
+                &u64::from(freq_hz).to_le_bytes(),
+            ),
+        }
     }
 }
 
@@ -216,9 +227,39 @@ impl Device {
     }
 
     /// Toggle the bias tee (`airspy_set_rf_bias` — a GPIO write to
-    /// port 1 pin 13).
+    /// port 1 pin 13). An RFOne's has a request of its own, the value
+    /// in `wIndex` (`hydrasdr_generic_set_rf_bias`); it powers the
+    /// first input alone.
     pub fn set_rf_bias(&self, enabled: bool) -> Result<()> {
-        self.gpio_write(GpioPort::Port1, GpioPin::Pin13, u8::from(enabled))
+        match self.family() {
+            Family::Airspy => self.gpio_write(GpioPort::Port1, GpioPin::Pin13, u8::from(enabled)),
+            Family::Rfone => {
+                self.out_setter(Command::SetRfBias, NO_WVALUE, u16::from(enabled), &[])
+            }
+        }
+    }
+
+    /// Pick the input an RFOne hears, by its place in
+    /// [`crate::device::RFONE_RF_PORTS`] (`hydrasdr_generic_set_rf_port`):
+    /// the firmware answers 1 for an input it has, and anything else is
+    /// [`Error::InvalidParam`]. It keeps the input after it is closed.
+    /// An Airspy has the one: [`Error::Unsupported`].
+    pub fn set_rf_port(&self, port: u8) -> Result<()> {
+        if self.family() != Family::Rfone {
+            return Err(Error::Unsupported);
+        }
+        let mut status = [0u8; 1];
+        let n = self.vendor_in(Command::SetRfPort, NO_WVALUE, u16::from(port), &mut status)?;
+        if n < status.len() {
+            return Err(Error::TransferLengthMismatch {
+                expected: status.len(),
+                actual: n,
+            });
+        }
+        if status[0] != 1 {
+            return Err(Error::InvalidParam);
+        }
+        Ok(())
     }
 
     /// Toggle 12-bit packed transfers (`airspy_set_packing`). Refused
@@ -275,18 +316,82 @@ impl Device {
 pub(crate) mod tests {
     use std::sync::Arc;
 
-    use crate::device::Device;
+    use crate::device::{Device, Family};
     use crate::transport::mock::{MockTransport, wire};
 
     /// A Device over a mock transport, with construction-time traffic
     /// (the samplerate query) already drained.
     pub(crate) fn mock_device() -> (Arc<MockTransport>, Device) {
+        mock_family(Family::Airspy)
+    }
+
+    /// [`mock_device`], for either family.
+    pub(crate) fn mock_family(family: Family) -> (Arc<MockTransport>, Device) {
         let transport = Arc::new(MockTransport::default());
         // Unscripted reads fail, so the open-time samplerate query
         // takes the C fallback table deterministically.
-        let device = Device::from_transport(Arc::clone(&transport) as Arc<_>);
+        let device = Device::from_transport_as(family, Arc::clone(&transport) as Arc<_>);
         transport.take_recorded();
         (transport, device)
+    }
+
+    #[test]
+    fn rfone_set_freq_is_eight_bytes() {
+        // hydrasdr_generic_set_freq: bRequest HYDRASDR_SET_FREQ (13),
+        // an 8-byte little-endian payload.
+        let (transport, device) = mock_family(Family::Rfone);
+        device.set_freq(100_000_000).expect("set_freq");
+        let calls = transport.take_recorded();
+        assert_eq!(calls.len(), 1);
+        let c = &calls[0];
+        assert_eq!(c.request_type, wire::VENDOR_OUT);
+        assert_eq!(c.request, wire::SET_FREQ);
+        assert_eq!((c.value, c.index), (0, 0));
+        assert_eq!(c.data, vec![0x00, 0xE1, 0xF5, 0x05, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rfone_bias_is_its_own_request() {
+        // hydrasdr_generic_set_rf_bias: HYDRASDR_SET_RF_BIAS_CMD (20),
+        // OUT, the value in wIndex, no payload.
+        let (transport, device) = mock_family(Family::Rfone);
+        device.set_rf_bias(true).expect("bias");
+        let calls = transport.take_recorded();
+        assert_eq!(calls.len(), 1);
+        let c = &calls[0];
+        assert_eq!(c.request_type, wire::VENDOR_OUT);
+        assert_eq!(c.request, 20);
+        assert_eq!((c.value, c.index), (0, 1));
+        assert!(c.data.is_empty());
+    }
+
+    #[test]
+    fn rfone_input_is_what_the_firmware_takes() {
+        // hydrasdr_generic_set_rf_port: HYDRASDR_SET_RF_PORT (28), IN,
+        // the port in wIndex, one byte back that must be 1.
+        let (transport, device) = mock_family(Family::Rfone);
+        transport.script_reads(vec![Ok(vec![1]), Ok(vec![0])]);
+        device.set_rf_port(2).expect("CABLE2");
+        assert!(matches!(
+            device.set_rf_port(7),
+            Err(crate::Error::InvalidParam)
+        ));
+        let calls = transport.take_recorded();
+        assert_eq!(calls.len(), 2);
+        assert_in_setter(&calls[0], 28, 2);
+        // An Airspy isn't asked.
+        let (transport, device) = mock_device();
+        assert!(matches!(
+            device.set_rf_port(0),
+            Err(crate::Error::Unsupported)
+        ));
+        assert!(transport.take_recorded().is_empty());
+    }
+
+    #[test]
+    fn rfone_falls_back_to_its_own_rates() {
+        let (_, device) = mock_family(Family::Rfone);
+        assert_eq!(device.samplerates(), vec![10_000_000, 5_000_000, 2_500_000]);
     }
 
     #[test]

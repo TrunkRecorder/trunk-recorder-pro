@@ -86,10 +86,7 @@ RUN ./configure --prefix=/opt/ffmpeg \
 
 # --- The image ----------------------------------------------------------------
 FROM debian:${DEBIAN}-slim
-# libairspy (with libusb: about 230 kB), loaded when the app starts: what an Airspy R2 / Mini the built-in
-# driver can't open falls back to. RTL-SDRs, HackRFs and Airspys need no driver; the other radios' drivers aren't in the image (docs/install/docker.md).
-RUN apt-get update && apt-get install -y --no-install-recommends libairspy0 \
-    && rm -rf /var/lib/apt/lists/*
+# RTL-SDRs, HackRFs, Airspys and HydraSDRs need no driver; the other radios' drivers aren't in the image (docs/install/docker.md).
 COPY --from=ffmpeg /src/ffmpeg /usr/local/bin/ffmpeg
 COPY --from=app /usr/local/bin/trunk-pro /usr/local/bin/trunk-pro
 # Everything the app writes is under /data: settings, band plans and plugins

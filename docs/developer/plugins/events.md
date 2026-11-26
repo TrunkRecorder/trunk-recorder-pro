@@ -17,6 +17,7 @@ frequencies are in hertz, unless a field says otherwise.
 | [`unit`](#unit) | `unit` | `UnitEvent` | A radio registers, affiliates, … | Many a second on a busy system |
 | [`audio`](#audio) | `audio` | `AudioChunk` | Live audio of recording calls | Many a second for each call |
 | [`voice`](#voice) | `voice` | `VoiceChunk` | Live voice of recording digital calls, as vocoder frames | One beside each `audio` chunk |
+| [`tap.<id>`](#tapid) | `tap` | `TapChunk` | A signal tap: data from part-way through a voice channel's receive chain | Many a second for each transmission |
 | [`status`](#status) | `status` | `Status` | Every site's state | Every 5 s |
 | [`totals`](#totals) | `totals` | `Totals` | Every series the recorder measures, as running totals | Every 10 s |
 | [`tone_pattern`](#tone_pattern) | `tone_pattern` | `TonePatternEvent` | A call's tones made a pattern: a page, an alert tone, a DTMF or KNOX string, a Morse ID | As heard |
@@ -231,7 +232,7 @@ without decoding it to audio and encoding it again. Since SDK 0.11.0.
 | `call_id`, `system`, `system_id`, `short_name`, `talkgroup` | As in `audio` |
 | `unit`, `unit_name` | Who is talking (0: not known yet), and their name, as the call's `sources` give it |
 | `decrypted` | Voice decrypted with the system's keys |
-| `frames` | The frames (`VoiceFrame`, as a line of a call's `.frames.jsonl`), 20 ms each |
+| `frames` | The frames (`VoiceFrame`), 20 ms each |
 
 Each frame:
 
@@ -248,6 +249,101 @@ Each frame:
 Voice goes where live audio goes: not to a plugin delayed for the call, decrypted only to plugins
 allowed decrypted calls, and encrypted voice the recorder can't decrypt not at all. This topic is as
 busy as `audio`.
+
+## `tap.<id>`
+
+A signal tap: what a voice channel's receiver makes on the way to a call's audio, as it is made.
+Each tap is a topic of its own, and subscribing to it is what turns the tap on, on every system the
+plugin is on for: the user sets nothing up. Since SDK 0.17.0.
+
+| Topic | From | `data` | Notes | |
+|---|---|---|---|---|
+| `tap.fm.discriminator` | Analog FM channels | `pcm`, 22,050 Hz | None | The FM demodulator's output before de-emphasis, the voice filters and the CTCSS notch, while the squelch is open; ±5 kHz deviation is half of full scale. For data decoders (POCSAG, FLEX, …) |
+| `tap.voice.air` | Digital voice: P25 (Phase 1 and 2), DMR, NXDN, EDACS ProVoice | `frames` | `AirFrame`, one a frame | Each voice frame as it came off the air: error-corrected, not decrypted |
+| `tap.voice.frames` | Digital voice | `frames` | `FrameErrors`, one a frame | Each voice frame the vocoder was given: after error correction and decryption |
+| `tap.voice.errors` | Digital voice | `none` | `FrameErrors`, one a frame vocoded | How each frame decoded: no data, only the figures |
+
+The SDK lists them as `TAPS`, and `Tap::VoiceAir.topic()` is the topic to subscribe to. All of them
+call the one method, `tap(chunk)`; `chunk.tap` says which.
+
+```json
+{
+  "type": "tap", "tap": "voice.air", "stream": 41, "seq": 0, "first": true, "offset": 0,
+  "system": 0, "system_id": 3, "short_name": "dcfd", "freq_hz": 854612500.0, "slot": 0,
+  "call_id": 912, "talkgroup": 101, "unit": 7001, "voice_mode": "p25", "time": 1795600000.2,
+  "data": { "kind": "frames", "codec": "imbe", "frames": ["a3f0…", "7c21…"] },
+  "notes": [
+    { "at": 0, "n": 0, "errs": 1, "e0": 0, "encrypted": true, "algid": 132, "keyid": 66, "mi": "0102030405060708a9" },
+    { "at": 1, "n": 1, "errs": 0, "e0": 0, "encrypted": true, "algid": 132, "keyid": 66, "mi": "0102030405060708a9" }
+  ]
+}
+```
+
+A **stream** is one transmission on one channel (on one slot of a TDMA channel): a channel is
+decoded only while something is on it, so a tap has nothing between transmissions. It ends at the
+air's terminator, when the squelch closes, after half a second of nothing, or when the channel
+closes; a carrier that never drops is cut every 10 minutes.
+
+| Field | |
+|---|---|
+| `tap` | Which tap: the topic without `tap.` |
+| `stream` | The stream the chunk is a piece of: a number no other stream of this run has |
+| `seq` | The chunk's number in its stream, from 0. Chunks of a stream come in order; those of different streams are interleaved |
+| `first`, `last` | The stream's first and last chunk (left out when false). The last may carry no data |
+| `offset` | Where in the stream its data starts: samples, frames, or (for a tap with no data) notes before it |
+| `system`, `system_id`, `short_name` | As in `audio` |
+| `freq_hz`, `slot` | The channel, and its TDMA slot (0 where there is one) |
+| `call_id`, `talkgroup` | The call on the channel as the chunk was made. Left out when there was none: a tap doesn't wait for a call |
+| `unit` | Who is talking, as the call's `sources` give it. Left out when it isn't known |
+| `voice_mode` | What the channel's voice is sent as, named as a call's `voice_mode`: `p25`, `p25_phase2`, `dmr`, `nxdn48`, `nxdn96`, `provoice`, `fm`, `am`. Left out until the decoder knows |
+| `decrypted` | The chunk holds voice the recorder decrypted with the system's keys (`voice.frames` only). Left out when false. Such chunks go only to a plugin the user allowed decrypted calls (`shareDecrypted`) |
+| `time` | Unix seconds when the recorder handed it out; its data is from just before |
+| `data` | `{"kind": "pcm", "rate": 22050, "pcm": "<base64>"}`: 16-bit mono PCM, little-endian, as `audio`'s. `{"kind": "frames", "codec": "imbe", "frames": ["<hex>", …]}`: vocoder frames, each its bits as `voice`'s. `{"kind": "none"}`: notes only |
+| `notes` | What is known about items of the data: each has `at`, the sample or frame it is about counted from the chunk's first (`offset + at` in the stream), and its tap's fields beside it. Left out when empty |
+
+In the SDK `chunk.data` is a `TapData` (`Pcm { rate, samples }`, `Frames { codec, frames }`, each
+frame a list of 0s and 1s, or `None`), and `chunk.notes_as::<AirFrame>()` gives each note with its
+place in the stream.
+
+`AirFrame` (`voice.air`):
+
+| Field | |
+|---|---|
+| `n` | The frame's place in its superframe. Left out when it isn't known |
+| `errs`, `e0` | As a `voice` frame's |
+| `erased` | Known lost: its bits mean nothing. Left out when false |
+| `encrypted` | Whether the transmission is encrypted, once the air has said (a header, link control, an encryption sync, a VCALL). Left out until then |
+| `algid`, `keyid`, `mi` | The encryption the frame is under, once the air has said: the algorithm, the key ID and the message indicator or initialization vector (hex) |
+
+`n` and the encryption fields are those of the chunk's `voice_mode`:
+
+| `voice_mode` | Frame | `n` | `algid`, `keyid`, `mi` |
+|---|---|---|---|
+| `p25` | IMBE, 88 bits | 0–17: LDU1's nine, then LDU2's | The encryption sync's ALGID, KID and MI (9 bytes) |
+| `p25_phase2` | AMBE+2, 49 bits | 0–17: the four 4V bursts' frames, then the 2V's. Unknown after a lost burst | The same |
+| `dmr` | AMBE+2, 49 bits | 0–17: bursts A–F, three each. Unknown for a transmission joined late | The privacy indicator header's algorithm, key ID and IV (4 bytes). Basic privacy sends none: only `encrypted` |
+| `nxdn48`, `nxdn96` | AMBE+2, 49 bits | 0–15: four frames of four (at 9600 baud a FACCH1 takes two at a time). Unknown where the frame's SACCH didn't decode, and on Type-D | The VCALL's cipher type (1 scrambler, 2 DES, 3 AES) and key ID, and the VCALL_IV's IV (8 bytes) |
+| `provoice` | IMBE, 88 bits | 0–3: the frame's four | Never: the air doesn't say |
+
+NXDN full-rate voice (EFR) is another codeword and isn't tapped.
+
+`FrameErrors` (`voice.frames`, `voice.errors`): `codec`, `errs`, `e0`, `erased`, `kind` and
+`tone`, as a `voice` frame's. With its frame's bits it is that frame: `chunk.voice_frames()` gives
+a `voice.frames` chunk's as `VoiceFrame`s, each with its place in the stream.
+
+`voice.frames` carries what the [`voice`](#voice) topic does, from the channel instead of the
+call: every transmission as it is heard, whether or not a call records it, with no call needed
+(`call_id` when there is one). Take `voice` to follow calls; take the tap to study a channel.
+
+Taps are live, like `audio`: a plugin the user delays calls for isn't sent them, and they aren't
+queued for one that is catching up. Only `voice.frames` holds decrypted voice (marked `decrypted`, and kept from a plugin the user hasn't
+allowed it); in `voice.air` encrypted voice comes as it was sent, whether or not the recorder has its key. Unlike `voice`, a tap doesn't follow the call's
+recording rules: it is of the channel, so it comes for voice ahead of its grant and for a call the
+recorder decodes but doesn't keep.
+
+The user can save the same streams to files, a `.jsonl` sidecar holding what the notes hold: see
+[`taps`](../../configuration/recording.md#taps). These topics are busy: hand each chunk to a thread
+of your own straight away.
 
 ## `status`
 

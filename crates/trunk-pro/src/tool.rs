@@ -15,16 +15,16 @@
 //! SmartNet control channel: its messages (and with `--osw` every OSW) as
 //! JSON lines, then OSW counts and the measured carrier offset.
 //!
-//! `tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile
-//! enhanced|fixed|mbelib] [--seed 1] [--hard-fec] [--s16]` — vocode a call's
-//! frame capture (the recording setting "Save vocoder frames") again, e.g.
+//! `tool revoice <frames.sdr | frames.jsonl> <out.wav> [--profile
+//! enhanced|fixed|mbelib] [--seed 1] [--hard-fec] [--s16]` — vocode a
+//! transmission's saved frames (the `voice.frames` signal tap) again, e.g.
 //! with another vocoder profile; `--hard-fec` uses TIA's repeat rule,
 //! `--s16` writes raw 16-bit samples at the vocoder's own scale instead of a
 //! WAV.
 //!
-//! `tool sdr <call.sdr> [--frames]` — an `.sdr` frame capture's call as
-//! MimoSDR projects it (its sidecar JSON), or its frames as `.frames.jsonl`
-//! lines (what the vocoder shootout's decoders read).
+//! `tool sdr <frames.sdr> [--frames]` — an `.sdr` file's call as MimoSDR
+//! projects it (its sidecar JSON), or its frames as JSON lines (what the
+//! vocoder shootout's decoders read).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -281,20 +281,24 @@ fn num_any(a: &Args, key: &str) -> u32 {
     })
 }
 
-/// A frame capture: an `.sdr` file, or `.frames.jsonl`.
+/// Saved vocoder frames: an `.sdr` file, the `voice.frames` tap's sidecar (`.jsonl`), or
+/// bare frame lines.
 pub(crate) fn load_frames(path: &str) -> Vec<VoiceFrame> {
     let bytes = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
     if trunk_core::trunk::sdr::is_sdr(&bytes) {
         return trunk_core::trunk::sdr::sdr_frames(&bytes);
     }
     let text = String::from_utf8(bytes).unwrap_or_else(|_| die(&format!("{path}: not an .sdr file or frame JSON lines")));
+    if let Some((_, frames)) = trunk_app::taps::sidecar_frames(&text) {
+        return frames;
+    }
     VoiceFrame::from_jsonl(&text).unwrap_or_else(|e| die(&format!("{path}: {e}")))
 }
 
 /// `tool sdr`: an `.sdr` file's call as MimoSDR sees it (its sidecar JSON),
-/// or with `--frames` its frames as `.frames.jsonl` lines.
+/// or with `--frames` its frames as JSON lines.
 fn run_sdr(a: &Args) {
-    let path = a.positional.get(1).unwrap_or_else(|| die("tool sdr <call.sdr> [--frames]"));
+    let path = a.positional.get(1).unwrap_or_else(|| die("tool sdr <frames.sdr> [--frames]"));
     if a.flag("frames") {
         print!("{}", VoiceFrame::to_jsonl(&load_frames(path)));
         return;
@@ -316,21 +320,21 @@ fn vocode(dec: &mut mbe::Decoder, f: &VoiceFrame, buf: &mut [f32; FRAME_SAMPLES]
 }
 
 /// `tool tones`: the in-band tones in saved calls, found as a call's are
-/// ([`trunk_core::trunk::recorded::Recorded`]): an `.sdr` or `.frames.jsonl`
-/// capture's frames vocoded again (its tone frames, and its audio), or a
+/// ([`trunk_core::trunk::recorded::Recorded`]): an `.sdr` or `.jsonl`
+/// file's frames vocoded again (its tone frames, and its audio), or a
 /// `.wav`'s audio.
 fn run_tones(a: &Args) {
     use trunk_core::trunk::inband::InBandSpec;
     use trunk_core::trunk::recorded::Recorded;
     let paths = &a.positional[1..];
     if paths.is_empty() {
-        die("tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]");
+        die("tool tones <frames.sdr | frames.jsonl | call.wav>… [--patterns]");
     }
     let secs = |n: usize| n as f64 / mbe::SAMPLE_RATE as f64;
     let (mut frames, mut tone_frames, mut calls) = (0usize, 0usize, 0usize);
     let mut kinds = BTreeMap::<&str, u32>::new();
     for path in paths {
-        let mut rec = Recorded::new(false, InBandSpec::default());
+        let mut rec = Recorded::new(InBandSpec::default());
         if path.ends_with(".wav") {
             let b = std::fs::read(path).unwrap_or_else(|e| die(&format!("{path}: {e}")));
             let (rate, audio) = trunk_core::wav::decode(&b).unwrap_or_else(|e| die(&format!("{path}: {e}")));
@@ -377,7 +381,7 @@ fn run_tones(a: &Args) {
 
 /// `tool revoice`: a frame capture back through the vocoder.
 fn run_revoice(a: &Args) {
-    let path = a.positional.get(1).unwrap_or_else(|| die("tool revoice <call.sdr | call.frames.jsonl> <out.wav>"));
+    let path = a.positional.get(1).unwrap_or_else(|| die("tool revoice <frames.sdr | frames.jsonl> <out.wav>"));
     let out = a.positional.get(2).unwrap_or_else(|| die("tool revoice: no output .wav"));
     let profile = a.get("profile").map_or(mbe::Profile::Enhanced, |p| mbe::Profile::from_name(p).unwrap_or_else(|| die("tool revoice: --profile enhanced|fixed|mbelib")));
     let mbelib = profile == mbe::Profile::Mbelib;

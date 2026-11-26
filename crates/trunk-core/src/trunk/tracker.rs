@@ -14,6 +14,7 @@ use crate::p25::gps::LcPositions;
 use crate::p25::lc::{self, Lc, LinkControl};
 use crate::p25::voice::{decode_tdulc, imbe_bits_to_params, imbe_params_to_bits, ldu_codeword_end_bit, EncryptionSync, ALGID_CLEAR};
 use super::calls::Flags;
+use super::taps::{AirFrame, Tap, TapPiece, TapSet};
 use super::voice::{Crypt, Encryption, TrackerOut};
 use std::sync::Arc;
 
@@ -54,9 +55,27 @@ pub struct VoiceTracker {
     positions: LcPositions,
     call_frames: u64,
     end_s: f64,
+    /// The taps on: [`Tap::VoiceAir`] is this decoder's.
+    taps: TapSet,
     /// Vocoder frames / repeated or muted, over the channel's life.
     pub frames: u64,
     pub bad_frames: u64,
+}
+
+/// What [`Tap::VoiceAir`] says of a P25 frame as it was sent: frame `n` of its superframe,
+/// under the encryption `crypt` knows of so far.
+pub(super) fn air_frame(n: Option<usize>, errs: u32, e0: u32, erased: bool, crypt: &Crypt) -> AirFrame {
+    let es = crypt.es;
+    AirFrame {
+        n: n.map(|n| n as u8),
+        errs,
+        e0,
+        erased,
+        encrypted: crypt.voice.known(),
+        algid: es.map(|es| es.algid),
+        keyid: es.map(|es| es.keyid),
+        mi: es.map(|es| AirFrame::hex(&es.mi)),
+    }
 }
 
 impl VoiceTracker {
@@ -78,9 +97,16 @@ impl VoiceTracker {
             positions: LcPositions::default(),
             call_frames: 0,
             end_s: 0.0,
+            taps: TapSet::NONE,
             frames: 0,
             bad_frames: 0,
         }
+    }
+
+    /// With these taps on.
+    pub fn tapped(mut self, taps: TapSet) -> Self {
+        self.taps = taps;
+        self
     }
 
     /// The talkgroup link control named for the current transmission.
@@ -389,6 +415,10 @@ impl VoiceTracker {
     fn voice_frame(&mut self, ldu: usize, k: usize, u: [u32; 8], e0: u32, errs: u32, erased: bool, out: &mut Vec<TrackerOut>) {
         self.frames += 1;
         self.call_frames += 1;
+        if self.taps.has(Tap::VoiceAir) {
+            let note = air_frame(Some(ldu * 9 + k), errs, e0, erased, &self.crypt);
+            out.push(TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Imbe, &imbe_params_to_bits(&u), &note)));
+        }
         let unsure = self.crypt.voice == Encryption::Unknown;
         let waiting = self.crypt.voice.encrypted() && self.crypt.keystream().is_none() && self.keys.is_some();
         if ldu == 0 && (unsure || waiting) {

@@ -1,5 +1,7 @@
 //! Pure-Rust port of [libairspy] — USB driver for the Airspy R2 / Mini
 //! software-defined radio receivers, with no C library dependency.
+//! This fork also drives the HydraSDR RFOne ([`Family`]), whose
+//! firmware takes the same requests.
 //!
 //! This is a faithful port: USB wire behavior, sample-pipeline
 //! semantics, and DSP output match the original C library, behind an
@@ -35,7 +37,7 @@ mod transport;
 pub use board::PartIdSerial;
 pub use control::MIN_KERNEL_LEN;
 pub use conversion::Samples;
-pub use device::{Device, list_devices};
+pub use device::{Device, Family, RFONE_RF_PORTS, list_devices, list_family};
 pub use error::{Error, Result};
 
 /// Library version, mirroring `airspy_lib_version` /

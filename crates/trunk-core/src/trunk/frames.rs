@@ -1,7 +1,6 @@
 //! Per-call vocoder frame records: the FEC error summary written to the call
-//! JSON (in intervals, so bursts stand out), and the optional frame capture —
-//! each frame's information bits and error counts as JSON lines, which
-//! `trunk-pro tool revoice` decodes again offline.
+//! JSON (in intervals, so bursts stand out). (The frames themselves are a
+//! signal tap, `voice.frames`: [`super::taps`].)
 
 use crate::mbe::{FRAME_SAMPLES, SAMPLE_RATE};
 // (The plugin SDK's, which plugins get on the `voice` topic.)
@@ -75,12 +74,10 @@ impl FrameErrors {
     }
 }
 
-/// A call's frame bookkeeping: always the error summary, the frames
-/// themselves only when captured.
+/// A call's frame bookkeeping: the error summary.
 #[derive(Clone, Debug, Default)]
 pub struct CallFrames {
     pub errors: FrameErrors,
-    pub captured: Option<Vec<VoiceFrame>>,
     /// Each frame's errors, in order (so the summary can be redone for
     /// the frames a call keeps: [`CallFrames::keep`]).
     stats: Vec<FrameStat>,
@@ -101,17 +98,10 @@ impl FrameStat {
 }
 
 impl CallFrames {
-    pub fn new(capture: bool) -> Self {
-        CallFrames { errors: FrameErrors::default(), captured: capture.then(Vec::new), stats: Vec::new() }
-    }
-
     pub fn push(&mut self, f: &VoiceFrame) {
         let st = FrameStat::of(f);
         self.stats.push(st);
         self.errors.add_stat(st);
-        if let Some(c) = self.captured.as_mut() {
-            c.push(f.clone());
-        }
     }
 
     /// Frames so far.
@@ -130,10 +120,6 @@ impl CallFrames {
         let kept = |k: usize| ranges.iter().any(|r| r.contains(&(k * FRAME_SAMPLES)));
         let mut k = 0;
         self.stats.retain(|_| (kept(k), k += 1).0);
-        if let Some(c) = self.captured.as_mut() {
-            let mut k = 0;
-            c.retain(|_| (kept(k), k += 1).0);
-        }
         self.errors = FrameErrors::default();
         for &st in &self.stats {
             self.errors.add_stat(st);

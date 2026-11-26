@@ -63,9 +63,10 @@ jobs:
           docker buildx build --load --platform ${{ matrix.platform }} --cache-from type=gha,scope=${{ matrix.arch }} -t trunk-pro-test .
           docker run --rm trunk-pro-test --version
           docker run --rm --entrypoint ffmpeg trunk-pro-test -hide_banner -version | head -1
-          # The Airspy's driver is built in, and libairspy (its fallback) loads, on each architecture.
+          # The radios with drivers built in are listed as such, on each architecture.
           docker run --rm trunk-pro-test devices | tee devices.txt
-          grep -E '^Airspy: built in, and libairspy [0-9]' devices.txt
+          grep -x 'Airspy: built in' devices.txt
+          grep -x 'HydraSDR: built in' devices.txt
       - name: Keep the digest
         if: env.PUSH == 'true'
         run: |

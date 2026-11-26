@@ -2,7 +2,7 @@
 //!
 //! A radio's driver keeps only a short buffer (65–440 ms); the threads that
 //! empty it — ours, and the ones the driver starts (libusb's event thread on
-//! macOS, nusb's, UHD's and libairspy's workers) — are lost when they wait
+//! macOS, nusb's, UHD's and the Airspy driver's workers) — are lost when they wait
 //! behind other work. [`crate::sdr::run_with`] raises a source's own thread
 //! once and, each time the radio opens, the driver's threads started meanwhile.
 //!
@@ -22,7 +22,7 @@
 /// The threads running before a radio opened, so [`raise_new`] can tell the ones its driver started.
 pub struct Before(#[allow(dead_code)] Vec<u64>);
 
-/// Driver threads with names of their own: libusb's on macOS (UHD, libairspy,
+/// Driver threads with names of their own: libusb's on macOS (UHD,
 /// most SoapySDR modules), nusb's (RTL-SDR, HackRF, Airspy) and the built-in
 /// Airspy driver's, which keeps its USB transfers going.
 #[allow(dead_code)]

@@ -120,7 +120,7 @@ trunk-pro --log-level debug
 trunk-pro devices [--usrp [args]]
 ```
 
-Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened), the HackRFs and the Airspys, then whether the optional HydraSDR (libhydrasdr), bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy,
+Lists the RTL-SDRs it can see (model and serial number; one the app is recording from is shown as `recording`, not opened), the HackRFs, the Airspys and the HydraSDRs (the Airspy and HydraSDR drivers are built in: `Airspy: built in`, `HydraSDR: built in`), then whether the optional bladeRF (libbladeRF), USRP (UHD) and SoapySDR drivers are installed. For Airspy,
 HydraSDR and bladeRF it lists the devices: Airspys with their model (R2 or Mini) and the sample rates they run
 at, HydraSDRs with theirs, bladeRFs with their full serials; for
 SoapySDR it lists the installed modules (and any that failed to load, with why) and the devices
@@ -260,7 +260,7 @@ called `conv`.
 | `--transmissions` | off | Conversation mode off: each transmission is a call of its own (`conversationMode`) |
 | `--min-transmission s` | 0 | Leave out transmissions shorter than this |
 | `--tapes dir` | | Also write each channel as a SigMF tape in `dir`: its IQ and what its decoder needs, for [`tool channel`](developer/tools.md#tool-channel) |
-| `--capture-frames` | off | Also write each digital call's vocoder frames as `<call>.sdr` (NXDN: `<call>.frames.jsonl`), for `tool revoice` |
+| `--taps` | none | Signal taps to save beside the calls, by id (`fm.discriminator,voice.air,voice.frames`): see [`taps`](configuration/recording.md#taps) |
 | `--messages` | off | Print every control channel message |
 | `--summary file` | | Also write each site's control channel blocks, good and bad, as JSON: over all of it and, for one of our captures, over the part its live figures (`trp:live`) cover |
 | `--quiet` | off | Don't print control channels, calls and files as they happen |
@@ -389,7 +389,7 @@ seconds: 114 by default.
 **Each kind of radio has a plan**, from how it is built. The front of the chain (the LNA) sets the
 noise figure and is what strong signals overload, so it moves first; the stages after it only bring
 the level into the ADC's range, so they move last. Where the radio's maker drew a path through its
-stages (libairspy's tables, an R820T's gain table, the gain table behind an AD9361's one number),
+stages (an Airspy's linearity and sensitivity tables, an R820T's gain table, the gain table behind an AD9361's one number),
 the search goes along that path: each step on it is a setting the maker measured. A move goes one
 way while each step is better; refused at its first step, it tries the other way. When any move
 was kept, the moves are walked once more (one stage moved can change what suits another), never
@@ -469,7 +469,7 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool nxdnscan` | Every NXDN carrier in a capture |
 | `tool nxdn` | One NXDN channel's messages |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
-| `tool sdr` | A saved `.sdr` call's metadata, or its frames |
+| `tool sdr` | A saved `.sdr` file's metadata, or its frames |
 | `tool tones` | The in-band tones in saved calls, or the patterns they make up |
 
 The tools for testing and measuring the decoders (`p25synth`, `dmrsynth`, `nxdnsynth`, `perf`,
@@ -542,29 +542,30 @@ NXDN capture, see [`tool nxdnsynth`](developer/tools.md#tool-nxdnsynth).
 ### tool revoice
 
 ```bash
-trunk-pro tool revoice <call.sdr | call.frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
+trunk-pro tool revoice <frames.sdr | frames.jsonl> <out.wav> [--profile enhanced|fixed|mbelib]
                        [--seed 1] [--hard-fec] [--s16]
 ```
 
-Runs a call's saved vocoder frames through the vocoder again, for example to hear it with another
-vocoder (`enhanced` unless `--profile` says otherwise; recording's own default is `fixed`). The frames are saved when **Save vocoder frames** is on in Setup → Recording (or with
-`replay --capture-frames`). `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
+Runs a transmission's saved vocoder frames through the vocoder again, for example to hear it with another
+vocoder (`enhanced` unless `--profile` says otherwise; recording's own default is `fixed`). The frames are those the
+[`voice.frames` signal tap](configuration/recording.md#taps) saves (Setup → Recording → Advanced → Signal taps, or
+`replay --taps voice.frames`): its `.sdr` or its `.jsonl`. `--hard-fec` uses the standard's repeat rule; `--s16` writes raw
 16-bit samples instead of a WAV.
 
 ### tool sdr
 
 ```bash
-trunk-pro tool sdr <call.sdr> [--frames]
+trunk-pro tool sdr <frames.sdr> [--frames]
 ```
 
-Prints a saved `.sdr` call's metadata as JSON, as MimoSDR reads it, or with `--frames` its vocoder
+Prints a saved `.sdr` file's metadata as JSON, as MimoSDR reads it, or with `--frames` its vocoder
 frames as JSON lines (one frame per line: `codec`, `bits` in hex, `e0`, `errs`, `erased`, and `out`,
 what the vocoder made of it).
 
 ### tool tones
 
 ```bash
-trunk-pro tool tones <call.sdr | call.frames.jsonl | call.wav>… [--patterns]
+trunk-pro tool tones <frames.sdr | frames.jsonl | call.wav>… [--patterns]
 ```
 
 Finds the in-band tones in saved calls as a call's are found while recording: DTMF, KNOX, call
@@ -676,10 +677,6 @@ systemctl --user restart trunk-pro    # or however the recorder runs
 | Variable | What it does |
 |---|---|
 | `TRUNK_PRO_UHD` | The UHD library file to load for USRPs, instead of searching for it |
-| `TRUNK_PRO_AIRSPY` | The libairspy library file to load, instead of searching (libairspy is optional: an Airspy's driver is built in) |
-| `TRUNK_PRO_AIRSPY_NATIVE` | Set to `0` to drive Airspys through libairspy alone, not the built-in driver |
-| `TRUNK_PRO_AIRSPY_LIBRARY_IQ` | Set to `1` for an Airspy to have its driver convert to IQ (libairspy's conversion), instead of the recorder converting the samples on the source's decoding thread |
-| `TRUNK_PRO_HYDRASDR` | The libhydrasdr library file to load, instead of searching |
 | `TRUNK_PRO_BLADERF` | The libbladeRF library file to load, instead of searching |
 | `TRUNK_PRO_SOAPY` | The SoapySDR library file to load, instead of searching |
 | `TRP_CORPUS_CACHE` | Where [`tool corpus`](developer/tools.md#tool-corpus) keeps its files, when `--cache` isn't given |

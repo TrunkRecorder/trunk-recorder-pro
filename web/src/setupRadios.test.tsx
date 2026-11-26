@@ -43,20 +43,20 @@ test("Setup: a HackRF's editor has its stages and bias-T, and needs no driver", 
 
 test("Setup: a driver that won't load says why in full, with the steps for the computer it runs on (#219)", () => {
   const c = defaultConfig();
-  c.sources = [SOURCE_KINDS.hydrasdr.fresh()];
+  c.sources = [SOURCE_KINDS.bladerf.fresh()];
   setup(c);
-  const why = "libhydrasdr found but couldn't be loaded: LoadLibraryExW failed (os error 126) — a DLL it needs is missing: hydrasdr.dll needs libusb-1.0.dll beside it";
+  const why = "libbladeRF found but couldn't be loaded: LoadLibraryExW failed (os error 126) — a DLL it needs is missing";
   const radios = (platform: string) => {
     transport.onMessage({ type: "hello", version: "test", platform, api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers"] });
-    transport.onMessage({ type: "radios", radios: { hydrasdr: { available: false, detail: why, devices: null } } as unknown as Radios });
+    transport.onMessage({ type: "radios", radios: { bladerf: { available: false, detail: why, devices: null } } as unknown as Radios });
     return text(renderToString(<SourceCard c={c} i={0} />));
   };
   const win = radios("windows");
-  assert.ok(win.includes(`HydraSDR needs ${why}`), "the recorder's reason, shown outright");
-  assert.match(win, /Windows put hydrasdr\.dll and libusb-1\.0\.dll .* next to trunk-pro\.exe Then Restart the app/);
-  assert.doesNotMatch(win, /dylib|host-tools/, "not another computer's steps");
+  assert.ok(win.includes(`bladeRF needs ${why}`), "the recorder's reason, shown outright");
+  assert.match(win, /Windows Nuand's bladeRF installer Then Restart the app/);
+  assert.doesNotMatch(win, /brew|sudo/, "not another computer's steps");
   // A computer it can't place: every way to install it.
-  assert.match(radios("test"), /libhydrasdr\.1\.dylib .* hydrasdr-host-tools .* put hydrasdr\.dll/);
+  assert.match(radios("test"), /brew install libbladerf .* sudo apt install libbladerf2 .* Nuand's bladeRF installer/);
 });
 
 test("Setup: an Airspy's driver is built in — nothing to install, its radios listed (#225)", () => {
@@ -193,7 +193,7 @@ test("Setup: a dongle with no serial, or another's serial, can't be picked; the 
   a.sources = [{ ...SOURCE_KINDS.airspy.fresh(), serial: "" } as Config["sources"][number], { ...SOURCE_KINDS.airspy.fresh(), serial: "" } as Config["sources"][number]];
   setup(a);
   const airspy = { serial: "735863dc2f650ae3", label: "Airspy R2 · SN 735863DC2F650AE3" };
-  transport.onMessage({ type: "radios", radios: { usrp: { available: false, detail: "" }, hackrf: { available: true, detail: "built in", devices: [] }, airspy: { available: true, detail: "libairspy", devices: [airspy, airspy] }, hydrasdr: { available: false, detail: "" }, bladerf: { available: false, detail: "" } } as unknown as Radios });
+  transport.onMessage({ type: "radios", radios: { usrp: { available: false, detail: "" }, hackrf: { available: true, detail: "built in", devices: [] }, airspy: { available: true, detail: "built in", devices: [airspy, airspy] }, hydrasdr: { available: false, detail: "" }, bladerf: { available: false, detail: "" } } as unknown as Radios });
   const clones = text(renderToString(<SourceCard c={a} i={1} />));
   assert.equal(clones.match(/\(same serial as another\)/g)?.length, 2);
   assert.match(clones, /2 Airspys can't be picked: they report the same serial \(clones can\).* Source 1 opens the first Airspy found, which may be any of these: give it its own too/);
