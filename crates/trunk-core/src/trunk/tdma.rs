@@ -9,6 +9,8 @@
 
 use super::frames::{Codec, VoiceFrame};
 use super::calls::Flags;
+use super::taps::{Tap, TapPiece, TapSet};
+use super::tracker::air_frame;
 use super::voice::{CipherId, Crypt, Encryption, TrackerOut};
 use crate::ambe::decode_vcw;
 use crate::mbe::{self, Kind, FRAME_SAMPLES};
@@ -242,6 +244,8 @@ pub struct TdmaTracker {
     keys: Option<Arc<Keyring>>,
     /// Use bit reliabilities (the DUID, the AMBE c1 word, the RS codes).
     pub soft: bool,
+    /// The taps on: [`Tap::VoiceAir`] is this decoder's.
+    pub taps: TapSet,
     /// Vocoder frames / repeated, muted or erased, over the channel's life.
     pub frames: u64,
     pub bad_frames: u64,
@@ -283,6 +287,7 @@ impl TdmaTracker {
             key: None,
             keys,
             soft: true,
+            taps: TapSet::NONE,
             frames: 0,
             bad_frames: 0,
             undecodable: 0,
@@ -456,6 +461,10 @@ impl TdmaTracker {
                 BURST_2V => Some(16 + j),
                 _ => (0..4).contains(&s.burst_id).then(|| 4 * s.burst_id as usize + j),
             };
+            if self.taps.has(Tap::VoiceAir) {
+                let note = air_frame(f, v.errs, 0, false, &s.crypt);
+                out.push((c, TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Ambe, &v.bits, &note))));
+            }
             if s.crypt.voice == Encryption::Unknown || (s.crypt.voice.encrypted() && s.crypt.keystream().is_none() && keys.is_some()) {
                 s.held.push((f, v.bits, v.errs));
             } else {

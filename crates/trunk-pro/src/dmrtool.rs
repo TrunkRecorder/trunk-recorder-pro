@@ -197,7 +197,7 @@ pub fn run(a: &Args) {
                         *counts.entry("slco".into()).or_default() += 1;
                         let _ = writeln!(out, "{}", serde_json::json!({ "t": t, "slot": s, "slco": raw[0] >> 4, "hex": hex(&raw) }));
                     }
-                    SlotEvent::Privacy { alg, key } => {
+                    SlotEvent::Privacy { alg, key, .. } => {
                         *counts.entry("pi_header".into()).or_default() += 1;
                         let _ = writeln!(out, "{{\"t\":{t:.4},\"slot\":{s},\"privacy\":{{\"alg\":{alg},\"key\":{key}}}}}");
                     }

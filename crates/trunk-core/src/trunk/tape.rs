@@ -180,7 +180,7 @@ mod tests {
     use crate::trunk::voice::VoiceKind;
 
     fn spec(rate: f64) -> VoiceSpec {
-        VoiceSpec { kind: VoiceKind::Fdma, rate, t0: 0.0, seed: 1, vocoder: mbe::Profile::Fixed, bank: BankConfig::default(), squelch: 0.5, subaudible: false, analog: AnalogTuning::default(), ignore_hz: Vec::new(), keys: None }
+        VoiceSpec { kind: VoiceKind::Fdma, rate, t0: 0.0, seed: 1, vocoder: mbe::Profile::Fixed, bank: BankConfig::default(), squelch: 0.5, subaudible: false, analog: AnalogTuning::default(), ignore_hz: Vec::new(), keys: None, taps: Default::default() }
     }
 
     #[test]

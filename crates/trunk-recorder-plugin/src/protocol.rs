@@ -58,12 +58,23 @@ pub mod topic {
     /// elsewhere. A plugin isn't sent its own lines.
     pub const LOG: &str = "log";
 
+    /// A signal tap's chunks ([`crate::TapChunk`]) come on topic `tap.<id>`, one for each tap
+    /// ([`crate::TAPS`], [`crate::Tap::topic`]): `tap.fm.discriminator`, `tap.voice.air`, ….
+    /// Subscribing turns the tap on, for the systems the plugin is on for.
+    pub const TAP: &str = crate::tap::TAP_TOPIC;
+
+    /// (The taps' topics are [`crate::TAPS`]', not listed here.)
     pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, TOTALS, TONE_PATTERN, LOG];
 
-    /// A call's live media ([`AUDIO`], [`VOICE`]): late isn't live, so a plugin
-    /// delayed for the call, or catching up, isn't given it.
+    /// A call's live media ([`AUDIO`], [`VOICE`]) and the taps' streams: late isn't live, so
+    /// a plugin delayed for the call, or catching up, isn't given it.
     pub fn is_live(topic: &str) -> bool {
-        topic == AUDIO || topic == VOICE
+        topic == AUDIO || topic == VOICE || topic.starts_with(TAP)
+    }
+
+    /// A topic the recorder has: one of [`ALL`], or a tap's.
+    pub fn known(topic: &str) -> bool {
+        ALL.contains(&topic) || crate::Tap::of_topic(topic).is_some()
     }
 }
 
@@ -204,6 +215,9 @@ pub enum HostMessage {
     Audio(AudioChunk),
     #[serde(rename = "voice")]
     Voice(VoiceChunk),
+    /// A piece of a signal tap's stream (topic `tap.<id>`: its `tap` says which).
+    #[serde(rename = "tap")]
+    Tap(crate::TapChunk),
     #[serde(rename = "status")]
     Status(Status),
     #[serde(rename = "totals")]
@@ -1091,7 +1105,7 @@ pub enum FrameKind {
 }
 
 /// One vocoder frame (20 ms) as the recorder decoded it: the `voice` topic's,
-/// and a line of a call's `.frames.jsonl`. In JSON its `bits` are hex, MSB
+/// and a line of the `voice.frames` signal tap's sidecar. In JSON its `bits` are hex, MSB
 /// first, the last byte zero-padded ([`bits_hex`]).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "FrameJson")]
@@ -1120,7 +1134,7 @@ impl VoiceFrame {
         self.erased || !matches!(self.kind, FrameKind::Voice | FrameKind::Tone)
     }
 
-    /// A call's frames as `.frames.jsonl`: one a line, in order (frame k
+    /// Frames as JSON lines: one a line, in order (frame k
     /// covers the call's audio from k × 20 ms).
     pub fn to_jsonl(frames: &[VoiceFrame]) -> String {
         frames.iter().map(|f| serde_json::to_string(f).unwrap_or_default() + "\n").collect()

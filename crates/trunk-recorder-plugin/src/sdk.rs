@@ -43,6 +43,9 @@ pub trait Plugin: Sized {
     fn audio(&mut self, _chunk: AudioChunk) {}
     /// Live voice as vocoder frames (subscribe to `voice`).
     fn voice(&mut self, _chunk: VoiceChunk) {}
+    /// A piece of a signal tap's stream (subscribe to the tap's topic, `tap.<id>`:
+    /// [`Tap::topic`](crate::Tap::topic)); `chunk.tap` says which tap's.
+    fn tap(&mut self, _chunk: crate::TapChunk) {}
     fn status(&mut self, _status: Status) {}
     /// Every series the recorder measures, as running totals since recording started, every
     /// 10 s ([`topic::TOTALS`]). [`crate::health`] makes node health reports of them.
@@ -410,6 +413,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
             HostMessage::Unit(u) => p.unit(u),
             HostMessage::Audio(a) => p.audio(a),
             HostMessage::Voice(v) => p.voice(v),
+            HostMessage::Tap(t) => p.tap(t),
             HostMessage::Status(s) => p.status(s),
             HostMessage::Totals(t) => p.totals(t),
             HostMessage::TonePattern(t) => p.tone_pattern(t),

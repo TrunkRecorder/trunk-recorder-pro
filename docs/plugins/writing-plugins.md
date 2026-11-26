@@ -213,6 +213,7 @@ build events nobody subscribed to, so subscribe only to what you use.
 | Follow calls as they happen, recorded or not | [`call.start`, `call.update`, `call.end`](../developer/plugins/events.md#callstart-callupdate-and-callend) |
 | Stream live audio | [`audio`](../developer/plugins/events.md#audio) (with `call.start` and `call.end`) |
 | Relay digital voice without decoding it | [`voice`](../developer/plugins/events.md#voice): the vocoder frames |
+| Decode something the recorder doesn't (pagers, data), or watch how channels decode | A signal tap, [`tap.<id>`](../developer/plugins/events.md#tapid): the FM discriminator, voice frames off the air, frame errors. Subscribing turns it on |
 | Watch radios register, affiliate, call for help | [`unit`](../developer/plugins/events.md#unit) |
 | Act on pages, alert tones, DTMF and Morse IDs | [`tone_pattern`](../developer/plugins/events.md#tone_pattern) |
 | Show how each site is doing | [`status`](../developer/plugins/events.md#status), every 5 s |
@@ -336,13 +337,13 @@ Add the crate, and `schemars` for the settings form:
 
 ```toml
 [dependencies]
-trunk-recorder-plugin = "0.15.1"
+trunk-recorder-plugin = "0.17.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-Use the latest version on [crates.io](https://crates.io/crates/trunk-recorder-plugin) (0.15.1 when
+Use the latest version on [crates.io](https://crates.io/crates/trunk-recorder-plugin) (0.17.0 when
 this was written). The recorder's
 [CHANGELOG](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/CHANGELOG.md) notes each SDK release beside
 the recorder's, and says what a plugin must change. Both sides ignore what they don't know, so a
@@ -383,7 +384,7 @@ The main pieces:
 
 | Item | What it does |
 |---|---|
-| `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_update`, `call_end`, `call_concluded`, `unit`, `audio`, `voice`, `status`, `tone_pattern`, `log_line`, `totals`), `action(a, reply)`, `settings(setup)`, `calls(request, page)`, `settings_saved(request, ok, message)` and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages |
+| `Plugin` | The trait. `Config` and `SystemConfig` are your settings types (`NoConfig` for none). `manifest()`, `start()`, one method per topic (`call_start`, `call_update`, `call_end`, `call_concluded`, `unit`, `audio`, `voice`, `tap`, `status`, `tone_pattern`, `log_line`, `totals`), `action(a, reply)`, `settings(setup)`, `calls(request, page)`, `settings_saved(request, ok, message)` and `shutdown(grace)`. Every method runs on the one thread reading the recorder's messages |
 | `manifest!()` | A `Manifest` with the id, version, description, homepage, repository, authors and license from `Cargo.toml` |
 | `run::<P>()` | Answers `--describe` (and `--version`), parses `hello` and your settings, calls your methods, and exits with 78 when `start` returns `Err` |
 | `Setup` | What `start` gets: `config`, `systems` (each a `System`: `index`, `id`, `short_name`, `kind`, `name`, its FCC licenses (`fcc`, `fcc_call_sign`, `fcc_name`), `sites`, `config` (your `SystemConfig` or `None`) and `settings` (your `Config` as it is for the system)), `host` (the recorder's `name` and `version`), `capture_dir`, `data_dir`, `audio_formats`; `system_named()` and `has_format()`. The name and FCC licenses are optional, so often empty |

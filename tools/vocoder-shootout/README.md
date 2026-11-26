@@ -10,9 +10,11 @@ you hear comes from the decoder, not the radio channel.
 open wmata-oct1/shootout.html
 ```
 
-The calls need their vocoder frames saved: set `"captureFrames": true` under
-`recording` in the trunk-pro config (or tick **Save vocoder frames**) and let
-it record for a while first.
+The vocoder frames need saving first: add the **Voice frames as vocoded**
+signal tap (Setup → Recording → Advanced → Signal taps, or
+`"taps": [{ "tap": "voice.frames" }]` under `recording` in the trunk-pro
+config) and let it record for a while. Each transmission is saved beside the
+system's calls.
 
 ## Example calls
 
@@ -32,8 +34,8 @@ A file or a folder (searched recursively) of IMBE frames, in any of these forms:
 
 | File | Contents |
 |---|---|
-| `*.sdr` | trunk-pro's vocoder frame capture. Turn on **Save vocoder frames** (`recording.captureFrames`) and every call gets one beside its WAV. The call's `.json` record next to it supplies the talkgroup name, description and frequency. Read through `trunk-pro tool sdr --frames`, so trunk-pro must be found. |
-| `*.frames.jsonl` | The same capture as JSON lines, as trunk-pro saved it before `.sdr` (and still does for NXDN). |
+| `*.sdr` | trunk-pro's vocoder frames: what the `voice.frames` signal tap saves, a transmission each (`<start>_<freq>-tap_<n>.voice.frames.sdr`). Its `.jsonl` sidecar next to it supplies the talkgroup and frequency. Read through `trunk-pro tool sdr --frames`, so trunk-pro must be found. |
+| `*.frames.jsonl` | The tap's sidecar alone (the same frames as JSON lines), or a call's frames as trunk-pro saved them before taps, with the call's `.json` record beside it for the talkgroup's name. |
 | `*.hex` | One frame per line: 22 hex digits (the 88 bits u0..u7), optionally followed by E0 and ET error counts. |
 | `*.imbe` | Raw 11-byte frames, u0..u7 packed MSB first. |
 

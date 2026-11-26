@@ -147,6 +147,8 @@ pub struct Ctx {
     pub spool: Mutex<Option<Arc<crate::spool::Spool>>>,
     /// The folders calls are written to, and how writing to them goes ([`crate::folder`]).
     pub folders: crate::folder::Folders,
+    /// The signal taps' streams being saved to files.
+    pub taps: crate::taps::TapFiles,
     /// The computer's clock, watched (#61): what calls' `clock_off` and the dashboard go by.
     pub clock: Arc<crate::clock::Clock>,
     /// Key containers unlocked from the interface ([`crate::unlock`]).
@@ -1263,7 +1265,6 @@ struct Finish {
     system_id: Option<SystemId>,
     wav: Vec<u8>,
     record: trunk_recorder_plugin::CallRecord,
-    frames: Option<trunk_core::trunk::Capture>,
     rules: FileRules,
     /// Some of it was decrypted with our keys: only plugins with `shareDecrypted` take it.
     decrypted: bool,
@@ -1331,9 +1332,6 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
             Some(None) => break 'w None,
             j => j.flatten(),
         };
-        if f.frames.as_ref().filter(|_| p.write_frames).is_some_and(|c| put(keep_audio, c.ext, &c.bytes).is_none()) {
-            break 'w None;
-        }
         Some((wav, json))
     };
     let Some((wav_at, json_at)) = written else {
@@ -1433,6 +1431,14 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                     p.event(&m);
                 }
             }
+            Output::Tap { chunk, save } => {
+                if let Some(p) = plugins {
+                    p.tap(&chunk);
+                }
+                if let Some(rel) = save {
+                    ctx.taps.take(&ctx.folders.recordings, rel, chunk);
+                }
+            }
             Output::Log(r) => crate::logging::record(&r),
             Output::Topic { topic, msg } => {
                 let _ = ctx.hub.send(Arc::new(Out::Topic { topic, text: msg.to_json() }));
@@ -1454,10 +1460,10 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
                 let ctx = ctx.clone();
                 let _ = std::thread::Builder::new().name("share".into()).spawn(move || share(&ctx, short_name, observation, site_names));
             }
-            Output::File { rel, system, wav, record, frames, decrypted } => {
+            Output::File { rel, system, wav, record, decrypted } => {
                 ctx.iq.fact(crate::iq_rules::Fact { on: "call.end", facts: crate::iq_rules::call_facts(&record) });
                 let (rules, system_id) = rules(system);
-                finish(Finish { rel, system, system_id, wav, record, frames, rules, decrypted })
+                finish(Finish { rel, system, system_id, wav, record, rules, decrypted })
             }
         }
     }
@@ -2053,7 +2059,7 @@ mod folder_tests {
         fs::write(&dir, b"in the way").unwrap();
         ctx.folders.recordings.set_path(&dir);
         let rules = FileRules { archive_wav: true, archive_m4a: false, call_log: true, archive_files_on_failure: true };
-        let call = |n: u32| Finish { rel: format!("ohmarcs/2026/11/22/{n}-1"), system: 0, system_id: None, wav: b"RIFF".to_vec(), record: Default::default(), frames: None, rules, decrypted: false };
+        let call = |n: u32| Finish { rel: format!("ohmarcs/2026/11/22/{n}-1"), system: 0, system_id: None, wav: b"RIFF".to_vec(), record: Default::default(), rules, decrypted: false };
         finish_one(&ctx, &dir, None, call(1), None);
         let r = ctx.folders.report();
         assert_eq!((r[0]["ok"].as_bool(), r[0]["why"].as_str(), r[0]["lost"].as_u64()), (Some(false), Some("Not a folder"), Some(1)));

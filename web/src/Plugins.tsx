@@ -138,7 +138,7 @@ function hasKeys(c: Config): boolean {
   return activeSystems(c).some((s) => !!s.keys?.trim()) || c.conventional.some((x) => x.enabled && !!x.keys?.trim());
 }
 
-function systemsOf(c: Config): { at: SystemRef; id: number | undefined; name: string; copies: (id: string) => PluginValues[] }[] {
+export function systemsOf(c: Config): { at: SystemRef; id: number | undefined; name: string; copies: (id: string) => PluginValues[] }[] {
   const out: { at: SystemRef; id: number | undefined; name: string; copies: (id: string) => PluginValues[] }[] = c.systems.map((x, i) => ({
     at: i,
     id: x.id,

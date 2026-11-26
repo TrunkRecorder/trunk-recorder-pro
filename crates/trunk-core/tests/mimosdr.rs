@@ -4,8 +4,9 @@
 //! order, or bits misread, and it doesn't.
 //!
 //! `TRP_SDR_DIR=<dir> cargo test -p trunk-core --test mimosdr -- --nocapture`
-//! also checks every `.sdr` under `dir` (a `captures/regress.sh` output)
-//! against the WAV recorded beside it.
+//! also checks every `.sdr` under `dir` (a `captures/regress.sh` output:
+//! the `voice.frames` signal tap's, a transmission each) against our own
+//! vocoder over the frames read back from it.
 
 use trunk_core::mbe::{self, Kind, FRAME_SAMPLES};
 use trunk_core::trunk::frames::{Codec, VoiceFrame};
@@ -88,8 +89,9 @@ fn our_calls_play_in_mimosdr() {
 }
 
 /// Every `.sdr` under `TRP_SDR_DIR` renders in MimoSDR, and per mode its
-/// envelope tracks the WAV we recorded (the median call's r: single calls
-/// differ where the two vocoders' concealment and muting do).
+/// envelope tracks our vocoder's over the same file (the median
+/// transmission's r: single ones differ where the two vocoders'
+/// concealment and muting do).
 #[test]
 fn recorded_calls_play_in_mimosdr() {
     let Ok(dir) = std::env::var("TRP_SDR_DIR") else { return };
@@ -119,9 +121,11 @@ fn recorded_calls_play_in_mimosdr() {
                 continue;
             }
         };
-        let Ok(wav) = std::fs::read(p.with_extension("wav")) else { continue };
-        let (rate, ours) = trunk_core::wav::decode(&wav).unwrap();
-        assert_eq!(rate, 8000, "{}", p.display());
+        // (A second of voice at the least: a burst's envelope is the vocoders' start-up, which differs.)
+        let ours = ours(&bytes);
+        if ours.len() < 50 * FRAME_SAMPLES {
+            continue;
+        }
         let r = envelope_r(&theirs, &ours);
         println!("{kind:9} r={r:5.2} {}", p.display());
         by_mode.entry(kind).or_default().push(if r.is_nan() { 0.0 } else { r });
@@ -130,7 +134,7 @@ fn recorded_calls_play_in_mimosdr() {
     for (kind, mut rs) in by_mode {
         rs.sort_by(f64::total_cmp);
         let median = rs[rs.len() / 2];
-        println!("{kind}: {} calls, median r {median:.2}", rs.len());
-        assert!(median > 0.8, "{kind}: median envelope r {median:.2} over {} calls", rs.len());
+        println!("{kind}: {} transmissions, median r {median:.2}", rs.len());
+        assert!(median > 0.8, "{kind}: median envelope r {median:.2} over {} transmissions", rs.len());
     }
 }

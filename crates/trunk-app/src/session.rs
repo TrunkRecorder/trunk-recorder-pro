@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value};
 use trunk_core::metrics;
-use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus, SystemId};
+use trunk_core::trunk::{heard_code, Call, ChannelKind, Engine, Event, Identity, LiveAudio, MessageType, NoteLevel, ProtocolStatus, SystemId, TapSet};
 
 use crate::filename;
 use sdr_core::clock::{ClockEvent, SampleClock};
@@ -37,11 +37,14 @@ pub enum Output {
     /// the recordings folder); `record` is its call JSON, and [`call_entry`]
     /// its history entry, which the platform sends as a `concluded` message
     /// once the files are stored.
-    /// `frames`: the frame capture, for `<rel>.sdr` (NXDN: `<rel>.frames.jsonl`).
     /// `decrypted`: some of it was decrypted with our keys.
-    File { rel: String, system: u16, wav: Vec<u8>, record: trunk_recorder_plugin::CallRecord, frames: Option<trunk_core::trunk::Capture>, decrypted: bool },
+    File { rel: String, system: u16, wav: Vec<u8>, record: trunk_recorder_plugin::CallRecord, decrypted: bool },
     /// An event for plugins (only those [`Session::plugin_topics`] asks for).
     Plugin(HostMessage),
+    /// A piece of a signal tap's stream, for the plugins subscribed to its topic. `save`: its
+    /// stream is saved ([`crate::config::TapRoute`]), to files at this path (relative to the
+    /// recordings folder, without an extension: the same for each chunk of the stream).
+    Tap { chunk: trunk_recorder_plugin::TapChunk, save: Option<String> },
     /// A line for the log (the platform's logger formats and routes it).
     Log(Record),
     /// A message only for interfaces watching `topic` ([`crate::stats::Topics`]).
@@ -97,6 +100,8 @@ pub struct PluginTopics {
     pub totals: bool,
     pub tone_patterns: bool,
     pub voice: bool,
+    /// The signal taps subscribed to (topic `tap.<id>`): turned on for every system.
+    pub taps: TapSet,
 }
 
 /// Live audio as the browsers take it, a binary frame: `[2][u16 system][u32 call][u32 tg][i16…]`.
@@ -389,6 +394,10 @@ pub struct Session {
     /// Each system's recording rules, as calls number them ([`Config::recordings`]).
     recordings: Vec<crate::config::Recording>,
     pub plugin_topics: PluginTopics,
+    /// Each system's signal taps, as the engine was last told ([`Session::set_taps`]).
+    taps: Vec<TapSet>,
+    /// The tap streams being saved, each with its files' path ([`Output::Tap`]).
+    tap_files: std::collections::HashMap<u64, String>,
     /// How the computer's clock is kept ([`trunk_recorder_plugin::ClockState::sync`]), as the
     /// app last saw; none: the operating system doesn't say.
     pub clock_sync: Option<String>,
@@ -477,6 +486,8 @@ impl Session {
             sites,
             recordings,
             plugin_topics: PluginTopics::default(),
+            taps: Vec::new(),
+            tap_files: Default::default(),
             clock_sync: None,
             epoch_ms,
             wall_correction_ms: 0.0,
@@ -557,6 +568,19 @@ impl Session {
         let set = self.engine.set_unit_names(i, rows);
         self.meas.shared().names.lock().unwrap().set_systems(&self.engine.systems());
         set
+    }
+
+    /// Each system's signal taps — those saved to files (the config's) and those plugins
+    /// subscribe to — told to the engine when they change: channels opened from then on give them.
+    fn set_taps(&mut self) {
+        let asked = self.plugin_topics.taps;
+        let now: Vec<TapSet> = self.cfg.call_systems().iter().map(|s| self.cfg.recording.saved_taps(s.id).and(asked)).collect();
+        if now != self.taps {
+            for (i, &set) in now.iter().enumerate() {
+                self.engine.set_taps(i as u16, set);
+            }
+            self.taps = now;
+        }
     }
 
     /// The encryption keys of system `system` (trunked or
@@ -698,6 +722,7 @@ impl Session {
         self.steer_clocks();
         self.meas.set_now(now_ms / 1000.0);
         self.fill_quiet(now_ms);
+        self.set_taps();
         for ev in self.engine.drain_events() {
             self.handle(ev, out);
         }
@@ -1310,6 +1335,21 @@ impl Session {
                     .flatten();
                 out.push(Output::Audio { short_name, audio, voice, voice_listened });
             }
+            Event::Tap { time_s, mut chunk } => {
+                let id = self.system_id(chunk.system);
+                chunk.system_id = id.0;
+                chunk.short_name = self.system_name(chunk.system).to_string();
+                chunk.time = self.wall(time_s);
+                // Saved from its start, when a row says so (a tap on for a plugin alone isn't): each
+                // stream beside its system's calls, named for when and where it began.
+                if chunk.first && self.cfg.recording.saved_taps(id).has(chunk.tap) {
+                    let start = chunk.time as i64;
+                    let base = format!("{start}_{:.0}-tap_{}.{}", chunk.freq_hz, chunk.stream, chunk.tap);
+                    self.tap_files.insert(chunk.stream, filename::default_path(&chunk.short_name, &base, start, (self.local_offset)(start)));
+                }
+                let save = if chunk.last { self.tap_files.remove(&chunk.stream) } else { self.tap_files.get(&chunk.stream).cloned() };
+                out.push(Output::Tap { chunk, save });
+            }
             Event::ConvSkipped { freq_hz, code } => {
                 let ms = self.wall(self.engine.status().now_s) * 1000.0;
                 self.heard.note(freq_hz, &code, false, ms);
@@ -1332,7 +1372,7 @@ impl Session {
                     filename::render(format, &serde_json::to_value(r).unwrap_or_default(), k.call.system, offset)
                 };
                 let body = Body::Concluded { length_s: k.audio.len() as f64 / 8000.0, signal_db: r.signal, noise_db: r.noise, snr_db: r.snr, clean_pct: r.clean_voice_pct, ended: r.end_reason.clone() };
-                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), record: k.record, frames: k.frames, decrypted: k.call.decrypted });
+                out.push(Output::File { rel, system: k.call.system, wav: trunk_core::wav::encode(&k.audio, 8000), record: k.record, decrypted: k.call.decrypted });
                 let r = self.call_record(Level::Info, &k.call, body);
                 self.records.push(r);
             }
@@ -1990,6 +2030,75 @@ mod tone_tests {
         let (topic, e) = topic.expect("to the topic");
         assert!(plugin.is_none());
         assert_eq!((topic.as_str(), e.short_name.as_str(), e.site.as_str(), e.kind.as_str(), e.unit, e.talkgroup), (UNIT, "dcfd", "north", "affiliation", 1234, Some(101)));
+    }
+
+    /// A tap's chunks go out named for their system; a stream is saved — one path from its
+    /// first chunk to its last, beside the system's calls — only when a row of the config
+    /// says so. The engine is told each system's taps: the rows' and the plugins'.
+    #[test]
+    fn a_taps_stream_is_saved_when_a_row_says_so() {
+        use trunk_core::trunk::{Tap, TapChunk, TapSet};
+        use trunk_recorder_plugin::TapData;
+        let cfg = |taps: serde_json::Value| -> Config {
+            serde_json::from_value(json!({
+                "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+                "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }],
+                "recording": { "taps": taps }
+            }))
+            .unwrap()
+        };
+        let chunk = |stream: u64, seq: u32, last: bool| TapChunk {
+            tap: Tap::FmDiscriminator,
+            stream,
+            seq,
+            first: seq == 0,
+            last,
+            offset: seq as u64 * 4,
+            system: 0,
+            system_id: 0,
+            short_name: String::new(),
+            freq_hz: 155.2e6,
+            slot: 0,
+            call_id: None,
+            talkgroup: None,
+            unit: None,
+            voice_mode: String::new(),
+            decrypted: false,
+            time: 0.0,
+            data: TapData::Pcm { rate: 22_050, samples: vec![0; 4] },
+            notes: Vec::new(),
+        };
+        let sent = |s: &mut Session, c: TapChunk| {
+            let mut out = Vec::new();
+            s.handle(Event::Tap { time_s: 10.0, chunk: c }, &mut out);
+            out.into_iter().find_map(|o| match o { Output::Tap { chunk, save } => Some((chunk, save)), _ => None }).unwrap()
+        };
+        // No row: a plugin's alone. On in the engine, not saved.
+        let mut s = Session::new(cfg(json!([])), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        s.set_taps();
+        assert_eq!(s.taps, vec![TapSet::NONE]);
+        s.plugin_topics.taps = TapSet::of([Tap::FmDiscriminator]);
+        s.set_taps();
+        assert_eq!(s.taps, vec![TapSet::of([Tap::FmDiscriminator])]);
+        let (c, save) = sent(&mut s, chunk(1, 0, true));
+        assert_eq!((c.short_name.as_str(), c.system_id, save), ("wood", s.system_id(0).0, None));
+        assert!(c.time > 1.7e9);
+        // A row: every chunk of the stream under the path its first was given.
+        let mut s = Session::new(cfg(json!([{ "tap": "fm.discriminator" }])), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        s.set_taps();
+        assert_eq!(s.taps, vec![TapSet::of([Tap::FmDiscriminator])]);
+        let (c, first) = sent(&mut s, chunk(7, 0, false));
+        let path = first.expect("saved");
+        let start = c.time as i64;
+        assert!(path.starts_with("wood/") && path.ends_with(&format!("/{start}_155200000-tap_7.fm.discriminator")), "{path}");
+        assert_eq!(sent(&mut s, chunk(7, 1, false)).1.as_deref(), Some(path.as_str()));
+        assert_eq!(sent(&mut s, chunk(7, 2, true)).1.as_deref(), Some(path.as_str()));
+        assert!(s.tap_files.is_empty(), "forgotten at its end");
+        // A row for another system alone: not this one's.
+        let mut s = Session::new(cfg(json!([{ "tap": "fm.discriminator", "systems": [4_000_000] }])), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        s.set_taps();
+        assert_eq!(s.taps, vec![TapSet::NONE]);
+        assert_eq!(sent(&mut s, chunk(1, 0, true)).1, None);
     }
 }
 #[cfg(test)]

@@ -220,7 +220,7 @@ Group names used so far, to reuse where they fit: **Basics** (names, type),
 and Recording tabs set; Recording in two disclosures, **Recording** for call
 rules and **Archive** for file names and what's kept),
 **Device**, **Tuning**, **Gain**, **Frequency correction**, **Storage**,
-**Recording**, **Startup and diagnostics**, **Where it goes**, **What it
+**Recording**, **Startup**, **Where it goes**, **What it
 says**.
 
 ### Field (`<Field>`)

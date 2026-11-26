@@ -119,7 +119,7 @@ def tapes_of(scenario, bin_path):
     """The scenario's channel tapes, cut by replaying it."""
     out = CAPTURES / "scenarios" / f".tapes-{scenario}"
     shutil.rmtree(out, ignore_errors=True)
-    subprocess.run([bin_path, "replay", str(CAPTURES / "scenarios" / scenario), "--out", str(out / "calls"), "--capture-frames", "--tapes", str(out / "tapes"), "--quiet"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run([bin_path, "replay", str(CAPTURES / "scenarios" / scenario), "--out", str(out / "calls"), "--tapes", str(out / "tapes"), "--quiet"], cwd=ROOT, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return out / "tapes"
 
 

@@ -27,8 +27,8 @@ pub struct Recorded {
 }
 
 impl Recorded {
-    pub fn new(capture_frames: bool, inband: InBandSpec) -> Self {
-        Recorded { audio: Vec::new(), frames: CallFrames::new(capture_frames), tx: Transmissions::default(), inband: InBand::new(inband), reception: Reception::default(), freq_error: (0.0, 0) }
+    pub fn new(inband: InBandSpec) -> Self {
+        Recorded { audio: Vec::new(), frames: CallFrames::default(), tx: Transmissions::default(), inband: InBand::new(inband), reception: Reception::default(), freq_error: (0.0, 0) }
     }
 
     /// Voice heard by air time `now_s`: `samples`, and (digital) the frames

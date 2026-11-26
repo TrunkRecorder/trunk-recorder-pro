@@ -140,7 +140,12 @@ const ARING: usize = 256;
 impl AudioResampler {
     /// Low-pass at `cutoff_hz` for channel rate `rate`.
     pub fn new(rate: f64, cutoff_hz: f64) -> Self {
-        AudioResampler { taps: lowpass(128, cutoff_hz / rate), ring: vec![0.0; ARING], n_in: 0, t_next: 0.0, step: rate / AUDIO_RATE }
+        Self::to(rate, cutoff_hz, AUDIO_RATE)
+    }
+
+    /// [`Self::new`], out at `out_rate` Hz.
+    pub fn to(rate: f64, cutoff_hz: f64, out_rate: f64) -> Self {
+        AudioResampler { taps: lowpass(128, cutoff_hz / rate), ring: vec![0.0; ARING], n_in: 0, t_next: 0.0, step: rate / out_rate }
     }
 
     #[inline]
@@ -176,6 +181,8 @@ impl AudioResampler {
 }
 
 pub struct Nbfm {
+    /// The channel's sample rate, Hz.
+    rate: f64,
     filter: ChannelFilter,
     last: Complex32,
     disc_gain: f32,
@@ -186,7 +193,21 @@ pub struct Nbfm {
     hpf: [Biquad; HPF_SOS.len()],
     gate: Gate,
     data: Option<DataBurst>,
+    /// The discriminator tapped ([`Nbfm::tapped`]).
+    tap: Option<DiscTap>,
 }
+
+/// The discriminator's output while the carrier is up, resampled: what [`Nbfm::take_tapped`] gives.
+struct DiscTap {
+    resampler: AudioResampler,
+    samples: Vec<i16>,
+}
+
+/// The tap's low-pass, Hz: everything a 12.5 or 25 kHz channel's data has (and under half the channel's rate).
+const TAP_CUTOFF_HZ: f64 = 10_000.0;
+/// The tap's samples are the discriminator's at this scale: full-scale deviation (5 kHz) is half
+/// of 16 bits' range, so a wide signal or a noise click isn't clipped.
+const TAP_SCALE: f32 = 16_384.0;
 
 /// Fast data on an FM voice channel (EDACS's 9600 baud signalling): loud,
 /// steady deviation that sits at two levels (not speech's peaks and
@@ -277,6 +298,7 @@ impl Nbfm {
             (1.0, 1.0)
         };
         Nbfm {
+            rate,
             filter: ChannelFilter::with_half_bw(rate, t.half_bw_hz),
             last: Complex32::new(1.0, 0.0),
             disc_gain: (rate / (2.0 * PI) / FULL_SCALE_DEV) as f32,
@@ -287,7 +309,23 @@ impl Nbfm {
             hpf: HPF_SOS.map(Biquad::new),
             gate: Gate::new(rate, t.squelch, FAST_S),
             data: t.data_mute.then(|| DataBurst::new(rate)),
+            tap: None,
         }
+    }
+
+    /// Tap the discriminator (`out_rate`: at that rate, Hz; none: don't): its output as it is
+    /// before de-emphasis, the voice filters and the data mute, while the squelch is open,
+    /// kept for [`Self::take_tapped`]. What a data decoder takes (POCSAG, FLEX), which the
+    /// voice path's filters would spoil.
+    pub fn tapped(mut self, out_rate: Option<u32>) -> Self {
+        let rate = self.rate;
+        self.tap = out_rate.map(|out| DiscTap { resampler: AudioResampler::to(rate, TAP_CUTOFF_HZ.min(0.45 * rate), out as f64), samples: Vec::new() });
+        self
+    }
+
+    /// The tapped discriminator's samples since last asked (none when it isn't tapped).
+    pub fn take_tapped(&mut self) -> Vec<i16> {
+        self.tap.as_mut().map(|t| std::mem::take(&mut t.samples)).unwrap_or_default()
     }
 
     /// Demodulate `iq`, appending gated 8 kHz audio to `out`. The gate opens
@@ -301,14 +339,23 @@ impl Nbfm {
     /// before the high-pass and the gate's ramp (CTCSS and DCS still in it).
     pub fn push_low(&mut self, iq: &[Complex32], open_power: f32, out: &mut Vec<f32>, mut low: Option<&mut Vec<f32>>) -> bool {
         let mut carrier = false;
-        let Nbfm { filter, last, disc_gain, de_a, de_y, de_gain, audio, hpf, gate, data } = self;
+        let Nbfm { filter, last, disc_gain, de_a, de_y, de_gain, audio, hpf, gate, data, tap, .. } = self;
         for &x in iq {
             let y = filter.step(x);
             let up = filter.power() > open_power;
             carrier |= up;
-            gate.meter(y, up, open_power);
+            let open = gate.meter(y, up, open_power);
             let d = (y * last.conj()).arg() * *disc_gain;
             *last = y;
+            if let Some(t) = tap {
+                // (Run through the shut squelch too, so the filter is settled when it opens.)
+                let DiscTap { resampler, samples } = t;
+                resampler.push(d, |s| {
+                    if open {
+                        samples.push((s * TAP_SCALE).clamp(-32_768.0, 32_767.0) as i16);
+                    }
+                });
+            }
             if let Some(db) = data {
                 let on = db.step(d);
                 gate.mute(on, db.back);
@@ -378,6 +425,53 @@ mod tests {
         // 2.5 kHz / 5 kHz full scale → amplitude 0.5 → power 0.125.
         assert!((10.0 * (p1k / 0.125).log10()).abs() < 1.0, "1 kHz level {:.1} dB", 10.0 * (p1k / 0.125).log10());
         assert!(10.0 * (p100 / p1k).log10() < -40.0, "CTCSS {:.1} dB below voice", 10.0 * (p1k / p100).log10());
+    }
+
+    /// The discriminator tap: what the receiver heard before any of the audio's filters — the
+    /// CTCSS tone still under the voice — at its own rate, 5 kHz deviation as [`TAP_SCALE`].
+    #[test]
+    fn the_discriminator_tap_is_the_fm_before_the_audio_filters() {
+        let rate = 39_062.5;
+        let n = (rate * 2.0) as usize;
+        let mut ph = 0.0f64;
+        let iq: Vec<Complex32> = (0..n)
+            .map(|i| {
+                let t = i as f64 / rate;
+                let f = 2500.0 * (2.0 * PI * 1000.0 * t).sin() + 500.0 * (2.0 * PI * 100.0 * t).sin();
+                ph += 2.0 * PI * f / rate;
+                Complex32::from_polar(0.5, ph as f32)
+            })
+            .collect();
+        let mut fm = Nbfm::new(rate);
+        let mut out = Vec::new();
+        fm.push(&iq, 1e-4, &mut out);
+        assert!(fm.take_tapped().is_empty(), "off");
+        let mut fm = Nbfm::new(rate).tapped(Some(22_050));
+        for c in iq.chunks(4000) {
+            fm.push(c, 1e-4, &mut out);
+        }
+        let tap: Vec<f32> = fm.take_tapped().iter().map(|&s| s as f32 / TAP_SCALE).collect();
+        assert!(fm.take_tapped().is_empty(), "taken");
+        assert!((tap.len() as f64 - (2.0 - SquelchTiming::default().open_s) * 22_050.0).abs() < 200.0, "{} samples", tap.len());
+        let tail = &tap[tap.len() / 2..];
+        let (p1k, p100) = (tone_power(tail, 22_050.0, 1000.0), tone_power(tail, 22_050.0, 100.0));
+        assert!((10.0 * (p1k / 0.125).log10()).abs() < 1.0, "1 kHz level {:.1} dB", 10.0 * (p1k / 0.125).log10());
+        // 500 Hz / 5 kHz → amplitude 0.1 → power 0.005: there, as it was sent.
+        assert!((10.0 * (p100 / 0.005).log10()).abs() < 1.0, "100 Hz level {:.1} dB", 10.0 * (p100 / 0.005).log10());
+        // With no carrier, nothing.
+        let mut seed = 7u32;
+        let noise: Vec<Complex32> = (0..n)
+            .map(|_| {
+                let mut r = || {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
+                };
+                Complex32::new(r() * 1e-4, r() * 1e-4)
+            })
+            .collect();
+        let mut fm = Nbfm::new(rate).tapped(Some(22_050));
+        fm.push(&noise, 1e-2, &mut out);
+        assert!(fm.take_tapped().is_empty(), "squelched");
     }
 
     #[test]

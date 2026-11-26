@@ -25,6 +25,7 @@ use num_complex::Complex32;
 use crate::mbe;
 use crate::smartnet::{Bit, Fsk2, Fsk2Options};
 use crate::trunk::frames::{Codec, VoiceFrame};
+use crate::trunk::taps::{AirFrame, Tap, TapPiece, TapSet};
 use crate::trunk::voice::TrackerOut;
 
 /// Symbols a second, control channel and ProVoice alike.
@@ -55,6 +56,8 @@ pub struct ProVoice {
     vocoder: mbe::Decoder,
     layout: [[usize; 142]; 4],
     bits: Vec<Bit>,
+    /// The taps on: [`Tap::VoiceAir`] is this decoder's.
+    pub taps: TapSet,
     /// Frames decoded, and vocoder frames that weren't spoken as sent.
     pub frames: u64,
     pub bad_vc: u64,
@@ -72,9 +75,16 @@ impl ProVoice {
             vocoder,
             layout: provoice::layout(),
             bits: Vec::new(),
+            taps: TapSet::NONE,
             frames: 0,
             bad_vc: 0,
         }
+    }
+
+    /// With `taps` on.
+    pub fn tapped(mut self, taps: TapSet) -> Self {
+        self.taps = taps;
+        self
     }
 
     pub fn offset_hz(&self) -> f32 {
@@ -100,6 +110,11 @@ impl ProVoice {
             let at = &self.layout[f];
             let words = provoice::deinterleave(|i| (self.sync.body[at[i]] > 0.0) as u8);
             let (d, e0, et) = provoice::decode(&words);
+            let t = self.sync.t + header_s + f as f64 * 0.02;
+            if self.taps.has(Tap::VoiceAir) {
+                let note = AirFrame { n: Some(f as u8), errs: et, e0, ..Default::default() };
+                out.push(PvOut { t, out: TrackerOut::Tap(TapPiece::frame(Tap::VoiceAir, Codec::Imbe, &d, &note)) });
+            }
             let mut buf = [0f32; mbe::FRAME_SAMPLES];
             let kind = self.vocoder.imbe(&d, e0, et, false, &mut buf);
             if !matches!(kind, mbe::Kind::Voice | mbe::Kind::Tone) {
@@ -107,7 +122,7 @@ impl ProVoice {
             }
             mbe::to_limited(&mut buf);
             let vf = VoiceFrame { codec: Codec::Imbe, bits: d.to_vec(), e0, errs: et, erased: false, kind, tone: None };
-            out.push(PvOut { t: self.sync.t + header_s + f as f64 * 0.02, out: TrackerOut::Audio(buf.to_vec(), vf) });
+            out.push(PvOut { t, out: TrackerOut::Audio(buf.to_vec(), vf) });
         }
     }
 }
@@ -193,9 +208,20 @@ pub(crate) mod tests {
             let b: Vec<u8> = bits.iter().map(|&b| b ^ flip as u8).collect();
             let mut iq = modulate(&b, rate, 2600.0, 400.0);
             noise(&mut iq, 0.2, 3);
-            let mut pv = ProVoice::new(rate, 851_000_000, mbe::Profile::Enhanced);
+            let mut pv = ProVoice { taps: TapSet::of([Tap::VoiceAir]), ..ProVoice::new(rate, 851_000_000, mbe::Profile::Enhanced) };
             let mut out = Vec::new();
             pv.push(&iq, 0.0, &mut out);
+            // The air tap: each vocoder frame as it was sent, just before its audio, 0–3 of its frame.
+            let mut tapped = 0;
+            for (i, o) in out.iter().enumerate() {
+                let TrackerOut::Tap(p) = &o.out else { continue };
+                let TrackerOut::Audio(_, vf) = &out[i + 1].out else { panic!("its audio next") };
+                assert_eq!(p.data, crate::trunk::taps::TapData::Frames { codec: Codec::Imbe, frames: vec![vf.bits.clone()] });
+                let f: AirFrame = p.notes[0].get().unwrap();
+                assert_eq!(f, AirFrame { n: Some(tapped as u8 % 4), errs: vf.errs, e0: vf.e0, ..Default::default() });
+                tapped += 1;
+            }
+            assert!(tapped >= 36, "rate {rate}: {tapped} tapped");
             let audio: Vec<&VoiceFrame> = out.iter().filter_map(|o| if let TrackerOut::Audio(_, vf) = &o.out { Some(vf) } else { None }).collect();
             assert!(audio.len() >= 36, "rate {rate}: {} vocoder frames", audio.len());
             assert!(audio.iter().all(|vf| vf.bits == frames[0].to_vec() && vf.errs == 0), "rate {rate}: {:?}", audio.iter().map(|v| v.errs).collect::<Vec<_>>());
