@@ -52,6 +52,7 @@ frequency (*Scans at its center: 858.3000 MHz*); set the capture's center first.
 | UHF | 450–470 | yes |
 | VHF | 136–174 | yes |
 | UHF federal | 380–420 | no |
+| UHF 420–450 | 420–450 | no |
 | Business UHF | 451–470 | no |
 | Business VHF | 150.8–174 | no |
 | T-band | 470–512 | no |
@@ -401,9 +402,9 @@ carrier was up). The last line holds the system:
 - **Check the gain.** The scan sweeps with the source's gain as set on the **Radios** tab. Far too
   little and weak control channels never stand out; far too much and strong signals swamp the
   rest. Try the default, then a few dB either way.
-- **Add more bands.** Federal systems are often in **UHF federal**, some city systems in
-  **T-band**, many DMR and NXDN systems in the business bands. None of those are scanned by
-  default.
+- **Add more bands.** Federal systems are often in **UHF federal**, trunked DMR outside the US often in
+  **UHF 420–450**, some city systems in **T-band**, many DMR and NXDN systems in the business bands.
+  None of those are scanned by default.
 - **Scan again.** A busy step, or a fade, can hide a control channel for a moment.
 - **Look it up.** Find the control channel on [RadioReference](https://www.radioreference.com/db/)
   and enter it by hand: **Add a system** on the **Systems** tab, or **I know the control channel**

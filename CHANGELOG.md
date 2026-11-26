@@ -18,6 +18,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
     status is **up**, not **unknown**. `Attempt::together` ranks it between done and skipped. The Broadcastify
     plugin uses it for `SKIPPED` and unit-to-unit answers (0.2.2).
 
+- **Find my system scans 420–450 MHz** (#257, thanks @drfruct). A **UHF 420–450** band (`uhf-420`), off by default,
+  fills the gap between UHF federal and UHF: amateur in the US, but trunked DMR is often there elsewhere. A band id
+  the scan doesn't know (`--bands uhf2`) now stops it with *Not a band* instead of being left out.
 - **Apps sign in by way of the browser** (#255). An app such as Trunk Monitor opens the recorder's own page; you sign
   in there as you always do (a token, a passkey, the proxy in front) and click **Allow**, and the app gets a token of
   its own, for 30 days. It never sees yours. The page says which app, who, what it may do (an Admin picks **Admin** or
