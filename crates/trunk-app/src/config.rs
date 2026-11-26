@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use trunk_core::dsp::inband::pattern::PatternKind;
 use trunk_core::dsp::AnalogTuning;
+pub use trunk_core::dsp::audio_in::Stereo;
 use trunk_core::p25::diversity::BankConfig;
 use trunk_core::trunk::{
     check_channels, Access, CallConfig, Protocol, ConvChannel, Talkgroups, ConvConfig, ConvMode, EngineConfig, Identity, SaveRules, SourceConfig,
@@ -26,8 +27,11 @@ use trunk_core::trunk::Pins;
 pub struct Source {
     #[serde(flatten)]
     pub kind: SourceKind,
-    /// Its centre, Hz; 0 = placed automatically over the channels it's for.
+    /// Its centre, Hz; 0 = placed automatically over the channels it's for (a stream: none, it has no band).
+    #[serde(default)]
     pub center_hz: f64,
+    /// Its sample rate, Hz (a stream's: its audio's, [`Source::rate`]).
+    #[serde(default)]
     pub rate_hz: f64,
     /// Its frequency error, ppm (a file's: 0).
     #[serde(default)]
@@ -213,6 +217,13 @@ pub enum SourceKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         format: Option<SampleFormat>,
     },
+    /// An internet audio stream: the HTTP or HTTPS address of an MP3 or WAV feed (a scanner
+    /// feed, Broadcastify's and the like), someone else's receiver with its audio demodulated
+    /// already. It has no band and no gain: its conventional rows are the ones with no
+    /// frequency, each recording its left channel, its right or both ([`Channel::stereo`]).
+    /// `url` may carry a login (`https://user:password@host/feed`), which is never shown.
+    #[serde(rename_all = "camelCase")]
+    Stream { url: String },
 }
 
 choice! {
@@ -416,7 +427,11 @@ impl Source {
         }
     }
     /// It to place: its centre stays when set.
+    /// (A stream has no band to place: it stays where it is and reaches no frequency.)
     pub fn placing(&self) -> Placing {
+        if self.audio() {
+            return Placing { rate_hz: 0.0, guard_hz: 0.0, fixed_hz: Some(0.0), band: None };
+        }
         Placing { rate_hz: self.rate_hz, guard_hz: self.guard_hz, fixed_hz: (self.center_hz > 0.0).then_some(self.center_hz), band: None }
     }
     /// Its `type` ("rtlsdr", "airspy", …), as the config names it.
@@ -431,13 +446,26 @@ impl Source {
             SourceKind::Spyserver { .. } => "spyserver",
             SourceKind::Soapy { .. } => "soapy",
             SourceKind::File { .. } => "file",
+            SourceKind::Stream { .. } => "stream",
         }
+    }
+    /// It gives audio, demodulated already (a stream), not a radio's IQ ([`SourceConfig::audio`]).
+    pub fn audio(&self) -> bool {
+        matches!(self.kind, SourceKind::Stream { .. })
+    }
+    /// Its sample rate, Hz: a stream's is its audio's, decoded to the rate every channel's audio is.
+    pub fn rate(&self) -> f64 {
+        if self.audio() { trunk_core::dsp::fm::AUDIO_RATE } else { self.rate_hz }
+    }
+    /// The engine's settings for it, tuned to `center_hz`.
+    fn engine(&self, center_hz: f64) -> SourceConfig {
+        SourceConfig { center_hz, rate_hz: self.rate(), auto_tune: self.auto_tune && !self.audio(), guard_hz: self.guard_hz, audio: self.audio() }
     }
     /// What advice may change about it ([`place::advise`]): a centre typed
     /// in, and the rates it may run at (`found`: what its radio said). A
     /// capture file's are the recording's: neither.
     pub fn choices(&self, found: Option<&crate::rates::Rates>) -> Choices {
-        if matches!(self.kind, SourceKind::File { .. }) {
+        if matches!(self.kind, SourceKind::File { .. } | SourceKind::Stream { .. }) {
             return Choices::default();
         }
         let kind = self.kind_name();
@@ -466,7 +494,7 @@ impl Source {
             SourceKind::Rtlsdr { serial: id, .. } | SourceKind::Usrp { args: id, .. } | SourceKind::Airspy { serial: id, .. } | SourceKind::Hydrasdr { serial: id, .. } | SourceKind::Bladerf { serial: id, .. } | SourceKind::Soapy { args: id, .. } | SourceKind::Hackrf { serial: id, .. } => {
                 radio_id(self.kind_name(), id)
             }
-            SourceKind::Spyserver { .. } | SourceKind::File { .. } => None,
+            SourceKind::Spyserver { .. } | SourceKind::File { .. } | SourceKind::Stream { .. } => None,
         }
     }
 
@@ -500,8 +528,34 @@ impl Source {
             SourceKind::Spyserver { .. } => "SpyServer (no address)".into(),
             SourceKind::Soapy { args, .. } => format!("SoapySDR {}", if args.is_empty() { "(first)" } else { args }),
             SourceKind::File { path, .. } => format!("file {}", path.rsplit(['/', '\\']).next().unwrap_or(path)),
+            SourceKind::Stream { url } => format!("stream {}", stream_address(url)),
         }
     }
+}
+
+/// A stream's address as it is shown: its host and path, without the scheme, a login or a query
+/// (which may hold a password or a key) — `user:pw@feeds.example.com/123?key=…` → `feeds.example.com/123`.
+pub fn stream_address(url: &str) -> String {
+    let rest = url.trim();
+    let rest = rest.split_once("://").map_or(rest, |(_, r)| r);
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let (host, path) = rest.split_once('/').map_or((rest, ""), |(h, p)| (h, p));
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let path = path.trim_end_matches('/');
+    if path.is_empty() { host.to_string() } else { format!("{host}/{path}") }
+}
+
+/// What's wrong with a stream's address, if anything: an `http://` or `https://` one, with a host.
+fn stream_url_problem(url: &str) -> Option<String> {
+    let u = url.trim();
+    let Some((scheme, rest)) = u.split_once("://") else { return Some("its address starts http:// or https://.".into()) };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return Some(format!("{scheme}:// isn't a stream's: its address starts http:// or https://."));
+    }
+    if u.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Some("its address has a space in it.".into());
+    }
+    stream_address(rest).split('/').next().filter(|h| !h.is_empty()).is_none().then(|| "its address has no host.".into())
 }
 
 /// What a config sets to receive on a source that isn't one, left out of a run (the rest records):
@@ -1530,6 +1584,8 @@ impl Demod {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
+    /// None (0): a stream's row, received on a stream source ([`SourceKind::Stream`]).
+    #[serde(default)]
     pub freq_hz: f64,
     #[serde(default)]
     pub mode: ConvMode,
@@ -1579,6 +1635,9 @@ pub struct Channel {
     /// a repeater output to trust, not radios on simplex). Off by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_tune: bool,
+    /// A stream's row: which of its audio channels it records (both mixed, by default).
+    #[serde(default, skip_serializing_if = "Stereo::is_mix")]
+    pub stereo: Stereo,
 }
 
 /// A USRP's gain when none is given, dB (as the interface starts one).
@@ -1599,7 +1658,7 @@ pub fn default_talkgroups(channels: &[Channel]) -> Vec<u32> {
         .iter()
         .enumerate()
         .map(|(i, c)| {
-            let k = channels[..i].iter().filter(|o| (o.freq_hz - c.freq_hz).abs() < 1.0).count();
+            let k = channels[..i].iter().filter(|o| o.shares(c)).count();
             ConvChannel::default_talkgroup_at(c.freq_hz, k)
         })
         .collect()
@@ -1642,6 +1701,7 @@ impl Channel {
             enabled: true,
             receive_on: Vec::new(),
             auto_tune: false,
+            stereo: Stereo::Mix,
         }
     }
 
@@ -1685,7 +1745,20 @@ impl Channel {
             system: 0,
             analog: Demod::default().tuning(self),
             pins: Default::default(),
+            stereo: self.stereo,
         }
+    }
+
+    /// Where it is, as a message says ([`ConvChannel::place`]): "154.43000 MHz", "on a stream".
+    pub fn place(&self) -> String {
+        self.engine_channel(0).place()
+    }
+
+    /// Whether it and `other` are one channel, as the engine makes them ([`ConvChannel::same_place`]):
+    /// rows on one frequency, or on a stream's same side and the same sources. Rows that share one
+    /// share its mode, bandwidth and sources, and are told apart by their codes.
+    pub fn shares(&self, other: &Channel) -> bool {
+        self.engine_channel(0).same_place(&other.engine_channel(0)) && (self.freq_hz > 0.0 || self.receive_on == other.receive_on)
     }
 }
 
@@ -3152,7 +3225,15 @@ impl Config {
         let sources: Vec<Placing> = self.sources.iter().map(Source::placing).collect();
         let t = self.targets();
         let centers = place_sources(&sources, &t);
-        let cov = coverage(&sources, &centers, &t);
+        let mut cov = coverage(&sources, &centers, &t);
+        // A stream places nothing; it is the first to receive the rows with no frequency it hears.
+        let engine: Vec<SourceConfig> = self.sources.iter().map(|s| s.engine(0.0)).collect();
+        for c in self.enabled_channels().filter(|c| c.freq_hz <= 0.0) {
+            let e = ConvChannel { pins: self.pins(&c.receive_on), ..c.engine_channel(0) };
+            if let Some(i) = e.pins.first(engine.len(), |i| e.heard_on(&engine[i])) {
+                cov.listed[i] += 1;
+            }
+        }
         (centers, cov)
     }
 
@@ -3443,7 +3524,7 @@ impl Config {
     /// [`Config::problem`] of a config as it is, nothing left out.
     fn problem_as_it_runs(&self) -> Option<String> {
         if self.sources.is_empty() {
-            return Some("Add a source (a dongle or a capture file).".into());
+            return Some("Add a source (a dongle, a capture file or a stream).".into());
         }
         if let Some(p) = folder_problem(&self.recording.capture_dir) {
             return Some(format!("Recordings folder: {p}"));
@@ -3457,7 +3538,15 @@ impl Config {
         // (A system or channel set to receive on a source that isn't one is left out of a run, not the
         // whole run: Config::set_aside_unreceivable.)
         for (i, s) in self.sources.iter().enumerate() {
+            if !s.audio() && s.rate_hz <= 0.0 {
+                return Some(format!("{}: set its sample rate.", s.title(i)));
+            }
             match &s.kind {
+                SourceKind::Stream { url } => {
+                    if let Some(e) = stream_url_problem(url) {
+                        return Some(format!("{}: {e}", s.title(i)));
+                    }
+                }
                 SourceKind::Rtlsdr { address, gain_db, buf_len, buffers, .. } => {
                     if let Some(e) = Some(address).filter(|a| !a.trim().is_empty()).and_then(|a| address_problem(a, "rtl_tcp")) {
                         return Some(format!("{}: {e}", s.title(i)));
@@ -3550,18 +3639,27 @@ impl Config {
                 return Some(format!("{name}: an EDACS site needs its channel list — each LCN (1–25) and its frequency."));
             }
         }
-        // A frequency belongs to one conventional system.
+        // A frequency belongs to one conventional system (a stream's audio too: the engine's check).
         let mut owner: Vec<(f64, &str)> = Vec::new();
         for v in self.conventional.iter().filter(|v| v.enabled) {
-            for c in v.channels.iter().filter(|c| c.enabled) {
+            for c in v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0) {
                 if let Some((_, other)) = owner.iter().find(|(f, o)| (f - c.freq_hz).abs() < 1.0 && *o != v.short_name) {
                     return Some(format!("Conventional channel {:.5} MHz is in both {other} and {} — a frequency belongs to one conventional system.", c.freq_hz / 1e6, v.short_name));
                 }
                 owner.push((c.freq_hz, &v.short_name));
             }
         }
-        if self.enabled_channels().any(|c| c.freq_hz <= 0.0) {
-            return Some("A conventional channel has no frequency yet.".into());
+        // A row with no frequency is a stream's: on a stream source, under a number of its own.
+        let sources: Vec<SourceConfig> = self.sources.iter().zip(&centers).map(|(s, c)| s.engine(c.unwrap_or(0.0))).collect();
+        for c in self.enabled_channels().filter(|c| c.freq_hz <= 0.0) {
+            let e = ConvChannel { pins: self.pins(&c.receive_on), ..c.engine_channel(0) };
+            if e.pins.first(sources.len(), |i| e.heard_on(&sources[i])).is_none() {
+                let name = if c.name.is_empty() { String::new() } else { format!(" {}", c.name) };
+                return Some(format!("Conventional channel{name} has no frequency, and no stream source it may be received on — give it a frequency, or add its stream (Setup → Add a stream)."));
+            }
+            if c.talkgroup.is_none() {
+                return Some(format!("Conventional channel {}: give it a TG Number — a stream has no frequency to file its calls under.", c.place()));
+            }
         }
         let missed: Vec<f64> = cov.groups.iter().skip(self.active_sites().count()).flat_map(|g| g.need_missed.iter().copied()).collect();
         let outside: Vec<String> = self.enabled_channels().filter(|c| missed.contains(&c.freq_hz)).map(|c| format!("{:.5}", c.freq_hz / 1e6)).collect();
@@ -3569,11 +3667,11 @@ impl Config {
             return Some(format!("Conventional channel(s) outside the bandwidth of every source they may be received on: {} MHz — move a center frequency or disable them.{}", outside.join(", "), self.advice_fix()));
         }
         if let Some((c, e)) = self.enabled_channels().find_map(|c| c.parsed_access().err().map(|e| (c, e))) {
-            return Some(format!("Conventional channel {:.5} MHz: {e}.", c.freq_hz / 1e6));
+            return Some(format!("Conventional channel {}: {e}.", c.place()));
         }
         let (lo, hi) = BANDWIDTH_KHZ;
         if let Some(c) = self.enabled_channels().find(|c| c.bandwidth_khz.is_some_and(|b| !(lo..=hi).contains(&b))) {
-            return Some(format!("Conventional channel {:.5} MHz: a bandwidth is {lo}–{hi} kHz.", c.freq_hz / 1e6));
+            return Some(format!("Conventional channel {}: a bandwidth is {lo}–{hi} kHz.", c.place()));
         }
         if let Some((v, e)) = self.conventional.iter().filter(|v| v.enabled).find_map(|v| v.demod.problem().map(|e| (v, e))) {
             return Some(format!("{}: {e}", v.short_name));
@@ -3660,7 +3758,7 @@ impl Config {
         }
         EngineConfig {
             systems,
-            sources: self.sources.iter().zip(centers).map(|(s, c)| SourceConfig { center_hz: c, rate_hz: s.rate_hz, auto_tune: s.auto_tune, guard_hz: s.guard_hz }).collect(),
+            sources: self.sources.iter().zip(centers).map(|(s, c)| s.engine(c)).collect(),
             preroll_s: self.recording.preroll_s,
             max_recorders: self.recording.max_recorders,
             epoch_ms_at_zero: epoch_ms,
@@ -3836,6 +3934,34 @@ fn system_kinds_ts() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stream source and its row: one config, run as any other. Its address is shown without
+    /// its login or query; it places nothing and stays where it is; the engine is told it's audio,
+    /// at the audio rate, no AutoTune; its row needs a TG Number and the stream to be heard on.
+    #[test]
+    fn a_stream_and_its_row() {
+        let cfg = |row: serde_json::Value, more: serde_json::Value| {
+            let mut sources = vec![serde_json::json!({ "type": "stream", "url": "https://user:pw@feeds.example.com/live/123?key=s3cret", "autoTune": true })];
+            sources.extend(more.as_array().cloned().unwrap_or_default());
+            Config::from_value(serde_json::json!({ "sources": sources, "recording": { "captureDir": "/data/recordings" }, "conventional": [{ "shortName": "feed", "channels": [row] }] })).unwrap()
+        };
+        let label = "stream feeds.example.com/live/123";
+        let ok = cfg(serde_json::json!({ "talkgroup": 7, "name": "Fire", "receiveOn": [label] }), serde_json::json!([]));
+        assert_eq!(ok.sources[0].label(), label);
+        assert_eq!(ok.problem(), None);
+        assert_eq!(ok.placement()[0].listed, 1, "its row is its");
+        let e = ok.engine_config(0.0, &Default::default());
+        assert_eq!((e.sources[0].audio, e.sources[0].rate_hz, e.sources[0].auto_tune), (true, 8000.0, false));
+        assert_eq!((e.conventional[0].freq_hz, e.conventional[0].talkgroup), (0.0, Some(7)));
+        assert!(cfg(serde_json::json!({ "name": "Fire" }), serde_json::json!([])).problem().unwrap().contains("TG Number"));
+        let rtl = serde_json::json!([{ "type": "rtlsdr", "serial": "", "centerHz": 851000000, "rateHz": 2400000, "gainDb": 30, "agc": false }]);
+        let on_the_radio = cfg(serde_json::json!({ "talkgroup": 7, "receiveOn": ["RTL-SDR (first)"] }), rtl);
+        assert!(on_the_radio.problem().unwrap().contains("no stream source"), "{:?}", on_the_radio.problem());
+        let mut bad = cfg(serde_json::json!({ "talkgroup": 7 }), serde_json::json!([]));
+        bad.sources[0].kind = SourceKind::Stream { url: "rtsp://feeds.example.com/1".into() };
+        assert!(bad.problem().unwrap().contains("http:// or https://"));
+        assert_eq!(stream_address("http://feeds.example.com/"), "feeds.example.com");
+    }
 
     /// The folders the recorder writes to are full paths (#211): a relative one would be read
     /// from another folder by a plugin. `~` is the recorder's home, expanded when it reads a config.
@@ -4644,7 +4770,7 @@ mod tests {
             code: tone.into(),
             slot: None,
             match_talkgroup: None,
-            enabled: true, auto_tune: false, receive_on: Vec::new(),
+            enabled: true, auto_tune: false, receive_on: Vec::new(), stereo: Default::default(),
         };
         let mut c = Config { conventional: vec![Conventional::default()], ..Default::default() };
         c.conventional[0].channels = vec![row("", None), row("D023N", None), row("151.4", Some(500)), row("94.8", None)];
@@ -4697,7 +4823,7 @@ mod tests {
             code: String::new(),
             slot: None,
             match_talkgroup: None,
-            enabled: true, auto_tune: false, receive_on: Vec::new(),
+            enabled: true, auto_tune: false, receive_on: Vec::new(), stereo: Default::default(),
         }];
         // Linking a new path writes the current list there.
         c.link_channel_file(0, &cfg_path, "channels.csv").unwrap();

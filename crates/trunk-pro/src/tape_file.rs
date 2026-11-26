@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn a_decoders_settings_read_back_the_same() {
-        let spec = VoiceSpec { kind: VoiceKind::Tdma, rate: 37500.0, t0: 1.5, seed: 77, vocoder: Profile::Enhanced, bank: BankConfig { soft: false, ..Default::default() }, squelch: 0.25, subaudible: true, analog: AnalogTuning { data_mute: true, ..Default::default() }, ignore_hz: vec![(1.0, 2.0)], keys: None, taps: Default::default() };
+        let spec = VoiceSpec { kind: VoiceKind::Tdma, rate: 37500.0, t0: 1.5, seed: 77, vocoder: Profile::Enhanced, bank: BankConfig { soft: false, ..Default::default() }, squelch: 0.25, subaudible: true, analog: AnalogTuning { data_mute: true, ..Default::default() }, audio: false, ignore_hz: vec![(1.0, 2.0)], keys: None, taps: Default::default() };
         let v = serde_json::to_value(&spec).unwrap();
         let back = VoiceSpec::deserialize(&v).unwrap();
         assert_eq!(format!("{spec:?}"), format!("{back:?}"));

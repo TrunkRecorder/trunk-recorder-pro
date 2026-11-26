@@ -90,7 +90,7 @@ Notes:
 
 | Key | Required | Default | Type | Description |
 |---|:---:|---|---|---|
-| `freqHz` | ✓ | | number | The frequency, Hz |
+| `freqHz` | ✓ | | number | The frequency, Hz. `0` (or left out): a stream's row ([A stream's rows](#a-streams-rows)) |
 | `mode` | | `"fm"` | string | `"fm"` (analog FM), `"am"` (analog AM, airband), `"p25"` (P25 Phase 1, C4FM or CQPSK), `"dmr"` (both slots), `"nxdn48"` or `"nxdn96"`, `"auto"` (whichever turns up: analog FM, P25, DMR or NXDN; see [Auto](../guides/conventional.md#auto)) (any case; anything else is refused when the config is read) |
 | `name` | | `""` | string | Alpha tag, written to the call JSON |
 | `description` | | `""` | string | Description in the call JSON |
@@ -105,6 +105,7 @@ Notes:
 | `enabled` | | `true` | bool | `false` keeps the row without recording it |
 | `receiveOn` | | `[]` | array | The sources it may be received on, by label (`"RTL-SDR SN 200"`, as the dashboard names a source: the radio, wherever it is in `sources`). Empty: any source that reaches it. Rows sharing a frequency need the same ones. Not set by a linked channel file. A label that isn't one of the sources' leaves it out of a run (the rest records; the log and the dashboard say why, naming the sources there are). A source's label edited in Setup (its serial, address or args) is followed here. See [How channels are shared out](../guides/radios.md#how-channels-are-shared-out) |
 | `autoTune` | | `false` | bool | `p25`, `dmr`, `nxdn`: its calls' carrier offsets correct its source's AutoTune (a repeater output to trust; see [Frequency correction](../guides/conventional.md#frequency-correction)) |
+| `stereo` | | `"mix"` | string | A stream's row: `"left"` or `"right"` records that side of a stereo stream (some carry a channel on each), `"mix"` both mixed. Rows on one side of one stream share it, as rows share a frequency |
 
 ### Talkgroup numbers
 
@@ -172,6 +173,31 @@ Rules for rows sharing a frequency:
 
 Recording won't start while any of these is broken; the message names the frequency.
 
+### A stream's rows
+
+A row with no frequency is a [stream's](sources.md#type-stream): received on a `"stream"` source (`receiveOn`
+names it; left empty, the first stream), its audio standing in for a frequency's. Everything else is a
+row's as usual: its system's call timeout, longest call, pre-roll, plugins, signals and names, and its
+`squelchDb`, here dB above the stream's quiet floor (its level between calls, learned from the last few
+seconds, so a quiet feed and one with a hum under it both open on voice). A pause between words is kept
+in the call (half a second; the squelch's hang if that's longer); the quiet after the last word isn't.
+
+- Its `mode` is `"fm"` (the default) or `"am"`: the audio is demodulated already. An FM row hears the
+  tones and unit IDs in it as on the air, so rows on one stream can be told apart by their CTCSS tone or
+  DCS code (`code`) when the feed keeps it under the voice.
+- It needs a `talkgroup`: there's no frequency to file its calls under.
+- Its calls' frequency is 0; the dashboard lists them as "stream".
+
+```json
+"sources": [ { "type": "stream", "url": "https://feeds.example.com/12345" } ],
+"conventional": [ { "shortName": "county", "channels": [
+  { "mode": "fm", "talkgroup": 9001, "name": "County Fire Dispatch", "stereo": "left", "receiveOn": ["stream feeds.example.com/12345"] },
+  { "mode": "fm", "talkgroup": 9002, "name": "County EMS", "stereo": "right", "receiveOn": ["stream feeds.example.com/12345"] } ] } ]
+```
+
+In a channel file, a row with no frequency is a stream's when the file has a `Stereo` column (written
+when one of its rows is a stream's).
+
 ## Channel file (`channelFile`)
 
 Instead of listing channels in the config, a conventional system can read them from a CSV file you
@@ -220,6 +246,7 @@ A header row is required. Columns are matched in any case and any order; others 
 | `Bandwidth kHz` | `BandwidthKhz`, `Bandwidth` | `fm`, `am` and `auto` rows: the filter's width, 4–20; empty = the mode's |
 | `Enable` | `Enabled` | `false`, `no`, `0` or `off` = off; anything else or empty = on |
 | `AutoTune` | `Auto Tune` | `true`, `yes`, `1` or `on` = its calls correct the source (digital rows); empty = off |
+| `Stereo` | | A stream's row: `left`, `right`, or empty (both mixed). Written only when a row is a stream's; in a file with it, an empty `Frequency` is a stream's row |
 
 Parsing:
 

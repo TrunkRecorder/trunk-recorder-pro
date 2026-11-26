@@ -282,6 +282,11 @@ impl log::Log for Logger {
         level_of(m.level()) >= self.settings.read().unwrap().level
     }
     fn log(&self, r: &log::Record) {
+        // (The audio decoder warns of each frame it can't use as a stream is joined mid-way, as one
+        // always is: its own diagnostics, not the recorder's.)
+        if r.target().starts_with("symphonia") && r.level() > log::Level::Error {
+            return log::Log::log(self, &log::Record::builder().args(*r.args()).level(log::Level::Debug.max(r.level())).target("decoder").build());
+        }
         if self.enabled(r.metadata()) {
             let level = level_of(r.level());
             let kind = if level >= Level::Warning { "error" } else if r.target() == "plugin" { "plugin" } else { "info" };

@@ -30,7 +30,7 @@ use trunk_app::calls::{CallsPage, CallsQuery, StoredCall};
 use crate::config::{AirspyGain, AirspyGains, Config, SampleFormat, Source, SourceKind};
 use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
-use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, uhd};
+use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, stream, uhd};
 use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
@@ -865,6 +865,7 @@ pub(crate) fn spawn_source(src: &Source, i: usize, center: f64, tx: SyncSender<S
                 sdr::run_with(i, soapy::SoapyConfig { args, center_hz: center, rate_hz, agc, gain_db, gains, antenna, settings, ppm }, tx, stop, ctl)
             }
             SourceKind::File { path, realtime, format } => run_file(i, &path, rate_hz, realtime, SampleFormat::of(format, &path), tx, stop),
+            SourceKind::Stream { url } => sdr::run_with(i, stream::StreamConfig { url }, tx, stop, ctl),
         }
     })
 }
@@ -991,6 +992,7 @@ fn feed_source(feeder: Feeder, rx: mpsc::Receiver<SourceMsg>, ctl: mpsc::Sender<
                 Block::U8(b) => feeder.push(b, dropped, at_ms(at)),
                 Block::Iq(b) => feeder.push_iq(b, dropped, at_ms(at)),
                 Block::Real16(_) => unreachable!("the inbox makes them I/Q"),
+                Block::Audio { samples, channels } => feeder.push_audio(samples, *channels, dropped, at_ms(at)),
             }
             air.fed(block.len() as u64 + dropped);
         }

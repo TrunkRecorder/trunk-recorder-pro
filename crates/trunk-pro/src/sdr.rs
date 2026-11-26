@@ -45,15 +45,18 @@ pub enum Block {
     /// INT16_REAL): turned into I/Q by the [`Inbox`], on the thread that takes
     /// them, not the driver's.
     Real16(Pooled<i16>),
+    /// A stream's audio ([`crate::radio::stream`]): 8 kHz, `channels` interleaved.
+    Audio { samples: Pooled<f32>, channels: usize },
 }
 
 impl Block {
-    /// Its I/Q samples.
+    /// Its samples (I/Q, or frames of audio).
     pub fn len(&self) -> usize {
         match self {
             Block::U8(b) => b.len() / 2,
             Block::Iq(b) => b.len(),
             Block::Real16(b) => b.len() / 2,
+            Block::Audio { samples, channels } => samples.len() / channels.max(&1),
         }
     }
 }
@@ -143,6 +146,7 @@ pub struct Sink {
     bytes: Pool<u8>,
     iq: Pool<Complex32>,
     real: Pool<i16>,
+    audio: Pool<f32>,
     /// Bytes per 8-bit message, and the one being gathered (its dropped, when the last part came).
     gather: usize,
     pending: Option<(Pooled<u8>, u64, Instant)>,
@@ -154,7 +158,7 @@ impl Sink {
     /// For source `source` at `rate_hz`; `live`: a radio (see [`Sink::live`]).
     pub fn new(source: usize, tx: SyncSender<SourceMsg>, rate_hz: f64, live: bool) -> Sink {
         let gather = ((rate_hz * 2.0 * GATHER.as_secs_f64()) as usize).clamp(16 << 10, 1 << 20);
-        Sink { source, tx, live, lost: 0, closed: false, bytes: Pool::default(), iq: Pool::default(), real: Pool::default(), gather, pending: None, raise: None }
+        Sink { source, tx, live, lost: 0, closed: false, bytes: Pool::default(), iq: Pool::default(), real: Pool::default(), audio: Pool::default(), gather, pending: None, raise: None }
     }
 
     /// An empty buffer for `n` I/Q samples, to fill and [`Sink::send`].
@@ -166,6 +170,12 @@ impl Sink {
     pub fn real16(&mut self, s: &[i16], dropped: u64, at: Instant) -> bool {
         let b = Block::Real16(self.real.copy(s));
         self.send(b, dropped, at)
+    }
+
+    /// A stream's audio, `channels` interleaved, copied ([`Block::Audio`]).
+    pub fn audio(&mut self, s: &[f32], channels: usize, at: Instant) -> bool {
+        let b = Block::Audio { samples: self.audio.copy(s), channels };
+        self.send(b, 0, at)
     }
 
     /// Float I/Q, copied.

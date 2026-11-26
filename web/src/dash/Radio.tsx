@@ -4,7 +4,7 @@
 // radio, its week and its connections.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { formatMhz, siteLabel, systemColor } from "../config.ts";
+import { formatMhz, placeText, siteLabel, systemColor } from "../config.ts";
 import { callsQuery, editTalkgroup, mayEdit, nameUnit, radioQuery, setTalkgroupIgnore, setView, usePolled, useApp, type AppState } from "../controller.ts";
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "../NameFields.tsx";
 import { originText } from "../origins.ts";
@@ -376,7 +376,7 @@ function OutOfBand({ s, sys, rows, hours, focus }: { s: AppState; sys: DashSyste
                     const c = coverage(s, r.freqHz);
                     return (
                       <tr key={r.freqHz}>
-                        <td className="mono">{formatMhz(r.freqHz)}</td>
+                        <td className="mono">{placeText(r.freqHz)}</td>
                         <td className="mono" title={`${r.totalCalls} all told`}>{r.calls}</td>
                         <td className="spark-cell">
                           <HeatStrip v={r.hourly} titles={r.hourly.map((v, i) => `${hourLabel(hours)(i)}: ${v} calls`)} />
