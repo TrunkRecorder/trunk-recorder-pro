@@ -217,6 +217,13 @@ impl Parser {
         m
     }
 
+    /// A radio's emergency button: `src`, on talkgroup `tg` (0: not said).
+    fn alarm(&self, t: f64, src: u16, tg: u32, meta: String) -> Message {
+        let mut m = self.msg(MessageType::EmergencyAlarm, t);
+        (m.source, m.talkgroup, m.emergency, m.meta) = (src as i64, tg, true, meta);
+        m
+    }
+
     fn sysid(&mut self, sys: u16, cc: Option<u64>, t: f64, out: &mut Vec<Message>) {
         let changed = self.sys_id != Some(sys as u32) || (cc.is_some() && cc != self.cc_hz);
         self.sys_id = Some(sys as u32);
@@ -364,8 +371,12 @@ impl Parser {
                     }
                     None => {}
                 }
-            } else if (osw1.cmd == 0x322 || osw1.cmd == 0x32e) && osw2.grp && osw1.grp {
-                // Date / time; emergency PTT.
+            } else if osw1.cmd == 0x322 && osw2.grp && osw1.grp {
+                // Date / time.
+            } else if osw1.cmd == 0x32e && osw2.grp && osw1.grp {
+                // Emergency PTT: a radio keyed up with its emergency button pressed.
+                let tg = (osw1.addr & 0xfff0) as u32;
+                out.push(self.alarm(osw1.t, osw2.addr, tg, format!("emergency ptt src {} tg {tg}", osw2.addr)));
             } else if osw1.cmd == 0x340 && osw2.grp && osw1.grp && (is_patch_group(osw2.addr) || is_multiselect_group(osw2.addr)) {
                 let sg = (osw1.addr as u32 & 0xfff) << 4;
                 let tg = (osw2.addr & 0xfff0) as u32;
@@ -456,6 +467,9 @@ impl Parser {
                 m.meta = format!("patch cancel tg {sg}");
                 out.push(m);
             }
+        } else if osw1.addr == 0x26e8 {
+            // The site acknowledging a radio's emergency alarm (its button pressed; no talkgroup said).
+            out.push(self.alarm(osw1.t, osw2.addr, 0, format!("emergency alarm ack src {}", osw2.addr)));
         } else if osw1.addr == 0x261c {
             let mut m = self.msg(MessageType::Deregistration, osw1.t);
             m.source = osw2.addr as i64;
@@ -540,6 +554,26 @@ mod tests {
         assert_eq!(g, vec![(0x0210, 851_412_500, true, false), (0x0220, 851_812_500, false, true)]);
         assert_eq!(p.sys_id, Some(0x0abc));
         assert_eq!(p.cc_hz, Some(851_012_500 + 0x30 * 25_000));
+    }
+
+    #[test]
+    fn emergency_grant_and_alarms_800() {
+        let mut p = Parser::new(Bandplan::B800 { rebanded: true, splinter: false });
+        let out = feed(
+            &mut p,
+            &[
+                Osw { addr: 1001, grp: true, cmd: 0x321 },
+                Osw { addr: 0x0212, grp: true, cmd: 0x010 }, // tg 0x0210, status 2: emergency
+                Osw { addr: 1001, grp: true, cmd: 0x308 },
+                Osw { addr: 0x0214, grp: true, cmd: 0x32e }, // emergency PTT on tg 0x0210
+                Osw { addr: 1001, grp: false, cmd: 0x308 },
+                Osw { addr: 0x26e8, grp: false, cmd: 0x30b }, // emergency alarm ack
+            ],
+        );
+        let g: Vec<(u32, i64, bool)> = out.iter().filter(|m| m.kind == MessageType::Grant).map(|m| (m.talkgroup, m.source, m.emergency)).collect();
+        assert_eq!(g, vec![(0x0210, 1001, true)]);
+        let a: Vec<(u32, i64, bool)> = out.iter().filter(|m| m.kind == MessageType::EmergencyAlarm).map(|m| (m.talkgroup, m.source, m.emergency)).collect();
+        assert_eq!(a, vec![(0x0210, 1001, true), (0, 1001, true)]);
     }
 
     #[test]
