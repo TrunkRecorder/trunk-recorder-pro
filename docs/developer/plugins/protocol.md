@@ -222,7 +222,8 @@ away; all go when the plugin stops or restarts. (Since SDK 0.16.0.)
 |---|---|
 | `path` | The `path` of the `call.concluded` |
 | `outcome` | `ok`, `skipped` (not handled, on purpose) or `failed` (given up on) |
-| `message`, `url` | Optional: why, and where the call can be found now |
+| `message` | Optional: why it was skipped or failed, in a few words, the same each time (`talkgroup filter`, not `talkgroup 101 filtered out`). The card counts calls by it, so the call's own details (its talkgroup, a file, a server's error text) go in a [`log`](#log) line |
+| `url` | Optional: where the call can be found now |
 | `took_ms` | Optional: how long the work on the call took (an upload's last try), so the dashboard tells uploading from waiting |
 
 Send one for every call: see [What becomes of a call](../../plugins/writing-plugins.md#what-becomes-of-a-call).

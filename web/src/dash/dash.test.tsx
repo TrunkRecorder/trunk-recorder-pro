@@ -578,6 +578,37 @@ test("Plugins: a plugin that doesn't say its upload time gives the age alone", (
   assert.match(html, /doesn&#x27;t say its own upload time/);
 });
 
+test("Plugins: why calls were skipped and failed, by what the plugin said", () => {
+  const c = defaultConfig();
+  c.plugins = { broadcastify: { enabled: true, settings: {} } } as Config["plugins"];
+  running(c, []);
+  const show = (runtime: Partial<PluginInfo["runtime"]>) => {
+    const p: PluginInfo = {
+      id: "broadcastify", path: "/plugins/broadcastify/broadcastify", custom: false, problem: null,
+      manifest: { id: "broadcastify", name: "Broadcastify Calls", version: "0.2.2", description: "", api: 1, subscribe: ["call.concluded"], audio_formats: [] },
+      runtime: { state: "ok", message: "", ok: 0, skipped: 0, failed: 0, lastFailure: "", log: [], ...runtime },
+    };
+    transport.onMessage({ type: "plugins", encoderFound: null, plugins: [p] });
+    setView("plugins");
+    return text(renderToString(<PluginHealthPage manage={null} />));
+  };
+  // A backup node: every call already received.
+  const skips = [
+    { outcome: "skipped" as const, reason: "already received", calls: 460 },
+    { outcome: "skipped" as const, reason: "encrypted", calls: 6 },
+  ];
+  let page = show({ skipped: 466, reasons: skips });
+  assert.match(page, /Why skipped, this run\s*460\s*already received\s*99%\s*6\s*encrypted\s*1\.3%/);
+  assert.match(page, /Failed\s*0\s*none failed/, "466 tried and skipped: not \"none tried yet\"");
+  assert.doesNotMatch(page, /Why failed/);
+  // Failures get their own list, by their own share.
+  page = show({ ok: 10, skipped: 466, failed: 4, reasons: [...skips, { outcome: "failed", reason: "gave up after 4 tries: audio upload: HTTP 503", calls: 4 }] });
+  assert.match(page, /Why failed, this run\s*4\s*gave up after 4 tries: audio upload: HTTP 503\s*100%/);
+  // Nothing skipped or failed: nothing said of it.
+  uploader("broadcastify");
+  assert.doesNotMatch(text(renderToString(<PluginHealthPage manage={null} />)), /Why (skipped|failed)/);
+});
+
 test("A chart of one line says what it is and in what unit, as one of several does", () => {
   const data = { t0: Date.now() / 1000 - 600, stepS: 60, v: [3, -2, 1, 0, 2, -1, 3, 0, 1, 2], lo: Array(10).fill(null), hi: Array(10).fill(null), n: Array(10).fill(1) };
   const html = renderToString(<TimeSeries lines={[{ label: "This computer's clock against pool.ntp.org, ms (+: behind)", color: "red", data }]} />);

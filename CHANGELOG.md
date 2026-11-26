@@ -5,6 +5,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A plugin's card says why calls failed and were skipped.** A Broadcastify node on a site another node already
+  uploads showed Sent 0, Skipped 466, **Failed 0, none tried yet** and Broadcastify Calls **unknown**: every call was
+  answered `SKIPPED---ALREADY-RECEIVED-THIS-CALL` (it's a backup, and nothing is wrong), but nothing said so (forum
+  thread 505184, thanks @blantonl). The reason a plugin gives with each result was dropped; the card now counts
+  calls by it, **Why failed** and **Why skipped**, this run, most first. **Failed** says **none failed** when calls
+  were tried and skipped.
+  - **To plugins** (SDK 0.17.0): a `call.result`'s `message` is its reason on the card, counted as it is, so keep
+    it short and the same each time (`talkgroup filter`, not `talkgroup 101 filtered out`); a call's own details go
+    in a log line. `Attempt::Declined(why)` is for a call the service answered and turned away as it means to (it
+    has it already, or doesn't take that kind): it's reported skipped, and the service counts as answering, so its
+    status is **up**, not **unknown**. `Attempt::together` ranks it between done and skipped. The Broadcastify
+    plugin uses it for `SKIPPED` and unit-to-unit answers (0.2.2).
+
 - **Find my system scans 420–450 MHz** (#257, thanks @drfruct). A **UHF 420–450** band (`uhf-420`), off by default,
   fills the gap between UHF federal and UHF: amateur in the US, but trunked DMR is often there elsewhere. A band id
   the scan doesn't know (`--bands uhf2`) now stops it with *Not a band* instead of being left out.

@@ -184,7 +184,15 @@ We recommend leaving them on.
   retries and then failures: check the log's last error.
 - **Recording stops with calls still waiting.** They're saved in
   `plugin-data/broadcastify/queue.jsonl` and uploaded when recording starts again.
-- **Broadcastify answers `SKIPPED`.** The call is marked skipped.
+- **Every call skipped as already received.** Another node uploads the same system or site, and
+  Broadcastify keeps one copy of each call: it answers the other
+  `SKIPPED---ALREADY-RECEIVED-THIS-CALL`. The card shows **Sent 0** and **Why skipped: already
+  received**, and Broadcastify Calls **up**. Nothing is wrong: this node is a backup. If the
+  other node stops or its audio is worse, Broadcastify takes this node's copies instead, with
+  nothing to change. Broadcastify's page for the node counts them as Dup Calls.
+- **Broadcastify answers another `SKIPPED`**, or `Skip-Unit-To-Unit` (a private call, which it
+  doesn't take). The call is marked skipped, with Broadcastify's words or **unit-to-unit** as
+  the reason.
 - **Broadcastify answers `REJECTED`**, or the server refuses the request outright (an HTTP 4xx
   error other than 408 or 429). The call is marked failed and not tried again.
 

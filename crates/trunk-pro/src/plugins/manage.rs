@@ -47,6 +47,8 @@ pub struct Runtime {
     pub skipped: u64,
     pub failed: u64,
     pub last_failure: String,
+    /// Why calls were skipped or failed (what the plugin said of each), most first.
+    pub reasons: Vec<Reason>,
     /// Its recent log lines.
     pub log: VecDeque<LogEntry>,
     /// What it last said of its work (queue, timing, services), if it says.
@@ -103,6 +105,7 @@ impl Default for Runtime {
             skipped: 0,
             failed: 0,
             last_failure: String::new(),
+            reasons: Vec::new(),
             log: VecDeque::new(),
             metrics: None,
             last_result: None,
@@ -121,8 +124,22 @@ impl Default for Runtime {
     }
 }
 
+/// A reason a plugin gave for calls it skipped or failed (its `call.result` message, as it
+/// said it), and how many.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Reason {
+    pub outcome: Outcome,
+    pub reason: String,
+    pub calls: u64,
+}
+
+/// Reasons kept apart for each outcome; the rest are counted together.
+const REASONS: usize = 8;
+const OTHER_REASONS: &str = "other reasons";
+
 impl Runtime {
-    fn count(&mut self, outcome: Outcome) {
+    /// A result: counted, in its minute, and (skipped or failed) by what the plugin said.
+    fn count(&mut self, outcome: Outcome, message: &str) {
         let t = crate::clock::unix_s();
         self.last_result = Some(t);
         let m = (t as i64).div_euclid(60) * 60;
@@ -136,14 +153,30 @@ impl Runtime {
         match outcome {
             Outcome::Ok => {
                 b[0] += 1;
+                self.ok += 1;
                 self.last_ok = Some(t);
+                return;
             }
-            Outcome::Skipped => b[1] += 1,
+            Outcome::Skipped => {
+                b[1] += 1;
+                self.skipped += 1;
+            }
             Outcome::Failed => {
                 b[2] += 1;
+                self.failed += 1;
                 self.last_fail = Some(t);
             }
         }
+        let mut why = Some(message.trim()).filter(|m| !m.is_empty()).unwrap_or("no reason given");
+        let named = self.reasons.iter().filter(|r| r.outcome == outcome && r.reason != OTHER_REASONS);
+        if !self.reasons.iter().any(|r| r.outcome == outcome && r.reason == why) && named.count() >= REASONS {
+            why = OTHER_REASONS;
+        }
+        match self.reasons.iter_mut().find(|r| r.outcome == outcome && r.reason == why) {
+            Some(r) => r.calls += 1,
+            None => self.reasons.push(Reason { outcome, reason: why.to_string(), calls: 1 }),
+        }
+        self.reasons.sort_by_key(|r| std::cmp::Reverse(r.calls));
     }
 
     /// Copy `copy`'s state: the plugin's is the worst of its copies' and their notices.
@@ -598,14 +631,9 @@ impl Plugins {
                         health_event(was, r);
                     }
                     Note::Result { outcome, message, path, .. } => {
-                        r.count(*outcome);
-                        match outcome {
-                            Outcome::Ok => r.ok += 1,
-                            Outcome::Skipped => r.skipped += 1,
-                            Outcome::Failed => {
-                                r.failed += 1;
-                                r.last_failure = tell(&format!("{path}: {message}"));
-                            }
+                        r.count(*outcome, message);
+                        if *outcome == Outcome::Failed {
+                            r.last_failure = tell(&format!("{path}: {message}"));
                         }
                     }
                     Note::Metrics { metrics, .. } => r.set_metrics(copy, metrics.clone()),
@@ -767,5 +795,41 @@ mod tests {
         assert_eq!((r.state, r.message.as_str()), ("warning", "copy 2: the other"));
         r.set_notice(1, None, None, "");
         assert_eq!((r.state, r.message.as_str(), r.notices.len()), ("ok", "running", 0));
+    }
+
+    /// Skipped and failed calls are counted by what the plugin said, each outcome apart, most
+    /// first; past the reasons kept apart, the rest are one.
+    #[test]
+    fn results_are_counted_by_reason() {
+        let mut r = Runtime::default();
+        let results = [
+            (Outcome::Skipped, "talkgroup filter"),
+            (Outcome::Skipped, "already received"),
+            (Outcome::Ok, ""),
+            (Outcome::Skipped, "already received"),
+            (Outcome::Failed, "talkgroup filter"),
+            (Outcome::Skipped, " "),
+            (Outcome::Skipped, "already received"),
+        ];
+        for (o, m) in results {
+            r.count(o, m);
+        }
+        let got: Vec<(Outcome, &str, u64)> = r.reasons.iter().map(|x| (x.outcome, x.reason.as_str(), x.calls)).collect();
+        let want = [
+            (Outcome::Skipped, "already received", 3),
+            (Outcome::Skipped, "talkgroup filter", 1),
+            (Outcome::Failed, "talkgroup filter", 1),
+            (Outcome::Skipped, "no reason given", 1),
+        ];
+        assert_eq!(got, want);
+        assert_eq!((r.ok, r.skipped, r.failed), (1, 5, 1));
+        for i in 0..REASONS + 3 {
+            r.count(Outcome::Failed, &format!("reason {i}"));
+        }
+        let failed: Vec<&Reason> = r.reasons.iter().filter(|x| x.outcome == Outcome::Failed).collect();
+        assert_eq!(failed.len(), REASONS + 1, "the first reason and 7 more apart, the rest together");
+        assert_eq!(failed.iter().find(|x| x.reason == OTHER_REASONS).map(|x| x.calls), Some(4));
+        assert_eq!(failed.iter().map(|x| x.calls).sum::<u64>(), r.failed);
+        assert_eq!(r.reasons.iter().filter(|x| x.outcome == Outcome::Skipped).count(), 3, "skips keep their own");
     }
 }

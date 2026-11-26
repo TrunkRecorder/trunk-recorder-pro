@@ -267,7 +267,7 @@ The **Health** tab has a card for each plugin that's on (**Install & settings** 
 | **Waiting** | Calls queued for it (amber over 20), and how many are waiting to retry |
 | **Age at delivery** | How long after a call ended the plugin finished with it, over the last 5 minutes (or the hour, when nothing was delivered in the last 5), and its parts: **held** by your delay rules, **waiting** (the call's files being finished, the plugin's queue, failed tries) and the plugin's own **upload**. Then the hour's longest. A plugin built before SDK 0.6 doesn't say its upload time, so only the age shows. All by this computer's clock: no service reports it. |
 
-Under them: how much it has sent this run, a bar per minute for the last hour (sent, skipped, failed), each service the plugin
+Under them: how much it has sent this run, a bar per minute for the last hour (sent, skipped, failed), **Why failed** and **Why skipped** (each reason the plugin gave this run, with how many calls), each service the plugin
 talks to with its state, any figures of its own the plugin reports (simplestream's packets sent and
 dropped, for example), and when it last succeeded and failed. **Restarts** means the plugin
 crashed and was restarted; **Fell behind** (N events) means it was too slow to take events and some
