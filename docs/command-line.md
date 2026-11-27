@@ -362,7 +362,11 @@ what the radio's systems decode while it is set:
   refused, whatever it decoded.
 
 The setting's score (0 to 100) is the systems' average with the weakest counted twice, so a gain
-that helps the strong systems a little at a weak one's cost isn't chosen. The systems scored are
+that helps the strong systems a little at a weak one's cost isn't chosen. A system the radio
+receives at several sites is scored the same way site by site: its control channel score is its
+sites' average with the weakest site counted twice (and the SNR tie-break below is its weakest
+site's), and each site is shown under it (`county · North`). Added together, one site decoding in
+full hid another decoding half. The systems scored are
 those whose control channels the recorder receives on that radio, or only `--systems`. The radio's
 other systems are still watched then, and shown (the scored ones starred), and protected: a
 candidate that costs one of them more than `--protect` points (5 by default) on average over the
@@ -383,7 +387,7 @@ standard error of the rounds' differences.
 one gain it can't score better at another, however close to the noise it is: on one RTL-SDR at
 490 MHz, 16.6 dB and 25.4 dB both decoded 99.8 %, but the control channel's SNR went from 13.6 to
 20.3 dB. So a candidate that decodes no worse (by less than `--margin`) is also better when the
-weakest scored system's control channel SNR is higher by more than 2 dB and by more than twice the
+weakest scored system's (or site's) control channel SNR is higher by more than 2 dB and by more than twice the
 standard error of the rounds' differences: that margin is what a fade takes. A candidate takes `rounds × 2 × (settle + slice)`
 seconds: 114 by default.
 

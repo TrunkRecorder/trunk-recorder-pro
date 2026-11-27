@@ -16,6 +16,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   set higher than it is. Each trial carries the radio's whole gain, so the setting it had puts every element back
   exactly; a radio with no overall gain and an element the search moves left unset isn't tuned (it couldn't be put
   back), and says which to set. Gain stages also change live from Setup now, as the overall gain did.
+- **The gain tuner scores a multi-site system site by site.** A system the radio receives at several sites had its
+  sites' control channels added together: P25 coverage summed past 100 % and counted as 100, so one site decoding in
+  full hid another decoding half, often the very site the gain is tuned for. Each site is now scored on its own and
+  the system's control channel is their average with the weakest site counted twice, as the weakest system is
+  across systems; the SNR tie-break is the weakest site's. `trunk-pro tune` and the Tune gain report show each
+  site's figures under its system (`county · North`).
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the

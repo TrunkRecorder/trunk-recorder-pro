@@ -14,7 +14,9 @@
 //!   is refused, whatever it decoded.
 //!
 //! The weakest system counts twice, so a gain that helps the strong systems a
-//! little at the cost of a weak one isn't chosen.
+//! little at the cost of a weak one isn't chosen. So does the weakest site of a
+//! system the radio hears at several: its control channel is scored site by
+//! site. (Added together, one site decoding in full hid another that wasn't.)
 //!
 //! A control channel already decoded in full can't score better, however much
 //! closer to the noise it is: there the tie is broken by its SNR (the weakest
@@ -121,6 +123,15 @@ pub struct SysTally {
     pub phase_err: Mean,
     pub voice_frames: f64,
     pub voice_bad: f64,
+    /// Each site's control channel, by its name, when the radio receives the system at more than one
+    /// (the figures above are all of them together; voice is the system's).
+    pub sites: BTreeMap<String, SysTally>,
+}
+
+/// The weakest of `scores` counted twice.
+fn weakest_twice(scores: &[f64]) -> Option<f64> {
+    let worst = scores.iter().copied().reduce(f64::min)?;
+    Some((scores.iter().sum::<f64>() + worst) / (scores.len() as f64 + 1.0))
 }
 
 /// The radio over a slice.
@@ -166,12 +177,19 @@ impl SysTally {
         self.phase_err.merge(&o.phase_err);
         self.voice_frames += o.voice_frames;
         self.voice_bad += o.voice_bad;
+        for (k, s) in &o.sites {
+            self.sites.entry(k.clone()).or_default().merge(s);
+        }
     }
 
     /// The control channel's share decoded, 0–1: P25's coverage (symbols
     /// decoded of those it carries), else messages decoded of those framed,
-    /// for the share of the slice it was locked.
+    /// for the share of the slice it was locked. Received at several sites:
+    /// each site's, the weakest counted twice.
     pub fn control(&self) -> f64 {
+        if self.sites.len() > 1 {
+            return weakest_twice(&self.sites.values().map(SysTally::control).collect::<Vec<_>>()).unwrap_or(0.0);
+        }
         if self.seconds <= 0.0 {
             return 0.0;
         }
@@ -180,6 +198,14 @@ impl SysTally {
             None if self.good + self.bad > 0.0 => self.good / (self.good + self.bad) * (self.locked_s / self.seconds),
             None => 0.0,
         }
+    }
+
+    /// The control channel's SNR, dB: its weakest site's, received at several.
+    pub fn weakest_snr(&self) -> Option<f64> {
+        if self.sites.len() > 1 {
+            return self.sites.values().filter_map(|s| s.snr.get()).reduce(f64::min);
+        }
+        self.snr.get()
     }
 
     /// Voice frames lost, 0–1, when there were enough to tell.
@@ -235,9 +261,9 @@ impl Step {
         self.src.clip.get().is_some_and(|c| c > CLIP_PCT)
     }
 
-    /// The scored systems' weakest control channel SNR, dB (`only` as [`Self::score_of`]).
+    /// The scored systems' weakest control channel SNR, dB, site by site (`only` as [`Self::score_of`]).
     pub fn snr_of(&self, only: Option<&[String]>) -> Option<f64> {
-        self.systems.iter().filter(|(n, _)| only.is_none_or(|o| o.contains(n))).filter_map(|(_, t)| t.snr.get()).reduce(f64::min)
+        self.systems.iter().filter(|(n, _)| only.is_none_or(|o| o.contains(n))).filter_map(|(_, t)| t.weakest_snr()).reduce(f64::min)
     }
 }
 
@@ -247,6 +273,8 @@ impl Step {
 pub struct Watch {
     pub short_name: String,
     pub cc_keys: Vec<String>,
+    /// Each control channel's site, by name (`cc_keys`' order).
+    pub sites: Vec<String>,
 }
 
 /// The systems whose control channels source `source` receives, by the
@@ -256,8 +284,11 @@ pub fn watches(sites: &[SiteStatus], source: usize) -> Vec<Watch> {
     for y in sites.iter().filter(|y| y.source == Some(source)) {
         let key = y.key.clone();
         match out.iter_mut().find(|w| w.short_name == y.short_name) {
-            Some(w) => w.cc_keys.push(key),
-            None => out.push(Watch { short_name: y.short_name.clone(), cc_keys: vec![key] }),
+            Some(w) => {
+                w.cc_keys.push(key);
+                w.sites.push(y.site_name.clone());
+            }
+            None => out.push(Watch { short_name: y.short_name.clone(), cc_keys: vec![key], sites: vec![y.site_name.clone()] }),
         }
     }
     out
@@ -284,20 +315,31 @@ pub fn tally(step: &mut Step, watches: &[Watch], src_label: &str, values: &Value
         if locked(values, w) {
             t.locked_s += dt;
         }
-        for k in &w.cc_keys {
-            t.good += v(&format!("{k}/cc/good")).unwrap_or(0.0) * dt;
-            t.bad += v(&format!("{k}/cc/bad")).unwrap_or(0.0) * dt;
-            if let Some(s) = v(&format!("{k}/cc/airSym")) {
-                *t.air_sym.get_or_insert(0.0) += s * dt;
-            }
-            if v(&format!("{k}/cc/locked")).unwrap_or(0.0) >= 0.5 {
-                if let Some(s) = v(&format!("{k}/cc/snr")) {
-                    t.snr.add(s);
+        for (j, k) in w.cc_keys.iter().enumerate() {
+            let on = v(&format!("{k}/cc/locked")).unwrap_or(0.0) >= 0.5;
+            let add = |t: &mut SysTally| {
+                t.good += v(&format!("{k}/cc/good")).unwrap_or(0.0) * dt;
+                t.bad += v(&format!("{k}/cc/bad")).unwrap_or(0.0) * dt;
+                if let Some(s) = v(&format!("{k}/cc/airSym")) {
+                    *t.air_sym.get_or_insert(0.0) += s * dt;
                 }
-                if let Some(p) = v(&format!("{k}/cc/phaseErr")) {
-                    t.phase_err.add(p);
+                if on {
+                    if let Some(s) = v(&format!("{k}/cc/snr")) {
+                        t.snr.add(s);
+                    }
+                    if let Some(p) = v(&format!("{k}/cc/phaseErr")) {
+                        t.phase_err.add(p);
+                    }
                 }
+            };
+            add(t);
+            // The site's own, as well.
+            let site = t.sites.entry(w.sites.get(j).cloned().unwrap_or_else(|| k.clone())).or_default();
+            site.seconds += dt;
+            if on {
+                site.locked_s += dt;
             }
+            add(site);
         }
         let sys = system_key(&w.short_name);
         t.voice_frames += v(&format!("{sys}/voice/frames")).unwrap_or(0.0) * dt;
@@ -420,24 +462,35 @@ pub struct SystemFigures {
     pub snr_db: Option<[f64; 2]>,
 }
 
-/// Each system's figures, `inc` against `cand`, in `names`' order.
+/// Each system's figures, `inc` against `cand`, in `names`' order; after a system the radio
+/// receives at several sites, each site's ("county · North", its control channel alone).
 pub fn figures(inc: &Step, cand: &Step, names: &[String], scored: Option<&[String]>) -> Vec<SystemFigures> {
     let pair = |a: Option<f64>, b: Option<f64>| Some([a?, b?]);
-    names
-        .iter()
-        .filter_map(|n| {
-            let (a, b) = (inc.systems.get(n)?, cand.systems.get(n)?);
-            let phase_err = pair(a.phase_err.get(), b.phase_err.get());
-            Some(SystemFigures {
-                system: n.clone(),
-                scored: scored.is_none_or(|s| s.contains(n)),
-                control_pct: [a.control() * 100.0, b.control() * 100.0],
-                voice_lost_pct: pair(a.voice_lost(), b.voice_lost()).map(|[x, y]| [x * 100.0, y * 100.0]),
-                snr_db: pair(a.snr.get(), b.snr.get()).filter(|_| phase_err.is_none()),
-                phase_err,
-            })
-        })
-        .collect()
+    let row = |name: String, scored: bool, a: &SysTally, b: &SysTally, voice: bool| {
+        let phase_err = pair(a.phase_err.get(), b.phase_err.get());
+        SystemFigures {
+            system: name,
+            scored,
+            control_pct: [a.control() * 100.0, b.control() * 100.0],
+            voice_lost_pct: pair(a.voice_lost(), b.voice_lost()).filter(|_| voice).map(|[x, y]| [x * 100.0, y * 100.0]),
+            snr_db: pair(a.snr.get(), b.snr.get()).filter(|_| phase_err.is_none()),
+            phase_err,
+        }
+    };
+    let mut out = Vec::new();
+    for n in names {
+        let (Some(a), Some(b)) = (inc.systems.get(n), cand.systems.get(n)) else { continue };
+        let scored = scored.is_none_or(|s| s.contains(n));
+        out.push(row(n.clone(), scored, a, b, true));
+        if a.sites.len() > 1 {
+            for (site, sa) in &a.sites {
+                if let Some(sb) = b.sites.get(site) {
+                    out.push(row(format!("{n} · {site}"), scored, sa, sb, false));
+                }
+            }
+        }
+    }
+    out
 }
 
 // ───────────────────────────── the search ─────────────────────────────
@@ -583,11 +636,45 @@ mod tests {
         assert_eq!(w.iter().map(|w| w.short_name.as_str()).collect::<Vec<_>>(), ["metro", "county"]);
         assert_eq!(w[0].cc_keys, ["sys/metro"]);
         assert_eq!(w[1].cc_keys, ["sys/county/site/North", "sys/county/site/East"], "only the sites this radio receives");
+        assert_eq!(w[1].sites, ["North", "East"]);
+    }
+
+    /// A system the radio hears at several sites is scored site by site, the weakest twice: added together, a
+    /// site decoding in full hid one decoding half (their coverage summed past 100 %, and counted as 100).
+    #[test]
+    fn a_weak_site_isnt_hidden_by_its_systems_other_sites() {
+        let w = vec![Watch { short_name: "county".into(), cc_keys: vec!["sys/county/site/North".into(), "sys/county/site/South".into()], sites: vec!["North".into(), "South".into()] }];
+        let v = values(json!({
+            "sys/county/site/North/cc/locked": 1, "sys/county/site/North/cc/airSym": 4800, "sys/county/site/North/cc/snr": 20,
+            "sys/county/site/South/cc/locked": 1, "sys/county/site/South/cc/airSym": 2400, "sys/county/site/South/cc/snr": 6,
+        }));
+        let mut s = Step::default();
+        for _ in 0..3 {
+            tally(&mut s, &w, "airspy:1", &v, 1.0);
+        }
+        let t = &s.systems["county"];
+        assert_eq!((t.sites["North"].control(), t.sites["South"].control()), (1.0, 0.5));
+        assert!((t.control() - (1.0 + 0.5 + 0.5) / 3.0).abs() < 1e-9, "{}", t.control());
+        assert!((s.score_of(None).unwrap() - 200.0 / 3.0).abs() < 1e-9);
+        assert_eq!(s.snr_of(None), Some(6.0), "the weakest site's SNR breaks ties");
+        // Reported site by site, after the system.
+        let mut better = s.clone();
+        better.systems.get_mut("county").unwrap().sites.get_mut("South").unwrap().air_sym = Some(4800.0 * 3.0);
+        let rows = figures(&s, &better, &["county".into()], None);
+        let shown: Vec<(&str, [f64; 2])> = rows.iter().map(|r| (r.system.as_str(), r.control_pct)).collect();
+        assert_eq!(shown[1..], [("county · North", [100.0, 100.0]), ("county · South", [50.0, 100.0])]);
+        assert!(rows[0].control_pct[1] > rows[0].control_pct[0], "the system's score moves with its weak site");
+        // One site: as before.
+        let one = vec![Watch { short_name: "metro".into(), cc_keys: vec!["sys/metro".into()], sites: vec!["metro".into()] }];
+        let mut m = Step::default();
+        tally(&mut m, &one, "airspy:1", &values(json!({ "sys/metro/cc/locked": 1, "sys/metro/cc/airSym": 2400 })), 1.0);
+        assert_eq!(m.systems["metro"].control(), 0.5);
+        assert_eq!(figures(&m, &m, &["metro".into()], None).len(), 1);
     }
 
     #[test]
     fn a_second_of_stats_is_tallied() {
-        let w = vec![Watch { short_name: "metro".into(), cc_keys: vec!["sys/metro".into()] }];
+        let w = vec![Watch { short_name: "metro".into(), cc_keys: vec!["sys/metro".into()], sites: vec!["metro".into()] }];
         let mut s = Step::default();
         let v = values(json!({ "sys/metro/cc/locked": 1, "sys/metro/cc/airSym": 2400, "sys/metro/cc/phaseErr": 12, "sys/metro/voice/frames": 100, "sys/metro/voice/bad": 5, "src/rtlsdr-1/clipPct": 0.1 }));
         for _ in 0..3 {
