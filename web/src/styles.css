@@ -151,12 +151,16 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .mk-cc { border-left-color: var(--accent); }
 .mk-cc i { color: var(--accent); }
 .mk-cc.faint { opacity: 0.55; border-left-style: dotted; }
-.mk-cc.faint i { top: 64px; font-size: 10px; }
 .mk-recording { border-left: 2px solid var(--rec); }
-.mk-recording i { color: var(--rec); top: 24px; }
-.mk-monitoring i { top: 44px; color: var(--muted); }
+.mk-recording i { color: var(--rec); }
+.mk-monitoring i { color: var(--muted); }
 .mk-enc { border-left-style: dotted; }
-.wf-axis { display: flex; justify-content: space-between; padding: 4px 10px; font-size: 11px; color: var(--muted); }
+/* (A call's tag says what it is, then fades: its line stays, and hovering it says again.) */
+.mk-call i { animation: mk-fade 1.5s ease-in 4s forwards; }
+@keyframes mk-fade { to { opacity: 0.2; } }
+.wf-tip { display: block; color: var(--text); }
+.wf-axis { display: flex; justify-content: space-between; gap: 8px; padding: 4px 10px; font-size: 11px; color: var(--muted); }
+.wf-axis-mid { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .table-wrap { overflow-x: auto; }
 .table-wrap.channels-wrap { max-height: 420px; overflow-y: auto; }

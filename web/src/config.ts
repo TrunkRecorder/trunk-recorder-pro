@@ -728,6 +728,57 @@ export function configIndex(running: SourceStatus[], c: Config, st: SourceStatus
   return c.sources.findIndex((_, k) => runningSource(running, c, k) === st);
 }
 
+/**
+ * A source as the dashboard shows it: its kind and its name ("SoapySDR · 700-band", "Airspy · production"), its
+ * kind alone with no name. Not its label: a SoapySDR's is its whole device arguments, which only a tooltip has room
+ * for (`sourcesShown`).
+ */
+export function sourceShort(x: { type: Source["type"]; name?: string }): string {
+  const kind = SOURCE_KINDS[x.type]?.label ?? x.type;
+  const name = x.name?.trim();
+  return name ? `${kind} · ${name}` : kind;
+}
+
+/**
+ * The kind of radio a source's label names (the recorder's Source::label: "SoapySDR driver=…", "RTL-SDR SN 200",
+ * "rtl_tcp host:1234", "file x.cu8"), as sourceShort says it; "Source" for a label it doesn't know. For a source
+ * known only by its label (an event's, once that source is gone): never the label itself, which may be a whole
+ * device argument string.
+ */
+export function labelKind(label: string): string {
+  const kind = Object.values(SOURCE_KINDS).find((k) => label === k.label || label.startsWith(`${k.label} `));
+  if (kind) return kind.label;
+  const head = label.split(" ")[0];
+  if (head === "rtl_tcp") return SOURCE_KINDS.rtlsdr.label;
+  if (head === "file") return SOURCE_KINDS.file.label;
+  if (head === "stream") return SOURCE_KINDS.stream.label;
+  return "Source";
+}
+
+/** A running source as shown: `short` (sourceShort) in the line, `full` (its label: the radio, as the recorder names it) on hover. */
+export interface SourceShown {
+  short: string;
+  full: string;
+}
+
+/**
+ * The running sources as the dashboard shows them (sourceShort), each by its name as Setup has it now (a name is
+ * taken while recording; the radio's own settings don't carry it). Two that would read the same say which they are,
+ * as Setup counts them: "RTL-SDR · Source 2", or with a name they share "RTL-SDR · roof (Source 2)".
+ */
+export function sourcesShown(running: SourceStatus[], c: Config | null): SourceShown[] {
+  const at = running.map((st) => (c ? configIndex(running, c, st) : -1));
+  const name = running.map((st, n) => (at[n] >= 0 ? c!.sources[at[n]].name : st.settings?.name)?.trim() || "");
+  // (A recorder that doesn't say a source's settings: the kind its label names.)
+  const kind = running.map((st) => (st.settings ? sourceShort({ type: st.settings.type }) : labelKind(st.label)));
+  const short = running.map((_, n) => (name[n] ? `${kind[n]} · ${name[n]}` : kind[n]));
+  return running.map((st, n) => {
+    const place = `Source ${(at[n] >= 0 ? at[n] : st.index) + 1}`;
+    const same = short.filter((x) => x === short[n]).length > 1;
+    return { short: !same ? short[n] : name[n] ? `${short[n]} (${place})` : `${kind[n]} · ${place}`, full: st.label };
+  });
+}
+
 /** Whether a source of `s`'s rate and guard tuned to `center` reaches `hz` (Source::reaches). */
 export function reaches(s: { rateHz: number; guardHz?: number }, center: number, hz: number): boolean {
   return Math.abs(hz - center) <= usableHalfWidth(s.rateHz, s.guardHz);

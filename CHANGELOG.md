@@ -5,6 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Sources are shown by kind and name; the waterfall's labels don't pile up.** The dashboard named a source by its
+  label, a SoapySDR source's whole device arguments (`SoapySDR driver=remote,remote=tcp://…`), which squeezed the
+  Decode page's Frequencies table and the RF cards. A source is now shown by its kind and its name from Setup
+  ("SoapySDR · 700-band", "Airspy · roof"), its kind alone with no name, and with its number when two would read the
+  same ("RTL-SDR · Source 2", "RTL-SDR · roof (Source 3)"); the label is on hover. That's on the RF cards and
+  waterfall, the Frequencies and Out of band tables, the band-edge hint, the RF page's light and the Lately feed,
+  where an event about a source that isn't running now (changed or removed since) shows the kind its label names.
+  Setup still names the radio in full (#210's cut-off stays for any long text). On the waterfall, site names that
+  would print over each other stack to a second row (a third that fits in neither shares the row that frees first); an
+  adjacent site's address is no longer printed on the trace (its line stays, and the readout names it when the
+  pointer is on it, as it does any line); and calls are tagged on a row of their own below the sites, the tag fading
+  after a few seconds.
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the

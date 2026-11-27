@@ -4,14 +4,14 @@ import "../testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderToString } from "react-dom/server";
-import { defaultConfig, newConventional, newSystem } from "../config.ts";
+import { defaultConfig, labelKind, newConventional, newSystem, SOURCE_KINDS, sourceShort, sourcesShown } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, dashSystems, pageHealth, rangesFor, sourceHealth, type DetailedSite } from "./data.ts";
-import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
+import { coverage, dashSystems, pageHealth, rangesFor, sourceHealth, sourceNamer, sourceShown, type DetailedSite } from "./data.ts";
+import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, MonitorEvent, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
 import { DmrSites } from "./Systems.tsx";
-import { eventText, Overview } from "./Overview.tsx";
+import { EventFeed, eventText, Overview } from "./Overview.tsx";
 import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
 import { RfPage } from "./Rf.tsx";
@@ -684,7 +684,7 @@ test("RF: a source whose gain may be low suggests so (no warning) and offers Tun
   page = text(renderToString(<RfPage />));
   assert.match(page, /Gain may be low · peaks -32 dBFS — Tune gain/);
   assert.match(page, /Best changed since/);
-  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain may be low · peaks -32 dBFS");
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR: gain may be low · peaks -32 dBFS");
 });
 
 test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {
@@ -697,10 +697,10 @@ test("RF: a source nothing needs says it can probably go; one in use doesn't", (
   setView("rf");
   const page = text(renderToString(<RfPage />));
   assert.equal(page.split("You can probably remove it").length - 1, 1, "on the spare's card only");
-  assert.match(page, /RTL-SDR SN 2 .*Unused Probably removable The other sources reach every channel the config lists, and no call has used this one/);
+  assert.match(page, /RTL-SDR · Source 2 .*Unused Probably removable The other sources reach every channel the config lists, and no call has used this one/);
 });
 
-test("RF: a source's card is called as Setup calls it, a new name at once; its radio by its label", () => {
+test("RF: a source's card is called by its kind and its name as Setup has it, a new name at once; Setup's title and its radio's label on hover", () => {
   const c = defaultConfig();
   const rtl = (serial: string, name?: string): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, biasTee: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0, ...(name ? { name } : {}) });
   c.sources = [rtl("1"), rtl("2", "Whip")];
@@ -708,12 +708,89 @@ test("RF: a source's card is called as Setup calls it, a new name at once; its r
   const st = (i: number): SourceStatus => ({ index: i, label: `RTL-SDR SN ${i + 1}`, centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: rtl(String(i + 1)) });
   transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [st(0), st(1)], load: 0, calls: [] });
   setView("rf");
-  assert.match(text(renderToString(<RfPage />)), /Source 2 \(Whip\) · RTL-SDR SN 2/);
+  let html = renderToString(<RfPage />);
+  assert.match(html, /<span title="Source 1 · RTL-SDR SN 1">RTL-SDR<\/span>/);
+  assert.match(html, /<span title="Source 2 \(Whip\) · RTL-SDR SN 2">RTL-SDR · Whip<\/span>/);
+  assert.ok(titles(html).length >= 4 && titles(html).every((t) => !/RTL-SDR SN/.test(t)), "the radio's label only on hover");
+  assert.match(html, /<span title="RTL-SDR SN 2">Waterfall · <!-- -->RTL-SDR · Whip<\/span>/);
   // Renamed (and moved first) while recording: the card follows its radio and its new name.
   transport.onMessage({ type: "config", config: { ...c, sources: [rtl("2", "Roof"), rtl("1")] }, version: 2 });
-  const page = text(renderToString(<RfPage />));
-  assert.match(page, /Source 1 \(Roof\) · RTL-SDR SN 2/);
-  assert.match(page, /Source 2 · RTL-SDR SN 1/);
+  html = renderToString(<RfPage />);
+  assert.match(html, /<span title="Source 1 \(Roof\) · RTL-SDR SN 2">RTL-SDR · Roof<\/span>/);
+  assert.match(html, /<span title="Source 2 · RTL-SDR SN 1">RTL-SDR<\/span>/);
+});
+
+test("Sources as shown: kind and name, kind alone unnamed; two that would read the same say which; the label on hover", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string, name?: string): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, biasTee: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0, ...(name ? { name } : {}) });
+  const args = "driver=remote,remote=tcp://radio.example:55132,remote:driver=airspy";
+  const soapy: Source = { type: "soapy", args, agc: false, gainDb: null, gains: {}, antenna: "", settings: "", centerHz: 771_000_000, rateHz: 2_500_000, ppm: 0, name: "700-band" };
+  c.sources = [soapy, rtl("1"), rtl("2")];
+  const st = (i: number, label: string): SourceStatus => ({ index: i, label, centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: { ...c.sources[i], name: undefined } });
+  const sources = [st(0, `SoapySDR ${args}`), st(1, "RTL-SDR SN 1"), st(2, "RTL-SDR SN 2")];
+  assert.deepEqual(sourcesShown(sources, c), [
+    { short: "SoapySDR · 700-band", full: `SoapySDR ${args}` },
+    { short: "RTL-SDR · Source 2", full: "RTL-SDR SN 1" },
+    { short: "RTL-SDR · Source 3", full: "RTL-SDR SN 2" },
+  ]);
+  // One named: none reads the same.
+  assert.deepEqual(sourcesShown(sources, { ...c, sources: [soapy, rtl("1"), rtl("2", "roof")] }).map((x) => x.short), ["SoapySDR · 700-band", "RTL-SDR", "RTL-SDR · roof"]);
+  // No config (yet): the name the radio runs with, if any.
+  assert.deepEqual(sourcesShown([{ ...sources[0], settings: soapy }], null), [{ short: "SoapySDR · 700-band", full: `SoapySDR ${args}` }]);
+  // Two sharing a name keep it, and say which.
+  assert.deepEqual(sourcesShown(sources, { ...c, sources: [soapy, rtl("1", "roof"), rtl("2", "roof")] }).map((x) => x.short), ["SoapySDR · 700-band", "RTL-SDR · roof (Source 2)", "RTL-SDR · roof (Source 3)"]);
+  // An event names a source by its label: shown so while it runs; one not running now by the kind its label names.
+  const name = sourceNamer({ sources, config: c });
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceDrops", source: `SoapySDR ${args}` }, name), "SoapySDR · 700-band: dropping samples");
+  assert.equal(eventText({ type: "monitorEvent", t: 0, level: "ok", kind: "sourceRecovered", source: "HackRF SN 9" }, name), "HackRF: clean again");
+  assert.equal(sourceShown({ sources, config: c }, sources[0]).short, "SoapySDR · 700-band");
+});
+
+test("Lately: a source event from before the sources changed (or before they're known) shows its kind, its whole label only on hover", () => {
+  const old = "SoapySDR driver=remote,remote=tcp://radio.example:55132,remote:driver=airspy,remote:prot=tcp";
+  const ev = (kind: "sourceDrops" | "sourceClipping" | "sourceQuiet" | "sourceRecovered"): MonitorEvent => ({ type: "monitorEvent", t: Date.now() / 1000, level: "warn", kind, source: old, pct: 2, peakDb: -32 });
+  // The recording restarted with the remote radio's arguments changed: the event's label matches no running source.
+  const now: Source = { type: "soapy", args: "driver=remote,remote=tcp://radio.example:55133", agc: false, gainDb: null, gains: {}, antenna: "", settings: "", centerHz: 771_000_000, rateHz: 2_500_000, ppm: 0, name: "700-band" };
+  const running: SourceStatus = { index: 0, label: `SoapySDR ${now.args}`, centerHz: 771_000_000, rateHz: 2_500_000, rateMeasured: 2_500_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: now };
+  for (const sources of [[running], []]) {
+    const html = renderToString(<EventFeed events={[ev("sourceDrops"), ev("sourceClipping"), ev("sourceQuiet"), ev("sourceRecovered")]} source={sourceNamer({ sources, config: null })} />);
+    const shown = text(html);
+    assert.doesNotMatch(shown, /driver=|radio\.example/, "no device arguments in the line");
+    assert.match(shown, /SoapySDR: dropping samples/);
+    assert.match(shown, /SoapySDR: gain too high · 2% clipping/);
+    assert.match(shown, /SoapySDR: clean again/);
+    assert.equal(html.split(`title="${old}"`).length - 1, 2, "the whole label on hover (drops, recovered)");
+    assert.equal(html.split(`title="${old}: samples`).length - 1, 2, "and before the hint (clipping, quiet)");
+  }
+  // Without a namer, the same.
+  assert.equal(eventText(ev("sourceDrops")), "SoapySDR: dropping samples");
+});
+
+test("sourceShort and labelKind: each kind, named and unnamed; a label read back to its kind", () => {
+  // (Stated here, not read from SOURCE_KINDS: what a user sees.)
+  const kinds: [Source["type"], string, string][] = [
+    ["rtlsdr", "RTL-SDR", "RTL-SDR SN 200"],
+    ["usrp", "USRP", "USRP serial=31A2B5C"],
+    ["airspy", "Airspy", "Airspy SN 735863DC2F650AE3"],
+    ["hydrasdr", "HydraSDR", "HydraSDR SN 1A2B3C4D5E6F7081"],
+    ["bladerf", "bladeRF", "bladeRF (first)"],
+    ["hackrf", "HackRF", "HackRF SN 0000a1"],
+    ["spyserver", "SpyServer", "SpyServer radio.example:5555"],
+    ["soapy", "SoapySDR", "SoapySDR driver=remote,remote=tcp://radio.example:55132"],
+    ["file", "Capture file", "file capture.cu8"],
+    ["stream", "Internet stream", "stream feeds.example/123"],
+  ];
+  assert.equal(kinds.length, Object.keys(SOURCE_KINDS).length, "every kind there is");
+  for (const [type, kind, label] of kinds) {
+    assert.equal(sourceShort({ type }), kind, `${type} unnamed`);
+    assert.equal(sourceShort({ type, name: "" }), kind, `${type} named nothing`);
+    assert.equal(sourceShort({ type, name: "  " }), kind, `${type} named blank`);
+    assert.equal(sourceShort({ type, name: " roof " }), `${kind} · roof`, `${type} named`);
+    assert.equal(labelKind(label), kind, label);
+  }
+  assert.equal(labelKind("rtl_tcp radio.example:1234"), "RTL-SDR");
+  assert.equal(labelKind("Unknown args=a,b"), "Source", "never the label itself");
+  assert.equal(labelKind(""), "Source");
 });
 
 test("History spans: a week from memory or files; further as the store keeps the dashboard's history", () => {
