@@ -1,7 +1,8 @@
 // What a setup input shows for a value, and the value it reads back from
 // what was typed. Pure, so `npm test` covers them; DraftInput (inputs.tsx)
 // pairs one with an <input>.
-import { hzOf } from "./rules.ts";
+import { hzOf, rangesOf } from "./rules.ts";
+import type { HzRange } from "./protocol.ts";
 import { formatGain, formatMhz, parseFreqList } from "./config.ts";
 
 export interface TextCodec<T> {
@@ -96,6 +97,26 @@ export const lcnTable: TextCodec<Record<string, number>> = {
     return t;
   },
 };
+
+/** Ranges of frequencies as typed, and the parts that aren't one (kept, for the field to say so). */
+export interface RangeList {
+  ranges: HzRange[];
+  bad: string[];
+}
+
+/** A frequency in MHz, as short as it goes (433.05, not 433.05000). */
+export const mhzShort = (hz: number) => String(Number((hz / 1e6).toFixed(6)));
+
+/** Ranges of frequencies: "420-450, 433.05-434.79" (MHz, or Hz as anywhere else), read by the recorder's own rangesOf. */
+export const rangeList: TextCodec<RangeList> = {
+  format: (v) => [...v.ranges.map((r) => `${mhzShort(r.loHz)}-${mhzShort(r.hiHz)}`), ...v.bad].join(", "),
+  parse: rangesOf,
+};
+
+/** What's wrong with ranges typed: the parts that aren't one. null: nothing. */
+export function rangeListProblem(v: RangeList): string | null {
+  return v.bad.length ? `Not a range: ${v.bad.join(", ")}. Write them as 420-450.` : null;
+}
 
 /** Seconds, typed in minutes (1.5 = 90 s). Blank, unreadable or below 0 = 0. */
 export const minutes: TextCodec<number> = {

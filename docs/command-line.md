@@ -303,6 +303,7 @@ settings (`suggest`) and how long it took.
 |---|---|---|
 | `--serial S` | first dongle | Which RTL-SDR |
 | `--bands list` | `800,700,900,uhf,vhf` | Any of `800`, `700`, `900`, `uhf`, `vhf`, and also `uhf-fed` (380–420 MHz), `uhf-420` (420–450 MHz), `biz-uhf`, `biz-vhf` (business bands, where most DMR is) and `t-band` (470–512 MHz), which are only scanned when you name them. An id it doesn't know stops the scan with *Not a band*. |
+| `--ranges list` | | Ranges of your own, `lo-hi`, commas between, each end in MHz (under 10 000) or Hz: `--ranges 420-450,433.05-434.79`. Scanned after the bands; given alone, just them. |
 | `--gain dB` | AGC, then a gain search | A fixed gain; turns off the gain search |
 | `--no-gain` | | Don't search for the best gain |
 | `--ppm n` | 0 | Frequency correction while scanning, in whole ppm |

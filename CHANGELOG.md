@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Find my system scans ranges of your own** (#258, thanks @drfruct). Under the bands, **Other ranges, MHz** takes
+  ranges such as `420-450, 433.05-434.79`, scanned beside the bands ticked; each end is read as every frequency field
+  reads one (MHz under 10 000, else Hz). Setup and the setup guide share the one picker, and remember the bands and
+  ranges a scan last started with. On the command line: `--ranges 420-450,433.05-434.79`; to the recorder,
+  `surveyStart`'s `ranges` (`[{ loHz, hiHz }]`). Each band reported (`progress.band`, a candidate's `band`, and so
+  `band` in `trunk-pro survey`'s `found` lines) is now `{ id, loHz, hiHz }` rather than the band's id, `id` null for a
+  range of one's own, and the `survey` message no longer repeats the `bands` it was asked for.
+
 - **Removing asks first, and Cancel is the default** (#266, thanks @gofaster). Remove on a radio in Setup → Radios
   deleted it at once; it now asks. Every question before something is done (removing a radio, site, system, user,
   token, passkey or the proxy, uninstalling a plugin or interface, deleting data or an IQ capture, joining systems,
