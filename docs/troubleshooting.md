@@ -91,7 +91,7 @@ the log says `Not started: <why>`, the first problem found. The reasons:
 | `x: …` (a signal problem, such as `x: two signals are called y …`) | A system's [signals](guides/signals.md) can't be used: no id, an id used twice, a pattern it doesn't know, a page without its two tones |
 | `Set a center frequency for source N — it couldn't be placed automatically …` | Automatic centring couldn't fit the channels. Set the centre yourself, or add a source. See [Radios](guides/radios.md). |
 | `x: …` (a band plan problem) | A SmartNet system's band plan isn't one it knows, or `400_custom` lacks a number; see [SmartNet](guides/smartnet.md) |
-| `x: DMR frequencies outside every source's bandwidth: … MHz — move a center frequency or add a source.` (or NXDN, EDACS) | Every control and voice frequency of a DMR, NXDN or EDACS site has to be covered |
+| `x: DMR frequencies outside every source's bandwidth: … MHz — move a center frequency or add a source.` (or NXDN, EDACS, LTR) | Every control and voice frequency of a DMR, NXDN, EDACS or LTR site has to be covered |
 | `No control channel of x falls inside any source's bandwidth — move a center frequency or add a source.` | At least one control channel must be inside a source's usable band (its band minus the guard band at each edge: see [Guard band](configuration/sources.md#guard-band-and-usable-bandwidth)) |
 | `x: an EDACS site needs its channel list — each LCN (1–25) and its frequency.` | Fill in the site's `lcnTableHz`; see [EDACS](configuration/systems.md#edacs) |
 | `Conventional channel … MHz is in both a and b — a frequency belongs to one conventional system.` | As it says |

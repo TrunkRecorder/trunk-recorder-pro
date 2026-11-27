@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **LTR, LTR-Net and Passport** (#267, thanks @ishelly404): a trunked system of `"type": "ltr"` (Setup: **LTR /
+  LTR-Net / Passport**). List every repeater as the site's frequencies; each is watched for the 300 baud status
+  words under its voice, and a call is recorded, as analog FM, on the repeater its words name. Which of the three a
+  site is comes from its words. Each repeater's LCN comes from `lcnTableHz`, or is learned from its own idle bursts.
+  LTR talkgroups A-HH-GGG are numbered AHHGGG (1-05-123 is `105123`); Passport talkgroups are their number. The
+  Decode page lists each repeater with its LCN and call. Written from the documented formats, and not heard on a
+  real system yet: captures are welcome. See [LTR](docs/configuration/systems.md#ltr).
+  - **To plugins**: a call's `system_type` (and a system's `kind`) may be `"ltr"`.
+
 - **Setup → Plugins folds each plugin into a card** (#263, thanks @jschmall), like the Systems,
   Conventional and Radios tabs: a chevron, **Expand all** / **Collapse all**, open only when there's
   one. The folded head keeps the **On/Off** switch and the plugin's state.

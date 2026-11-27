@@ -8,6 +8,7 @@ export const SYSTEM_KINDS = {
   dmr: { label: "DMR", watched: true, siteLock: [] },
   nxdn: { label: "NXDN", watched: true, siteLock: ["sysId", "site"] },
   edacs: { label: "EDACS", watched: true, siteLock: ["site"] },
+  ltr: { label: "LTR", watched: true, siteLock: [] },
 } as const;
 
 export type SystemKind = keyof typeof SYSTEM_KINDS;

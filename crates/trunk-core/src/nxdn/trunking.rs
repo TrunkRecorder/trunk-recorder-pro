@@ -37,6 +37,7 @@ use crate::dsp::{Receiver, Symbol};
 use crate::trunk::engine::NoteLevel;
 use crate::trunk::identity::{IdField, Identity};
 use crate::trunk::message::{site_code, ChannelTable, LastCall, Message, MessageType};
+pub use crate::trunk::message::ChannelEntry;
 use crate::trunk::Voice;
 
 /// A grant waits this long for its group to show up on a watched carrier.
@@ -105,14 +106,6 @@ pub struct SiteStatus {
     /// Channel numbers granted whose frequency isn't known.
     pub unknown: Vec<u32>,
     pub carriers: Vec<CarrierStatus>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ChannelEntry {
-    pub number: u32,
-    pub hz: u64,
-    /// From the config's table (else learned from the air).
-    pub configured: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -250,9 +243,7 @@ impl Site {
     }
 
     pub fn status(&self) -> SiteStatus {
-        let mut channels: Vec<ChannelEntry> = self.cfg.channel_table.iter().map(|(&number, &hz)| ChannelEntry { number, hz, configured: true }).collect();
-        channels.extend(self.table.learned().map(|(number, hz)| ChannelEntry { number, hz, configured: false }));
-        channels.sort_by_key(|c| c.number);
+        let channels = self.table.entries();
         let carriers = self
             .carriers
             .iter()

@@ -13,6 +13,7 @@
 //! DMR:      every carrier of the site: 4FSK → bursts → CSBK / link control → Message
 //! NXDN:     every carrier of the site: 4FSK → frames → CAC / VCALL / SCCH → Message
 //! EDACS:    9600 baud 2FSK → framer (3× vote, BCH) → Parser → Message
+//! LTR:      every repeater of the site: FM → 300 baud status words → Message
 //! ```
 
 use std::collections::BTreeMap;
@@ -27,6 +28,7 @@ use super::voice::VoiceParams;
 use crate::dmr;
 use crate::dsp::AnalogTuning;
 use crate::edacs;
+use crate::ltr;
 use crate::metrics::{Instrumented, Sink};
 use crate::nxdn;
 use crate::p25::diversity::{best_frame, control_frame, Bank, BankConfig, Group};
@@ -48,6 +50,8 @@ pub enum Protocol {
     Nxdn(nxdn::trunking::NxdnConfig),
     /// EDACS Standard / Networked: the site's channel list.
     Edacs(edacs::EdacsConfig),
+    /// LTR Standard, LTR-Net or Passport: every repeater (and [`ltr::LtrConfig::lcn_table`]'s) is watched.
+    Ltr(ltr::LtrConfig),
 }
 
 impl Protocol {
@@ -60,6 +64,7 @@ impl Protocol {
             Protocol::Dmr(_) => "dmr",
             Protocol::Nxdn(_) => "nxdn",
             Protocol::Edacs(_) => "edacs",
+            Protocol::Ltr(_) => "ltr",
         }
     }
 
@@ -83,6 +88,8 @@ pub enum ProtocolStatus {
     /// Type-C / Type-D, the site's location and RAN, channel table and carriers.
     Nxdn(nxdn::trunking::SiteStatus),
     Edacs,
+    /// Which LTR it is, its site, LCN table and repeaters.
+    Ltr(ltr::SiteStatus),
 }
 
 /// Which carriers a system listens to.
@@ -241,6 +248,11 @@ pub fn build(cfg: &SiteConfig, rate: f64) -> Box<dyn ControlChannel> {
             let what = if nc.kind == nxdn::trunking::Kind::TypeD { "repeaters" } else { "frequencies" };
             let site = nxdn::trunking::Site::new(&cfg.control_channels, rate, nc.clone());
             let note = format!("Watching {} NXDN {what} ({})", site.carriers.len(), nc.kind.name());
+            Box::new(Watched { site, note })
+        }
+        Protocol::Ltr(lc) => {
+            let site = ltr::Site::new(&cfg.control_channels, rate, lc.clone());
+            let note = format!("Watching {} LTR repeaters", site.carriers_hz().len());
             Box::new(Watched { site, note })
         }
     }
@@ -810,6 +822,64 @@ impl WatchedSite for nxdn::trunking::Site {
     }
     fn status(&self) -> ProtocolStatus {
         ProtocolStatus::Nxdn(nxdn::trunking::Site::status(self))
+    }
+}
+
+/// LTR: every repeater at once (no control channel: each one's status
+/// words name the calls). LTR-Net and Passport state their site.
+impl WatchedSite for ltr::Site {
+    fn carriers_hz(&self) -> Vec<f64> {
+        ltr::Site::carriers_hz(self)
+    }
+    fn cutoff_hz(&self) -> f64 {
+        ltr::CHANNEL_CUTOFF_HZ
+    }
+    fn push(&mut self, carrier: usize, iq: &[Complex32], t0: f64, rate: f64, out: &mut Vec<Message>) {
+        ltr::Site::push(self, carrier, iq, t0, rate, out);
+    }
+    fn counts(&self) -> (u64, u64) {
+        ltr::Site::counts(self)
+    }
+    fn identity(&self) -> Identity {
+        ltr::Site::identity(self).clone()
+    }
+    fn control_hz(&self) -> Option<u64> {
+        ltr::Site::control_hz(self)
+    }
+    /// (Its FM receivers don't measure the carrier's offset.)
+    fn offset_hz(&self) -> Option<f32> {
+        None
+    }
+    fn quality(&self) -> super::voice::ChannelQuality {
+        Default::default()
+    }
+    fn take_notes(&mut self) -> Vec<(NoteLevel, String)> {
+        ltr::Site::take_notes(self)
+    }
+    fn map_to_string(&self) -> String {
+        ltr::Site::map_to_string(self)
+    }
+    fn map_from_str(&mut self, s: &str) {
+        ltr::Site::map_from_str(self, s);
+    }
+    fn name(&self) -> &'static str {
+        "LTR"
+    }
+    fn blocks(&self) -> &'static str {
+        "words"
+    }
+    fn identity_fields(&self) -> &'static [IdField] {
+        &[IdField::Site]
+    }
+    fn modulation(&self) -> &'static str {
+        self.flavor().map_or("LTR", ltr::Flavor::name)
+    }
+    fn status(&self) -> ProtocolStatus {
+        ProtocolStatus::Ltr(ltr::Site::status(self))
+    }
+    /// A repeater sends its call's word all through the call, hang time too.
+    fn repeats_grants(&self) -> bool {
+        true
     }
 }
 

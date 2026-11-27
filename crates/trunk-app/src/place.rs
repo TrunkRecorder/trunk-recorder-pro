@@ -76,7 +76,7 @@ pub struct Group {
     pub channels: Vec<Weighted>,
     /// What it needs reached before any other channel counts: one of these
     /// (a P25 or SmartNet site's control channels), or with `all` every one
-    /// (a DMR, NXDN or EDACS site's control and watched frequencies, a
+    /// (a DMR, NXDN, EDACS or LTR site's control and watched frequencies, a
     /// conventional system's channels). While it isn't, each outweighs every
     /// channel. Empty: nothing.
     #[serde(default)]
