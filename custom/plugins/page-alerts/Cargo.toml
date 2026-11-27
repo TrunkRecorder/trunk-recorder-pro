@@ -1,0 +1,25 @@
+[package]
+name = "page-alerts"
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Two-tone paging alerts: names each page Trunk Recorder Pro hears by your agency list (Tone Board's), speaks it, and sends the call to Rdio Scanner under the agency's talkgroup."
+license = "MIT OR Apache-2.0"
+authors = ["photounit"]
+homepage = "https://github.com/photounit/trunk-plugin-page-alerts"
+repository = "https://github.com/photounit/trunk-plugin-page-alerts"
+
+[dependencies]
+trunk-recorder-plugin = { path = "sdk/trunk-recorder-plugin" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+ureq = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

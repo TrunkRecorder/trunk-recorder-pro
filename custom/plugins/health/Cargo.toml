@@ -1,0 +1,26 @@
+[package]
+name = "health"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Checks the recorder's health — radios, control channels, calls, uploads, disk and clock — says what to do about what it finds, and sends phone alerts through ntfy."
+license = "MIT OR Apache-2.0"
+authors = ["photounit"]
+homepage = "https://github.com/photounit/trunk-plugin-health"
+repository = "https://github.com/photounit/trunk-plugin-health"
+
+[dependencies]
+trunk-recorder-plugin = { path = "sdk/trunk-recorder-plugin" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+# Pure-Rust TLS (rustls), so it cross-compiles; for ntfy over https.
+ureq = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+strip = true

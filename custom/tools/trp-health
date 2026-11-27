@@ -1,0 +1,1079 @@
+#!/usr/bin/env python3
+"""trp-health: a health check for Trunk Recorder Pro.
+
+Reads the recorder's own figures (its web socket: each radio's drops, clipping,
+peak and noise floor; each control channel's decodes) and its log (each call's
+signal, noise, SNR and clean voice), then gives a status for each part and
+what to do about it.
+
+    trp-health                 last hour
+    trp-health --hours 6       last 6 hours
+    trp-health --port 8090     a recorder on another port (it finds 8080-8099 itself)
+    trp-health --json          the same, as JSON
+    trp-health --skip Aircraft leave a system out (repeat, or comma-separate)
+    trp-health --dupes NYCOMCO --hours 6   duplicate calls of a system (or all, without a name)
+
+Alerts (a phone push via ntfy when a box turns WARN / BAD, and when it recovers):
+    trp-health --setup-ntfy    make a private ntfy topic (or --setup-ntfy TOPIC to reuse one)
+    trp-health --test-alert    send a test
+    trp-health --install-timer check every 15 minutes in the background (--remove-timer to stop)
+
+Systems to leave out every time go in ~/.config/trp-health.conf, one line:
+    skip = Aircraft, NWS_Albany
+"""
+import argparse, base64, json, os, re, shutil, socket, statistics, struct, subprocess, sys, time
+from collections import defaultdict
+
+VERSION = "1.9"
+
+# ---------------------------------------------------------------- thresholds
+DROP_BAD_PPM = 10          # dropped samples per million: above this, audio suffers
+CLIP_WARN_PCT = 0.01       # % of samples at full scale
+CLIP_BAD_PCT = 0.1
+PEAK_WARN_DBFS = -3.0      # the radio's peak sample
+CC_WARN = 0.90             # control channel: share of messages decoded
+CC_BAD = 0.70
+LOCK_BAD = 0.90            # share of the time a control channel was locked
+SNR_WARN_DB = 18           # a site's typical call
+SNR_BAD_DB = 12
+HOT_DBFS = -28             # a channel this strong, with others, can overload the radio
+LIFT_SNR_DB = 38           # ...and only when the call's SNR is below this
+NOISE_LIFT_DB = 8          # a channel's noise this far over its radio's floor: overload junk
+CLEAN_WARN = 90            # digital calls' clean voice %
+CLEAN_BAD = 75
+RECOVERED_MIN = 10         # minutes without a low-rate flag, decoding well: recovered
+DISK_WARN_PCT = 10         # free space where recordings go
+DISK_BAD_PCT = 5
+CPU_WARN = 85              # % (typical)
+MEM_WARN = 90              # % used
+TEMP_WARN = 85             # °C
+TEMP_BAD = 95
+CLOCK_WARN_MS = 100        # the clock's error bound / offset
+CLOCK_BAD_MS = 500
+UPLOAD_FAIL_BAD = 0.10     # share of uploads failing
+QUEUE_WARN = 20            # calls waiting for a plugin
+ADJ_HZ = 60_000            # a channel this close to a control channel hears its edge
+MIN_CALLS = 3              # calls needed before a channel or site is called weak
+
+C = {"OK": "\033[32m", "WARN": "\033[33m", "BAD": "\033[31m", "INFO": "\033[36m", "dim": "\033[2m", "b": "\033[1m", "0": "\033[0m"}
+RANK = {"OK": 0, "INFO": 0.5, "WARN": 1, "BAD": 2}
+
+
+def worst(*s):
+    return max(s, key=lambda x: RANK[x]) if s else "OK"
+
+
+# ---------------------------------------------------------------- web socket (stdlib only)
+class WS:
+    def __init__(self, port, timeout=8):
+        self.s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.s.sendall((f"GET /api/ws HTTP/1.1\r\nHost: localhost:{port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            c = self.s.recv(4096)
+            if not c:
+                raise OSError("closed during handshake")
+            head += c
+        head, self.buf = head.split(b"\r\n\r\n", 1)
+        if b" 101 " not in head.split(b"\r\n")[0]:
+            raise OSError(head.split(b"\r\n")[0].decode(errors="replace"))
+
+    def _need(self, n):
+        while len(self.buf) < n:
+            c = self.s.recv(65536)
+            if not c:
+                raise OSError("connection closed")
+            self.buf += c
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def send(self, obj):
+        data = json.dumps(obj).encode()
+        n = len(data)
+        hdr = bytes([0x81]) + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n) if n < 65536 else bytes([0x80 | 127]) + struct.pack(">Q", n))
+        mask = os.urandom(4)
+        self.s.sendall(hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+    def recv(self):
+        """The next whole text message, parsed."""
+        parts = b""
+        while True:
+            b0, b1 = self._need(2)
+            op, n = b0 & 0x0F, b1 & 0x7F
+            if n == 126:
+                n = struct.unpack(">H", self._need(2))[0]
+            elif n == 127:
+                n = struct.unpack(">Q", self._need(8))[0]
+            mask = self._need(4) if b1 & 0x80 else None
+            data = self._need(n)
+            if mask:
+                data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+            if op == 0x9:  # ping
+                self.s.sendall(bytes([0x8A, 0x80 | len(data)]) + b"\0\0\0\0" + data)
+                continue
+            if op == 0x8:
+                raise OSError("closed by the recorder")
+            parts += data
+            if b0 & 0x80 and op in (0x0, 0x1, 0x2):
+                try:
+                    return json.loads(parts)
+                except ValueError:
+                    parts = b""
+                    continue
+
+    def close(self):
+        try:
+            self.s.close()
+        except OSError:
+            pass
+
+
+def gather_live(port, hours, debug=False):
+    """hello, a few status messages, and the stats history for the span."""
+    ws = WS(port)
+    hello, statuses, stats = None, [], None
+    t_end = time.time() + 20
+    ws.s.settimeout(5)
+    while time.time() < t_end:
+        m = ws.recv()
+        ty = m.get("type")
+        if ty == "hello":
+            hello = m
+            now = int(time.time())
+            ws.send({"type": "statsQuery", "id": "health", "series": ["src/*", "sys/*", "plg/*", "plat/*", "clock/*"], "from": now - int(hours * 3600), "to": now, "points": 120})
+        elif ty == "status":
+            statuses.append(m)
+        elif ty == "statsResult" and m.get("id") == "health":
+            stats = m
+        if hello and stats is not None and len(statuses) >= 2:
+            break
+    ws.close()
+    if debug:
+        json.dump({"hello": hello, "status": statuses[-1:] or None, "stats_keys": sorted((stats or {}).get("series", {}).keys())}, sys.stderr, indent=1, default=str)
+        print(file=sys.stderr)
+    return hello, (statuses[-1] if statuses else None), (stats or {}).get("series", {})
+
+
+def fetch_calls(port, hours, system=None):
+    """The recorded calls of the last `hours`, from the call store, newest first."""
+    ws = WS(port, timeout=8)
+    ws.s.settimeout(30)
+    # Wait for the greeting to finish.
+    while ws.recv().get("type") != "hello":
+        pass
+    now = int(time.time() * 1000)
+    out, cursor = [], None
+    for n in range(200):
+        q = {"type": "callsQuery", "id": f"dupes{n}", "from": now - int(hours * 3600 * 1000), "limit": 500}
+        if system:
+            q["system"] = system
+        if cursor:
+            q["cursor"] = cursor
+        ws.send(q)
+        while True:
+            m = ws.recv()
+            if m.get("type") == "callsResult" and m.get("id") == q["id"]:
+                break
+            if m.get("type") == "error":
+                raise OSError(m.get("message") or str(m))
+        if m.get("error"):
+            print(f"note: {m['error']}", file=sys.stderr)
+        out += [e.get("record") or {} for e in m.get("entries") or []]
+        cursor = m.get("next")
+        if not cursor:
+            break
+    ws.close()
+    return out
+
+
+OVERLAP_S = 0.5  # audio overlapping this long: the same speech twice
+
+
+def dupes(port, hours, system, gap, color, limit):
+    b, z, dim = (C["b"], C["0"], C["dim"]) if color else ("", "", "")
+    calls = fetch_calls(port, hours, system)
+    calls = [c for c in calls if c.get("start_time_ms")]
+    calls.sort(key=lambda c: c["start_time_ms"])
+    print(f"{b}Duplicate calls — {socket.gethostname()} — last {hours:g} h" + (f" — {system}" if system else "") + f"{z}")
+    print(f"{dim}{len(calls)} calls checked; a duplicate: the same system and talkgroup, starting within {gap:g} s of each other{z}\n")
+    by = defaultdict(list)
+    for c in calls:
+        by[(c.get("short_name", ""), c.get("talkgroup"))].append(c)
+    pairs = []
+    for k, v in by.items():
+        for i in range(1, len(v)):
+            a, c = v[i - 1], v[i]
+            if (c["start_time_ms"] - a["start_time_ms"]) / 1000 <= gap:
+                pairs.append((a, c))
+    pairs.sort(key=lambda p: p[0]["start_time_ms"])
+    # Their audio has to overlap: a reply that starts after the last talker's
+    # audio ended is a conversation, not a copy (EDACS gives each press of
+    # the button a channel of its own).
+    end = lambda c: c["start_time_ms"] + (c.get("call_length_ms") or c.get("call_length", 0) * 1000)
+    over = lambda a, c: (min(end(a), end(c)) - c["start_time_ms"]) / 1000
+    same_id = lambda a, c: bool(a.get("transmission_id")) and a.get("transmission_id") == c.get("transmission_id")
+    replies = [p for p in pairs if not same_id(*p) and over(*p) < OVERLAP_S]
+    pairs = [p for p in pairs if same_id(*p) or over(*p) >= OVERLAP_S]
+    src = lambda c: ",".join(str(s.get("src")) for s in (c.get("srcList") or [])[:2]) or "-"
+    kinds = defaultdict(int)
+    sitepairs = defaultdict(int)
+    def kind(a, c):
+        if a.get("transmission_id") and a.get("transmission_id") == c.get("transmission_id"):
+            return "same transmission ID: both copies kept"
+        if a.get("site") != c.get("site"):
+            return "different sites, different IDs" + (" (talker IDs differ)" if src(a) != src(c) else "")
+        if a.get("freq") == c.get("freq"):
+            return "same site and channel: split in two"
+        return "same site, another channel"
+    for a, c in pairs:
+        kinds[kind(a, c)] += 1
+        sitepairs[" + ".join(sorted([a.get("site") or "-", c.get("site") or "-"]))] += 1
+    print(f"{len(replies)} pairs one after the other (a reply, on another channel: not duplicates)")
+    if not pairs:
+        print(f"  {C['OK'] if color else ''}No duplicates: no two copies' audio overlaps.{z}")
+        return 0
+    print(f"{b}{len(pairs)} duplicate pairs{z}: their audio overlaps ({len(pairs) / max(1, len(calls)) * 100:.1f}% of calls)\n")
+    print(f"{b}What kind{z}")
+    for k, n in sorted(kinds.items(), key=lambda x: -x[1]):
+        print(f"  {n:>5}  {k}")
+    print(f"\n{b}Which sites{z}")
+    for k, n in sorted(sitepairs.items(), key=lambda x: -x[1]):
+        print(f"  {n:>5}  {k}")
+    print(f"\n{b}The pairs{z}  {dim}(newest {limit}; time, talkgroup, then each copy: site, MHz, talker, length){z}")
+    for a, c in pairs[-limit:]:
+        t = time.strftime("%m-%d %H:%M:%S", time.localtime(a["start_time_ms"] / 1000))
+        d = (c["start_time_ms"] - a["start_time_ms"]) / 1000
+        tg = f"TG {a.get('talkgroup')} {a.get('talkgroup_description') or a.get('talkgroup_tag') or ''}".strip()
+        site = lambda x: (x.get('site') or '-').removeprefix(f"{x.get('short_name', '')} - ")
+        one = lambda x: f"{site(x)[:12]:>12} {x.get('freq', 0) / 1e6:9.4f} src {src(x):>6} {(x.get('call_length_ms') or x.get('call_length', 0) * 1000) / 1000:5.1f}s"
+        print(f"  {t}  {tg[:28]:<28}  {one(a)}  |  +{d:.1f}s {one(c)}  overlap {over(a, c):.1f}s")
+        same = a.get("transmission_id") and a.get("transmission_id") == c.get("transmission_id")
+        print(f"  {dim}{'':>14}  {kind(a, c)}; IDs {a.get('transmission_id', '?')} / {c.get('transmission_id', '?')}{' (same)' if same else ''}{z}")
+    return 1
+
+
+def find_port(want):
+    ports = [want] if want else list(range(8080, 8100))
+    for p in ports:
+        try:
+            with socket.create_connection(("127.0.0.1", p), timeout=0.3):
+                pass
+        except OSError:
+            continue
+        try:
+            ws = WS(p, timeout=3)
+            ws.close()
+            return p
+        except OSError:
+            continue
+    return None
+
+
+# ---------------------------------------------------------------- the log
+last_low = {}
+ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+LINE = re.compile(r"\((info|warning|error)\)\s+\[([^\]]+)\]\s+(.*)")
+CONCL = re.compile(r"Freq:\s+([\d.]+) MHz.*Concluding Recorded Call - Call Length: ([\d.]+)s(?:\s+Signal: (-?\d+)dBFS\s+Noise: (-?\d+)dBFS\s+SNR: (-?\d+)dB)?(?:\s+Clean voice: (\d+)%)?")
+RATE_ERR = re.compile(r"freq: ([\d.]+) MHz\s+Control Channel Message Decode Rate: ([\d.]+)/sec")
+RATE_ROW = re.compile(r"^\s*([\d.]+) MHz\s+([\d.]+) msg/sec")
+NOT_SAVED = re.compile(r"Freq:\s+([\d.]+) MHz.*Call not saved")
+
+
+def journal(hours):
+    since = f"{max(1, int(hours * 60))} min ago"
+    for user in (True, False):
+        cmd = ["journalctl"] + (["--user"] if user else []) + ["-u", "trunk-pro", "--since", since, "--no-pager", "-o", "cat"]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if out.strip() and "-- No entries --" not in out[:200]:
+            return out.splitlines(), ("user" if user else "system")
+    return [], None
+
+
+def parse_log(lines):
+    calls = []           # (system, site, mhz, len, sig, noise, snr, clean)
+    rate_err = defaultdict(list)   # (sys, site, mhz) -> rates flagged low
+    rate_ok = defaultdict(list)    # (sys, site, mhz) -> rates reported
+    not_saved = defaultdict(int)
+    failsoft = defaultdict(int)
+    warnings = defaultdict(int)
+    last_low.clear()
+    for ln in lines:
+        ln = ANSI.sub("", ln)
+        m = LINE.search(ln)
+        if not m:
+            continue
+        level, tag, rest = m.groups()
+        sysn, _, site = tag.partition("/")
+        c = CONCL.search(rest)
+        if c:
+            f = lambda x: None if x is None else float(x)
+            calls.append((sysn, site, float(c[1]), float(c[2]), f(c[3]), f(c[4]), f(c[5]), f(c[6])))
+            continue
+        r = RATE_ERR.search(rest)
+        if r:
+            t = re.match(r"\[(\d{4}-\d\d-\d\d \d\d:\d\d)", ln)
+            rate_err[(sysn, site, float(r[1]))].append(float(r[2]))
+            last_low[(sysn, site)] = t[1] if t else None
+            continue
+        r = RATE_ROW.match(rest)
+        if r:
+            rate_ok[(sysn, site, float(r[1]))].append(float(r[2]))
+            continue
+        if NOT_SAVED.search(rest):
+            not_saved[(sysn, site)] += 1
+            continue
+        if "failsoft" in rest:
+            failsoft[(sysn, site)] += 1
+            continue
+        if level in ("warning", "error"):
+            key = re.sub(r"\d+(\.\d+)?", "#", rest)[:90]
+            warnings[(tag, key)] += 1
+    return calls, rate_err, rate_ok, not_saved, failsoft, warnings
+
+
+# ---------------------------------------------------------------- figures from the history
+def series_total(s):
+    """A counter's total over the span (its values are per second)."""
+    if not s:
+        return None
+    step = s.get("stepS", 60)
+    return sum(v * step for v in s.get("v", []) if v is not None)
+
+
+def series_vals(s, k="v"):
+    return [v for v in (s or {}).get(k, []) if v is not None]
+
+
+def series_last(s, k="v"):
+    v = series_vals(s, k)
+    return v[-1] if v else None
+
+
+def gb(b):
+    return f"{b / 1e9:,.0f} GB" if b >= 1e9 else f"{b / 1e6:,.0f} MB"
+
+
+def item(name, status, fig="", issues=None):
+    return {"name": name, "status": status, "fig": fig, "issues": issues or []}
+
+
+def check_extras(rep, series):
+    """The computer, its clock, and the plugins (uploads)."""
+    comp, clock, plugs = [], [], []
+    # Disks: the recordings folder's, and the RAM spool's
+    for k in sorted(series):
+        m = re.match(r"^plat/disk/(.+)/freePct$", k)
+        if not m:
+            continue
+        pct = series_last(series[k])
+        free = series_last(series.get(f"plat/disk/{m[1]}/free"))
+        if pct is None:
+            continue
+        st = "BAD" if pct < DISK_BAD_PCT else "WARN" if pct < DISK_WARN_PCT else "OK"
+        nm = "RAM spool" if m[1] == "spool" else f"disk {m[1]}"
+        it = item(nm, st, f"{pct:.0f}% free" + (f" ({gb(free)})" if free else ""))
+        comp.append(it)
+        if st != "OK":
+            rep["recs"].append((st, f"{nm}: only {pct:.0f}% free",
+                                "When it fills, calls stop saving. Delete or move old recordings (or let Setup → Storage prune them), "
+                                "and check what's growing: du -sh ~/.config/trunk-pro/* <recordings folder>"))
+    cpu = series_vals(series.get("plat/cpu"))
+    if cpu:
+        typ = statistics.median(cpu)
+        st = "WARN" if typ > CPU_WARN else "OK"
+        comp.append(item("CPU", st, f"{typ:.0f}% typical, {max(series_vals(series.get('plat/cpu'), 'hi') or cpu):.0f}% highest"))
+        if st != "OK":
+            rep["recs"].append(("WARN", f"CPU busy ({typ:.0f}% typical)", "Something else may be using it (top), or the radios' sample rates are more than this computer keeps up with."))
+    mem = series_last(series.get("plat/mem"))
+    if mem is not None:
+        st = "WARN" if mem > MEM_WARN else "OK"
+        comp.append(item("memory", st, f"{mem:.0f}% used"))
+        if st != "OK":
+            rep["recs"].append(("WARN", f"Memory {mem:.0f}% used", "Check what's using it (top, sorted by memory); a restart of trunk-pro clears a leak until it's found."))
+    temp = series_vals(series.get("plat/temp"), "hi")
+    if temp:
+        t = max(temp)
+        st = "BAD" if t >= TEMP_BAD else "WARN" if t >= TEMP_WARN else "OK"
+        comp.append(item("temperature", st, f"{t:.0f} °C highest"))
+        if st != "OK":
+            rep["recs"].append((st, f"Running hot ({t:.0f} °C)", "Check the fans and airflow; a CPU that hot slows itself down and can drop samples."))
+    # The clock
+    syn = series_last(series.get("clock/synced"))
+    err = series_vals(series.get("clock/maxErrMs"), "hi")
+    off = series_vals(series.get("clock/offsetMs"))
+    if syn is not None or err or off:
+        st, fig, iss = "OK", [], []
+        if syn is not None:
+            fig.append("synchronized" if syn > 0.5 else "NOT synchronized")
+            if syn <= 0.5:
+                st = "BAD"
+        if err:
+            # The kernel's error bound: a worst case that grows between time-server polls
+            # (seconds, with systemd-timesyncd), not a measurement. The offset is.
+            fig.append(f"bound {statistics.median(err):.0f} ms")
+            if not off and statistics.median(err) > 1000:
+                st = worst(st, "WARN")
+        if off:
+            o = max(off, key=abs)
+            fig.append(f"offset {o:+.0f} ms")
+            st = worst(st, "BAD" if abs(o) > CLOCK_BAD_MS else "WARN" if abs(o) > CLOCK_WARN_MS else "OK")
+        clock.append(item("clock", st, ", ".join(fig)))
+        if st != "OK":
+            rep["recs"].append((st, "The clock is off",
+                                "Call times and multi-site duplicate removal depend on it. Run: timedatectl   (wants 'System clock synchronized: yes'); "
+                                "if not: sudo timedatectl set-ntp true"))
+    # Plugins (uploads)
+    ids = sorted({m[1] for k in series for m in [re.match(r"^plg/(.+)/(state|ok|failed)$", k)] if m})
+    for pid in ids:
+        g = lambda n: series.get(f"plg/{pid}/{n}")
+        state = series_last(g("state"))
+        ok, failed, skipped = series_total(g("ok")) or 0, series_total(g("failed")) or 0, series_total(g("skipped")) or 0
+        dropped, restarts = series_total(g("dropped")) or 0, series_total(g("restarts")) or 0
+        q = series_vals(g("queued"))
+        lat = series_vals(g("latency"))
+        st, iss = "OK", []
+        if state is not None and state >= 1.5:
+            st = "BAD"; iss.append("in error")
+        elif state is not None and state >= 0.5:
+            st = "WARN"; iss.append("reporting a warning")
+        if failed:
+            share = failed / max(1, ok + failed)
+            st = worst(st, "BAD" if share > UPLOAD_FAIL_BAD else "WARN"); iss.append(f"{failed:.0f} failed ({share * 100:.0f}%)")
+        if dropped:
+            st = worst(st, "BAD"); iss.append(f"{dropped:.0f} calls dropped (never sent)")
+        if restarts:
+            st = worst(st, "WARN"); iss.append(f"restarted {restarts:.0f}×")
+        if q and q[-1] >= QUEUE_WARN and (len(q) < 2 or q[-1] >= q[0]):
+            st = worst(st, "WARN"); iss.append(f"{q[-1]:.0f} calls waiting")
+        fig = f"{ok:.0f} sent" + (f", {skipped:.0f} skipped" if skipped else "") + (f", ~{statistics.median(lat) / 1000:.1f} s each" if lat and statistics.median(lat) >= 1000 else f", ~{statistics.median(lat):.0f} ms each" if lat else "")
+        plugs.append(item(pid, st, fig, iss))
+        if st != "OK":
+            rep["recs"].append((st, f"Plugin {pid}: " + ", ".join(iss),
+                                "Calls aren't all reaching it. Open the page's Plugins tab for its log: usually the server it sends to is down "
+                                "or unreachable, or its API key / URL changed."))
+    rep["computer"], rep["clock"], rep["plugins"] = comp, clock, plugs
+
+
+def mhz(hz):
+    return f"{hz / 1e6:.4f}".rstrip("0").rstrip(".")
+
+
+# ---------------------------------------------------------------- the checks
+CONF = os.path.expanduser("~/.config/trp-health.conf")
+
+
+def conf_get(key):
+    try:
+        for ln in open(CONF):
+            k, _, v = ln.partition("=")
+            if k.strip().lower() == key:
+                return v.strip()
+    except OSError:
+        pass
+    return None
+
+
+def conf_set(key, value):
+    lines = []
+    try:
+        lines = [ln for ln in open(CONF).read().splitlines() if ln.partition("=")[0].strip().lower() != key]
+    except OSError:
+        pass
+    lines.append(f"{key} = {value}")
+    os.makedirs(os.path.dirname(CONF), exist_ok=True)
+    with open(CONF, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def conf_skips():
+    out = []
+    try:
+        for ln in open(CONF):
+            k, _, v = ln.partition("=")
+            if k.strip().lower() == "skip":
+                out += [x.strip() for x in v.split(",") if x.strip()]
+    except OSError:
+        pass
+    return out
+
+
+def check(port, hours, debug=False, skip=()):
+    rep = {"version": VERSION, "hours": hours, "program": {}, "radios": [], "sites": [], "channels": [], "recs": [], "notes": []}
+
+    # The program
+    active = subprocess.run(["systemctl", "--user", "is-active", "trunk-pro"], capture_output=True, text=True).stdout.strip() if shutil.which("systemctl") else "?"
+    since = ""
+    if shutil.which("systemctl"):
+        since = subprocess.run(["systemctl", "--user", "show", "trunk-pro", "-p", "ActiveEnterTimestamp", "--value"], capture_output=True, text=True).stdout.strip()
+    p = find_port(port)
+    hello = status = None
+    series = {}
+    if p:
+        try:
+            hello, status, series = gather_live(p, hours, debug)
+        except OSError as e:
+            rep["notes"].append(f"Couldn't read the recorder's live figures on port {p}: {e}")
+    prog = {"service": active or "unknown", "since": since, "port": p, "version": (hello or {}).get("version")}
+    prog["status"] = "OK" if active == "active" and hello else "BAD"
+    rep["program"] = prog
+    if active != "active":
+        rep["recs"].append(("BAD", "Trunk Recorder Pro isn't running", "systemctl --user start trunk-pro   then   journalctl --user -u trunk-pro -n 50 --no-pager"))
+    if not p:
+        rep["notes"].append("No recorder answered on ports 8080-8099; radio and control-channel figures are left out (use --port).")
+
+    st = (status or {}).get("status") or {}
+    sources = (status or {}).get("sources") or []
+    load = (status or {}).get("load")
+    if load is not None:
+        prog["load"] = round(load * 100)
+        if load > 0.85:
+            prog["status"] = worst(prog["status"], "WARN")
+            rep["recs"].append(("WARN", f"The decoder is {load * 100:.0f}% busy", "Fewer or narrower radios, or a faster computer; above 100% it falls behind and drops audio."))
+
+    # The radios
+    for s in sources:
+        name = s.get("label") or f"radio {s.get('index')}"
+        key = "src/" + name.strip().replace("/", "_")
+        g = lambda k: series.get(f"{key}/{k}")
+        drops = series_total(g("dropped"))
+        samples = series_total(g("samples"))
+        clip = series_vals(g("clipPct"), "hi")
+        peak = series_vals(g("peak"), "hi")
+        noise = series_vals(g("noise"))
+        r = {"name": name, "centerHz": s.get("centerHz"), "rateHz": s.get("rateHz"), "rateMeasured": s.get("rateMeasured"),
+             "droppedNow": s.get("dropped"), "errors": s.get("errors"), "lastError": s.get("lastError"),
+             "dropped": drops, "dropPpm": (drops / samples * 1e6) if drops and samples else 0.0,
+             "clipMax": max(clip) if clip else None, "peakMax": max(peak) if peak else None,
+             "noise": statistics.median(noise) if noise else None, "issues": []}
+        stt = "OK"
+        if s.get("ended"):
+            stt = "BAD"; r["issues"].append("stopped")
+        rm, rh = s.get("rateMeasured"), s.get("rateHz")
+        if rm and rh and rm < 0.98 * rh:
+            stt = "BAD"; r["issues"].append(f"delivering {rm / rh * 100:.0f}% of its samples")
+        if drops:
+            lvl = "BAD" if r["dropPpm"] > DROP_BAD_PPM else "WARN"
+            stt = worst(stt, lvl); r["issues"].append(f"dropped {drops:,.0f} samples ({r['dropPpm']:.1f} per million)")
+        if r["clipMax"] is not None and r["clipMax"] >= CLIP_WARN_PCT:
+            lvl = "BAD" if r["clipMax"] >= CLIP_BAD_PCT else "WARN"
+            stt = worst(stt, lvl); r["issues"].append(f"clipping (up to {r['clipMax']:.2f}% of samples at full scale)")
+        elif r["peakMax"] is not None and r["peakMax"] > PEAK_WARN_DBFS:
+            typical = statistics.median(peak)
+            r["peakTypical"] = typical
+            share = sum(1 for x in peak if x > PEAK_WARN_DBFS) / len(peak)
+            if typical > PEAK_WARN_DBFS:
+                stt = worst(stt, "WARN"); r["issues"].append(f"peaks near full scale most of the time (typically {typical:.1f} dBFS)")
+                r["hotAlways"] = True
+            else:
+                stt = worst(stt, "INFO"); r["issues"].append(f"touched {r['peakMax']:.1f} dBFS in {share * 100:.0f}% of minutes (typically {typical:.0f} dBFS): brief strong bursts")
+                r["hotSometimes"] = True
+        if s.get("lastError"):
+            stt = worst(stt, "WARN"); r["issues"].append(f"error: {s['lastError']}")
+        r["status"] = stt
+        rep["radios"].append(r)
+
+    # Which radio hears a frequency
+    def radio_of(hz):
+        best = None
+        for r in rep["radios"]:
+            c, w = r.get("centerHz"), r.get("rateHz")
+            if c and w and abs(hz - c) <= w / 2:
+                if best is None or abs(hz - c) < abs(hz - best["centerHz"]):
+                    best = r
+        return best
+
+    # Control channels: live counts from the history, low rates from the log
+    lines, where = journal(hours)
+    calls, rate_err, rate_ok, not_saved, failsoft, warnings = parse_log(lines)
+    skipped = {x.lower() for x in skip}
+    if skipped:
+        out = lambda sy: sy.lower() in skipped
+        calls = [c for c in calls if not out(c[0])]
+        for d in (rate_err, rate_ok):
+            for k in [k for k in d if out(k[0])]:
+                del d[k]
+        for d in (not_saved, failsoft):
+            for k in [k for k in d if out(k[0])]:
+                del d[k]
+        series = {k: v for k, v in series.items() if not (re.match(r"^sys/(.+?)(?:/site/|/cc/)", k) and out(re.match(r"^sys/(.+?)(?:/site/|/cc/)", k)[1]))}
+        rep["notes"].append("Left out: " + ", ".join(sorted(skip, key=str.lower)) + (f" (from {CONF})" if set(skip) & set(conf_skips()) else ""))
+    if not lines:
+        rep["notes"].append("Couldn't read trunk-pro's log (journalctl); call and decode-rate figures are left out.")
+    cc = {}
+    for k, s in series.items():
+        m = re.match(r"^sys/(.+?)(?:/site/(.+?))?/cc/(good|bad|locked)$", k)
+        if m:
+            cc.setdefault((m[1], m[2] or ""), {})[m[3]] = s
+    site_cc_hz = {}
+    for sy in st.get("systems") or []:
+        for si in sy.get("sites") or []:
+            if si.get("controlChannelHz"):
+                site_cc_hz[(sy.get("shortName") or sy.get("name") or "", si.get("name") or "")] = si["controlChannelHz"]
+    log_rates = {}
+    for (sy, si, f), v in list(rate_ok.items()) + list(rate_err.items()):
+        log_rates.setdefault((sy, si), {"hz": f * 1e6, "ok": [], "low": []})
+    for (sy, si, f), v in rate_ok.items():
+        log_rates[(sy, si)]["ok"] += v
+    for (sy, si, f), v in rate_err.items():
+        log_rates[(sy, si)]["low"] += v
+    for key in sorted(set(cc) | set(log_rates)):
+        sy, si = key
+        d = cc.get(key, {})
+        good, bad = series_total(d.get("good")), series_total(d.get("bad"))
+        locked = series_vals(d.get("locked"))
+        lr = log_rates.get(key, {"ok": [], "low": [], "hz": None})
+        e = {"system": sy, "site": si, "hz": site_cc_hz.get(key) or lr.get("hz"), "issues": []}
+        e["decoded"] = good / (good + bad) if good is not None and bad is not None and good + bad > 0 else None
+        e["perSec"] = good / (hours * 3600) if good else (statistics.median(lr["ok"]) if lr["ok"] else None)
+        e["locked"] = sum(locked) / len(locked) if locked else None
+        e["lowReports"] = len(lr["low"])
+        e["lowMedian"] = statistics.median(lr["low"]) if lr["low"] else None
+        stt = "OK"
+        if e["decoded"] is not None:
+            if e["decoded"] < CC_BAD:
+                stt = "BAD"
+            elif e["decoded"] < CC_WARN:
+                stt = "WARN"
+            if stt != "OK":
+                e["issues"].append(f"only {e['decoded'] * 100:.0f}% of messages decode")
+        if e["locked"] is not None and e["locked"] < LOCK_BAD:
+            stt = "BAD"; e["issues"].append(f"locked {e['locked'] * 100:.0f}% of the time")
+        if e["lowReports"]:
+            total = e["lowReports"] + len(lr["ok"])
+            share = e["lowReports"] / max(1, total)
+            lvl = "BAD" if share > 0.5 else "WARN"
+            when = last_low.get(key)
+            ago = None
+            if when:
+                try:
+                    ago = (time.time() - time.mktime(time.strptime(when, "%Y-%m-%d %H:%M"))) / 60
+                except ValueError:
+                    pass
+            said = f"decode rate flagged low {e['lowReports']}× (typically {e['lowMedian']:.1f}/s)" + (f", last at {when[5:]}" if when else "")
+            if e["decoded"] is not None and e["decoded"] >= CC_WARN and ago is not None and ago > RECOVERED_MIN:
+                # Healthy now, and nothing flagged for a while: history, not a problem.
+                stt = worst(stt, "INFO"); e["issues"].append(f"recovered — {said}; decoding well since"); e["recovered"] = True
+            else:
+                stt = worst(stt, lvl); e["issues"].append(said)
+        if failsoft.get(key):
+            e["issues"].append(f"failsoft reported {failsoft[key]}× (the site's own state)")
+            stt = worst(stt, "INFO")
+        e["status"] = stt
+        e["radio"] = (radio_of(e["hz"]) or {}).get("name") if e["hz"] else None
+        rep["sites"].append(e)
+    for key, n in failsoft.items():
+        if key not in cc and key not in log_rates:
+            rep["sites"].append({"system": key[0], "site": key[1], "hz": None, "issues": [f"failsoft reported {n}× (the site's own state)"], "status": "INFO", "radio": None})
+
+    # Channels, from the calls
+    by_ch = defaultdict(list)
+    for sy, si, f, ln, sig, noi, snr, clean in calls:
+        by_ch[(sy, si, f)].append((sig, noi, snr, clean))
+    # Each radio's noise floor: the quieter half of its channels' noise readings
+    floor_by_radio = defaultdict(list)
+    ch_radio = {}
+    for (sy, si, f), v in by_ch.items():
+        r = radio_of(f * 1e6)
+        ch_radio[(sy, si, f)] = r["name"] if r else f"~{round(f / 10) * 10:.0f} MHz"
+        floor_by_radio[ch_radio[(sy, si, f)]] += [x[1] for x in v if x[1] is not None]
+    cc_freqs = [(hz, f"{sy}/{si}" if si else sy) for (sy, si), hz in site_cc_hz.items()]
+    cc_freqs += [(v["hz"], f"{sy}/{si}" if si else sy) for (sy, si), v in log_rates.items() if v.get("hz") and (sy, si) not in site_cc_hz]
+    floor = {k: statistics.quantiles(v, n=4)[0] if len(v) >= 4 else min(v) for k, v in floor_by_radio.items() if v}
+    for (sy, si, f), v in sorted(by_ch.items()):
+        sig = [x[0] for x in v if x[0] is not None]
+        noi = [x[1] for x in v if x[1] is not None]
+        snr = [x[2] for x in v if x[2] is not None]
+        cln = [x[3] for x in v if x[3] is not None]
+        e = {"system": sy, "site": si, "mhz": f, "calls": len(v), "radio": ch_radio[(sy, si, f)],
+             "signal": statistics.median(sig) if sig else None, "noise": statistics.median(noi) if noi else None,
+             "snr": statistics.median(snr) if snr else None, "clean": statistics.median(cln) if cln else None, "issues": []}
+        stt = "OK"
+        fl = floor.get(e["radio"])
+        if e["snr"] is not None and len(snr) >= MIN_CALLS:
+            if e["snr"] < SNR_BAD_DB:
+                stt = "BAD"; e["issues"].append("weak")
+            elif e["snr"] < SNR_WARN_DB:
+                stt = "WARN"; e["issues"].append("weak-ish")
+        rr = radio_of(f * 1e6)
+        edge = bool(rr and rr.get("rateHz") and abs(f * 1e6 - rr["centerHz"]) > 0.4 * rr["rateHz"])
+        # Lifted noise only means overload when it costs the call: a strong, clean channel's
+        # own reading runs high, and so does one at the edge of its radio's span.
+        if (e["noise"] is not None and fl is not None and e["noise"] - fl >= NOISE_LIFT_DB
+                and (e["snr"] is None or e["snr"] < LIFT_SNR_DB) and not edge):
+            near = [(abs(hz - f * 1e6), hz, nm) for hz, nm in cc_freqs if 0 < abs(hz - f * 1e6) <= ADJ_HZ]
+            if near:
+                # A control channel transmits all the time: right next door, its edge reads as noise.
+                d, hz, nm = min(near)
+                stt = worst(stt, "INFO")
+                e["issues"].append(f"noise {e['noise'] - fl:.0f} dB over the radio's floor: {d / 1e3:.1f} kHz from {nm}'s control channel ({mhz(hz)} MHz)")
+            else:
+                stt = worst(stt, "WARN"); e["issues"].append(f"noise {e['noise'] - fl:.0f} dB over the radio's floor (overload junk)")
+                e["lifted"] = True
+        if e["signal"] is not None and e["signal"] > HOT_DBFS:
+            e["issues"].append("very strong"); e["hot"] = True
+        if e["clean"] is not None:
+            if e["clean"] < CLEAN_BAD:
+                stt = "BAD"; e["issues"].append(f"clean voice {e['clean']:.0f}%")
+            elif e["clean"] < CLEAN_WARN:
+                stt = worst(stt, "WARN"); e["issues"].append(f"clean voice {e['clean']:.0f}%")
+        e["status"] = stt
+        rep["channels"].append(e)
+    rep["floors"] = floor
+    rep["notSaved"] = {f"{a}/{b}" if b else a: n for (a, b), n in not_saved.items()}
+    rep["logWarnings"] = sorted(((n, t, k) for (t, k), n in warnings.items()), reverse=True)[:8]
+    rep["logSource"] = where
+
+    # Each site's calls as a whole: its median SNR and clean voice decide (one weak channel doesn't)
+    rep["siteCalls"] = []
+    by_site = defaultdict(list)
+    for c in rep["channels"]:
+        by_site[(c["system"], c["site"])].append(c)
+    for (sy, si), chs in sorted(by_site.items()):
+        snr = [c["snr"] for c in chs for _ in range(c["calls"]) if c["snr"] is not None]
+        cln = [c["clean"] for c in chs for _ in range(c["calls"]) if c["clean"] is not None]
+        st = "OK"
+        if len(snr) >= MIN_CALLS:
+            m = statistics.median(snr)
+            st = "BAD" if m < SNR_BAD_DB else "WARN" if m < SNR_WARN_DB else "OK"
+        if len(cln) >= MIN_CALLS:
+            m = statistics.median(cln)
+            st = worst(st, "BAD" if m < CLEAN_BAD else "WARN" if m < CLEAN_WARN else "OK")
+        if st == "OK" and any(c["status"] != "OK" for c in chs):
+            st = "INFO"
+        rep["siteCalls"].append({"system": sy, "site": si, "status": st})
+
+    check_extras(rep, series)
+
+    # ------------------------------------------------ recommendations, per radio
+    radios = sorted({c["radio"] for c in rep["channels"]} | {r["name"] for r in rep["radios"]})
+    for rn in radios:
+        r = next((x for x in rep["radios"] if x["name"] == rn), None)
+        chs = [c for c in rep["channels"] if c["radio"] == rn]
+        ccs = [c for c in rep["sites"] if c.get("radio") == rn and c["status"] in ("WARN", "BAD")]
+        chs_bad = lambda cs: any(c["status"] != "OK" for c in cs)
+        drops = r and r["dropped"]
+        clip = r and r["clipMax"] is not None and r["clipMax"] >= CLIP_WARN_PCT
+        lifted = [c for c in chs if c.get("lifted")]
+        hot = [c for c in chs if c.get("hot")]
+        weak_sites = defaultdict(list)
+        for c in chs:
+            if c["snr"] is not None:
+                weak_sites[(c["system"], c["site"])] += [c["snr"]] * c["calls"]
+        weak = [(k, statistics.median(v)) for k, v in weak_sites.items() if len(v) >= MIN_CALLS and statistics.median(v) < SNR_WARN_DB]
+        # Raised noise on a channel alone hasn't proved overload (a neighbour on the next
+        # frequency does the same); clipping or failing control channels do.
+        lifted = [c for c in lifted if c["calls"] >= 2]
+        overload = clip or (lifted and ccs)
+        if len(lifted) >= 2 and not overload:
+            rep["recs"].append(("INFO", f"{rn}: noise reads high on " + ", ".join(f"{c['mhz']:g}" for c in lifted[:5]) + " MHz",
+                                "Not overload on its own (no clipping, control channels fine): likely neighbours on the next frequencies. "
+                                "If those channels sound noisy, try one step less gain and compare."))
+            for c in lifted:
+                c["issues"] = [i.replace("(overload junk)", "(a neighbour, or the start of overload)") for i in c["issues"]]
+                if c["status"] == "WARN" and not any(i.startswith("weak") or i.startswith("clean") for i in c["issues"]):
+                    c["status"] = "INFO"
+            lifted = []
+        if lifted and not overload:
+            # One channel alone with lifted noise: something on the next frequency, not the radio.
+            c = lifted[0]
+            c["issues"] = [i if "overload junk" not in i else i.replace("(overload junk)", "(likely a signal on the next frequency)") for i in c["issues"]]
+            if c["status"] == "WARN" and not any(i.startswith("weak") or i.startswith("clean") for i in c["issues"]):
+                c["status"] = "INFO"
+            lifted = []
+        if r and r.get("hotAlways"):
+            rep["recs"].append(("WARN", f"{rn}: running close to full scale",
+                                f"Its strongest samples sit near 0 dBFS most of the time (typically {r['peakTypical']:.1f}). One step less gain gives headroom before it clips."))
+        elif r and r.get("hotSometimes") and not chs_bad(chs):
+            rep["recs"].append(("INFO", f"{rn}: brief bursts reach full scale",
+                                "Probably a strong nearby transmitter keying up. Nothing to do while its calls sound clean; if audio breaks up at those moments, turn its gain down a step."))
+        if drops:
+            rep["recs"].append(("BAD" if r["dropPpm"] > DROP_BAD_PPM else "WARN", f"{rn}: losing samples ({r['dropPpm']:.1f} per million)",
+                                "Lost samples sound like clicks, crackle or robotic audio on every channel of that radio. "
+                                "Run `lsusb -t`: move it off an add-on USB card onto a motherboard port, give it a port of its own, "
+                                "or lower its sample rate."))
+        if overload:
+            why = []
+            if clip:
+                why.append(f"clipping up to {r['clipMax']:.2f}%")
+            if lifted:
+                why.append("noise lifted on " + ", ".join(f"{c['mhz']:g}" for c in lifted[:5]) + " MHz")
+            if hot:
+                why.append(f"strongest channels at {max(c['signal'] for c in hot):.0f} dBFS")
+            if ccs:
+                why.append("control channels decoding poorly: " + ", ".join(c["site"] or c["system"] for c in ccs))
+            if weak:
+                rep["recs"].append(("WARN", f"{rn}: overloaded by strong signals, yet " + ", ".join(f"{k[1] or k[0]} ({v:.0f} dB)" for k, v in weak) + " is weak",
+                                    "Gain can't fix both. Use the lowest gain that keeps the weak site above ~15 dB SNR, "
+                                    "and add a band-pass filter (or a cavity / notch for the strongest transmitter) or a directional antenna. ("
+                                    + "; ".join(why) + ")"))
+            else:
+                rep["recs"].append(("BAD" if clip and r["clipMax"] >= CLIP_BAD_PCT else "WARN", f"{rn}: overloaded by strong signals",
+                                    "Turn its RF gain down a step (SDRplay: RFGR up one; others: LNA / RF gain down) and check again: "
+                                    "the lifted noise should fall" + (" and control-channel rates rise" if ccs else "") + ". (" + "; ".join(why) + ")"))
+        elif weak:
+            peaky = r and r.get("peakMax") is not None and r["peakMax"] > PEAK_WARN_DBFS
+            rep["recs"].append(("WARN", f"{rn}: weak signal on " + ", ".join(f"{k[1] or k[0]} ({v:.0f} dB SNR)" for k, v in weak),
+                                ("Its peaks already reach full scale, so more gain would clip: improve the antenna / feed line for those "
+                                 "(a better-placed or band-specific antenna, or a filtered preamp for that band)."
+                                 if peaky else "No sign of overload: raise its gain a step, or improve the antenna / feed line for that direction.")))
+        elif ccs and not drops:
+            rep["recs"].append(("WARN", f"{rn}: control channels decoding poorly (" + ", ".join(c["site"] or c["system"] for c in ccs) + ")",
+                                "Check the antenna and gain; if only one site, it may simply be far away."))
+    return rep
+
+
+# ---------------------------------------------------------------- output
+def tag(s, color):
+    return f"{C[s]}{s:>4}{C['0']}" if color else f"{s:>4}"
+
+
+def overall_of(rep):
+    parts = [rep["program"]["status"]] + [x["status"] for k in ("radios", "sites", "siteCalls", "computer", "clock", "plugins") for x in rep.get(k, [])]
+    parts += [lvl for lvl, _, _ in rep.get("recs", [])]
+    o = worst(*parts)
+    return "OK" if o == "INFO" else o
+
+
+def show(rep, color):
+    b, z, dim = (C["b"], C["0"], C["dim"]) if color else ("", "", "")
+    p = rep["program"]
+    host = socket.gethostname()
+    print(f"{b}Trunk Recorder Pro health — {host} — last {rep['hours']:g} h{z}  {dim}(trp-health {rep['version']}){z}\n")
+    print(f"{b}Program{z}")
+    print(f"  {tag(p['status'], color)}  service {p['service']}" + (f", since {p['since']}" if p.get("since") else "")
+          + (f"; v{p['version']}" if p.get("version") else "") + (f"; port {p['port']}" if p.get("port") else "")
+          + (f"; decoder {p['load']}% busy" if p.get("load") is not None else ""))
+    if rep["radios"]:
+        print(f"\n{b}Radios{z}")
+        for r in rep["radios"]:
+            span = f"{mhz(r['centerHz'] - r['rateHz'] / 2)}–{mhz(r['centerHz'] + r['rateHz'] / 2)} MHz" if r.get("centerHz") and r.get("rateHz") else ""
+            fig = []
+            if r.get("peakMax") is not None:
+                fig.append(f"peak {r['peakMax']:.0f} dBFS")
+            if r.get("noise") is not None:
+                fig.append(f"floor {r['noise']:.0f} dBFS")
+            fig.append(f"drops {r['dropped'] or 0:,.0f}")
+            print(f"  {tag(r['status'], color)}  {r['name']}  {dim}{span}  " + ", ".join(fig) + z)
+            for i in r["issues"]:
+                print(f"          {i}")
+    if rep["sites"]:
+        print(f"\n{b}Control channels{z}")
+        for e in sorted(rep["sites"], key=lambda e: (e["system"], e["site"])):
+            fig = []
+            if e.get("hz"):
+                fig.append(f"{mhz(e['hz'])} MHz")
+            if e.get("perSec"):
+                fig.append(f"{e['perSec']:.1f} msg/s")
+            if e.get("decoded") is not None:
+                fig.append(f"{e['decoded'] * 100:.0f}% decoded")
+            nm = f"{e['system']}/{e['site']}" if e["site"] else e["system"]
+            print(f"  {tag(e['status'], color)}  {nm}  {dim}" + ", ".join(fig) + z)
+            for i in e["issues"]:
+                print(f"          {i}")
+    if rep["channels"]:
+        print(f"\n{b}Calls by site{z}  {dim}(median signal / noise / SNR of each site's calls){z}")
+        sites = defaultdict(list)
+        for c in rep["channels"]:
+            sites[(c["system"], c["site"])].append(c)
+        for (sy, si), chs in sorted(sites.items()):
+            allc = sum(c["calls"] for c in chs)
+            md = lambda k: statistics.median([c[k] for c in chs for _ in range(c["calls"]) if c[k] is not None]) if any(c[k] is not None for c in chs) else None
+            sig, noi, snr, cln = md("signal"), md("noise"), md("snr"), md("clean")
+            stt = next((x["status"] for x in rep.get("siteCalls", []) if (x["system"], x["site"]) == (sy, si)), worst(*[c["status"] for c in chs]))
+            fig = f"{allc} calls"
+            if sig is not None:
+                fig += f", {sig:.0f} / {noi:.0f} dBFS, SNR {snr:.0f} dB"
+            if cln is not None:
+                fig += f", clean voice {cln:.0f}%"
+            nm = f"{sy}/{si}" if si else sy
+            print(f"  {tag(stt, color)}  {nm}  {dim}{fig}{z}")
+            for c in chs:
+                if c["status"] != "OK":
+                    print(f"          {c['mhz']:.4f} MHz ({c['calls']} calls, SNR {c['snr']:.0f} dB): " + ", ".join(c["issues"]) if c["snr"] is not None else
+                          f"          {c['mhz']:.4f} MHz ({c['calls']} calls): " + ", ".join(c["issues"]))
+    for title, key in (("Uploads & plugins", "plugins"), ("Computer", "computer"), ("Clock", "clock")):
+        if rep.get(key):
+            print(f"\n{b}{title}{z}")
+            for it in rep[key]:
+                print(f"  {tag(it['status'], color)}  {it['name']}  {dim}{it['fig']}{z}")
+                for i in it["issues"]:
+                    print(f"          {i}")
+    if rep.get("logWarnings"):
+        print(f"\n{b}Other warnings in the log{z}")
+        for n, t, k in rep["logWarnings"]:
+            print(f"   {n:>5}×  [{t}] {k}")
+    print(f"\n{b}Recommendations{z}")
+    if not rep["recs"]:
+        print(f"  {tag('OK', color)}  Nothing to do: everything checked looks healthy.")
+    for lvl, what, how in sorted(rep["recs"], key=lambda x: -RANK[x[0]]):
+        print(f"  {tag(lvl, color)}  {b}{what}{z}")
+        print(f"          {how}")
+    for n in rep["notes"]:
+        print(f"\n  {dim}note: {n}{z}")
+    overall = overall_of(rep)
+    print(f"\n{b}Overall:{z} " + (f"{C[overall]}{overall}{C['0']}" if color else overall))
+    return overall
+
+
+# ---------------------------------------------------------------- alerts
+STATE = os.path.expanduser("~/.local/state/trp-health/state.json")
+UNIT_DIR = os.path.expanduser("~/.config/systemd/user")
+
+
+def send_alert(title, body, level):
+    """To ntfy (a phone push) and/or a command of your own, as the config says."""
+    sent = []
+    url = conf_get("ntfy")
+    if url:
+        import urllib.request
+        req = urllib.request.Request(url, data=body.encode(), method="POST", headers={
+            "Title": title.encode("ascii", "replace").decode(),
+            "Priority": {"BAD": "high", "WARN": "default"}.get(level, "low"),
+            "Tags": {"BAD": "rotating_light", "WARN": "warning"}.get(level, "white_check_mark")})
+        try:
+            urllib.request.urlopen(req, timeout=15).read()
+            sent.append("ntfy")
+        except Exception as e:
+            print(f"trp-health: ntfy failed: {e}", file=sys.stderr)
+    cmd = conf_get("alert_cmd")
+    if cmd:
+        r = subprocess.run(cmd, shell=True, input=f"{title}\n\n{body}\n", text=True, env={**os.environ, "TRP_HEALTH_LEVEL": level, "TRP_HEALTH_TITLE": title})
+        if r.returncode == 0:
+            sent.append("alert_cmd")
+    return sent
+
+
+def alert(rep):
+    """Tell of a change in the box's state, once it has held for two checks in a row."""
+    host = socket.gethostname()
+    now = overall_of(rep)
+    floor = (conf_get("alert_on") or "WARN").upper()
+    eff = now if RANK.get(now, 0) >= RANK.get(floor, 1) else "OK"
+    try:
+        st = json.load(open(STATE))
+    except (OSError, ValueError):
+        st = {"reported": "OK", "seen": None, "count": 0}
+    if eff == st.get("reported"):
+        st.update(seen=None, count=0)
+    else:
+        st["count"] = st["count"] + 1 if st.get("seen") == eff else 1
+        st["seen"] = eff
+        need = int(conf_get("alert_after") or 2)
+        if st["count"] >= need:
+            recs = [r for r in sorted(rep["recs"], key=lambda x: -RANK[x[0]]) if RANK[r[0]] >= RANK.get(floor, 1)]
+            if eff == "OK":
+                title = f"{host}: TRP back to OK"
+                body = f"Trunk Recorder Pro on {host} is healthy again (was {st['reported']})."
+            else:
+                title = f"{host}: TRP {eff}"
+                body = "\n".join(f"{lvl}: {what}" for lvl, what, _ in recs[:5]) or f"Overall {eff}."
+                body += "\n\nDetails: run trp-health on " + host
+            if send_alert(title, body, eff):
+                st.update(reported=eff, seen=None, count=0)
+    os.makedirs(os.path.dirname(STATE), exist_ok=True)
+    json.dump(st, open(STATE, "w"))
+    return now
+
+
+def install_timer(minutes):
+    exe = os.path.realpath(sys.argv[0])
+    os.makedirs(UNIT_DIR, exist_ok=True)
+    with open(f"{UNIT_DIR}/trp-health.service", "w") as f:
+        f.write(f"[Unit]\nDescription=Trunk Recorder Pro health check (alerts on a change)\n\n"
+                f"[Service]\nType=oneshot\nExecStart={exe} --alert\n")
+    with open(f"{UNIT_DIR}/trp-health.timer", "w") as f:
+        f.write(f"[Unit]\nDescription=Run trp-health every {minutes} minutes\n\n"
+                f"[Timer]\nOnActiveSec=1min\nOnBootSec=10min\nOnUnitActiveSec={minutes}min\nPersistent=true\n\n[Install]\nWantedBy=timers.target\n")
+    for c in (["daemon-reload"], ["enable", "--now", "trp-health.timer"]):
+        subprocess.run(["systemctl", "--user"] + c, check=False)
+    print(f"Installed: trp-health runs every {minutes} minutes (systemctl --user list-timers trp-health.timer).")
+    import getpass
+    user = os.environ.get("USER") or getpass.getuser()
+    try:
+        linger = subprocess.run(["loginctl", "show-user", user, "-p", "Linger", "--value"], capture_output=True, text=True).stdout.strip()
+    except OSError:
+        linger = "?"
+    if linger not in ("yes", "?"):
+        print(f"Note: lingering is off, so it only runs while {user} is logged in. To run it always:  sudo loginctl enable-linger {user}")
+    if not conf_get("ntfy") and not conf_get("alert_cmd"):
+        print("Note: no alert set up yet: trp-health --setup-ntfy")
+
+
+def remove_timer():
+    subprocess.run(["systemctl", "--user", "disable", "--now", "trp-health.timer"], check=False)
+    for f in ("trp-health.timer", "trp-health.service"):
+        try:
+            os.remove(f"{UNIT_DIR}/{f}")
+        except OSError:
+            pass
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    print("Removed the trp-health timer.")
+
+
+def setup_ntfy(topic):
+    if not topic:
+        topic = "trp-" + base64.b32encode(os.urandom(10)).decode().lower().rstrip("=")
+    url = topic if topic.startswith("http") else f"https://ntfy.sh/{topic}"
+    conf_set("ntfy", url)
+    print(f"Alerts will go to {url}  (saved in {CONF})\n")
+    print("On your phone: install the ntfy app, tap +, and subscribe to the topic:")
+    print(f"    {url.rsplit('/', 1)[1]}")
+    print("Anyone who knows the topic name can read it, so keep it to yourself.")
+    print("Use the same topic on your other boxes:  trp-health --setup-ntfy " + url.rsplit("/", 1)[1])
+    print("\nThen send a test:  trp-health --test-alert")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Trunk Recorder Pro health check")
+    ap.add_argument("--hours", type=float, help="how far back to look (default 1; 0.25 with --alert)")
+    ap.add_argument("--port", type=int, help="the recorder's web port (default: found on 8080-8099)")
+    ap.add_argument("--json", action="store_true", help="print JSON")
+    ap.add_argument("--no-color", action="store_true")
+    ap.add_argument("--dupes", nargs="?", const="", metavar="SYSTEM", help="list duplicate calls (one system's, or all) over --hours (default 6)")
+    ap.add_argument("--gap", type=float, default=3.0, help="--dupes: seconds apart that count as one call (default 3)")
+    ap.add_argument("--show", type=int, default=40, help="--dupes: how many pairs to list (default 40)")
+    ap.add_argument("--skip", action="append", default=[], metavar="SYSTEM", help="leave a system out (its short name; repeat or comma-separate)")
+    ap.add_argument("--alert", action="store_true", help="check quietly; send an alert if the state changed (for the timer)")
+    ap.add_argument("--test-alert", action="store_true", help="send a test alert")
+    ap.add_argument("--setup-ntfy", nargs="?", const="", metavar="TOPIC", help="send alerts to ntfy (a new private topic, or the one given)")
+    ap.add_argument("--install-timer", nargs="?", const=15, type=int, metavar="MIN", help="run --alert every MIN minutes (default 15)")
+    ap.add_argument("--remove-timer", action="store_true")
+    ap.add_argument("--debug", action="store_true", help="also print what the recorder sent (to stderr)")
+    ap.add_argument("--version", action="version", version=f"trp-health {VERSION}")
+    a = ap.parse_args()
+    if a.dupes is not None:
+        p = find_port(a.port)
+        if not p:
+            sys.exit("No recorder answered on ports 8080-8099 (use --port).")
+        sys.exit(dupes(p, a.hours or 6.0, a.dupes or None, a.gap, sys.stdout.isatty() and not a.no_color, a.show))
+    if a.setup_ntfy is not None:
+        return setup_ntfy(a.setup_ntfy)
+    if a.install_timer:
+        return install_timer(a.install_timer)
+    if a.remove_timer:
+        return remove_timer()
+    if a.test_alert:
+        sent = send_alert(f"{socket.gethostname()}: trp-health test", "If you can read this, alerts work.", "OK")
+        print("Sent via " + ", ".join(sent) if sent else f"Nothing sent: set up ntfy (trp-health --setup-ntfy) or alert_cmd in {CONF}")
+        return
+    skip = conf_skips() + [x.strip() for v in a.skip for x in v.split(",") if x.strip()]
+    hours = a.hours if a.hours else (0.25 if a.alert else 1.0)
+    rep = check(a.port, hours, a.debug, skip)
+    if a.alert:
+        alert(rep)
+        return
+    if a.json:
+        json.dump(rep, sys.stdout, indent=1, default=str)
+        print()
+        return
+    overall = show(rep, sys.stdout.isatty() and not a.no_color)
+    sys.exit({"OK": 0, "WARN": 1, "BAD": 2}.get(overall, 0))
+
+
+if __name__ == "__main__":
+    main()

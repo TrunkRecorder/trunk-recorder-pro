@@ -1,0 +1,57 @@
+# Tag a version (git tag v0.1.0 && git push --tags) and this builds the
+# release files Trunk Recorder Pro installs from ("Install from GitHub…").
+name: Release
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: "${{ matrix.target }}" }
+      - run: cargo build --release --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/health${{ contains(matrix.target, 'windows') && '.exe' || '' }}
+  release:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: bins }
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="${GITHUB_REF_NAME#v}"; ID=health; mkdir -p out
+          pack() { local t="$1" src="$2"; mkdir -p "pkg/$t/$ID"; cp "$src" "pkg/$t/$ID/"; cp README.md LICENSE-MIT LICENSE-APACHE "pkg/$t/$ID/"; chmod +x "pkg/$t/$ID/$(basename "$src")"; }
+          pack x86_64-unknown-linux-gnu bins/bin-x86_64-unknown-linux-gnu/$ID
+          pack aarch64-unknown-linux-gnu bins/bin-aarch64-unknown-linux-gnu/$ID
+          pack x86_64-pc-windows-msvc bins/bin-x86_64-pc-windows-msvc/$ID.exe
+          mkdir -p pkg/universal-apple-darwin/$ID
+          lipo -create -output pkg/universal-apple-darwin/$ID/$ID bins/bin-aarch64-apple-darwin/$ID bins/bin-x86_64-apple-darwin/$ID
+          chmod +x pkg/universal-apple-darwin/$ID/$ID; cp README.md LICENSE-MIT LICENSE-APACHE pkg/universal-apple-darwin/$ID/
+          for t in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu universal-apple-darwin; do tar -C "pkg/$t" -czf "out/$ID-$V-$t.tar.gz" "$ID"; done
+          (cd pkg/x86_64-pc-windows-msvc && zip -r "../../out/$ID-$V-x86_64-pc-windows-msvc.zip" "$ID")
+          pkg/universal-apple-darwin/$ID/$ID --describe > "out/$ID-$V.manifest.json"
+          (cd out && shasum -a 256 * > SHA256SUMS)
+      - uses: actions/attest-build-provenance@v2
+        with: { subject-path: "out/*" }
+      - uses: softprops/action-gh-release@v2
+        with: { files: "out/*" }
