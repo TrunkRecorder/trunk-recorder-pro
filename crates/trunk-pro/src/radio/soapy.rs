@@ -15,6 +15,8 @@ use std::time::Duration;
 use libloading::Library;
 use num_complex::Complex32;
 
+use trunk_app::gain::ReportedStage;
+
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
 use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
 
@@ -77,6 +79,9 @@ struct Api {
     set_gain_mode: unsafe extern "C" fn(Dev, c_int, usize, bool) -> c_int,
     set_gain: unsafe extern "C" fn(Dev, c_int, usize, f64) -> c_int,
     set_gain_element: unsafe extern "C" fn(Dev, c_int, usize, *const c_char, f64) -> c_int,
+    /// Its gain elements, by name, and each one's range (what the gain tuner searches).
+    list_gains: Option<unsafe extern "C" fn(Dev, c_int, usize, *mut usize) -> *mut *mut c_char>,
+    gain_element_range: Option<unsafe extern "C" fn(Dev, c_int, usize, *const c_char) -> SoapyRange>,
     /// The overall gain it's set to (its stages together).
     get_gain: Option<unsafe extern "C" fn(Dev, c_int, usize) -> f64>,
     set_antenna: unsafe extern "C" fn(Dev, c_int, usize, *const c_char) -> c_int,
@@ -169,6 +174,8 @@ fn api() -> Result<&'static Api, String> {
                 set_gain_mode: f!("SoapySDRDevice_setGainMode"),
                 set_gain: f!("SoapySDRDevice_setGain"),
                 set_gain_element: f!("SoapySDRDevice_setGainElement"),
+                list_gains: opt!("SoapySDRDevice_listGains"),
+                gain_element_range: opt!("SoapySDRDevice_getGainElementRange"),
                 get_gain: opt!("SoapySDRDevice_getGain"),
                 set_antenna: f!("SoapySDRDevice_setAntenna"),
                 write_setting: f!("SoapySDRDevice_writeSetting"),
@@ -417,8 +424,10 @@ impl crate::sdr::Radio for SoapyConfig {
         self.center_hz = hz;
     }
     fn gain_to(&mut self, g: Gain) {
-        if let Gain::Db(db) = g {
-            self.gain_db = Some(db as f64);
+        match g {
+            Gain::Db(db) => self.gain_db = Some(db as f64),
+            Gain::Soapy(s) => (self.gain_db, self.gains) = (s.overall, s.elements().map(|(k, v)| (k.to_string(), v)).collect()),
+            _ => {}
         }
     }
     fn gain(&self) -> Option<Gain> {
@@ -430,6 +439,39 @@ impl crate::sdr::Radio for SoapyConfig {
     fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
         stream_once(self, sink, stop, ctl)
     }
+}
+
+/// A manual gain's SoapySDR calls, in order: the overall gain as `(None, dB)` (none: left as it
+/// is), then each element `stages` sets, by its name — which the overall gain alone would undo.
+fn gain_calls(overall: Option<f64>, stages: &[(String, f64)]) -> Vec<(Option<&str>, f64)> {
+    overall.map(|db| (None, db)).into_iter().chain(stages.iter().map(|(k, v)| (Some(k.as_str()), *v))).collect()
+}
+
+/// A gain set while running, as a SoapySDR device takes it: the overall gain to set, and the
+/// elements it keeps setting after it (`stages`). An overall gain keeps them; a [`Gain::Soapy`] is
+/// the source's whole gain, so its elements replace them, and one a trial set that the source
+/// doesn't is left to the overall gain again. None: a gain it doesn't take.
+fn take_gain(stages: &mut Vec<(String, f64)>, g: Gain) -> Option<Option<f64>> {
+    match g {
+        Gain::Db(db) => Some(Some(db.into())),
+        Gain::Soapy(s) => {
+            *stages = s.elements().map(|(k, v)| (k.to_string(), v)).collect();
+            Some(s.overall)
+        }
+        _ => None,
+    }
+}
+
+/// The gain elements each SoapySDR radio reported when it was last opened, by its key ([`key`]).
+fn reported() -> &'static Mutex<HashMap<String, Vec<ReportedStage>>> {
+    static R: OnceLock<Mutex<HashMap<String, Vec<ReportedStage>>>> = OnceLock::new();
+    R.get_or_init(Default::default)
+}
+
+/// The gain elements the radio `args` opens reported when it was last opened in this run (none: not
+/// opened yet, or its SoapySDR can't say): what the gain tuner searches ([`trunk_app::gain::GainPlan::of_reported`]).
+pub fn reported_stages(args: &str) -> Vec<ReportedStage> {
+    reported().lock().unwrap_or_else(|e| e.into_inner()).get(&key(args)).cloned().unwrap_or_default()
 }
 
 /// A USRP through SoapyUHD gets the bigger receive buffer a direct one does.
@@ -475,12 +517,13 @@ impl Tunable for Device {
         check(self.a, "tune", unsafe { (self.a.set_frequency)(self.dev, RX, 0, ppm_corrected(hz, self.ppm), std::ptr::null()) })?;
         Ok(Retuned { hz, gap: 0 })
     }
-    /// A manual gain (AGC on or off waits for the next start).
+    /// A manual gain (AGC on or off waits for the next start): overall, or the source's whole
+    /// gain, overall and elements ([`take_gain`]): a trial's and, after it, the setting it had.
     fn set_gain(&mut self, g: Gain) -> Result<Regained, String> {
-        let Gain::Db(db) = g else { return Ok(Regained::LEFT_ALONE) };
+        let Some(overall) = take_gain(&mut self.stages, g) else { return Ok(Regained::LEFT_ALONE) };
         // SAFETY: an open device.
-        unsafe { self.gain(Some(db as f64)) }?;
-        Ok(Regained { gap: 0, gain: self.gain_set() })
+        unsafe { self.gain(overall) }?;
+        Ok(Regained { gap: 0, gain: if let Gain::Db(_) = g { self.gain_set() } else { Some(g) } })
     }
 }
 
@@ -492,14 +535,37 @@ impl Device {
             if (self.a.has_gain_mode)(self.dev, RX, 0) {
                 check(self.a, "AGC off", (self.a.set_gain_mode)(self.dev, RX, 0, false))?;
             }
-            if let Some(db) = db {
-                check(self.a, "gain", (self.a.set_gain)(self.dev, RX, 0, db))?;
-            }
-            for (k, db) in &self.stages {
-                let ck = CString::new(k.as_str()).map_err(|e| e.to_string())?;
-                check(self.a, &format!("gain {k}"), (self.a.set_gain_element)(self.dev, RX, 0, ck.as_ptr(), *db))?;
+            for (element, db) in gain_calls(db, &self.stages) {
+                match element {
+                    None => check(self.a, "gain", (self.a.set_gain)(self.dev, RX, 0, db))?,
+                    Some(k) => {
+                        let ck = CString::new(k).map_err(|e| e.to_string())?;
+                        check(self.a, &format!("gain {k}"), (self.a.set_gain_element)(self.dev, RX, 0, ck.as_ptr(), db))?;
+                    }
+                }
             }
             Ok(())
+        }
+    }
+    /// Its receive gain elements and their ranges, when its SoapySDR can say.
+    unsafe fn elements(&self) -> Vec<ReportedStage> {
+        let (Some(list), Some(range)) = (self.a.list_gains, self.a.gain_element_range) else { return vec![] };
+        unsafe {
+            let mut n = 0usize;
+            let mut p = list(self.dev, RX, 0, &mut n);
+            if p.is_null() {
+                return vec![];
+            }
+            let names: Vec<String> = (0..n).map(|i| cstr(*p.add(i))).collect();
+            (self.a.strings_clear)(&mut p, n);
+            names
+                .into_iter()
+                .filter_map(|name| {
+                    let c = CString::new(name.as_str()).ok()?;
+                    let r = range(self.dev, RX, 0, c.as_ptr());
+                    Some(ReportedStage { name, min: r.minimum, max: r.maximum, step: r.step })
+                })
+                .collect()
         }
     }
     /// The overall gain it's set to, when its SoapySDR can say.
@@ -567,6 +633,11 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
         let rates = d.rates();
         if let Some(r) = &rates {
             super::remember(&key(&cfg.args), Caps { model: String::new(), rates: r.clone(), gains: Vec::new() });
+        }
+        // Its gain elements, for the gain tuner.
+        let elements = d.elements();
+        if !elements.is_empty() {
+            reported().lock().unwrap_or_else(|e| e.into_inner()).insert(key(&cfg.args), elements);
         }
         check(a, "sample rate", (a.set_sample_rate)(d.dev, RX, 0, cfg.rate_hz))?;
         let actual = (a.get_sample_rate)(d.dev, RX, 0);
@@ -896,6 +967,115 @@ mod tests {
         let mut s = Stamps::new(RATE);
         assert_eq!((0..100).map(|_| s.read(2012, None)).sum::<u64>(), 0);
         assert!(!s.timed());
+    }
+
+    /// A SoapySDR device as far as its gain goes: an overall gain fills its elements front first,
+    /// as SoapySDR's default setGain does (SoapyAirspy's too: 31 is LNA 15, MIX 15, VGA 1); an
+    /// element set by name is set alone, and a name it doesn't have is an error (here, a panic).
+    struct FakeGains(Vec<(&'static str, f64, f64)>);
+    impl FakeGains {
+        fn new(elements: &[(&'static str, f64)]) -> FakeGains {
+            FakeGains(elements.iter().map(|(n, max)| (*n, *max, 0.0)).collect())
+        }
+        fn run(&mut self, calls: Vec<(Option<&str>, f64)>) {
+            for (element, v) in calls {
+                match element {
+                    None => {
+                        let mut left = v;
+                        for e in &mut self.0 {
+                            e.2 = left.clamp(0.0, e.1);
+                            left -= e.2;
+                        }
+                    }
+                    Some(k) => self.0.iter_mut().find(|e| e.0 == k).unwrap_or_else(|| panic!("no element {k}")).2 = v,
+                }
+            }
+        }
+        fn now(&self) -> Vec<f64> {
+            self.0.iter().map(|e| e.2).collect()
+        }
+    }
+
+    /// The radio as the recorder runs it: opened as `src` has it (stream_once: its elements, then the
+    /// overall gain and them), then each later gain the way [`Device::set_gain`] takes it.
+    struct Running {
+        fake: FakeGains,
+        stages: Vec<(String, f64)>,
+    }
+    impl Running {
+        fn open(fake: FakeGains, src: &crate::config::Source) -> Running {
+            let crate::config::SourceKind::Soapy { gain_db, gains, .. } = &src.kind else { panic!() };
+            let mut r = Running { fake, stages: gains.clone().into_iter().collect() };
+            r.fake.run(gain_calls(*gain_db, &r.stages));
+            r
+        }
+        /// `to` set while running from `run` (the run's source, which a trial doesn't change), as the
+        /// tuner sets a trial, the incumbent, and the radio back when it ends, stops or isn't applied.
+        fn set(&mut self, run: &crate::config::Source, to: &crate::config::Source) -> Vec<f64> {
+            let g = crate::runtime::live_gain(run, to).expect("taken while running");
+            let overall = take_gain(&mut self.stages, g).expect("a gain it takes");
+            self.fake.run(gain_calls(overall, &self.stages));
+            self.fake.now()
+        }
+    }
+
+    fn source(v: serde_json::Value) -> crate::config::Source {
+        let mut v = v;
+        (v["type"], v["centerHz"], v["rateHz"], v["agc"]) = ("soapy".into(), 852e6.into(), 10e6.into(), false.into());
+        serde_json::from_value(v).unwrap()
+    }
+
+    /// A trial and then the setting the radio had (the incumbent's slices, and the radio put back when the tuning
+    /// ends, is stopped or isn't applied) leave every element as it was: an overall gain alone, with some elements
+    /// set, or elements alone; a trial's elements the source doesn't set go back to what the overall gain gives.
+    #[test]
+    fn a_trial_is_undone_exactly() {
+        use trunk_app::gain::GainPlan;
+        let airspy = || FakeGains::new(&[("LNA", 15.0), ("MIX", 15.0), ("VGA", 15.0)]);
+        let args = "driver=remote,remote=tcp://server:55132,remote:driver=airspy,remote:prot=tcp";
+        for (start, opened) in [
+            (serde_json::json!({ "args": args, "gainDb": 31 }), [15.0, 15.0, 1.0]),
+            (serde_json::json!({ "args": args, "gainDb": 31, "gains": { "LNA": 5 } }), [5.0, 15.0, 1.0]),
+            (serde_json::json!({ "args": args, "gains": { "LNA": 5, "MIX": 4, "VGA": 3 } }), [5.0, 4.0, 3.0]),
+        ] {
+            let run = source(start);
+            let mut radio = Running::open(airspy(), &run);
+            assert_eq!(radio.fake.now(), opened, "{run:?}");
+            let plan = GainPlan::of(&run, None).unwrap();
+            // Linearity step 14: LNA 9, MIX 6, VGA 10.
+            assert_eq!(radio.set(&run, &plan.apply(&run, &vec![14])), [9.0, 6.0, 10.0], "the trial");
+            assert_eq!(radio.set(&run, &run), opened, "back as it was: {run:?}");
+            assert_eq!(radio.set(&run, &plan.apply(&run, &vec![17])), [12.0, 8.0, 11.0], "the next trial");
+            assert_eq!(radio.set(&run, &run), opened);
+        }
+        // No overall gain and an element the search moves not set: it couldn't be put back, so it isn't tuned.
+        assert!(GainPlan::of(&source(serde_json::json!({ "args": args, "gains": { "LNA": 5 } })), None).is_err());
+    }
+
+    /// A radio's own element names go all the way to the device, as it reported them: a MIXER isn't set as MIX,
+    /// and an element no stage is named after (TIA) is searched and set too.
+    #[test]
+    fn elements_keep_the_names_the_radio_gave_them() {
+        use trunk_app::gain::{GainPlan, ReportedStage};
+        let lime = || FakeGains::new(&[("LNA", 30.0), ("MIXER", 15.0), ("TIA", 12.0)]);
+        let el = |name: &str, max: f64, step: f64| ReportedStage { name: name.into(), min: 0.0, max, step };
+        let reported = [el("LNA", 30.0, 1.0), el("MIXER", 15.0, 1.0), el("TIA", 12.0, 3.0)];
+        let run = source(serde_json::json!({ "args": "driver=lime", "gainDb": 20 }));
+        let mut radio = Running::open(lime(), &run);
+        assert_eq!(radio.fake.now(), [20.0, 0.0, 0.0]);
+        let plan = GainPlan::of_reported(&run, None, None, &reported).unwrap();
+        assert_eq!(radio.set(&run, &plan.apply(&run, &vec![10, 7, 3])), [10.0, 7.0, 9.0], "set by their own names");
+        assert_eq!(radio.set(&run, &run), [20.0, 0.0, 0.0], "and back");
+    }
+
+    /// trunk-app's copy of libairspy's tables (the gain tuner's steps for an Airspy through SoapySDR) is libairspy-rs's.
+    #[test]
+    fn the_tuners_airspy_tables_are_libairspys() {
+        for sensitivity in [false, true] {
+            for step in 0..=trunk_app::gain::AIRSPY_STEP_MAX {
+                assert_eq!(trunk_app::gain::airspy_preset(sensitivity, step), libairspy_rs::composite_gains(sensitivity, step), "{sensitivity} {step}");
+            }
+        }
     }
 
     #[test]

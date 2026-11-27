@@ -225,7 +225,7 @@ impl Tunable for Conn {
         let db = match g {
             Gain::Agc => None,
             Gain::Db(db) => Some(db),
-            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) => return Ok(Regained::LEFT_ALONE),
+            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) | Gain::Soapy(_) => return Ok(Regained::LEFT_ALONE),
         };
         let set = self.gain(db)?;
         Ok(Regained { gap: 0, gain: Some(set) })

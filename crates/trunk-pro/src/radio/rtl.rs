@@ -124,7 +124,7 @@ impl Radio for RtlConfig {
         match g {
             Gain::Agc => self.gain_db = None,
             Gain::Db(db) => self.gain_db = Some(db),
-            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) => {}
+            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) | Gain::Soapy(_) => {}
         }
     }
     fn gain(&self) -> Option<Gain> {
@@ -172,7 +172,7 @@ impl Tunable for Rtl<'_> {
         let gain = match g {
             Gain::Agc => GainConfig::Auto,
             Gain::Db(db) => GainConfig::Manual(db),
-            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) => return Ok(Regained::LEFT_ALONE),
+            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) | Gain::Soapy(_) => return Ok(Regained::LEFT_ALONE),
         };
         let gap = self.halted(|dev| dev.set_gain(gain).wait().map_err(|e| format!("gain {g}: {e}")))?;
         Ok(Regained { gap, gain: Some(gain_set(self.dev)) })

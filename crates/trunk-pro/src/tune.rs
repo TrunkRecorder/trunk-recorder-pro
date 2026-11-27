@@ -122,8 +122,12 @@ pub fn start(ctx: &Arc<Ctx>, req: TuneRequest) -> Result<Option<ToClient>, Strin
         let k = cfg.same_radio(i, &run.sources).ok_or_else(|| format!("{title} isn't recording (it was added since Start)."))?;
         (k, run.sources[k].clone())
     };
-    // (The gains its radio said it has, where they aren't its kind's own.)
-    let plan = GainPlan::of_with(&base, req.mode, crate::radio::reported_gains(&base).as_deref()).map_err(|e| format!("{title}: {e}"))?;
+    // (The gains its radio said it has, where they aren't its kind's own; a SoapySDR radio's gain elements.)
+    let elements = match &base.kind {
+        crate::config::SourceKind::Soapy { args, .. } => crate::radio::soapy::reported_stages(args),
+        _ => vec![],
+    };
+    let plan = GainPlan::of_reported(&base, req.mode, crate::radio::reported_gains(&base).as_deref(), &elements).map_err(|e| format!("{title}: {e}"))?;
     let start = plan.point(&base);
     let as_it_is = plan.apply(&base, &start) != base;
     if crate::runtime::live_gain(&base, &plan.apply(&base, &start)).is_none() {
@@ -409,7 +413,9 @@ trunk-pro tune [--url http://127.0.0.1:8080] [--source N] [--systems a,b] [--sli
 Asks a recorder that is recording to find the gain at which a radio decodes its
 systems best. The recorder follows a plan for the radio's kind (which stage moves
 first, which way, in what steps: an Airspy along its linearity table, an RTL-SDR
-along its tuner's gains, a HackRF's LNA, then VGA, then amp…). Each candidate is
+along its tuner's gains, a HackRF's LNA, then VGA, then amp; an Airspy through
+SoapySDR along the same table, set as its LNA, MIX and VGA elements; another
+SoapySDR radio by the gain elements it reported…). Each candidate is
 compared with the best so far by turns, a --slice of seconds each (after --settle),
 for --rounds rounds, and kept only if it scores better by more than --margin and by
 more than twice the rounds' spread. Systems are scored on control channel decoding
@@ -425,8 +431,10 @@ Ctrl-C) unless --apply keeps the best.
                than this many points (0–100 scale; default 5, `off` to allow it)
   --try        compare one setting with the one it has, no search: lna=11,mixer=10,vga=9
                (Airspy manual), step=16 (Airspy linearity/sensitivity), lna=32,vga=24,amp=on
-               (HackRF), gain=33.8 (RTL-SDR, USRP, bladeRF, SoapySDR)
-  --mode       Airspy, HydraSDR: search this gain mode instead of the one it is in
+               (HackRF), gain=33.8 (RTL-SDR, USRP, bladeRF, SoapySDR by its overall gain),
+               step=14 (an Airspy through SoapySDR), lna=20,tia=9 (SoapySDR by its elements' names)
+  --mode       Airspy, HydraSDR, an Airspy through SoapySDR: search this gain mode instead of
+               the one it is in (through SoapySDR: linearity unless asked)
   --max-steps  at most this many candidates compared
   --margin     a move is kept only when it scores this much better (0–100 scale)
   --yes        don't ask before starting

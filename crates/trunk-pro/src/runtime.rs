@@ -31,7 +31,7 @@ use crate::config::{AirspyGain, AirspyGains, Config, SampleFormat, Source, Sourc
 use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, stream, uhd};
-use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
+use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SoapyGain, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
@@ -454,9 +454,16 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
             (*lna_db, *vga_db, *amp) = (*l, *v, *a);
             Gain::Stages(hackrf_gain(*l, *v, *a))
         }
-        (SourceKind::Soapy { gain_db, agc: false, .. }, SourceKind::Soapy { gain_db: Some(g), agc: false, .. }) => {
-            *gain_db = Some(*g);
-            Gain::Db(*g as f32)
+        // Its whole gain, overall and elements by name (the gain tuner's trials, and the setting it had after them).
+        // Without an overall gain, what the new gain doesn't set can't be put back: an element dropped, or the
+        // overall gain itself, waits for the start.
+        (SourceKind::Soapy { gain_db, gains, agc: false, .. }, SourceKind::Soapy { gain_db: g, gains: gs, agc: false, .. }) => {
+            if g.is_none() && (gain_db.is_some() || gains.keys().any(|k| !gs.contains_key(k))) {
+                return None;
+            }
+            let whole = SoapyGain::new(*g, gs)?;
+            (*gain_db, *gains) = (*g, gs.clone());
+            Gain::Soapy(whole)
         }
         _ => return None,
     };
@@ -1735,6 +1742,20 @@ mod live_tests {
         assert_eq!(g, Some(Gain::Stages(hackrf_gain(24, 20, true))), "a HackRF's stages, live");
         assert_eq!(g.unwrap().to_string(), "AMP on · LNA 24 · VGA 20");
         assert_eq!(manual(0, 0, 7, true).to_string(), "AGC · VGA 7");
+        // SoapySDR: its whole gain, overall and elements by their own names (the tuner's trials, and back).
+        let soapy = |gain: Option<f64>, gains: serde_json::Value| src("soapy", json!({ "args": "driver=remote,remote:driver=airspy", "centerHz": 852e6, "rateHz": 10e6, "agc": false, "gainDb": gain, "gains": gains }));
+        let whole = |gain: Option<f64>, gains: serde_json::Value| Gain::Soapy(SoapyGain::new(gain, &serde_json::from_value(gains).unwrap()).unwrap());
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(25.0), json!({}))), Some(whole(Some(25.0), json!({}))), "its overall gain, live");
+        let trial = json!({ "LNA": 9, "MIXER": 6, "TIA": 10 });
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(31.0), trial.clone())), Some(whole(Some(31.0), trial.clone())), "its elements, by name");
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(31.0), json!({}))), Some(whole(Some(31.0), json!({}))), "as it was: the overall gain alone, so a trial's elements are filled again");
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(20.0), json!({ "LNA": 9 }))), Some(whole(Some(20.0), json!({ "LNA": 9 }))), "both at once");
+        assert_eq!(live_gain(&soapy(None, json!({ "LNA": 9, "IFGR": 40 })), &soapy(None, json!({ "LNA": 11, "IFGR": 30 }))), Some(whole(None, json!({ "LNA": 11, "IFGR": 30 }))), "elements alone");
+        assert_eq!(live_gain(&soapy(None, json!({ "LNA": 9 })), &soapy(None, json!({}))), None, "no overall gain: an element dropped can't be put back live");
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(None, json!({ "LNA": 9 }))), None, "nor the overall gain");
+        let long = json!({ "AN_ELEMENT_NAMED_TOO_LONG": 1 });
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(31.0), long)), None, "a name a gain can't carry waits");
+        assert_eq!(whole(Some(31.0), trial).to_string(), "31 dB · LNA 9 · MIXER 6 · TIA 10");
     }
 
     #[test]
