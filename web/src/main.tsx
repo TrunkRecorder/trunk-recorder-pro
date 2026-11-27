@@ -28,9 +28,11 @@ if (rulesFailed !== null) {
   root.render(<unsupported.NoWebUsb />);
 } else {
   const { App } = await import("./App.tsx");
+  const { Asking } = await import("./Confirm.tsx");
   root.render(
     <StrictMode>
       <App />
+      <Asking />
     </StrictMode>,
   );
 }
