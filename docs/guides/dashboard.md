@@ -107,7 +107,14 @@ and the source's errors, if any (a USB error, a dongle that went away).
 
 The **Waterfall** beside each source shows its whole band over time, with the control channels
 and active calls marked. **Show** turns it off; the browser remembers that, and the recorder
-stops sending that spectrum.
+stops sending that spectrum. The sites' names run along the top, stacked on a second row where
+two would overlap; an adjacent site has a fainter line, and its address shows when the pointer
+is on it, as the readout under the pointer names any line. Calls are tagged on a row of their
+own below, and the tag fades after a few seconds.
+
+The dashboard names a source by its kind and the name Setup gives it ("Airspy · roof"), or by
+its kind alone when it has none, with its number when two would read the same; the radio's full
+label (for SoapySDR, its device arguments) is on hover.
 
 Click a source's name for its own page, which adds:
 
