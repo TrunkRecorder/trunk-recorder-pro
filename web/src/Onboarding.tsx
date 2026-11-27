@@ -45,6 +45,7 @@ import { parseRadioReferencePaste, readTalkgroupFile, type Talkgroup } from "./t
 import { openTodos } from "./todo.ts";
 import { Waterfall } from "./Waterfall.tsx";
 import { savedWhere, takeWhere, WhereFields, WhyLocation, type Where } from "./Identify.tsx";
+import { scanRangeLabel, ScanPicker, useScanChoice } from "./scanChoice.tsx";
 
 // ── when to offer it ─────────────────────────────────────────────────────────
 
@@ -693,9 +694,8 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
   const sv = s.survey;
   const radios = c.sources.map((x, i) => ({ x, i })).filter(({ x }) => x.type !== "file");
   const [source, setSource] = useState(radios[0]?.i ?? 0);
-  const [bands, setBands] = useState<string[] | null>(null);
+  const choice = useScanChoice(s.surveyBands);
   const [manual, setManual] = useState(false);
-  const picked = bands ?? s.surveyBands.filter((b) => b.defaultOn).map((b) => b.id);
   const unsupported = !can("drivers") && !!c.sources[source] && desktopOnly(c.sources[source]);
   // Naming what it finds from FCC licenses: optional, with the location given here.
   const [naming, setNaming] = useState(() => !!savedWhere().text);
@@ -703,7 +703,8 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
   const at = useRef<{ lat: number; lon: number; radiusM: number } | null>(null);
   const scan = () => {
     at.current = naming ? takeWhere(where) : null;
-    startSurvey(source, picked, c.sources[source]?.type === "rtlsdr");
+    choice.remember();
+    startSurvey(source, choice.scan, c.sources[source]?.type === "rtlsdr");
   };
   // Once the sweep is over (and again when the system announces its control channels): who holds them.
   const swept = sv.stage === "monitoring" || sv.stage === "done";
@@ -770,21 +771,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
         )}
         <div className="ob-more">
           <h3 className="ob-more-title">Bands</h3>
-          <div className="ob-chips">
-            {s.surveyBands.map((b) => (
-              <button
-                key={b.id}
-                className={`ob-chip${picked.includes(b.id) ? " on" : ""}`}
-                aria-pressed={picked.includes(b.id)}
-                onClick={() => setBands(picked.includes(b.id) ? picked.filter((x) => x !== b.id) : [...picked, b.id])}
-              >
-                {b.label}
-                <span className="ob-chip-sub">
-                  {(b.loHz / 1e6).toFixed(0)}–{(b.hiHz / 1e6).toFixed(0)} MHz
-                </span>
-              </button>
-            ))}
-          </div>
+          <ScanPicker known={s.surveyBands} choice={choice} look="guide" />
         </div>
         <div className="ob-more">
           <h3 className="ob-more-title">Name what it finds (optional)</h3>
@@ -803,7 +790,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
         </div>
         {unsupported && <div className="ob-note bad">This radio needs the desktop app to scan.</div>}
         <div className="ob-center-actions">
-          <button className="ob-btn primary big" disabled={!s.connected || holdsRadios(s.phase) || unsupported || !picked.length || !s.surveyBands.length} onClick={scan}>
+          <button className="ob-btn primary big" disabled={!s.connected || holdsRadios(s.phase) || unsupported || !choice.ready || !s.surveyBands.length} onClick={scan}>
             Start scan
           </button>
           <button className="ob-link" onClick={() => setManual(true)}>
@@ -819,13 +806,12 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
   const controls = sv.candidates.filter(isControl);
   // Trunked DMR and NXDN sites: added as they are (nothing to listen for).
   const dmr = sv.candidates.filter((x) => x.kind === "dmrControl" || x.kind === "nxdnControl");
-  const bandLabel = (id: string) => s.surveyBands.find((b) => b.id === id)?.label ?? id;
 
   if (sv.stage === "scanning") {
     const p = sv.progress;
     return (
       <section className="ob-step">
-        <Head art={<ArtScan />} title="Scanning…" lead={p ? bandLabel(p.band) : "Getting the radio ready"} />
+        <Head art={<ArtScan />} title="Scanning…" lead={p ? scanRangeLabel(p.band, s.surveyBands) : "Getting the radio ready"} />
         {p && (
           <div className="ob-meter">
             <progress value={p.hop - 1} max={p.hops} />

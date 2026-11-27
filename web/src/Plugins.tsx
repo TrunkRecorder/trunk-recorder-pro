@@ -56,6 +56,7 @@ import { applies, fillTemplate, followRenames, mentions, refOptions, shownOnly, 
 import { signalChoices, signalRef } from "./Signals.tsx";
 import type { Config, System, InstallProgress, PluginContribution, PluginInfo, PluginListing, PluginManifest, PluginSchema, PluginValues, PluginsList, SignalDef } from "./protocol.ts";
 import { Author, InstallStage, newer, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
+import { confirmed } from "./asking.ts";
 
 /** "apiKey" → "Api key": a label for a field the plugin didn't title. */
 function spell(key: string): string {
@@ -1399,11 +1400,9 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
         <button
           className="btn ghost small danger"
           disabled={!!install}
-          onClick={() => {
-            const what = p.custom
-              ? `Uninstall ${m?.name ?? p.id} and delete its settings? Your file ${p.path} stays.`
-              : `Uninstall ${m?.name ?? p.id} and delete its settings?`;
-            if (confirm(what)) removePlugin(p.id);
+          onClick={async () => {
+            const question = p.custom ? `Your file ${p.path} stays.` : undefined;
+            if (await confirmed({ title: `Uninstall ${m?.name ?? p.id} and delete its settings?`, question, action: "Uninstall" })) removePlugin(p.id);
           }}
         >
           Uninstall

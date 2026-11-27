@@ -32,10 +32,10 @@ function surveyed(): ToRecorder[] {
     { type: "config", config: defaultConfig(), version: 1 },
     { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [{ id: "800", label: "800 MHz", loHz: 851e6, hiHz: 869e6, defaultOn: true }], capabilities: [] },
     {
-      type: "survey", stage: "done", source: 0, bands: ["800"], message: "", error: null, progress: null, monitor: null, suggest: null,
+      type: "survey", stage: "done", source: 0, message: "", error: null, progress: null, monitor: null, suggest: null,
       candidates: [
-        { freqHz: 857_987_000, correctedHz: 857_987_500, band: "800", snrDb: 25, widthHz: 12_500, kind: "control", frames: 10, good: 10, bad: 0, modulation: "", identity: { nac: 0x443 } },
-        { freqHz: 858_100_000, correctedHz: null, band: "800", snrDb: 7, widthHz: 30_000, kind: "other", frames: 0, good: 0, bad: 0, modulation: "", identity: {} },
+        { freqHz: 857_987_000, correctedHz: 857_987_500, band: { id: "800", loHz: 851e6, hiHz: 869e6 }, snrDb: 25, widthHz: 12_500, kind: "control", frames: 10, good: 10, bad: 0, modulation: "", identity: { nac: 0x443 } },
+        { freqHz: 858_100_000, correctedHz: null, band: { id: "800", loHz: 851e6, hiHz: 869e6 }, snrDb: 7, widthHz: 30_000, kind: "other", frames: 0, good: 0, bad: 0, modulation: "", identity: {} },
       ],
     },
   ];

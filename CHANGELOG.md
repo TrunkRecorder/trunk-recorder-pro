@@ -9,12 +9,19 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Conventional and Radios tabs: a chevron, **Expand all** / **Collapse all**, open only when there's
   one. The folded head keeps the **On/Off** switch and the plugin's state, and says **not applied**
   when it has changes waiting.
-- **Plugin changes waiting for Apply can't be missed.** While recording, a change that would
-  restart a plugin is held behind an **Apply** bar at the end of its form, easy to scroll past on a
-  long card (the field shows the new value, nothing is saved, and Stop/Start doesn't apply it). A
-  pill now floats at the bottom of every page while any are held: *2 plugin changes not applied*,
-  **Show** (each in turn: its tab, its card or site section opened) and **Apply all**, which saves
-  them in one config save, so the plugins restart once rather than once per Apply.
+- **Find my system scans ranges of your own** (#258, thanks @drfruct). Under the bands, **Other ranges, MHz** takes
+  ranges such as `420-450, 433.05-434.79`, scanned beside the bands ticked; each end is read as every frequency field
+  reads one (MHz under 10 000, else Hz). Setup and the setup guide share the one picker, and remember the bands and
+  ranges a scan last started with. On the command line: `--ranges 420-450,433.05-434.79`; to the recorder,
+  `surveyStart`'s `ranges` (`[{ loHz, hiHz }]`). Each band reported (`progress.band`, a candidate's `band`, and so
+  `band` in `trunk-pro survey`'s `found` lines) is now `{ id, loHz, hiHz }` rather than the band's id, `id` null for a
+  range of one's own, and the `survey` message no longer repeats the `bands` it was asked for.
+
+- **Removing asks first, and Cancel is the default** (#266, thanks @gofaster). Remove on a radio in Setup → Radios
+  deleted it at once; it now asks. Every question before something is done (removing a radio, site, system, user,
+  token, passkey or the proxy, uninstalling a plugin or interface, deleting data or an IQ capture, joining systems,
+  quitting while recording) is now the app's own dialog with **Cancel** focused, so Enter, Escape or a click outside
+  does nothing. The browser's own box, which these used before, defaulted to OK.
 
 ## [0.5.2] — 2026-11-26
 

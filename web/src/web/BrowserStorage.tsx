@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { holdsRadios, forgetHistory, setNotice, useApp } from "../controller.ts";
 import { clearCalls, exportCalls, storageEstimate, zipCalls } from "./opfs.ts";
+import { confirmed } from "../asking.ts";
 
 const mb = (b: number) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e7 ? `${(b / 1e6).toFixed(0)} MB` : `${(b / 1e6).toFixed(1)} MB`);
 
@@ -56,7 +57,7 @@ export function BrowserStorage() {
   }
 
   async function clearAll() {
-    if (!confirm("Delete every recorded call stored in this browser?")) return;
+    if (!(await confirmed({ title: "Delete every recorded call stored in this browser?", action: "Delete" }))) return;
     await clearCalls();
     forgetHistory();
     setEst(await storageEstimate());

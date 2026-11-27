@@ -8,6 +8,7 @@ import { iqCaptureCancel, iqCaptureDelete, iqCaptureReview, iqCaptures, iqCaptur
 import { Card, Choice, Figs, Hint, Info } from "../charts.tsx";
 import { bytes } from "../fmt.ts";
 import type { CaptureRule, CaptureWhat, IqCapture, IqWaterfall, SystemStatus } from "../protocol.ts";
+import { confirmed } from "../asking.ts";
 
 type What = CaptureWhat["kind"];
 const WHATS: { v: What; label: string }[] = [
@@ -110,8 +111,8 @@ export function IqCaptureCard({ initial, systems: given }: { initial?: IqCapture
       shown(m);
     });
   };
-  const remove = (c: IqCapture) => {
-    if (!confirm(`Delete the capture from ${c.name} (${bytes(c.bytes)})? This can't be undone.`)) return;
+  const remove = async (c: IqCapture) => {
+    if (!(await confirmed({ title: `Delete the capture from ${c.name} (${bytes(c.bytes)})?`, question: "This can't be undone.", action: "Delete" }))) return;
     void iqCaptureDelete(c.name).then(shown);
   };
   const recording = list?.recording ?? false;
@@ -206,7 +207,7 @@ export function IqCaptureCard({ initial, systems: given }: { initial?: IqCapture
                   </button>
                 )}
                 {c.send?.state === "sent" && (
-                  <button className="btn ghost small" onClick={() => confirm("Withdraw this capture from the public corpus? Copies others made can't be recalled.") && void iqCaptureWithdraw(c.name).then(shown)}>
+                  <button className="btn ghost small" onClick={async () => (await confirmed({ title: "Withdraw this capture from the public corpus?", question: "Copies others made can't be recalled.", action: "Withdraw" })) && void iqCaptureWithdraw(c.name).then(shown)}>
                     Withdraw…
                   </button>
                 )}

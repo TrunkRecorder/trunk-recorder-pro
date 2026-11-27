@@ -5,7 +5,8 @@
 import { useEffect, useState } from "react";
 import { compactData, DATA_KINDS, dataSummary, deleteData, exportUrl, setNotice, web } from "./controller.ts";
 import { bytes } from "./fmt.ts";
-import { Modal } from "./Identify.tsx";
+import { confirmed } from "./asking.ts";
+import { Confirm } from "./Confirm.tsx";
 import { Group } from "./SetupLayout.tsx";
 import { Fig, Info } from "./charts.tsx";
 import { Field, Toggle } from "./inputs.tsx";
@@ -105,8 +106,9 @@ export function ManageData() {
   const [said, setSaid] = useState<string | null>(null);
   const [compacting, setCompacting] = useState(false);
   const [compacted, setCompacted] = useState<string | null>(null);
-  const compact = () => {
-    if (!confirm("Compact the store? It's rewritten without the space deleted data left, which takes a while on a big one (minutes on a Pi). Calls are saved as ever; the store catches up once it's done.")) return;
+  const compact = async () => {
+    const question = "It's rewritten without the space deleted data left, which takes a while on a big one (minutes on a Pi). Calls are saved as ever; the store catches up once it's done.";
+    if (!(await confirmed({ title: "Compact the store?", question, action: "Compact", safe: true }))) return;
     setCompacting(true);
     setCompacted(null);
     void compactData().then((m) => {
@@ -129,10 +131,11 @@ export function ManageData() {
   }, [systems, scope, one]);
   const counts = one ?? total(systems ?? []);
   const what = one ? one.shortName : "every system";
-  const remove = () => {
+  const remove = async () => {
     const kinds = DATA_KINDS.filter((k) => marked.includes(k));
     const names = KINDS.filter((k) => kinds.includes(k.kind)).map((k) => k.label.toLowerCase());
-    if (!kinds.length || !confirm(`Delete the ${names.join(", ")} of ${what}? This can't be undone (export them first to keep a copy). Recordings stay on disk.`)) return;
+    const question = "This can't be undone (export them first to keep a copy). Recordings stay on disk.";
+    if (!kinds.length || !(await confirmed({ title: `Delete the ${names.join(", ")} of ${what}?`, question, action: "Delete" }))) return;
     setBusy(true);
     setSaid(null);
     void deleteData(kinds, one?.id).then((m) => {
@@ -232,8 +235,7 @@ export function RemoveSystem(props: { name: string; question: string; id: number
     );
   };
   return (
-    <Modal title={`Remove ${props.name}?`} onClose={props.onClose}>
-      <p>{props.question}</p>
+    <Confirm title={`Remove ${props.name}?`} question={props.question} action="Remove" onYes={go} onClose={props.onClose}>
       {stored && (
         <Toggle
           label="Also delete its data"
@@ -243,15 +245,6 @@ export function RemoveSystem(props: { name: string; question: string; id: number
           onChange={setWithData}
         />
       )}
-      <div className="row">
-        <span className="spacer" />
-        <button className="btn ghost" onClick={props.onClose}>
-          Cancel
-        </button>
-        <button className="btn danger" onClick={go} autoFocus>
-          Remove
-        </button>
-      </div>
-    </Modal>
+    </Confirm>
   );
 }

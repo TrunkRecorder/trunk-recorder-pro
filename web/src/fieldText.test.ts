@@ -1,7 +1,7 @@
 // What the setup's inputs show and read back (fieldText.ts). `npm test`.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { asTyped, cleanShortName, decimal, finishDraft, verbatim, gain, hex, lcnTable, mhz, mhzList, minutes, msps, numberList, talkgroupList, talkgroupProblem, textList, type TextCodec } from "./fieldText.ts";
+import { asTyped, cleanShortName, decimal, finishDraft, verbatim, gain, hex, lcnTable, mhz, mhzList, minutes, msps, numberList, rangeList, rangeListProblem, talkgroupList, talkgroupProblem, textList, type TextCodec } from "./fieldText.ts";
 
 /** Each value shown reads back as itself. */
 function roundTrips<T>(codec: TextCodec<T>, values: T[]) {
@@ -94,4 +94,15 @@ test("frequencies as typed: MHz under 10 000, else Hz, in every field (the recor
   assert.deepEqual(mhzList.parse("147, 452.275 154430000"), [147_000_000, 452_275_000, 154_430_000]);
   assert.equal(mhz.parse("147"), 147_000_000, "Excel's 147.000");
   assert.deepEqual(lcnTable.parse("101=452.275, 102=452300000, 103=0"), { "101": 452_275_000, "102": 452_300_000 });
+});
+
+test("ranges of frequencies, read as frequencies are", () => {
+  assert.deepEqual(rangeList.parse("420-450, 433.05 - 434.79"), { ranges: [{ loHz: 420e6, hiHz: 450e6 }, { loHz: 433_050_000, hiHz: 434_790_000 }], bad: [] });
+  // Hz is Hz, as in every other frequency field (not 851 THz).
+  assert.deepEqual(rangeList.parse("851000000-852000000").ranges, [{ loHz: 851e6, hiHz: 852e6 }]);
+  const v = rangeList.parse("450-420, abc, 420-450, 420-450");
+  assert.deepEqual(v, { ranges: [{ loHz: 420e6, hiHz: 450e6 }], bad: ["450-420", "abc"] });
+  assert.match(rangeListProblem(v) ?? "", /Not a range: 450-420, abc/);
+  assert.equal(rangeListProblem(rangeList.parse(" ")), null);
+  roundTrips(rangeList, [{ ranges: [], bad: [] }, { ranges: [{ loHz: 433_050_000, hiHz: 434_790_000 }, { loHz: 851e6, hiHz: 852e6 }], bad: [] }]);
 });

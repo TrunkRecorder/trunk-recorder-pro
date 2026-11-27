@@ -1329,11 +1329,28 @@ export interface SurveyBand {
   defaultOn: boolean;
 }
 
-/** A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known. */
+/** A range of frequencies, Hz. */
+export interface HzRange {
+  loHz: number;
+  hiHz: number;
+}
+
+/** A band scanned (`id` one of the SurveyBand ids), or a range of one's own (`id` null). */
+export interface ScanRange extends HzRange {
+  id: string | null;
+}
+
+/** What a scan covers: bands by id (SurveyBand), and ranges of one's own. Neither: the bands on by default. */
+export interface SurveyScan {
+  bands: string[];
+  ranges?: HzRange[];
+}
+
+/** A signal the scan found. `freqHz` as heard (uncorrected); `correctedHz` once the ppm is known. `band`: the hop's band or range; null: a frequency looked for outside every band. */
 export interface SurveyCandidate {
   freqHz: number;
   correctedHz: number | null;
-  band: string;
+  band: ScanRange | null;
   snrDb: number;
   widthHz: number;
   kind: "control" | "smartnet" | "edacs" | "p25" | "dmrControl" | "dmr" | "nxdnControl" | "nxdn" | "other";
@@ -1471,14 +1488,13 @@ export type SurveyState =
       /** The source it scans with; null: a spare radio (`radio` names it), beside the recording. */
       source: number | null;
       radio?: string | null;
-      bands: string[];
       /** Looking for a system: how many of its frequencies, how many listened to so far, for how long each. */
       lookFor?: { freqs: number; probed: number; listenS: number; type: System["type"] | null } | null;
       /** Its sites, judged so far. */
       sites?: SurveySite[];
       message: string;
       error: string | null;
-      progress: { hop: number; hops: number; band: string; centerHz: number } | null;
+      progress: { hop: number; hops: number; band: ScanRange | null; centerHz: number } | null;
       candidates: SurveyCandidate[];
       monitor: SurveyMonitor | null;
       suggest: SurveySuggestion | null;
@@ -2627,8 +2643,8 @@ export type ToRecorder =
   | { type: "lockKeys"; source: string }
   /** Link the conventional channels to a CSV (created from the list if new), reload it (same path), or unlink (""). */
   | { type: "channelFile"; index: number; path: string }
-  /** Find a system: scan `bands` with source `source` (or `radio`, a spare no source uses, beside the recording), then monitor the best control channel. `lookFor`: just its frequencies, its sites judged. */
-  | { type: "surveyStart"; source: number; radio?: Source; bands: string[]; findGain: boolean; lookFor?: SurveyLookFor }
+  /** Find a system: scan what SurveyScan says with source `source` (or `radio`, a spare no source uses, beside the recording), then monitor the best control channel. `lookFor`: just its frequencies, its sites judged. */
+  | ({ type: "surveyStart"; source: number; radio?: Source; findGain: boolean; lookFor?: SurveyLookFor } & SurveyScan)
   /** Stop scanning and monitor this signal (as heard). */
   | { type: "surveyListen"; freqHz: number }
   | { type: "surveyRescan" }
