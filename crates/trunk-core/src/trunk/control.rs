@@ -405,8 +405,8 @@ impl ControlChannel for P25 {
         if let Some(m) = self.bank.detected() {
             return m;
         }
-        // Frames per receiver: the two CQPSK ones, then C4FM.
-        let (q, c) = self.bank.frames_per_rx().iter().enumerate().fold((0, 0), |(q, c), (i, &n)| if i < 2 { (q + n, c) } else { (q, c + n) });
+        // Frames by kind of receiver, not by place: a `fsk4` bank has only its C4FM receiver, a `qpsk` one only CQPSK.
+        let (q, c) = self.bank.frames_by_kind();
         if q + c < 8 {
             ""
         } else if q >= c {
@@ -871,6 +871,41 @@ mod tests {
         let total = reported.last().unwrap().1;
         assert!((4300..=5600).contains(&total), "a second of nothing is about 4800 symbols: {total}");
         assert!(reported.windows(2).all(|w| w[1].1 >= w[0].1), "only grows");
+    }
+
+    /// The modulation shown goes by the kind of receiver that found the frames, not by its
+    /// place in the bank: a `fsk4` site's one receiver is C4FM (it read "CQPSK", being first),
+    /// a `qpsk` site's are CQPSK, and `auto` counts as it did (the two CQPSK receivers, then C4FM).
+    #[test]
+    fn modulation_goes_by_the_kind_of_receiver() {
+        let rate = 37_500.0;
+        let frames: Vec<u8> = (0..40).flat_map(|_| tsdu(0x293)).collect(); // 3 s of C4FM
+        let mut iq = crate::p25::synth::modulate(&frames, rate, 0.0, 0.3, &mut 0.0);
+        crate::nxdn::synth::add_noise(&mut iq, 0.01, &mut 1);
+        let fsk4 = BankConfig { cqpsk: false, cqpsk_eq: false, ..Default::default() };
+        let qpsk = BankConfig { c4fm: false, ..Default::default() };
+        let auto = BankConfig { detect: false, ..Default::default() };
+        let shown = |bank: BankConfig| {
+            let mut cc = build(&SiteConfig { protocol: Protocol::P25, bank, ..Default::default() }, rate);
+            for c in iq.chunks(1875) {
+                cc.push(0, c, 0.0, rate, &mut Vec::new());
+            }
+            cc.modulation()
+        };
+        assert_eq!(shown(fsk4), "C4FM", "fixed fsk4: its only receiver is C4FM");
+        assert_eq!(shown(qpsk), "CQPSK", "fixed qpsk: its receivers are CQPSK");
+        let counted = |bank: BankConfig| {
+            let mut b = Bank::new(rate, bank);
+            for c in iq.chunks(1875) {
+                b.push(c, &mut Vec::new());
+            }
+            (b.frames_per_rx(), b.frames_by_kind())
+        };
+        let (per_rx, by_kind) = counted(fsk4);
+        assert!(per_rx.len() == 1 && per_rx[0] >= 8 && by_kind == (0, per_rx[0]), "{per_rx:?} {by_kind:?}");
+        let (per_rx, by_kind) = counted(auto);
+        assert_eq!(per_rx.len(), 3);
+        assert_eq!(by_kind, (per_rx[0] + per_rx[1], per_rx[2]), "auto: as before, CQPSK and CQPSK + EQ, then C4FM");
     }
 
     /// A voice channel naming another talkgroup ends a call only where grants

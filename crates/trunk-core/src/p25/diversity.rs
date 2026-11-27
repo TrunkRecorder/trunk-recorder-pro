@@ -376,6 +376,12 @@ impl<F: Framing> Bank<F> {
     pub fn frames_per_rx(&self) -> Vec<u64> {
         self.rx.iter().map(|r| r.frames).collect()
     }
+
+    /// Frames found by its CQPSK receivers and by its C4FM one, by kind: which are configured
+    /// decides where each sits in [`Bank::frames_per_rx`] (a `fsk4` bank's C4FM receiver is its first).
+    pub fn frames_by_kind(&self) -> (u64, u64) {
+        self.rx.iter().fold((0, 0), |(q, c), r| if Self::kind(r) == CQPSK_KIND { (q + r.frames, c) } else { (q, c + r.frames) })
+    }
 }
 
 /// Phase 1: frames.

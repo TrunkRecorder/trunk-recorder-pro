@@ -5,6 +5,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A P25 site set to `fsk4` reads "C4FM".** The modulation shown on the Overview and Decode pages counted frames
+  by each receiver's place in the bank, the first two as CQPSK, so a `fsk4` site, whose only receiver is C4FM, read
+  "CQPSK" (and the Decode page went to show a CQPSK phase error rather than its eye opening). Frames are now counted by the
+  kind of receiver that found them; `qpsk` and `auto` sites read as before.
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the
