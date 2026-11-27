@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Every lost call says why.** A call recorded and then not kept, or followed and never recorded for want of a radio,
+  now comes to interfaces as a `callDropped` message, once, as the recorder decides: its talkgroup, frequency, times,
+  `stage` (`notSaved` or `notRecorded`) and `why` (`silent`, `short`, `encrypted`, `writeFailed`; `noSource`,
+  `noRecorder`), with the signal, noise and voice frames it had, and a failed write's error. A connection's greeting
+  brings the last 30 minutes of them (`history.dropped`). `notSaved` now has a series per reason beside it
+  (`sys/<short>/notSaved/why/<why>`, and per site and channel), and a call whose files couldn't be written now counts
+  as not saved (it was counted as saved). A recorded call whose voice turned out encrypted is now `encrypted` rather
+  than `silent`, in capture rules' `call.not_saved` too.
+
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the

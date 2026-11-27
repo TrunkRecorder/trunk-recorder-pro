@@ -513,7 +513,7 @@ onmessage = async (ev: MessageEvent<ToWorker>) => {
       for (const [system, rows] of Object.entries(m.names.unitNames)) post({ type: "unitNames", system, unitNames: rows });
       for (const [system, csv] of Object.entries(await savedUnits(m.config))) post({ type: "units", system, csv });
       post({ type: "heard", heard: await savedHeard(m.config) });
-      post({ type: "history", ...callsPage(await listCalls(Number.MAX_SAFE_INTEGER), { limit: 300 }) });
+      post({ type: "history", ...callsPage(await listCalls(Number.MAX_SAFE_INTEGER), { limit: 300 }), dropped: [] });
       post({ type: "survey", stage: "idle" });
       post({ type: "devices", devices: await devices() });
       post({

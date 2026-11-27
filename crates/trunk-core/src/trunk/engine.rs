@@ -2267,7 +2267,9 @@ impl Core {
                         if tune_ref {
                             self.radio.score_call(on.source, &call, rec.freq_error_hz());
                         }
-                        self.write_call(Held::new(call.clone(), rec, on), None, None, None, &[]);
+                        if let Err(u) = self.write_call(Held::new(call.clone(), rec, on), None, None, None, &[]) {
+                            self.not_saved(*u);
+                        }
                     }
                     let (_, told) = self.multisite.conclude(&call, None, |_| false);
                     self.events.push(Event::CopyEnd(call));
@@ -2606,17 +2608,28 @@ impl Core {
         // The sites it was recorded on: each saved call of it says them all.
         let sites: Vec<u16> = copies.iter().filter_map(|h| h.call.site).collect();
         let mut kept: Vec<Kept> = Vec::new();
+        // Lost only when no copy was kept or held by another call: then once, as its best copy was.
+        let (mut unsaved, mut held_elsewhere) = (None, false);
         for h in copies {
             let dup = kept.iter().find(|k| k.holds(&h)).or_else(|| self.recent.holding(&h)).map(|k| k.call.clone());
             match dup {
-                Some(kept) => self.events.push(Event::Duplicate { call: h.call, kept }),
+                Some(kept) => {
+                    held_elsewhere = true;
+                    self.events.push(Event::Duplicate { call: h.call, kept })
+                }
                 None => {
                     let k = Kept::of(&h);
-                    if self.write_call(h, Some(first_s), Some(call_num), first_talker, &sites) {
-                        kept.push(k);
+                    match self.write_call(h, Some(first_s), Some(call_num), first_talker, &sites) {
+                        Ok(()) => kept.push(k),
+                        Err(u) => {
+                            unsaved.get_or_insert(u);
+                        }
                     }
                 }
             }
+        }
+        if let Some(u) = unsaved.filter(|_| kept.is_empty() && !held_elsewhere) {
+            self.not_saved(*u);
         }
         for k in kept {
             self.recent.push(k);
@@ -2624,14 +2637,16 @@ impl Core {
         told
     }
 
-    /// A finished call's record and audio, as [`Event::Concluded`]; false
-    /// when not kept (silent, or shorter than its system's minimum).
+    /// A finished call's record and audio, as [`Event::Concluded`]; `Err`
+    /// when not kept (silent, encrypted, or shorter than its system's minimum),
+    /// for the caller to report ([`Core::not_saved`]) if the call is lost.
     /// `first_s`: when the first of its copies began, `call_num`: its call's id, `first_talker`: the one its
     /// transmission_id names (multi-site);
     /// `sites`: the sites its copies were recorded on (its own among them).
-    fn write_call(&mut self, h: Held, first_s: Option<f64>, call_num: Option<CallId>, first_talker: Option<u32>, sites: &[u16]) -> bool {
+    fn write_call(&mut self, h: Held, first_s: Option<f64>, call_num: Option<CallId>, first_talker: Option<u32>, sites: &[u16]) -> Result<(), Box<super::record::Unsaved>> {
         let (site, system) = (h.call.site, h.call.system);
-        let Some(sys) = self.systems.get(system as usize) else { return false };
+        // (No such system: nothing to say of it.)
+        let Some(sys) = self.systems.get(system as usize) else { return Ok(()) };
         let trunk = site.and_then(|s| self.trunks.get(s as usize));
         // Its own first, then the others, each once.
         let mut order: Vec<u16> = site.into_iter().collect();
@@ -2671,13 +2686,20 @@ impl Core {
                     t.concluded += 1;
                 }
                 self.events.push(Event::Concluded(k));
-                true
+                Ok(())
             }
-            Err(u) => {
-                self.events.push(Event::NotSaved(u));
-                false
-            }
+            Err(u) => Err(Box::new(u)),
         }
+    }
+
+    /// Call `u` was lost: recorded and not kept. Counted where it was heard (its
+    /// site, or its conventional channel), and told ([`Event::NotSaved`]).
+    fn not_saved(&mut self, u: super::record::Unsaved) {
+        match u.call.site.and_then(|s| self.trunks.get_mut(s as usize)) {
+            Some(t) => t.calls.tally.not_saved(u.why),
+            None => self.conv.not_saved(&u.call, u.why),
+        }
+        self.events.push(Event::NotSaved(u));
     }
 }
 
@@ -4207,8 +4229,35 @@ mod tests {
         // East decodes best, but kept too little audio to be saved: west's copy is.
         let (ev, [east, west, far]) = two_sites_with(100, "", true, 10, 1.0, "");
         assert_eq!(saved(&ev), [far, west]);
-        assert!(ev.iter().any(|x| matches!(x, Event::NotSaved(u) if u.call.id == east && u.why == "short" && u.audio_s > 0.0 && u.audio_s < 1.0)));
+        assert!(!ev.iter().any(|x| matches!(x, Event::NotSaved(_))), "east's copy wasn't kept, but the call was: not lost");
         assert!(!ev.iter().any(|x| matches!(x, Event::Duplicate { .. })));
+        let _ = east;
+    }
+
+    /// A call heard on two sites, every copy too short to keep: lost once, as its best copy was, and
+    /// counted at that site (with duplicates kept, each copy is a call of its own: each is lost).
+    #[test]
+    fn a_call_lost_on_two_sites_is_lost_once() {
+        for dedupe in [true, false] {
+            let (mut e, [east, west, far]) = two_sites_core(80, "", dedupe, 100, 100.0, "");
+            let ev = e.drain_events();
+            let lost: Vec<CallId> = ev.iter().filter_map(|x| if let Event::NotSaved(u) = x { Some(u.call.id) } else { None }).collect();
+            let (want, at_east) = if dedupe { (vec![far, west], None) } else { (vec![east, far, west], Some(1)) };
+            assert_eq!(lost, want, "dedupe {dedupe}: west decoded more; far is another system's call");
+            let unsaved = |site: usize| {
+                let mut c = std::collections::BTreeMap::new();
+                struct Counters<'a>(&'a mut std::collections::BTreeMap<String, u64>);
+                impl Sink for Counters<'_> {
+                    fn counter(&mut self, name: &str, total: u64) {
+                        self.0.insert(name.to_string(), total);
+                    }
+                    fn gauge(&mut self, _: &str, _: f64) {}
+                }
+                e.trunks[site].calls.tally.report(&mut Counters(&mut c));
+                c.get("notSaved/why/short").copied()
+            };
+            assert_eq!((unsaved(0), unsaved(1), unsaved(2)), (at_east, Some(1), Some(1)), "dedupe {dedupe}");
+        }
     }
 
 }
