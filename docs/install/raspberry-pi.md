@@ -132,7 +132,17 @@ sudo loginctl enable-linger "$USER"
 ```
 
 The last line ("lingering") is what lets it run at boot and after you log out. Check on it with
-`systemctl --user status trunk-pro` and follow the log with `journalctl --user -u trunk-pro -f`.
+`systemctl --user status trunk-pro` and follow the log with:
+
+```bash
+journalctl --user-unit trunk-pro -f
+```
+
+Raspberry Pi OS keeps the journal in RAM only (`Storage=volatile`, to spare the card), and then
+there's no journal of your own, so `journalctl --user -u trunk-pro` says "No journal files were
+found." `--user-unit` reads your service's lines from the system journal instead. If it shows
+nothing, put `sudo` in front, or add yourself to the `adm` group. For the log in colour, see
+[Where is the log?](../troubleshooting.md#where-is-the-log).
 
 From now on, use the SSH tunnel whenever you want the interface:
 `ssh -L 8080:localhost:8080 you@recorder.local`, then `http://localhost:8080`. To reach it

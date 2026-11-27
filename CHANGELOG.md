@@ -19,6 +19,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   quitting while recording) is now the app's own dialog with **Cancel** focused, so Enter, Escape or a click outside
   does nothing. The browser's own box, which these used before, defaulted to OK.
 
+- **Docs: the log on Raspberry Pi OS** (#256, thanks @jjc-wx). Its journal is in RAM only, so `journalctl --user -u
+  trunk-pro` finds nothing; the Pi guide and Troubleshooting now give `journalctl --user-unit trunk-pro -f`, and how to
+  see the log in colour.
+
 ## [0.5.2] — 2026-11-26
 
 - **Reset counts** (#262). The totals since Start (a radio's dropped samples and errors, calls, a plugin's sent, skipped,
