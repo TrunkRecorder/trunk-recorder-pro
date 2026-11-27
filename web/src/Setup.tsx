@@ -64,6 +64,10 @@ import {
   cardKey,
   currentView,
   dismissTodo,
+  applyHeld,
+  dropHeld,
+  mayEdit,
+  start,
   downloadText,
   findRadios,
   forgetNames,
@@ -107,7 +111,7 @@ import { AccessSection } from "./Access.tsx";
 import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
 import { asTyped, cleanShortName, lcnTable, mhz, mhzList, msps } from "./fieldText.ts";
 import { SourceSuggestion, SourcesAdvice, useSourceAdvice } from "./sourceAdvice.tsx";
-import { openTodos } from "./todo.ts";
+import { openTodos, waiting, type Waiting } from "./todo.ts";
 import { allModes, modeInfo } from "./modes.ts";
 import { folderProblem, parseAccess, sameAccess, sameChannel, toneLabel, type AccessParts, type ToneLabel } from "./rules.ts";
 import { PrivacyCode, ToneName } from "./ToneName.tsx";
@@ -157,42 +161,110 @@ export function showTodo(target: string, tries = 0): void {
     return void setTimeout(() => showTodo(target, tries), 60);
   }
   if (el instanceof HTMLDetailsElement) el.open = true;
+  // (Or in a folded section of one: a site's plugin settings, say.)
+  for (let d = el?.parentElement?.closest("details"); d; d = d.parentElement?.closest("details")) d.open = true;
   el?.scrollIntoView({ behavior: "smooth", block: "center" });
   el?.classList.remove("flash");
   void el?.offsetWidth;
   el?.classList.add("flash");
 }
 
-/** What a Trunk Recorder import left to finish; each closes once its field is filled in. */
-function TodoPanel() {
-  const todos = openTodos(useApp());
-  if (!todos.length) return null;
+/** Go to where `w` is: its setup field, its plugin's page, or (nowhere of its own) the list. */
+export function showWaiting(w: Waiting): void {
+  if (w.page) return setView("plugin", w.page);
+  if (w.target) return showTodo(w.target);
+  if (currentView() !== "setup") {
+    setView("setup");
+    return void setTimeout(() => showWaiting(w), 60);
+  }
+  document.getElementById("waiting")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/** What's waiting on you (todo.ts `waiting`): each with where it is, and what to do about it here. */
+function WaitingPanel() {
+  const all = waiting(useApp());
+  if (!all.length) return null;
+  const held = all.filter((w) => w.held);
   return (
-    <section className="panel todo-panel">
+    <section className="panel todo-panel" id="waiting">
       <header className="panel-head">
-        <h2>Finish the import</h2>
-        <Fig v={todos.length} u="left" level="warn" />
+        <h2>To do</h2>
+        <Fig v={all.length} u="left" level="warn" />
+        {held.length > 1 && (
+          <button className="btn primary small" onClick={() => applyHeld()} title="One save: each plugin restarts once">
+            Apply all
+          </button>
+        )}
       </header>
       <ul className="todo-list">
-        {todos.map((t, k) => (
+        {all.map((w, k) => (
           <li key={k}>
             <span className="todo-mark" aria-hidden="true" />
             <div className="todo-text">
-              <b>{t.title}</b>
-              <span className="muted small">{t.text}</span>
+              <b>{w.title}</b>
+              <span className="muted small">{w.text}</span>
             </div>
             <div className="row">
-              <button className="btn small" onClick={() => showTodo(t.target)}>
-                {t.target.startsWith("plugin") ? "Open Plugins" : "Show"}
-              </button>
-              <button className="btn ghost small" onClick={() => dismissTodo(t.item)}>
-                Dismiss
-              </button>
+              {(w.target || w.page) && (
+                <button className="btn small" onClick={() => showWaiting(w)}>
+                  {w.page ? "Open page" : w.target!.startsWith("plugin") ? "Open Plugins" : "Show"}
+                </button>
+              )}
+              {w.held && (
+                <>
+                  <button className="btn primary small" onClick={() => applyHeld([w.held!])}>
+                    Apply
+                  </button>
+                  <button className="btn ghost small" onClick={() => dropHeld(w.held!)}>
+                    Discard
+                  </button>
+                </>
+              )}
+              {w.restart && (
+                <button className="btn primary small" onClick={start} title="Stop and start again, with the settings as they are now">
+                  Restart
+                </button>
+              )}
+              {w.todo && (
+                <button className="btn ghost small" onClick={() => dismissTodo(w.todo!)}>
+                  Dismiss
+                </button>
+              )}
             </div>
           </li>
         ))}
       </ul>
     </section>
+  );
+}
+
+/**
+ * Floating over every page while anything is waiting (`waiting`): how many, Show (each in
+ * turn: its tab, its card opened, scrolled to), and Apply all for held plugin changes.
+ */
+export function WaitingPill() {
+  const all = waiting(useApp());
+  const next = useRef(0);
+  if (!all.length || !mayEdit()) return null;
+  const held = all.filter((w) => w.held).length;
+  const show = () => {
+    showWaiting(all[next.current % all.length]);
+    next.current++;
+  };
+  return (
+    <div className="waiting-pill" role="status" aria-live="polite">
+      <span>
+        <b>{all.length}</b> to do
+      </span>
+      <button type="button" className="btn ghost small" onClick={show} title={all.length > 1 ? "Each in turn" : undefined}>
+        Show
+      </button>
+      {held > 0 && (
+        <button type="button" className="btn primary small" onClick={() => applyHeld()} title="One save: each plugin restarts once">
+          {held === 1 ? "Apply" : "Apply all"}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -3533,7 +3605,7 @@ const TABS: { id: SetupTab; label: string; icon: () => React.ReactNode }[] = [
 /** The setup page's tabs: how many of each, and what an import left to do there. */
 function SetupTabs(props: { c: Config; tab: SetupTab }) {
   const s = useApp();
-  const todos = openTodos(s);
+  const todos = waiting(s);
   const count: Record<SetupTab, number | null> = {
     systems: props.c.systems.length,
     conventional: props.c.conventional.reduce((n, v) => n + v.channels.length, 0),
@@ -3546,14 +3618,14 @@ function SetupTabs(props: { c: Config; tab: SetupTab }) {
   return (
     <nav className="setup-tabs" role="tablist" aria-label="Setup">
       {TABS.filter((t) => (t.id !== "plugins" || can("plugins")) && (t.id !== "access" || can("service")) && (t.id !== "data" || !web)).map((t) => {
-        const todo = todos.filter((x) => tabOf(x.target) === t.id).length;
+        const todo = todos.filter((x) => x.target && tabOf(x.target) === t.id).length;
         return (
           <button key={t.id} role="tab" aria-selected={props.tab === t.id} className={props.tab === t.id ? "on" : ""} onClick={() => setSetupTab(t.id)}>
             <t.icon />
             <span>{t.label}</span>
             {count[t.id] !== null && <span className="tab-count">{count[t.id]}</span>}
             {todo > 0 && (
-              <span className="tab-todo" title={`${todo} to finish here`}>
+              <span className="tab-todo" title={`${todo} to do here`}>
                 {todo}
               </span>
             )}
@@ -3593,7 +3665,7 @@ export function Setup() {
 
   return (
     <div className="setup">
-      <TodoPanel />
+      <WaitingPanel />
       <SetupTabs c={c} tab={tab} />
       {tab === "systems" && (
         <>

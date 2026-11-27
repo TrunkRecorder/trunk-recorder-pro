@@ -421,6 +421,13 @@ the journal:
 journalctl --user -u trunk-pro -f
 ```
 
+On Raspberry Pi OS, whose journal is in RAM only, that says "No journal files were found": use
+`journalctl --user-unit trunk-pro -f` instead (with `sudo` if it shows nothing).
+
+The journal isn't a terminal, so the log has no colour there. For colour, set **Colour** to
+**Console**, and follow it with `journalctl --user-unit trunk-pro -f -o cat -a`: `-o cat` drops
+the journal's own timestamps (each line has one already), `-a` passes the colour through.
+
 The **Control channel log** at the bottom of a system's Radio system page is a live view of control messages, not this log.
 
 ## Making a capture

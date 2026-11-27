@@ -437,14 +437,24 @@ impl Plugins {
         self.publish_all_runtime();
     }
 
-    /// The config went from `old` to `new`: plugins that take new settings
-    /// as they run are sent theirs ([`PluginHost::settle`]); anything more
-    /// changed, and they restart with it ([`Plugins::reload`]).
+    /// The config went from `old` to `new`: a plugin whose settings changed takes them as it runs
+    /// if it can ([`PluginHost::settle`]), else restarts alone with them ([`PluginHost::renew`]);
+    /// the others carry on. A change to which plugins run, or to what they all run with, restarts
+    /// them all ([`Plugins::reload`]).
     pub fn apply(&self, old: &Config, new: &Config) {
         match super::change(old, new) {
             super::Change::None => {}
-            super::Change::Settings(all) if self.host().is_some_and(|h| all.iter().all(|(id, v)| h.settle(id, v))) => {}
-            _ => self.reload(new),
+            super::Change::Plugins(changed) => {
+                // (Not recording, or none running: they start with it.)
+                let Some(h) = self.host() else { return self.reload(new) };
+                let alone = changed.into_iter().all(|c| {
+                    c.settings.as_ref().is_some_and(|v| h.settle(&c.id, v)) || h.renew(super::Spec::enabled(new).into_iter().filter(|s| s.id == c.id).collect())
+                });
+                if !alone {
+                    self.reload(new);
+                }
+            }
+            super::Change::Restart => self.reload(new),
         }
     }
 

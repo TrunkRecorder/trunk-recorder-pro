@@ -13,6 +13,16 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Decode page lists each repeater with its LCN and call. Written from the documented formats, and not heard on a
   real system yet: captures are welcome. See [LTR](docs/configuration/systems.md#ltr).
   - **To plugins**: a call's `system_type` (and a system's `kind`) may be `"ltr"`.
+- **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
+  system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
+  only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the
+  new settings, while what comes meanwhile waits for it. Turning a plugin on or off, a copy more or fewer, or the M4A
+  settings still restart them all.
+- **One To do list for everything waiting on you** (from #264, thanks @jlutz33). Setup's list (it was *Finish the
+  import*) now also has plugin changes held until **Apply**, each with **Show**, **Apply** and **Discard**, and
+  **Apply all** (one save, so each plugin restarts once), and **Restart to apply** when a change waits for the next
+  Start (the banner it replaces). Each Setup tab counts what's on it, and a pill at the bottom of every page says how
+  many (*3 to do*) with **Show** for each in turn. **Show** also opens a folded site section it's in.
 
 - **Setup → Plugins folds each plugin into a card** (#263, thanks @jschmall), like the Systems,
   Conventional and Radios tabs: a chevron, **Expand all** / **Collapse all**, open only when there's
@@ -30,6 +40,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   token, passkey or the proxy, uninstalling a plugin or interface, deleting data or an IQ capture, joining systems,
   quitting while recording) is now the app's own dialog with **Cancel** focused, so Enter, Escape or a click outside
   does nothing. The browser's own box, which these used before, defaulted to OK.
+
+- **Docs: the log on Raspberry Pi OS** (#256, thanks @jjc-wx). Its journal is in RAM only, so `journalctl --user -u
+  trunk-pro` finds nothing; the Pi guide and Troubleshooting now give `journalctl --user-unit trunk-pro -f`, and how to
+  see the log in colour.
 
 ## [0.5.2] — 2026-11-26
 

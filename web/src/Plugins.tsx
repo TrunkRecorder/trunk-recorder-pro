@@ -26,9 +26,6 @@ import {
   setPluginShareDecrypted,
   setPluginSiteOn,
   setPluginSystemOn,
-  setSystemPluginOverride,
-  setSystemPluginSettings,
-  setSystemPluginSiteSettings,
   settingsOpened,
   setView,
   systemAt,
@@ -38,6 +35,12 @@ import {
   type PluginActionResult,
   type SystemRef,
   isRecording,
+  applyHeld,
+  dropHeld,
+  heldAt,
+  holdChange,
+  savePluginForm,
+  type HeldForm,
 } from "./controller.ts";
 import { activeSystems, siteNameOf } from "./config.ts";
 import { EveryDelays, PluginDelay } from "./Delays.tsx";
@@ -48,7 +51,7 @@ import { numberList, talkgroupList, talkgroupProblem, textList } from "./fieldTe
 import { Card as SetupCard, ExpandAll, Group, Section, Switch } from "./SetupLayout.tsx";
 import { Card, Fig } from "./charts.tsx";
 import { ToneList } from "./ToneList.tsx";
-import { openTodos } from "./todo.ts";
+import { heldPlace, openTodos } from "./todo.ts";
 import { copyOwn, copyPerSite, pluginCopies } from "./protocol.ts";
 import { fieldsOf, ignoredOf, offFor, offForSite, overridable, overridableSchema, overrideOf, siteOverridable, siteSchema } from "./pluginSettings.ts";
 import { applies, fillTemplate, followRenames, mentions, refOptions, shownOnly, summarize, summaryValue, type KeyMemory } from "./pluginForm.ts";
@@ -639,7 +642,7 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
               {hasFields(m.system_config) && (
                 <>
                   {!copySetUp(m, values, every) && <p className="field-hint warn-text">Not set up for {sys.shortName} yet.</p>}
-                  <Held id={`copy:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={copyOwn(values)} save={(v) => setSystemPluginSettings(props.system, p.id, v, i)} restarts>
+                  <Held form={{ kind: "copy", plugin: p.id, system: props.system, copy: i }} name={m.name} saved={copyOwn(values)} restarts>
                     {(own, change) => <SchemaFields schema={m.system_config} values={own} inherited={every} onChange={change} id={idOf(i)} />}
                   </Held>
                 </>
@@ -679,14 +682,14 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
                           {name}
                           <span className="muted"> · {set.length ? set.map(([k]) => labelOf(m.system_config, k)).join(", ") : `as ${sys.shortName}`}</span>
                         </summary>
-                        <Held id={`site:${sys.shortName}:${p.id}:${i}:${site.id}`} name={m.name} saved={own} save={(v) => setSystemPluginSiteSettings(props.system, p.id, site.id!, v, i)} restarts>
+                        <Held form={{ kind: "site", plugin: p.id, system: props.system, copy: i, site: site.id! }} name={m.name} saved={own} restarts>
                           {(o, change) => <SchemaFields schema={siteSchema(m)} values={o} inherited={copyOwn(values)} onChange={change} id={`${idOf(i)}-site${site.id}`} />}
                         </Held>
                       </details>
                     );
                   })}
               {overridable(m).length > 0 && (
-                <Held id={`override:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={over} save={(v) => setSystemPluginOverride(props.system, p.id, v, i)} restarts>
+                <Held form={{ kind: "override", plugin: p.id, system: props.system, copy: i }} name={m.name} saved={over} restarts>
                   {(o, change) => <PluginOverride m={m} over={o} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={change} />}
                 </Held>
               )}
@@ -913,7 +916,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config; n: number }) {
 function PluginSettingsForm(props: { p: PluginInfo; m: PluginManifest; settings: PluginValues | undefined; needs: string[]; page?: boolean }) {
   const { p, m } = props;
   return (
-    <Held id={`settings:${p.id}`} name={m.name} saved={props.settings ?? {}} save={(v) => setPluginSettings(p.id, v)} restarts={!m.live_settings}>
+    <Held form={{ kind: "settings", plugin: p.id }} name={m.name} saved={props.settings ?? {}} restarts={!m.live_settings}>
       {(values, set) => <PluginSettingsFields {...props} values={values} set={set} />}
     </Held>
   );
@@ -960,44 +963,32 @@ function PluginSettingsFields(props: { p: PluginInfo; m: PluginManifest; values:
 /**
  * Plugin settings changed while recording that would restart the plugin
  * (`restarts`: its own settings when it doesn't take them as it runs; a
- * system's copy of it, always): held here until Apply, so a restart is one
- * the user chose, not one per field. Discard drops them. Held by form `id`
- * while the page changes; changed when not recording, saved at once.
+ * system's copy of it, always): held until Apply, so a restart is one the
+ * user chose, not one per field. Discard drops them. They're the controller's
+ * (`holdChange`), so they last while the page changes and are listed with
+ * what else is waiting (todo.ts `waiting`); when not recording, a change is
+ * saved at once.
  */
-const held = new Map<string, PluginValues>();
-const heldViews = new Set<() => void>();
-
-function Held(props: { id: string; name: string; saved: PluginValues; save: (v: PluginValues) => void; restarts: boolean; children: (values: PluginValues, change: (v: PluginValues) => void) => ReactNode }) {
+function Held(props: { form: HeldForm; name: string; saved: PluginValues; restarts: boolean; children: (values: PluginValues, change: (v: PluginValues) => void) => ReactNode }) {
+  const { form } = props;
   const recording = useSelect((x) => isRecording(x.phase));
-  const [, redraw] = useState(0);
-  useEffect(() => {
-    const f = () => redraw((n) => n + 1);
-    heldViews.add(f);
-    return () => void heldViews.delete(f);
-  }, []);
-  const tell = () => heldViews.forEach((f) => f());
-  const draft = held.get(props.id);
+  const draft = useSelect((x) => heldAt(x, form)?.values);
+  // Where Show (the list of what's waiting) brings you: this bar.
+  const target = useSelect((x) => heldPlace(x, form).target);
   const change = (v: PluginValues) => {
-    if (draft !== undefined || (recording && props.restarts)) {
-      held.set(props.id, v);
-      tell();
-    } else props.save(v);
-  };
-  const done = (apply: boolean) => {
-    if (apply && draft !== undefined) props.save(draft);
-    held.delete(props.id);
-    tell();
+    if (draft !== undefined || (recording && props.restarts)) holdChange({ form, name: props.name, values: v });
+    else savePluginForm(form, v);
   };
   return (
     <>
       {props.children(draft ?? props.saved, change)}
       {draft !== undefined && (
-        <div className="held-bar" role="status">
+        <div className="held-bar" role="status" id={target && `need-${target}`}>
           <span className="small">Not applied · Apply restarts {props.name}{recording ? "" : " when recording starts"}</span>
-          <button type="button" className="btn primary small" onClick={() => done(true)}>
+          <button type="button" className="btn primary small" onClick={() => applyHeld([form])}>
             Apply
           </button>
-          <button type="button" className="btn ghost small" onClick={() => done(false)}>
+          <button type="button" className="btn ghost small" onClick={() => dropHeld(form)}>
             Discard
           </button>
         </div>
