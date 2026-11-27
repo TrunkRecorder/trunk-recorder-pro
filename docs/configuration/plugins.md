@@ -215,9 +215,11 @@ A change to the delays applies at once, without restarting the plugins, to the c
 waiting too: shortening one lets them go sooner.
 
 A change to a plugin's recorder-wide `settings` alone is sent to the running plugin as it runs, if
-every plugin changed takes its settings that way. Otherwise, and for any other plugin change (its
-entry, a system's settings for it) or `recording.m4a`, the running plugins restart at once with the
-new settings, even while recording. The OpenMHz, Broadcastify, Rdio Scanner
+it takes its settings that way. Otherwise a change to one plugin's settings (its `settings`, a
+system's or site's settings for it, `systemsOff`, `sitesOff`, `shareDecrypted`) restarts that plugin
+alone, at once, even while recording: it finishes what it was already sent, and what comes
+meanwhile waits for it. Turning a plugin on or off, its `path`, a copy more or fewer, or
+`recording.m4a` restarts all the running plugins. The OpenMHz, Broadcastify, Rdio Scanner
 and upload-script plugins save calls still waiting in `plugin-data/<id>/queue.jsonl`, so a restart
 doesn't lose them.
 

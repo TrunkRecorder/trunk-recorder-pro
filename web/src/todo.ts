@@ -1,9 +1,10 @@
-// What a Trunk Recorder import left to finish: which items are still open (the
-// config, the dongles and the drivers say), what each asks, and the setup
-// field it points at. An item closes by itself once its field is filled in.
+// What's waiting on you: what a Trunk Recorder import left to finish (which items
+// are still open, as the config, the dongles and the drivers say, each closing by
+// itself once its field is filled in), plugin changes held until Apply, and
+// changes that wait for a restart. Each says what it asks and where it is.
 
 import { formatMhz, receiverOf, siteNameOf, SOURCE_KINDS, sourceTitle, type ImportTodo } from "./config.ts";
-import type { AppState } from "./controller.ts";
+import { isRecording, systemAt, type AppState, type HeldForm } from "./controller.ts";
 
 export interface OpenTodo {
   item: ImportTodo;
@@ -116,4 +117,38 @@ export function openTodos(s: AppState): OpenTodo[] {
     }
   }
   return out;
+}
+
+/** One thing waiting on you ([`waiting`]): an import's to-do, a plugin change held until Apply, or a restart. */
+export interface Waiting {
+  title: string;
+  text: string;
+  /** Where it is: a setup field (`need-<target>`), or a plugin's own page (`page`, its id). Neither: the list itself. */
+  target?: string;
+  page?: string;
+  /** What it is: the import's item, the form held, or changes that take effect on the next Start. */
+  todo?: ImportTodo;
+  held?: HeldForm;
+  restart?: true;
+}
+
+/** Where form `form`'s Apply bar is: a setup field id (`need-<target>`), or its plugin's own page. */
+export function heldPlace(s: AppState, form: HeldForm): { target?: string; page?: string } {
+  if (form.kind === "settings") {
+    const own = s.plugins?.plugins.find((p) => p.id === form.plugin)?.manifest?.page;
+    return own ? { page: form.plugin } : { target: `plugin-${form.plugin}-held` };
+  }
+  const sys = s.config && systemAt(s.config, form.system);
+  const at = `${typeof form.system === "number" ? "sysplug" : "convplug"}-${sys?.shortName ?? ""}-${form.plugin}-${form.copy}`;
+  return { target: `${at}-${form.kind === "site" ? `site${form.site}` : form.kind}-held` };
+}
+
+/** Everything waiting on you, in one list: the import's to-dos, held plugin changes, then a restart. */
+export function waiting(s: AppState): Waiting[] {
+  const recording = isRecording(s.phase);
+  return [
+    ...openTodos(s).map((t) => ({ title: t.title, text: t.text, target: t.target, todo: t.item })),
+    ...s.held.map((h) => ({ title: `${h.name}: not applied`, text: `Apply restarts ${h.name}${recording ? "" : " when recording starts"}`, held: h.form, ...heldPlace(s, h.form) })),
+    ...(recording && s.restartNeeded ? [{ title: "Restart to apply", text: "Some changes take effect on the next Start", restart: true as const }] : []),
+  ];
 }

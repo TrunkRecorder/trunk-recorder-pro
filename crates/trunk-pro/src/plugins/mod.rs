@@ -46,7 +46,7 @@ pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
 pub use host::{Calls, Note, PluginHost, Saves, Spec};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -131,27 +131,56 @@ pub fn forget(cfg: &mut Config, id: &str) {
 #[derive(Debug, PartialEq)]
 pub enum Change {
     None,
-    /// Only plugins' own settings: each changed plugin's id and new settings
-    /// (a plugin that takes them as it runs needn't restart).
-    Settings(Vec<(String, Value)>),
-    /// What they run with: they restart.
+    /// What some plugins run with: those restart, alone, or take it as they run ([`Changed`]).
+    Plugins(Vec<Changed>),
+    /// Which plugins run (one on or off, added or removed, a build of one's own, a copy more or
+    /// fewer), or what they all run with (the M4A encoding): they all restart.
     Restart,
+}
+
+/// A plugin whose settings changed: its own, a system's or site's of it, the systems and sites
+/// it's on for, or whether it's given decrypted calls.
+#[derive(Debug, PartialEq)]
+pub struct Changed {
+    pub id: String,
+    /// Its own new settings, when they're all that changed (a plugin that takes them as it runs
+    /// needn't restart); None: it restarts.
+    pub settings: Option<Value>,
 }
 
 /// What going from `a` to `b` changes for plugins.
 pub fn change(a: &Config, b: &Config) -> Change {
-    let per_system = |c: &Config| -> Vec<(String, BTreeMap<String, Value>)> {
-        let mut v: Vec<_> = c.systems.iter().map(|s| (s.short_name.clone(), s.plugins.clone())).collect();
-        v.extend(c.conventional.iter().map(|x| (x.short_name.clone(), x.plugins.clone())));
-        v
-    };
-    // Each plugin's entry, but for its settings.
-    let bare = |c: &Config| -> BTreeMap<String, PluginSetup> { c.plugins.iter().map(|(k, p)| (k.clone(), PluginSetup { settings: Value::Null, ..p.clone() })).collect() };
-    if a.recording.m4a != b.recording.m4a || per_system(a) != per_system(b) || bare(a) != bare(b) {
+    if a.recording.m4a != b.recording.m4a {
         return Change::Restart;
     }
-    let settings: Vec<_> = b.plugins.iter().filter(|(k, p)| a.plugins.get(*k).map(|o| &o.settings) != Some(&p.settings)).map(|(k, p)| (k.clone(), p.settings.clone())).collect();
-    if settings.is_empty() { Change::None } else { Change::Settings(settings) }
+    // Each system's settings of plugin `id`, by short name.
+    let per_system = |c: &Config, id: &str| -> Vec<(String, Option<Value>)> {
+        let mut v: Vec<_> = c.systems.iter().map(|s| (s.short_name.clone(), s.plugins.get(id).cloned())).collect();
+        v.extend(c.conventional.iter().map(|x| (x.short_name.clone(), x.plugins.get(id).cloned())));
+        v
+    };
+    let ids: BTreeSet<&String> = a.plugins.keys().chain(b.plugins.keys()).collect();
+    let mut changed = Vec::new();
+    for id in ids {
+        let (Some(pa), Some(pb)) = (a.plugins.get(id), b.plugins.get(id)) else { return Change::Restart };
+        if pa.enabled != pb.enabled || pa.path != pb.path {
+            return Change::Restart;
+        }
+        // (Off: nothing of it runs either way.)
+        if !pb.enabled {
+            continue;
+        }
+        if copies(a, id) != copies(b, id) {
+            return Change::Restart;
+        }
+        let rest = per_system(a, id) != per_system(b, id) || pa.share_decrypted != pb.share_decrypted || pa.systems_off != pb.systems_off || pa.sites_off != pb.sites_off;
+        if rest {
+            changed.push(Changed { id: id.clone(), settings: None });
+        } else if pa.settings != pb.settings {
+            changed.push(Changed { id: id.clone(), settings: Some(pb.settings.clone()) });
+        }
+    }
+    if changed.is_empty() { Change::None } else { Change::Plugins(changed) }
 }
 
 pub fn plugins_dir() -> PathBuf {
@@ -443,26 +472,51 @@ mod tests {
         assert_eq!(none, json!({ "a": 1 }));
     }
 
-    /// Allowing a plugin decrypted calls, or no longer, restarts the plugins.
+    /// Allowing a plugin decrypted calls, or no longer, restarts it alone.
     #[test]
-    fn a_change_to_share_decrypted_reloads_the_plugins() {
-        let a: Config = serde_json::from_value(json!({ "plugins": { "openmhz": { "enabled": true } } })).unwrap();
+    fn a_change_to_share_decrypted_restarts_that_plugin() {
+        let a: Config = serde_json::from_value(json!({ "plugins": { "openmhz": { "enabled": true }, "mqtt": { "enabled": true } } })).unwrap();
         let mut b = a.clone();
         b.plugins.get_mut("openmhz").unwrap().share_decrypted = true;
-        assert_eq!((change(&a, &b), change(&b, &a)), (Change::Restart, Change::Restart));
+        let openmhz = Change::Plugins(vec![Changed { id: "openmhz".into(), settings: None }]);
+        assert_eq!((change(&a, &b), change(&b, &a)), (openmhz, Change::Plugins(vec![Changed { id: "openmhz".into(), settings: None }])));
     }
 
-    /// A plugin's own settings alone changed: they may be sent to it as it
-    /// runs; with anything more (a system's settings of it, turned off), a restart.
+    /// Each plugin whose settings changed is said, the others aren't: its own settings alone may be
+    /// sent to it as it runs; a system's or site's of it, or the systems it's on for, restart it alone.
+    /// Which plugins run, or the M4A encoding they all take, restarts them all.
     #[test]
-    fn its_own_settings_alone_are_a_settings_change() {
-        let a: Config = serde_json::from_value(json!({ "plugins": { "notify": { "enabled": true, "settings": { "rules": [] } }, "openmhz": { "enabled": true } } })).unwrap();
+    fn only_the_plugins_whose_settings_changed_are_said() {
+        let a: Config = serde_json::from_value(json!({
+            "systems": [{ "shortName": "dcfd", "sites": [{ "controlChannelsHz": [857987500] }], "plugins": { "openmhz": { "apiKey": "k" } } }],
+            "plugins": { "notify": { "enabled": true, "settings": { "rules": [] } }, "openmhz": { "enabled": true }, "mqtt": { "enabled": true }, "idle": { "enabled": false } }
+        }))
+        .unwrap();
         assert_eq!(change(&a, &a.clone()), Change::None);
         let mut b = a.clone();
         b.plugins.get_mut("notify").unwrap().settings = json!({ "rules": [{ "name": "Station 1" }] });
-        assert_eq!(change(&a, &b), Change::Settings(vec![("notify".into(), json!({ "rules": [{ "name": "Station 1" }] }))]));
-        b.plugins.get_mut("openmhz").unwrap().enabled = false;
-        assert_eq!(change(&a, &b), Change::Restart);
+        assert_eq!(change(&a, &b), Change::Plugins(vec![Changed { id: "notify".into(), settings: Some(json!({ "rules": [{ "name": "Station 1" }] })) }]));
+        b.systems[0].plugins.insert("openmhz".into(), json!({ "apiKey": "new" }));
+        b.plugins.get_mut("mqtt").unwrap().systems_off = vec![crate::config::SystemId(3)];
+        let said = |c: Change| match c {
+            Change::Plugins(v) => v.into_iter().map(|x| (x.id, x.settings.is_some())).collect::<Vec<_>>(),
+            c => panic!("{c:?}"),
+        };
+        assert_eq!(said(change(&a, &b)), [("mqtt".to_string(), false), ("notify".to_string(), true), ("openmhz".to_string(), false)]);
+        // A plugin that's off: nothing runs to restart.
+        let mut idle = a.clone();
+        idle.plugins.get_mut("idle").unwrap().settings = json!({ "x": 1 });
+        assert_eq!(change(&a, &idle), Change::None);
+        // Which run, or what they all take: all of them.
+        let mut off = a.clone();
+        off.plugins.get_mut("mqtt").unwrap().enabled = false;
+        assert_eq!(change(&a, &off), Change::Restart);
+        let mut copy = a.clone();
+        copy.systems[0].plugins.insert("openmhz".into(), json!([{ "apiKey": "k" }, { "apiKey": "k2" }]));
+        assert_eq!(change(&a, &copy), Change::Restart, "a copy more");
+        let mut m4a = a.clone();
+        m4a.recording.m4a.bitrate_kbps += 32;
+        assert_eq!(change(&a, &m4a), Change::Restart);
     }
 
     /// A system's name, FCC licenses (and the one that names it) and sites are told to plugins, a

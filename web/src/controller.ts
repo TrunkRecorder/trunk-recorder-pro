@@ -170,6 +170,8 @@ export interface AppState {
   tune: TuneReport | null;
   /** Settings changed since this run started that only apply after a restart: the recorder's verdict (Config::needs_restart), with its phase. */
   restartNeeded: boolean;
+  /** Plugin settings changes held until Apply, in the order made ([`holdChange`]). */
+  held: HeldChange[];
   /** This browser's changes: being saved, all saved, or the last one wasn't (`saveError`: why); idle before any. */
   saveStatus: "idle" | "saving" | "saved" | "failed";
   saveError: string | null;
@@ -282,6 +284,7 @@ let state: AppState = {
   profiling: null,
   tune: null,
   restartNeeded: false,
+  held: [],
   saveStatus: "idle",
   saveError: null,
   plugins: null,
@@ -1507,6 +1510,68 @@ export function setSystemPluginSiteSettings(system: SystemRef, id: string, site:
     return c;
   });
 }
+/**
+ * A plugin settings form (Plugins.tsx `Held`): the plugin's own settings, a system's copy of
+ * them, what a copy overrides of the plugin's, or what a site sets again of a copy.
+ */
+export type HeldForm =
+  | { kind: "settings"; plugin: string }
+  | { kind: "copy" | "override"; plugin: string; system: SystemRef; copy: number }
+  | { kind: "site"; plugin: string; system: SystemRef; copy: number; site: number };
+
+/**
+ * A change to a plugin settings form held until Apply: while recording, one that would restart
+ * the plugin waits, so a restart is one the user chose rather than one per field. `name`: the
+ * plugin's.
+ */
+export interface HeldChange {
+  form: HeldForm;
+  name: string;
+  values: PluginValues;
+}
+
+const sameForm = (a: HeldForm, b: HeldForm) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Form `form`'s change held now, if any. */
+export function heldAt(s: AppState, form: HeldForm): HeldChange | undefined {
+  return s.held.find((h) => sameForm(h.form, form));
+}
+
+/** Hold `h` until it's applied or dropped (it replaces what its form held). */
+export function holdChange(h: HeldChange): void {
+  const i = state.held.findIndex((x) => sameForm(x.form, h.form));
+  set({ held: i < 0 ? [...state.held, h] : state.held.map((x, j) => (j === i ? h : x)) });
+}
+
+/** Drop what form `form` held (Discard). */
+export function dropHeld(form: HeldForm): void {
+  set({ held: state.held.filter((h) => !sameForm(h.form, form)) });
+}
+
+/** Save form `form`'s values, with the setter for what it is. */
+export function savePluginForm(form: HeldForm, values: PluginValues): void {
+  switch (form.kind) {
+    case "settings":
+      return setPluginSettings(form.plugin, values);
+    case "copy":
+      return setSystemPluginSettings(form.system, form.plugin, values, form.copy);
+    case "override":
+      return setSystemPluginOverride(form.system, form.plugin, values, form.copy);
+    case "site":
+      return setSystemPluginSiteSettings(form.system, form.plugin, form.site, values, form.copy);
+  }
+}
+
+/**
+ * Apply held changes (`forms`; none given: all): saved together, so they're one config save
+ * (updateConfig gathers the edits made at once), and each plugin they're for restarts once.
+ */
+export function applyHeld(forms?: HeldForm[]): void {
+  const go = state.held.filter((h) => !forms || forms.some((f) => sameForm(f, h.form)));
+  set({ held: state.held.filter((h) => !go.includes(h)) });
+  for (const h of go) savePluginForm(h.form, h.values);
+}
+
 /** Another copy of a plugin for one system, to set up: it runs again, with these settings, for this system alone. */
 export function addSystemPluginCopy(system: SystemRef, id: string): void {
   editSystemPlugin(system, id, (c) => [...(c.length ? c : [{}]), {}]);

@@ -48,7 +48,7 @@ Across the top are:
 - **Start** / **Stop**. If the settings can't start, **Start** is greyed out and hovering over it
   says why (for example "Add a source: a dongle or a capture file.").
 - **Restart** (only while recording, and only when a change needs it): stops and starts again
-  with the settings as they are now. A **Restart to apply** banner says the same.
+  with the settings as they are now. **Restart to apply** is in the **To do** list too.
 - **Sign in** (or who you are signed in as), when signing in is on.
 - **Quit** (see [Quitting](#quitting)).
 
@@ -83,12 +83,16 @@ how many of that thing you have:
 There's no Save button. Every change is saved to the config file a moment after you make it.
 Most changes take effect the next time you press **Start**. A few apply while recording:
 talkgroup files (including the **Ignore** button on the Radio system page), the **Log**
-settings, and plugin settings (the plugins restart with them).
+settings, and plugin settings (the plugin changed restarts with them).
 
-If you're coming from Trunk Recorder, **Import…** on Setup → Systems brings a `config.json`
-over; see [Migrating from Trunk Recorder](../migrating-from-trunk-recorder.md). Anything the
-import couldn't finish shows as a **Finish the import** list at the top of Setup (each item with
-**Show** and **Dismiss**), with a count on the tab it belongs to.
+What's waiting on you is one **To do** list at the top of Setup, with a count on the tab each item
+is on, and a pill at the bottom of every page (*3 to do*, **Show** each in turn):
+
+- what an import from Trunk Recorder couldn't finish (**Import…** on Setup → Systems; see
+  [Migrating from Trunk Recorder](../migrating-from-trunk-recorder.md)), with **Show** and **Dismiss**;
+- plugin changes held until **Apply** (while recording, a change that would restart a plugin
+  waits), with **Show**, **Apply** and **Discard**, and **Apply all**;
+- **Restart to apply**, when a change takes effect on the next Start, with **Restart**.
 
 ## Listen
 
