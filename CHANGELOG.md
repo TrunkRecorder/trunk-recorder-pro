@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Removing asks first, and Cancel is the default** (#266, thanks @gofaster). Remove on a radio in Setup → Radios
+  deleted it at once; it now asks. Every question before something is done (removing a radio, site, system, user,
+  token, passkey or the proxy, uninstalling a plugin or interface, deleting data or an IQ capture, joining systems,
+  quitting while recording) is now the app's own dialog with **Cancel** focused, so Enter, Escape or a click outside
+  does nothing. The browser's own box, which these used before, defaulted to OK.
+
 ## [0.5.2] — 2026-11-26
 
 - **Reset counts** (#262). The totals since Start (a radio's dropped samples and errors, calls, a plugin's sent, skipped,
