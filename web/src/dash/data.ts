@@ -8,6 +8,7 @@ import { isRecording, can, setView, snapshot, statsQuery, useApp, usePolled, typ
 import { dur, keyPart, num, pct, signed } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
 import type { Level } from "../charts.tsx";
+import { diskCounted, pluginCounted } from "./counts.ts";
 import type { FolderRow, PluginInfo, SeriesData, SiteDetail, SiteStatus, SourceStatus, StorageSettings, SystemStatus } from "../protocol.ts";
 
 // ── series names (crates/trunk-app/src/stats) ────────────────────────────────
@@ -402,7 +403,9 @@ export function platformHealth(s: AppState): Health {
   for (const f of h.platform.folders ?? []) {
     if (f.ok === false) hs.push({ level: "bad", why: `Can't write to ${FOLDER_LABEL[f.name] ?? f.name}: ${f.why}${f.lost ? ` · ${num(f.lost, 0)} files not saved` : ""}` });
   }
-  for (const d of h.platform.disks) {
+  for (const disk of h.platform.disks) {
+    // (The RAM spool's overflows and deletions since this browser's Reset counts.)
+    const d = diskCounted(s, disk);
     const free = (100 * d.freeBytes) / Math.max(1, d.totalBytes);
     if (d.name === "spool") {
       // Deleted while running (systemd at logout): made again, or calls go to the disk.
@@ -443,7 +446,7 @@ export function pluginsHealth(s: AppState): Health {
   const ps = s.plugins?.plugins ?? [];
   const on = (id: string) => !!s.config?.plugins?.[id]?.enabled;
   const ons = ps.filter((p) => on(p.id));
-  return ons.length ? worstOf(ons, (p) => p.manifest?.name ?? p.id, (p) => pluginHealth(p, true)) : { level: "idle", why: "No plugins on" };
+  return ons.length ? worstOf(ons, (p) => p.manifest?.name ?? p.id, (p) => pluginHealth(pluginCounted(s, p), true)) : { level: "idle", why: "No plugins on" };
 }
 
 /** A plugin's endpoint state, as a light. */

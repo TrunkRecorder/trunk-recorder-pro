@@ -17,6 +17,7 @@ import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
 import { IqCaptureCard } from "./IqCapture.tsx";
+import { sinceLabel, sourceCounts } from "./counts.ts";
 
 /** A radio's gain as Setup has it, and what the radio is set to when that differs (`set`). */
 export function gainLine(c: Source | undefined, set?: string | null): string {
@@ -59,6 +60,8 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
   const peak = val(s, K.src(src.label, "peak"));
   const clip = val(s, K.src(src.label, "clipPct"));
   const drops = recentAvg(K.src(src.label, "dropped"), 60) ?? 0;
+  // Its totals since start, or since this browser's Reset counts.
+  const n = sourceCounts(s, src);
   // A stream: audio, demodulated already — no band, gain, crystal or ADC to show.
   const audio = !!SOURCE_KINDS[src.settings.type]?.audio;
   return (
@@ -108,7 +111,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           value={compact(drops)}
           unit="samples/s"
           level={drops > 0 ? "bad" : undefined}
-          sub={<Figs inline items={[{ k: "Since start", v: compact(src.dropped), level: src.dropped > 0 ? "warn" : undefined }]} />}
+          sub={<Figs inline items={[{ k: sinceLabel(s), v: compact(n.dropped), level: n.dropped > 0 ? "warn" : undefined }]} />}
           hint="Lost by the driver (USB or CPU); calls lose audio"
         />
       </div>
@@ -136,10 +139,10 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
               audio
                 ? { k: "Rate", v: num(src.rateMeasured / 1e3, 2), u: `of ${num(src.rateHz / 1e3, 0)} kS/s`, level: src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05 ? "warn" : undefined }
                 : { k: "Rate", v: num(src.rateMeasured / 1e6, 3), u: `of ${num(src.rateHz / 1e6, 3)} MS/s`, level: src.rateMeasured > 0 && Math.abs(src.rateMeasured / src.rateHz - 1) > 0.05 ? "warn" : undefined },
-              src.errors > 0 && { k: "Errors", v: src.errors, level: "bad", title: src.lastError ?? undefined },
+              n.errors > 0 && { k: "Errors", v: n.errors, level: "bad", title: src.lastError ?? undefined },
             ]}
           />
-          {src.errors > 0 && src.lastError && <span className="muted small">{src.lastError}</span>}
+          {n.errors > 0 && src.lastError && <span className="muted small">{src.lastError}</span>}
         </div>
       )}
     </Card>

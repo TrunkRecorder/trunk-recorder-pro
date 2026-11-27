@@ -11,6 +11,7 @@ import { Info } from "./charts.tsx";
 import { CopyButton } from "./inputs.tsx";
 import { Group } from "./SetupLayout.tsx";
 import type { Config, Reach, Route } from "./protocol.ts";
+import { confirmed } from "./asking.ts";
 
 /** Whether a page's host name is this computer's own. */
 export const onThisComputer = (hostname: string) => {
@@ -51,11 +52,12 @@ export function Connections(props: { c: Config; signIn: boolean }) {
   const bind = props.c.server.bind;
   // (The saved address's kind is the recorder's word; before it has said, the two it's switched between.)
   const listen = reach?.saved.address === bind ? reach.saved.listen : bind === "127.0.0.1" ? "thisComputer" : bind === "0.0.0.0" ? "every" : "one";
-  const set = (to: string) => {
+  const set = async (to: string) => {
     if (to === bind) return;
     // A browser that came in directly loses its way in; one on this computer, or through a tunnel, keeps it.
     const tunnel = reach?.routes.some((r) => !r.direct && hostOf(r.url) === location.hostname.toLowerCase());
-    if (to === "127.0.0.1" && !onThisComputer(location.hostname) && !tunnel && !confirm(`From the next start, this browser can't reach the recorder at ${location.host}: only this computer, and tunnels on it, can. Go on?`)) return;
+    const question = `From the next start, this browser can't reach the recorder at ${location.host}: only this computer, and tunnels on it, can.`;
+    if (to === "127.0.0.1" && !onThisComputer(location.hostname) && !tunnel && !(await confirmed({ title: "Lock this browser out?", question, action: "Go on" }))) return;
     updateConfig((x) => void (x.server.bind = to));
   };
   const pending = reach && !reach.flag && reach.now.address !== bind;

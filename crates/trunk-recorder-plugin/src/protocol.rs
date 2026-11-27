@@ -1530,6 +1530,9 @@ pub enum PluginMessage {
     CallResult {
         path: String,
         outcome: Outcome,
+        /// Why it was skipped or failed, in a few words, the same each time it's so ("talkgroup
+        /// filter", not "talkgroup 101 filtered out"): the plugin's card counts calls by it. The
+        /// call's own details (its talkgroup, a file, a server's error text) go in a log line.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         message: String,
         /// Where the call can be found now (a link to it on the service).

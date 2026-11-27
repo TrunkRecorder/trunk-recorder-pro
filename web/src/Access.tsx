@@ -21,6 +21,7 @@ import { Group, Section, Switch } from "./SetupLayout.tsx";
 import { AddPasskey, AppChip, day, PasskeyChip } from "./Passkeys.tsx";
 import { Connections, onThisComputer } from "./Reach.tsx";
 import type { ApiAccess, AuthProxy, AuthSetup, AuthUser, Config } from "./protocol.ts";
+import { confirmed } from "./asking.ts";
 
 /** The roles, as the interface calls them. */
 export const ROLE: Record<ApiAccess, string> = { listen: "View", control: "Admin" };
@@ -111,8 +112,8 @@ function ProxyGroup(props: { proxy?: AuthProxy }) {
     );
     setDraft(null);
   };
-  const remove = () => {
-    if (!confirm("Remove the proxy? Whoever it signed in is signed out.")) return;
+  const remove = async () => {
+    if (!(await confirmed({ title: "Remove the proxy?", question: "Whoever it signed in is signed out.", action: "Remove" }))) return;
     setEdited(true);
     updateConfig((x) => void delete authOf(x).proxy);
   };
@@ -295,8 +296,8 @@ export function AccessSection(props: { c: Config; made?: Made }) {
     if (step === "admin" && m.access === "control") void finish(m.secret);
   };
 
-  const remove = (name: string) => {
-    if (!confirm(`Remove ${name}? Browsers signed in as them are signed out.`)) return;
+  const remove = async (name: string) => {
+    if (!(await confirmed({ title: `Remove ${name}?`, question: "Browsers signed in as them are signed out.", action: "Remove" }))) return;
     updateConfig((x) => void delete authOf(x).users?.[name]);
     if (made?.name === name) setMade(null);
   };
@@ -304,16 +305,17 @@ export function AccessSection(props: { c: Config; made?: Made }) {
   // The last Admin who can sign in, signing in on: they stay, and stay Admin, and keep a way in.
   const lastAdmin = (u: AuthUser) => on && admin(u) && admins <= 1;
   const keepsWayIn = (u: AuthUser, after: AuthUser) => canSignIn(after) && !(lastAdmin(u) && !admin(after));
-  const removeToken = (name: string) => {
-    if (!confirm(`Remove ${name}'s token? Browsers signed in with it are signed out; their passkeys stay.`)) return;
+  const removeToken = async (name: string) => {
+    if (!(await confirmed({ title: `Remove ${name}'s token?`, question: "Browsers signed in with it are signed out; their passkeys stay.", action: "Remove" }))) return;
     updateConfig((x) => void delete authOf(x).users![name].token);
   };
   const signOutAll = async (name: string) => {
-    if (!confirm(`Sign ${name} out everywhere? Every browser and app signed in as them signs in again${me.user === name ? ", this one too" : ""}. Their access token keeps working.`)) return;
+    const question = `Every browser and app signed in as them signs in again${me.user === name ? ", this one too" : ""}. Their access token keeps working.`;
+    if (!(await confirmed({ title: `Sign ${name} out everywhere?`, question, action: "Sign out" }))) return;
     setProblem(await signOutEverywhere(me.user === name ? undefined : name));
   };
-  const removePasskey = (name: string, id: string, label: string) => {
-    if (!confirm(`Remove ${name}'s passkey ${label}? Browsers signed in with it are signed out.`)) return;
+  const removePasskey = async (name: string, id: string, label: string) => {
+    if (!(await confirmed({ title: `Remove ${name}'s passkey ${label}?`, question: "Browsers signed in with it are signed out.", action: "Remove" }))) return;
     updateConfig((x) => void (authOf(x).users![name].passkeys = authOf(x).users![name].passkeys?.filter((p) => p.id !== id)));
   };
   const anon = auth?.anonymous === "listen";

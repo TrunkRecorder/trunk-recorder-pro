@@ -6777,6 +6777,34 @@
         "lastFailure": {
           "type": "string"
         },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "skipped",
+                  "failed"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "calls": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "outcome",
+              "reason",
+              "calls"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Why calls were skipped or failed (what the plugin said of each), most first."
+        },
         "log": {
           "type": "array",
           "items": {

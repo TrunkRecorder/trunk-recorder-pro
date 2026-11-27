@@ -47,8 +47,8 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
   const unknownColumns = useMemo(() => [...new Set(tgs.flatMap((t) => (t.extra ?? []).map(([k]) => k)))], [tgs]);
   const report = loaded && tgs.length ? loaded : null;
   /** The talkgroups are `next`, from `from` (none: cleared), unless that loses edits and the user says no. */
-  const set = (next: Talkgroup[], from: OriginFrom | undefined, what: string, file: TalkgroupFileReport | null = null): boolean => {
-    if (next.length && !mayReplaceNames("talkgroups", sys.shortName, next, what)) return false;
+  const set = async (next: Talkgroup[], from: OriginFrom | undefined, what: string, file: TalkgroupFileReport | null = null): Promise<boolean> => {
+    if (next.length && !(await mayReplaceNames("talkgroups", sys.shortName, next, what))) return false;
     setLoaded(file);
     setTalkgroups(sys.shortName, next, from);
     return true;
@@ -58,7 +58,7 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
     if (!f) return;
     const r = readTalkgroupFile(await f.text());
     if (!r.talkgroups.length) return setNotice(`${f.name}: no talkgroups found.`);
-    if (set(r.talkgroups, { kind: "file", name: f.name }, f.name, r))
+    if (await set(r.talkgroups, { kind: "file", name: f.name }, f.name, r))
       setNotice(`Loaded ${r.talkgroups.length} talkgroups from ${f.name} into ${sys.shortName}.${r.skipped.length ? ` ${r.skipped.length} row(s) without a number skipped.` : ""}`);
   };
 
@@ -78,7 +78,7 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
             <button className="btn ghost" title="Trunk Recorder CSV, with a header row" onClick={() => downloadText(`${sys.shortName || "system"}.talkgroups.csv`, talkgroupFileText(tgs))}>
               Download
             </button>
-            <button className="btn ghost" onClick={() => set([], undefined, "")}>
+            <button className="btn ghost" onClick={() => void set([], undefined, "")}>
               Clear
             </button>
           </>
@@ -113,8 +113,8 @@ export function TalkgroupsField(props: { sys: TalkgroupsOf; needs?: string; anch
         <RadioReferencePaste
           sys={sys}
           replacing={tgs.length}
-          onUse={(list) => {
-            if (!set(list, { kind: "radioReference" }, "The pasted table")) return;
+          onUse={async (list) => {
+            if (!(await set(list, { kind: "radioReference" }, "The pasted table"))) return;
             setPasting(false);
             setNotice(`Loaded ${list.length} talkgroups from RadioReference into ${sys.shortName}.`);
           }}
@@ -192,7 +192,7 @@ export function UnitNamesField(props: { system: string; value: UnitNames | undef
           if (!f) return;
           const r = readUnitNamesFile(await f.text());
           if (!r.unitNames.length) return setNotice(`${f.name}: no unit names found.`);
-          if (!mayReplaceNames("unitNames", props.system, r.unitNames, f.name)) return;
+          if (!(await mayReplaceNames("unitNames", props.system, r.unitNames, f.name))) return;
           setLoaded(r);
           setUnitNames(props.system, r.unitNames, { kind: "file", name: f.name });
           setNotice(`Loaded ${r.unitNames.length} unit names from ${f.name} into ${props.system}.`);

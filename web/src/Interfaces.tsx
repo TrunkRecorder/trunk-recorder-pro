@@ -15,6 +15,7 @@ import { Switch } from "./SetupLayout.tsx";
 import { Author, InstallStage, newer, Screenshots, STAGES, StoreCard, StorePanel, TierChip, webUrl, type StoreWords } from "./StoreParts.tsx";
 import { useReach } from "./Reach.tsx";
 import type { ApiAccess, Config, InstallProgress, InterfaceInfo, InterfaceListing } from "./protocol.ts";
+import { confirmed } from "./asking.ts";
 
 /** Where interface `port` is, from this browser. */
 const urlOf = (port: number) => `${location.protocol}//${location.hostname}:${port}/`;
@@ -86,8 +87,8 @@ function InterfaceCard(props: { i: InterfaceInfo; listing?: InterfaceListing; in
   const name = m?.name ?? i.id;
   const st = stateOf(i, on);
   const update = listing && m && i.installed && i.reviewed && !listing.unavailable && newer(listing.version, m.version) ? listing : null;
-  const setAccess = (a: ApiAccess) => {
-    if (a === "control" && !confirm(`Give ${name} control?\n\n${CONTROL_WARNING}`)) return;
+  const setAccess = async (a: ApiAccess) => {
+    if (a === "control" && !(await confirmed({ title: `Give ${name} control?`, question: CONTROL_WARNING, action: "Give control" }))) return;
     setInterface(i.id, { access: a });
   };
   return (
@@ -168,9 +169,11 @@ function InterfaceCard(props: { i: InterfaceInfo; listing?: InterfaceListing; in
           <button
             className="btn ghost small danger"
             disabled={!!install}
-            onClick={() => {
-              const what = i.installed ? `Uninstall ${name}? Its pages stop being served.` : `Stop serving ${name}? ${i.folder} stays.`;
-              if (confirm(what)) removeInterface(i.id);
+            onClick={async () => {
+              const ask = i.installed
+                ? { title: `Uninstall ${name}?`, question: "Its pages stop being served.", action: "Uninstall" }
+                : { title: `Stop serving ${name}?`, question: `${i.folder} stays.`, action: "Remove" };
+              if (await confirmed(ask)) removeInterface(i.id);
             }}
           >
             {i.installed ? "Uninstall" : "Remove"}
@@ -404,8 +407,8 @@ const INTERFACE_STORE: StoreWords = {
 function StoreListingCard(props: { l: InterfaceListing; installed?: InterfaceInfo; install?: InstallProgress }) {
   const { l, installed, install: going } = props;
   const have = installed?.manifest?.version;
-  const go = () => {
-    if (!installed && l.access === "control" && !confirm(`${l.name} asks for control.\n\n${CONTROL_WARNING}`)) return;
+  const go = async () => {
+    if (!installed && l.access === "control" && !(await confirmed({ title: `${l.name} asks for control`, question: CONTROL_WARNING, action: "Install" }))) return;
     installFromStore("interface", l.id);
   };
   let action: React.ReactNode;

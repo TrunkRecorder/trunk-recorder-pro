@@ -1628,6 +1628,8 @@ export interface PluginRuntime {
   skipped: number;
   failed: number;
   lastFailure: string;
+  /** Why calls were skipped or failed (what the plugin said of each), most first. */
+  reasons?: { outcome: "skipped" | "failed"; reason: string; calls: number }[];
   log: { time: number; level: "error" | "warn" | "info"; text: string }[];
   metrics?: PluginMetrics | null;
   /** Unix seconds of its last result, success, failure. */

@@ -8,6 +8,7 @@ import { LivePlayer } from "../../docs/api/client.js";
 import { blank, copyOf, copyOverride, copyOwn, copyPerSite, pluginCopies } from "./protocol.ts";
 import { renameSystemRefs } from "./pluginSettings.ts";
 import { configReplaced } from "./rules.ts";
+import { countTotals, runCounted } from "./dash/counts.ts";
 import type {
   ApiAccess,
   OwnPasskey,
@@ -91,6 +92,7 @@ import { talkgroupsReplace, unitNamesReplace } from "./rules.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
 import type { ScanChoice } from "./scanChoice.tsx";
+import { confirmed } from "./asking.ts";
 
 export interface AppState {
   connected: boolean;
@@ -203,6 +205,14 @@ export interface AppState {
   todo: ImportTodo[];
   /** The setup page's tab. */
   setupTab: SetupTab;
+  /** This browser's Reset counts: the since-start totals as they stood then, counted from (dash/counts.ts); null: since start. */
+  countsReset: CountsReset | null;
+}
+
+/** The since-start totals when Reset counts was pressed, by counts.ts's keys, and when (Unix s). */
+export interface CountsReset {
+  at: number;
+  base: Record<string, number>;
 }
 
 export type SetupTab = "systems" | "conventional" | "radios" | "recording" | "access" | "data" | "plugins";
@@ -221,6 +231,7 @@ function routeFromHash(): { view: View; path: string[] } {
 // Remembered in this browser (read while the state below is built, so declared first).
 const TAB_KEY = "trp.setupTab";
 const TODO_KEY = "trp.importTodo";
+const COUNTS_KEY = "trp.countsReset";
 
 let state: AppState = {
   connected: false,
@@ -289,6 +300,7 @@ let state: AppState = {
   guide: null,
   todo: loadTodo(),
   setupTab: loadSetupTab(),
+  countsReset: loadCountsReset(),
 };
 
 /** Recording, or about to be: calls are coming (Starting or Running; not while Stopping). */
@@ -421,6 +433,8 @@ function take(m: FromRecorder): void {
       break;
     case "state":
       set({ phase: m.phase, runError: m.error, ended: m.ended, restartNeeded: m.restartNeeded, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
+      // A new run counts from nothing: what it counts is all since the reset.
+      if (m.phase === "starting") keepCountsReset((k) => !runCounted(k));
       if (m.phase === "idle") set({ nowPlaying: null, stats: null });
       break;
     case "config":
@@ -1058,7 +1072,7 @@ function setNames<L extends NameList>(list: L, system: string, rows: NameRows[L]
  * changes or drops names edited by hand and the user, asked (`what`: what's
  * being loaded, "dc.csv"), says no.
  */
-export function mayReplaceNames(list: NameList, system: string, rows: NameRows[NameList], what: string): boolean {
+export async function mayReplaceNames(list: NameList, system: string, rows: NameRows[NameList], what: string): Promise<boolean> {
   const had: { origin?: Origin }[] = state[list][system] ?? [];
   if (!had.some((r) => r.origin?.kind === "edited")) return true;
   const key = (r: Talkgroup | UnitName) => ("number" in r ? String(r.number) : r.unit);
@@ -1066,7 +1080,7 @@ export function mayReplaceNames(list: NameList, system: string, rows: NameRows[N
     (list === "talkgroups" ? talkgroupsReplace(had as Talkgroup[], rows as Talkgroup[], fromNow({ kind: "file" })) : unitNamesReplace(had as UnitName[], rows as UnitName[], fromNow({ kind: "file" }))).map((r) => [key(r), r]),
   );
   const lost = (had as (Talkgroup | UnitName)[]).filter((r) => r.origin?.kind === "edited" && after.get(key(r))?.origin?.kind !== "edited").length;
-  return !lost || confirm(`${what} replaces ${lost} name${lost === 1 ? "" : "s"} edited by hand. Use it anyway?`);
+  return !lost || confirmed({ title: `${what} replaces ${lost} name${lost === 1 ? "" : "s"} edited by hand`, question: "Use it anyway?", action: "Use it" });
 }
 
 /** System `system`'s talkgroups are now `rows` (`[]`: none), from `from`: saved on the recorder at once. */
@@ -1612,6 +1626,38 @@ export function setSetupTab(setupTab: SetupTab): void {
   }
 }
 
+function loadCountsReset(): CountsReset | null {
+  try {
+    const r = JSON.parse(localStorage.getItem(COUNTS_KEY) ?? "null") as CountsReset | null;
+    return r && typeof r.at === "number" && r.base && typeof r.base === "object" ? r : null;
+  } catch {
+    return null;
+  }
+}
+function saveCountsReset(countsReset: CountsReset | null): void {
+  set({ countsReset });
+  try {
+    if (countsReset) localStorage.setItem(COUNTS_KEY, JSON.stringify(countsReset));
+    else localStorage.removeItem(COUNTS_KEY);
+  } catch {
+    // Kept for this session only.
+  }
+}
+/** Count the since-start totals from now, in this browser (no one else's view changes). */
+export function resetCounts(): void {
+  saveCountsReset({ at: Math.round(Date.now() / 1000), base: countTotals(state) });
+}
+/** Back to counting since start. */
+export function clearCountsReset(): void {
+  saveCountsReset(null);
+}
+/** Keep only the reset's totals `keep` says (the rest count from nothing). */
+function keepCountsReset(keep: (key: string) => boolean): void {
+  const r = state.countsReset;
+  if (!r) return;
+  saveCountsReset({ at: r.at, base: Object.fromEntries(Object.entries(r.base).filter(([k]) => keep(k))) });
+}
+
 function loadTodo(): ImportTodo[] {
   try {
     return JSON.parse(localStorage.getItem(TODO_KEY) ?? "[]") as ImportTodo[];
@@ -2125,8 +2171,8 @@ export function start(): void {
 }
 
 /** Stop recording and end the desktop app (the web build has nothing to quit). */
-export function quitApp(): void {
-  if (isRecording(state.phase) && !confirm("Recording is running. Quit anyway? Calls in progress are saved.")) return;
+export async function quitApp(): Promise<void> {
+  if (isRecording(state.phase) && !(await confirmed({ title: "Recording is running. Quit anyway?", question: "Calls in progress are saved.", action: "Quit" }))) return;
   flushConfig();
   transport.send({ type: "quit" });
 }

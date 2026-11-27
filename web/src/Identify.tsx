@@ -204,7 +204,8 @@ export function WhereFields(props: { value: Where; onChange: (w: Where) => void 
 export function Modal(props: { title: string; onClose: () => void; children: React.ReactNode }) {
   // Focus once on open: an inline ref callback runs again on every render and would pull focus out of the fields.
   const back = useRef<HTMLDivElement>(null);
-  useEffect(() => back.current?.focus(), []);
+  // A field or button inside that took focus itself (autoFocus) keeps it.
+  useEffect(() => void (back.current?.contains(document.activeElement) || back.current?.focus()), []);
   return (
     <div className="modal-back" role="dialog" aria-modal="true" aria-label={props.title} onClick={props.onClose} onKeyDown={(e) => e.key === "Escape" && props.onClose()} tabIndex={-1} ref={back}>
       <div className="modal stack" onClick={(e) => e.stopPropagation()}>

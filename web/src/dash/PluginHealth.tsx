@@ -8,6 +8,7 @@ import { pluginOn, setView, useApp, type AppState } from "../controller.ts";
 import { Card, Choice, Fig, Figs, LiveSpark, Light, Stat, StackedBars, TimeSeries } from "../charts.tsx";
 import { ago, bytes, compact, dur, ms, num, pct } from "../fmt.ts";
 import type { PluginInfo, SeriesData } from "../protocol.ts";
+import { pluginCounted, sinceLabel } from "./counts.ts";
 import { ENDPOINT_LEVEL, K, perIn, perLive, pluginHealth, recentAvg, total, useHistory } from "./data.ts";
 
 /** "packetsSent" → "Packets sent", "bytes_out" → "Bytes out". */
@@ -61,7 +62,10 @@ function useDelivery(id: string) {
   };
 }
 
-function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
+function PluginCard({ s, p: plugin }: { s: AppState; p: PluginInfo }) {
+  // Its results this run, or since this browser's Reset counts.
+  const p = pluginCounted(s, plugin);
+  const counted = s.countsReset ? sinceLabel(s) : "This run";
   const on = pluginOn(s.config, p.id);
   const h = pluginHealth(p, on);
   const r = p.runtime;
@@ -96,12 +100,12 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
       ) : (
         <>
           <div className="src-grid">
-            <Stat label="Sent" value={compact(r.ok)} sub={<Figs inline items={[{ k: "Skipped", v: compact(r.skipped) }, !!m?.bytesSent && { k: "Data", v: bytes(m.bytesSent) }]} />} hint="This run" />
+            <Stat label="Sent" value={compact(r.ok)} sub={<Figs inline items={[{ k: "Skipped", v: compact(r.skipped) }, !!m?.bytesSent && { k: "Data", v: bytes(m.bytesSent) }]} />} hint={counted} />
             <Stat
               label="Failed"
               value={compact(r.failed)}
               level={r.failed > 0 ? "warn" : undefined}
-              sub={tries ? <Figs inline items={[{ k: "Of tries", v: pct((100 * r.failed) / tries, 1), level: r.failed > 0 ? "warn" : undefined }]} /> : "none tried yet"}
+              sub={tries ? <Figs inline items={[{ k: "Of tries", v: pct((100 * r.failed) / tries, 1), level: r.failed > 0 ? "warn" : undefined }]} /> : r.skipped ? "none failed" : "none tried yet"}
               hint={r.lastFailure || undefined}
             />
             <Stat
@@ -139,6 +143,24 @@ function PluginCard({ s, p }: { s: AppState; p: PluginInfo }) {
             <StackedBars parts={minutes} colors={["var(--good)", "var(--muted-mark)", "var(--critical)"]} labels={["sent", "skipped", "failed"]} h={44} titles={minutes.map((c, i) => `${60 - i} min ago: ${c[0]} sent, ${c[1]} skipped, ${c[2]} failed`)} />
             <span className="muted small">last hour, per minute</span>
           </div>
+          {(["failed", "skipped"] as const).map((o) => {
+            const rows = (r.reasons ?? []).filter((x) => x.outcome === o);
+            const of = o === "failed" ? r.failed : r.skipped;
+            return rows.length > 0 && (
+              <div key={o} className="reasons">
+                <span className="muted small">{o === "failed" ? "Why failed" : "Why skipped"}, {counted.toLowerCase()}</span>
+                <ul className="line-list">
+                  {rows.map((x) => (
+                    <li key={x.reason}>
+                      <Fig v={compact(x.calls)} level={o === "failed" ? "warn" : undefined} />
+                      <span>{x.reason}</span>
+                      {of > 0 && <span className="muted small">{pct((100 * x.calls) / of, 0)}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
           {m?.endpoints && m.endpoints.length > 0 && (
             <ul className="line-list">
               {m.endpoints.map((e) => (
