@@ -173,7 +173,6 @@ pub fn hz_of(v: f64) -> Option<f64> {
 #[wasm_bindgen(js_name = rangesOf)]
 pub fn ranges_of(text: &str) -> String {
     let (ranges, bad) = trunk_app::channels::ranges_of(text);
-    let ranges: Vec<_> = ranges.iter().map(|&(lo, hi)| serde_json::json!({ "loHz": lo, "hiHz": hi })).collect();
     serde_json::json!({ "ranges": ranges, "bad": bad }).to_string()
 }
 

@@ -92,10 +92,27 @@ pub const BANDS: &[Band] = &[
     Band { id: "t-band", label: "T-band", lo_hz: 470.0e6, hi_hz: 512.0e6, default_on: false },
 ];
 
+/// A range of frequencies, Hz, as one is asked for: `{ loHz, hiHz }`.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HzRange {
+    pub lo_hz: f64,
+    pub hi_hz: f64,
+}
+
+impl HzRange {
+    /// It, if it is one: both ends above 0, the low end below the high.
+    pub fn checked(self) -> Option<HzRange> {
+        (self.lo_hz.is_finite() && self.hi_hz.is_finite() && self.lo_hz > 0.0 && self.hi_hz > self.lo_hz).then_some(self)
+    }
+}
+
 /// A stretch of spectrum to scan, Hz: one of [`BANDS`] (`band` its id), or a
-/// range of one's own (`band` None).
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// range of one's own (`band` None). As the interface has it: `{ id, loHz, hiHz }`.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanRange {
+    #[serde(rename = "id")]
     pub band: Option<&'static str>,
     pub lo_hz: f64,
     pub hi_hz: f64,
@@ -106,9 +123,9 @@ impl ScanRange {
     pub fn band(id: &str) -> Option<ScanRange> {
         BANDS.iter().find(|b| b.id == id).map(ScanRange::from)
     }
-    /// A range of one's own, Hz; None unless both ends are above 0 and `lo_hz` below `hi_hz`.
-    pub fn own(lo_hz: f64, hi_hz: f64) -> Option<ScanRange> {
-        (lo_hz.is_finite() && hi_hz.is_finite() && lo_hz > 0.0 && hi_hz > lo_hz).then_some(ScanRange { band: None, lo_hz, hi_hz })
+    /// A range of one's own; None unless it is one ([`HzRange::checked`]).
+    pub fn own(r: HzRange) -> Option<ScanRange> {
+        r.checked().map(|r| ScanRange { band: None, lo_hz: r.lo_hz, hi_hz: r.hi_hz })
     }
 }
 
@@ -2224,9 +2241,10 @@ mod tests {
     fn a_range_of_ones_own_must_be_one() {
         assert_eq!(ScanRange::band("uhf"), Some(ScanRange { band: Some("uhf"), lo_hz: 450.0e6, hi_hz: 470.0e6 }));
         assert_eq!(ScanRange::band("uhf2"), None);
-        assert_eq!(ScanRange::own(420.0e6, 450.0e6), Some(ScanRange { band: None, lo_hz: 420.0e6, hi_hz: 450.0e6 }));
+        let r = |lo_hz: f64, hi_hz: f64| HzRange { lo_hz, hi_hz };
+        assert_eq!(ScanRange::own(r(420.0e6, 450.0e6)), Some(ScanRange { band: None, lo_hz: 420.0e6, hi_hz: 450.0e6 }));
         for (lo, hi) in [(450.0e6, 420.0e6), (440.0e6, 440.0e6), (0.0, 10.0e6), (-5.0e6, 10.0e6), (f64::NAN, 1.0e6), (1.0e6, f64::INFINITY)] {
-            assert_eq!(ScanRange::own(lo, hi), None, "{lo}-{hi}");
+            assert_eq!(ScanRange::own(r(lo, hi)), None, "{lo}-{hi}");
         }
     }
 
@@ -2234,7 +2252,7 @@ mod tests {
     fn a_range_of_ones_own_is_scanned() {
         let rate = 2_400_000.0;
         let half = rate * USABLE / 2.0;
-        let own = |lo: f64, hi: f64| ScanRange::own(lo * 1e6, hi * 1e6).unwrap();
+        let own = |lo: f64, hi: f64| ScanRange::own(HzRange { lo_hz: lo * 1e6, hi_hz: hi * 1e6 }).unwrap();
         let r = own(430.0, 436.5);
         let hops = plan(&[r], rate, (24e6, 1766e6));
         assert!(!hops.is_empty() && hops.iter().all(|h| h.band == Some(r)));

@@ -54,6 +54,7 @@ import type {
   TuneReport,
   Spectrum,
   SurveyBand,
+  SurveyScan,
   Capability,
   SurveyState,
   LicenseResultRow,
@@ -91,7 +92,6 @@ import { editedNow, fromNow } from "./origins.ts";
 import { talkgroupsReplace, unitNamesReplace } from "./rules.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
-import type { ScanChoice } from "./scanChoice.tsx";
 import { confirmed } from "./asking.ts";
 
 export interface AppState {
@@ -1691,12 +1691,12 @@ export function listDir(path: string): void {
  * (`surveyFor`), just its frequencies, each listened to `listenS` (absent:
  * the recorder's default).
  */
-export function startSurvey(radio: number | Source, scan: ScanChoice, findGain: boolean, listenS?: number): void {
+export function startSurvey(radio: number | Source, scan: SurveyScan, findGain: boolean, listenS?: number): void {
   flushConfig();
   set({ error: null, surveySpectrum: null, surveyLicenses: null });
   const lookFor = state.surveyFor ? lookForMessage(state.surveyFor, listenS) : undefined;
   const where = typeof radio === "number" ? { source: radio } : { source: 0, radio };
-  transport.send({ type: "surveyStart", ...where, bands: scan.bands, ...(scan.ranges.length ? { ranges: scan.ranges } : {}), findGain, ...(lookFor ? { lookFor } : {}) });
+  transport.send({ type: "surveyStart", ...where, ...scan, findGain, ...(lookFor ? { lookFor } : {}) });
 }
 
 /**
@@ -1742,7 +1742,7 @@ export function findOnAir(l: LookingFor): string | null {
   if (!src && !spare) return "Add a radio first (Setup → Radios).";
   const radio = spare ?? src!;
   if (desktopOnly(radio) && !can("drivers")) return "Its radio needs the desktop app.";
-  startSurvey(spare ?? 0, { bands: bandsHolding(lookedFreqs(l), state.surveyBands), ranges: [] }, radio.type === "rtlsdr");
+  startSurvey(spare ?? 0, { bands: bandsHolding(lookedFreqs(l), state.surveyBands) }, radio.type === "rtlsdr");
   return null;
 }
 

@@ -82,7 +82,7 @@ test("you have it already: by its call sign, updated with the licenses it lacks"
 
 test("the survey marks its signals, first; a system added from one of its control channels gets its licenses and name", () => {
   connected(defaultConfig(), {
-    type: "survey", stage: "done", source: 0, bands: ["800"], ranges: [], message: "", error: null, progress: null, monitor: null, suggest: null,
+    type: "survey", stage: "done", source: 0, message: "", error: null, progress: null, monitor: null, suggest: null,
     candidates: [
       { freqHz: 851_012_000, correctedHz: 851_012_500, band: { id: "800", loHz: 851e6, hiHz: 869e6 }, snrDb: 30, widthHz: 12_500, kind: "control", frames: 10, good: 10, bad: 0, modulation: "", identity: { nac: 0x123 } },
       { freqHz: 857_987_000, correctedHz: 857_987_500, band: { id: "800", loHz: 851e6, hiHz: 869e6 }, snrDb: 25, widthHz: 12_500, kind: "control", frames: 10, good: 10, bad: 0, modulation: "", identity: { nac: 0x443 } },

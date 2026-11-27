@@ -186,7 +186,6 @@ pub fn cli(a: &crate::Args) {
     if let Some(b) = bad.first() {
         crate::die(&format!("--ranges: not a range: \"{b}\" (write them as 420-450, MHz or Hz)"));
     }
-    let ranges: Vec<Value> = ranges.iter().map(|&(lo, hi)| json!({ "loHz": lo, "hiHz": hi })).collect();
     let freqs: Vec<f64> = a.get("freqs").map(|f| f.split(',').filter_map(|x| x.trim().parse::<f64>().ok()).map(|m| (m * 1e6).round()).collect()).unwrap_or_default();
     let look_for = (!freqs.is_empty()).then(|| json!({ "freqsHz": freqs, "type": a.get("type"), "listenS": a.get("listen").and_then(|s| s.parse::<f64>().ok()) }));
     let mut req = Request::from_json(&json!({ "source": 0, "bands": bands, "ranges": ranges, "findGain": a.get("gain").is_none() && !a.flag("no-gain"), "lookFor": look_for }));

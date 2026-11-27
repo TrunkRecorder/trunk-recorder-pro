@@ -3108,19 +3108,6 @@
                 "null"
               ]
             },
-            "bands": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            },
-            "ranges": {
-              "type": "array",
-              "items": {
-                "$ref": "#/definitions/HzRange"
-              },
-              "description": "Ranges of one's own, scanned beside the bands."
-            },
             "lookFor": {
               "anyOf": [
                 {
@@ -3254,13 +3241,11 @@
             }
           },
           "required": [
-            "bands",
             "candidates",
             "error",
             "message",
             "monitor",
             "progress",
-            "ranges",
             "source",
             "stage",
             "suggest",
@@ -10734,17 +10719,8 @@
         },
         {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "type": {
-              "type": "string",
-              "const": "surveyStart"
-            },
-            "source": {
-              "type": "number"
-            },
-            "radio": {
-              "$ref": "#/definitions/Source"
-            },
             "bands": {
               "type": "array",
               "items": {
@@ -10757,6 +10733,16 @@
                 "$ref": "#/definitions/HzRange"
               }
             },
+            "type": {
+              "type": "string",
+              "const": "surveyStart"
+            },
+            "source": {
+              "type": "number"
+            },
+            "radio": {
+              "$ref": "#/definitions/Source"
+            },
             "findGain": {
               "type": "boolean"
             },
@@ -10765,12 +10751,11 @@
             }
           },
           "required": [
-            "type",
-            "source",
             "bands",
-            "findGain"
-          ],
-          "additionalProperties": false
+            "findGain",
+            "source",
+            "type"
+          ]
         },
         {
           "type": "object",

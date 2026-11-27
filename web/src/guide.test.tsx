@@ -27,14 +27,14 @@ const render = () => renderToString(<ScanStep s={snapshot()} c={snapshot().confi
 const text = (html: string) => html.replace(/<!-- -->/g, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 
 test("Setup guide: scanning shows how far and how many found as figures", () => {
-  connect({ type: "survey", stage: "scanning", source: 0, bands: ["800"], ranges: [], message: "", error: null, progress: { hop: 6, hops: 10, band: { id: "800", loHz: 851e6, hiHz: 869e6 }, centerHz: 855e6 }, candidates: [], monitor: null, suggest: null });
+  connect({ type: "survey", stage: "scanning", source: 0, message: "", error: null, progress: { hop: 6, hops: 10, band: { id: "800", loHz: 851e6, hiHz: 869e6 }, centerHz: 855e6 }, candidates: [], monitor: null, suggest: null });
   const t = text(render());
   assert.match(t, /Swept 50 %/, t);
   assert.match(t, /Found 0/);
 });
 
 test("Setup guide: listening to a control channel shows its figures, each labelled", () => {
-  connect({ type: "survey", stage: "monitoring", source: 0, bands: ["800"], ranges: [], message: "", error: null, progress: null, candidates: [], monitor, suggest: null });
+  connect({ type: "survey", stage: "monitoring", source: 0, message: "", error: null, progress: null, candidates: [], monitor, suggest: null });
   const html = render();
   const t = text(html);
   assert.match(t, /Control channel 857\.9875 MHz/, t);

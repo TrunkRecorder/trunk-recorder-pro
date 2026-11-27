@@ -2,7 +2,7 @@
 import "./testEnv.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canScan, savedPick, scanRangeLabel } from "./scanChoice.tsx";
+import { canScan, savedPick, savePick, scanRangeLabel } from "./scanChoice.tsx";
 import { startSurvey, transport } from "./controller.ts";
 import type { SurveyBand, ToRecorder } from "./protocol.ts";
 
@@ -29,8 +29,12 @@ test("a band is shown by its name, a range by its numbers", () => {
 test("bands and ranges are remembered alike", () => {
   store.clear();
   assert.deepEqual(savedPick(BANDS), { bands: ["800", "uhf"], ranges: { ranges: [], bad: [] } }, "nothing kept: the usual bands");
-  store.set("trp.surveyChoice", JSON.stringify({ bands: ["uhf-420", "gone"], ranges: [{ loHz: 433e6, hiHz: 435e6 }, { loHz: 5, hiHz: 1 }] }));
-  assert.deepEqual(savedPick(BANDS), { bands: ["uhf-420"], ranges: { ranges: [{ loHz: 433e6, hiHz: 435e6 }], bad: [] } }, "a band gone and a range that isn't one dropped");
+  store.set("trp.surveyChoice", JSON.stringify({ bands: ["uhf-420", "gone"], ranges: "433-435, 5-1" }));
+  assert.deepEqual(savedPick(BANDS), { bands: ["uhf-420"], ranges: { ranges: [{ loHz: 433e6, hiHz: 435e6 }], bad: ["5-1"] } }, "a band gone dropped; the ranges read as the field reads them");
+  // What a scan started with comes back as it was.
+  const pick = { bands: ["uhf"], ranges: { ranges: [{ loHz: 433_050_000, hiHz: 434_790_000 }, { loHz: 851e6, hiHz: 852e6 }], bad: [] } };
+  savePick(pick);
+  assert.deepEqual(savedPick(BANDS), pick);
   store.set("trp.surveyChoice", "not json");
   assert.deepEqual(savedPick(BANDS).bands, ["800", "uhf"]);
 });
@@ -50,6 +54,6 @@ test("a scan is started with its ranges, in Hz, beside its bands", () => {
   startSurvey(0, { bands: [], ranges: [{ loHz: 420e6, hiHz: 450e6 }] }, false);
   assert.deepEqual(start(), { type: "surveyStart", source: 0, bands: [], ranges: [{ loHz: 420e6, hiHz: 450e6 }], findGain: false });
   // None: left out, as before there were any.
-  startSurvey(0, { bands: ["uhf"], ranges: [] }, false);
+  startSurvey(0, { bands: ["uhf"] }, false);
   assert.deepEqual(start(), { type: "surveyStart", source: 0, bands: ["uhf"], findGain: false });
 });

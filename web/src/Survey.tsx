@@ -577,7 +577,7 @@ export function SurveyPanel(props: { c: Config }) {
   const lookingFor = s.surveyFor;
   const sought = lookingFor?.fcc ?? null;
   // (Looking for a system: just its frequencies, the bands that hold them.)
-  const scan = lookingFor ? { bands: bandsHolding(lookedFreqs(lookingFor), s.surveyBands), ranges: [] } : choice.scan;
+  const scan = lookingFor ? { bands: bandsHolding(lookedFreqs(lookingFor), s.surveyBands) } : choice.scan;
   // The radio: a source ("0", "1", …), or a spare one no source uses ("spare:…"), which may scan while recording.
   const spares = spareRadios(s);
   const [radioPick, setRadioPick] = useState<string | null>(null);

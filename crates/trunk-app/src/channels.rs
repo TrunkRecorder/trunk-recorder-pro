@@ -47,6 +47,7 @@
 //!   writes them in some locales. Blank rows and `#` comments are skipped.
 
 use trunk_core::nxdn::Rate;
+use trunk_core::survey::HzRange;
 use trunk_core::trunk::{Access, ConvMode};
 
 use crate::config::{Channel, Stereo};
@@ -99,18 +100,17 @@ pub fn hz_of(v: f64) -> Option<f64> {
 }
 
 /// A range of frequencies as typed, `lo-hi` (spaces around the dash or not; an en dash too, as a
-/// range is shown), each end as [`hz_of`] reads it (`420-450`, `851000000-852000000`): (lo, hi),
-/// Hz. None unless lo is below hi.
-pub fn range_of(text: &str) -> Option<(f64, f64)> {
+/// range is shown), each end as [`hz_of`] reads it (`420-450`, `851000000-852000000`). None
+/// unless it is one ([`HzRange::checked`]).
+pub fn range_of(text: &str) -> Option<HzRange> {
     let (lo, hi) = text.split_once(['-', '–'])?;
     let end = |s: &str| hz_of(s.trim().parse().ok()?);
-    let (lo, hi) = (end(lo)?, end(hi)?);
-    (hi > lo).then_some((lo, hi))
+    HzRange { lo_hz: end(lo)?, hi_hz: end(hi)? }.checked()
 }
 
 /// Ranges as typed, commas between ([`range_of`]): the ranges, in order and each once, and the
 /// parts that aren't one, as typed.
-pub fn ranges_of(text: &str) -> (Vec<(f64, f64)>, Vec<String>) {
+pub fn ranges_of(text: &str) -> (Vec<HzRange>, Vec<String>) {
     let (mut ranges, mut bad) = (Vec::new(), Vec::new());
     for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
         match range_of(part) {
@@ -370,18 +370,19 @@ mod tests {
 
     #[test]
     fn ranges_are_read_as_frequencies_are() {
-        assert_eq!(range_of("420-450"), Some((420e6, 450e6)));
-        assert_eq!(range_of(" 433.05 - 434.79 "), Some((433_050_000.0, 434_790_000.0)));
+        let r = |lo_hz: f64, hi_hz: f64| HzRange { lo_hz, hi_hz };
+        assert_eq!(range_of("420-450"), Some(r(420e6, 450e6)));
+        assert_eq!(range_of(" 433.05 - 434.79 "), Some(r(433_050_000.0, 434_790_000.0)));
         // Hz as Hz, as everywhere else; the ends may differ.
-        assert_eq!(range_of("851000000-852000000"), Some((851e6, 852e6)));
-        assert_eq!(range_of("851-852000000"), Some((851e6, 852e6)));
+        assert_eq!(range_of("851000000-852000000"), Some(r(851e6, 852e6)));
+        assert_eq!(range_of("851-852000000"), Some(r(851e6, 852e6)));
         // As the page shows one.
-        assert_eq!(range_of("433.05–434.79"), Some((433_050_000.0, 434_790_000.0)));
+        assert_eq!(range_of("433.05–434.79"), Some(r(433_050_000.0, 434_790_000.0)));
         for bad in ["450-420", "440-440", "0-10", "-5-10", "abc", "420", "420-", "420-abc", "inf-450", ""] {
             assert_eq!(range_of(bad), None, "{bad:?}");
         }
         let (ranges, bad) = ranges_of("420-450, abc,, 433-435 ,420-450, 450-420");
-        assert_eq!(ranges, [(420e6, 450e6), (433e6, 435e6)]);
+        assert_eq!(ranges, [r(420e6, 450e6), r(433e6, 435e6)]);
         assert_eq!(bad, ["abc", "450-420"]);
         assert_eq!(ranges_of("  "), (vec![], vec![]));
     }
