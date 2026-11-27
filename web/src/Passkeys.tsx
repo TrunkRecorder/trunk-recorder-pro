@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { addPasskey, passkeyName, removeApp, signOut, signOutEverywhere, useSelect, type SignedInApp } from "./controller.ts";
 import { Field } from "./inputs.tsx";
 import type { ApiAccess, AuthPasskey } from "./protocol.ts";
+import { confirmed } from "./asking.ts";
 
 /** What a role is called here. */
 const role = (a: ApiAccess) => (a === "control" ? "Admin" : "View");
@@ -102,7 +103,8 @@ export function AddPasskey() {
 function SignOutEverywhere() {
   const [problem, setProblem] = useState<string | null>(null);
   const go = async () => {
-    if (!confirm("Sign out everywhere? Every browser and app signed in as you signs in again, this one too. Access tokens keep working.")) return;
+    const question = "Every browser and app signed in as you signs in again, this one too. Access tokens keep working.";
+    if (!(await confirmed({ title: "Sign out everywhere?", question, action: "Sign out" }))) return;
     setProblem(await signOutEverywhere());
   };
   return (

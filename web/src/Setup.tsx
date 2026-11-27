@@ -100,7 +100,8 @@ import { lookForSystem } from "./lookFor.ts";
 import { addCard, Card, ExpandAll, Group, Section, setCardOpen, Switch } from "./SetupLayout.tsx";
 import { TalkgroupsField, UnitNamesField } from "./TalkgroupsField.tsx";
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "./NameFields.tsx";
-import { ConfirmRemove, ManageData, RemoveSystem } from "./DataTools.tsx";
+import { ManageData, RemoveSystem } from "./DataTools.tsx";
+import { confirmed } from "./asking.ts";
 import { FolderCheck } from "./FolderCheck.tsx";
 import { AccessSection } from "./Access.tsx";
 import { BiasT, DraftInput, Field, FileInput, NumberInput, ReleaseSlider, TextInput, Toggle } from "./inputs.tsx";
@@ -1041,7 +1042,6 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
   const tuned = src.centerHz || auto;
   // A stream: audio, no band, gain or crystal to set.
   const audio = !!SOURCE_KINDS[src.type].audio;
-  const [removing, setRemoving] = useState(false);
 
   return (
     <Card
@@ -1063,22 +1063,16 @@ export function SourceCard(props: { c: Config; i: number; advice?: Advice | null
       }
       actions={
         c.sources.length > 1 && (
-          <>
-            <button className="btn ghost small" onClick={() => setRemoving(true)}>
-              Remove
-            </button>
-            {removing && (
-              <ConfirmRemove
-                title={`Remove ${sourceTitle(c, i)}?`}
-                question="Its settings go with it."
-                onRemove={() => {
-                  web?.removeFile(i);
-                  updateConfig((x) => void x.sources.splice(i, 1));
-                }}
-                onClose={() => setRemoving(false)}
-              />
-            )}
-          </>
+          <button
+            className="btn ghost small"
+            onClick={async () => {
+              if (!(await confirmed({ title: `Remove ${sourceTitle(c, i)}?`, question: "Its settings go with it.", action: "Remove" }))) return;
+              web?.removeFile(i);
+              updateConfig((x) => void x.sources.splice(i, 1));
+            }}
+          >
+            Remove
+          </button>
         )
       }
       note={needs && <div className="field-needs set-card-needs">{needs}</div>}
@@ -2084,11 +2078,10 @@ export function ConventionalPanel(props: { c: Config; k: number }) {
                 <span className="spacer" />
                 <button
                   className="btn ghost small danger"
-                  onClick={() => {
-                    if (window.confirm(`Remove all ${chans.length} conventional channels?`)) {
-                      ids.current = [];
-                      edit((x) => void (x.channels = []));
-                    }
+                  onClick={async () => {
+                    if (!(await confirmed({ title: `Remove all ${chans.length} conventional channels?`, action: "Remove all" }))) return;
+                    ids.current = [];
+                    edit((x) => void (x.channels = []));
                   }}
                 >
                   Remove all channels
@@ -2632,14 +2625,15 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
   const at = `${sys.shortName}-${k}`;
   const todo = openTodos(useApp()).filter((t) => t.target === `site-${at}` || t.target === `cc-${at}`).length;
   const typeD = sys.type === "nxdn" && sys.nxdnType === "typeD";
-  const [removing, setRemoving] = useState(false);
-  const remove = () => (sys.sites.length === 1 ? props.onRemoveSystem() : setRemoving(true));
-  const removed = () =>
+  const remove = async () => {
+    if (sys.sites.length === 1) return props.onRemoveSystem();
+    if (!(await confirmed({ title: `Remove the site ${name} from ${sys.shortName}?`, action: "Remove" }))) return;
     updateConfig((x) => {
       const s = x.systems[i];
       if (s.preferredSite?.toLowerCase() === name.toLowerCase()) delete s.preferredSite;
       s.sites.splice(k, 1);
     });
+  };
   return (
     <Card
       cardKey={siteKey(sys, site)}
@@ -2667,7 +2661,6 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
           <button className="btn ghost small" onClick={remove}>
             Remove
           </button>
-          {removing && <ConfirmRemove title={`Remove the site ${name} from ${sys.shortName}?`} onRemove={removed} onClose={() => setRemoving(false)} />}
         </>
       }
     >
@@ -2826,7 +2819,7 @@ export function SystemCard(props: { c: Config; i: number }) {
   };
   // The other system's sites move here (each named as its system was, unless it has a name); this one's settings stay,
   // but for plugin settings a site can have of its own (an uploader's system ID): those go to the sites that move.
-  const join = (other: System) => {
+  const join = async (other: System) => {
     const j = c.systems.indexOf(other);
     const dropped = SYSTEM_OWN.filter(([k]) => other[k] !== undefined && other[k] !== "" && JSON.stringify(other[k]) !== JSON.stringify(sys[k])).map(([, w]) => w);
     const trial = structuredClone(c);
@@ -2835,11 +2828,10 @@ export function SystemCard(props: { c: Config; i: number }) {
     const [theirs, mine] = [app.talkgroups[other.shortName], app.talkgroups[sys.shortName]];
     if (theirs && mine && JSON.stringify(theirs) !== JSON.stringify(mine)) dropped.push("talkgroups");
     const n = other.sites.length;
-    const ask =
-      `Make ${other.shortName} a site${n === 1 ? "" : "s"} of ${sys.shortName}? ` +
+    const question =
       `Its ${n === 1 ? "site moves" : `${n} sites move`} here and ${other.shortName} is removed; its recordings stay on disk.` +
       (dropped.length ? ` Its ${dropped.join(", ")} ${dropped.length === 1 ? "is" : "are"} dropped: ${sys.shortName}'s are kept.` : "");
-    if (j < 0 || !confirm(ask)) return;
+    if (j < 0 || !(await confirmed({ title: `Make ${other.shortName} a site${n === 1 ? "" : "s"} of ${sys.shortName}?`, question, action: "Make it one system" }))) return;
     updateConfig((x) => {
       const to = x.systems[i];
       const from = x.systems[j];

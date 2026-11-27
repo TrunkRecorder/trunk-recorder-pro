@@ -91,6 +91,7 @@ import { editedNow, fromNow } from "./origins.ts";
 import { talkgroupsReplace, unitNamesReplace } from "./rules.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
+import { confirmed } from "./asking.ts";
 
 export interface AppState {
   connected: boolean;
@@ -1070,7 +1071,7 @@ function setNames<L extends NameList>(list: L, system: string, rows: NameRows[L]
  * changes or drops names edited by hand and the user, asked (`what`: what's
  * being loaded, "dc.csv"), says no.
  */
-export function mayReplaceNames(list: NameList, system: string, rows: NameRows[NameList], what: string): boolean {
+export async function mayReplaceNames(list: NameList, system: string, rows: NameRows[NameList], what: string): Promise<boolean> {
   const had: { origin?: Origin }[] = state[list][system] ?? [];
   if (!had.some((r) => r.origin?.kind === "edited")) return true;
   const key = (r: Talkgroup | UnitName) => ("number" in r ? String(r.number) : r.unit);
@@ -1078,7 +1079,7 @@ export function mayReplaceNames(list: NameList, system: string, rows: NameRows[N
     (list === "talkgroups" ? talkgroupsReplace(had as Talkgroup[], rows as Talkgroup[], fromNow({ kind: "file" })) : unitNamesReplace(had as UnitName[], rows as UnitName[], fromNow({ kind: "file" }))).map((r) => [key(r), r]),
   );
   const lost = (had as (Talkgroup | UnitName)[]).filter((r) => r.origin?.kind === "edited" && after.get(key(r))?.origin?.kind !== "edited").length;
-  return !lost || confirm(`${what} replaces ${lost} name${lost === 1 ? "" : "s"} edited by hand. Use it anyway?`);
+  return !lost || confirmed({ title: `${what} replaces ${lost} name${lost === 1 ? "" : "s"} edited by hand`, question: "Use it anyway?", action: "Use it" });
 }
 
 /** System `system`'s talkgroups are now `rows` (`[]`: none), from `from`: saved on the recorder at once. */
@@ -2167,8 +2168,8 @@ export function start(): void {
 }
 
 /** Stop recording and end the desktop app (the web build has nothing to quit). */
-export function quitApp(): void {
-  if (isRecording(state.phase) && !confirm("Recording is running. Quit anyway? Calls in progress are saved.")) return;
+export async function quitApp(): Promise<void> {
+  if (isRecording(state.phase) && !(await confirmed({ title: "Recording is running. Quit anyway?", question: "Calls in progress are saved.", action: "Quit" }))) return;
   flushConfig();
   transport.send({ type: "quit" });
 }
