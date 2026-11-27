@@ -121,8 +121,8 @@ Plugins are set up in **Setup**, like the rest of the recorder, and their settin
 - **Settings for the whole recorder** are on Setup's **Plugins** tab. Each installed plugin has a
   card there with an **On/Off** switch and its settings. Like the cards on the Systems,
   Conventional and Radios tabs, each folds to its head (click it), with **Expand all** and
-  **Collapse all** when there are several; a folded card still shows its switch, its state (**Needs setting up**,
-  say), and **not applied** when it has changes waiting for Apply. The **Set up** button on a plugin's card
+  **Collapse all** when there are several; a folded card still shows its switch and its state (**Needs setting up**,
+  say). The **Set up** button on a plugin's card
   on the Plugins page takes you there.
 - **Settings for each system** (an upload key, say) are on that system's card, under **Plugins**,
   once the plugin is on. Conventional systems get them too, once they have a channel. The plugin's
@@ -169,14 +169,6 @@ While recording, changing a plugin's settings, turning a plugin on or off, or ch
 settings restarts the plugins with the new settings (**Changes restart it.**, says the card). The
 old processes get 10 seconds to finish and save their queues, and the new ones start as soon as
 they've exited, so no calls are lost in between.
-
-Settings that would restart a plugin aren't saved as you type while recording: they're held until
-you choose to, so a restart is one you chose rather than one per field. Under the form, *Not
-applied · Apply restarts …* has **Apply** and **Discard**. Wherever such changes are (a plugin's
-card, a system's or a site's plugin settings), a pill at the bottom of the window counts them:
-**Show** takes you to each in turn (its tab, its card opened), and **Apply all** saves them all in
-one go, so the plugins restart once. Held changes are kept in this browser while you move between
-pages, until applied or discarded.
 
 ### In the config file
 

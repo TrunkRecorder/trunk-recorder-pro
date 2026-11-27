@@ -1477,12 +1477,6 @@ table.taps tr.auto td { color: var(--muted); }
 /* Plugin settings held until Apply (Plugins.tsx Held). */
 .held-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; padding: 8px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; background: var(--panel); }
 .held-bar > span { flex: 1 1 200px; }
-/* Held plugin changes, wherever they are: floating at the bottom of the window until applied. */
-.held-pill { position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 40; display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 32px); padding: 6px 6px 6px 16px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 999px; background: var(--panel); box-shadow: 0 6px 24px rgb(0 0 0 / 0.28); font-size: 13.5px; }
-.held-pill > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.held-pill .btn { border-radius: 999px; flex: none; }
-@media (prefers-reduced-motion: no-preference) { .held-pill { animation: held-pill-in 0.18s ease-out; } }
-@keyframes held-pill-in { from { opacity: 0; transform: translate(-50%, 8px); } }
 
 /* Setup: whether this browser's changes are saved (controller saveStatus). */
 .setup-tabs .save-status { margin: auto 4px auto auto; }

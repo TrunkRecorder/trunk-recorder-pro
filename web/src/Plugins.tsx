@@ -9,7 +9,7 @@
 // The settings forms are drawn from the schemas plugins describe themselves
 // with (trunk-recorder-plugin's schema.rs lists the subset).
 
-import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   addPlugin,
   addSystemPluginCopy,
@@ -38,7 +38,6 @@ import {
   type PluginActionResult,
   type SystemRef,
   isRecording,
-  mayEdit,
 } from "./controller.ts";
 import { activeSystems, siteNameOf } from "./config.ts";
 import { EveryDelays, PluginDelay } from "./Delays.tsx";
@@ -617,8 +616,6 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
       {plugins.flatMap((p) => {
         const m = p.manifest!;
         const every = c.plugins?.[p.id]?.settings;
-        // Where a held change of this system's shows (Setup's `need-` ids: its tab, and its card).
-        const heldAt = `${typeof props.system === "number" ? "sysplug" : "convplug"}-${sys.shortName}-${p.id}`;
         const copies = pluginCopies(sys.plugins?.[p.id]);
         const idOf = (i: number) => `sp-${p.id}-${sys.shortName}${i ? `-${i + 1}` : ""}`;
         return (copies.length ? copies : [undefined]).map((values, i) => {
@@ -642,7 +639,7 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
               {hasFields(m.system_config) && (
                 <>
                   {!copySetUp(m, values, every) && <p className="field-hint warn-text">Not set up for {sys.shortName} yet.</p>}
-                  <Held id={`copy:${sys.shortName}:${p.id}:${i}`} name={m.name} plugin={p.id} target={`${heldAt}-${i}-held`} saved={copyOwn(values)} save={(v) => setSystemPluginSettings(props.system, p.id, v, i)} restarts>
+                  <Held id={`copy:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={copyOwn(values)} save={(v) => setSystemPluginSettings(props.system, p.id, v, i)} restarts>
                     {(own, change) => <SchemaFields schema={m.system_config} values={own} inherited={every} onChange={change} id={idOf(i)} />}
                   </Held>
                 </>
@@ -682,14 +679,14 @@ export function SystemPluginSettings(props: { system: SystemRef }) {
                           {name}
                           <span className="muted"> · {set.length ? set.map(([k]) => labelOf(m.system_config, k)).join(", ") : `as ${sys.shortName}`}</span>
                         </summary>
-                        <Held id={`site:${sys.shortName}:${p.id}:${i}:${site.id}`} name={m.name} plugin={p.id} target={`${heldAt}-${i}-site${site.id}-held`} saved={own} save={(v) => setSystemPluginSiteSettings(props.system, p.id, site.id!, v, i)} restarts>
+                        <Held id={`site:${sys.shortName}:${p.id}:${i}:${site.id}`} name={m.name} saved={own} save={(v) => setSystemPluginSiteSettings(props.system, p.id, site.id!, v, i)} restarts>
                           {(o, change) => <SchemaFields schema={siteSchema(m)} values={o} inherited={copyOwn(values)} onChange={change} id={`${idOf(i)}-site${site.id}`} />}
                         </Held>
                       </details>
                     );
                   })}
               {overridable(m).length > 0 && (
-                <Held id={`override:${sys.shortName}:${p.id}:${i}`} name={m.name} plugin={p.id} target={`${heldAt}-${i}-override-held`} saved={over} save={(v) => setSystemPluginOverride(props.system, p.id, v, i)} restarts>
+                <Held id={`override:${sys.shortName}:${p.id}:${i}`} name={m.name} saved={over} save={(v) => setSystemPluginOverride(props.system, p.id, v, i)} restarts>
                   {(o, change) => <PluginOverride m={m} over={o} every={every} system={sys.shortName} id={`${idOf(i)}-ov`} onChange={change} />}
                 </Held>
               )}
@@ -806,7 +803,6 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config; n: number }) {
   const systems = systemsOf(c);
   const ownSettings = !!m && hasFields(m.system_config);
   const ignoring = m ? ignoringSystems(m, c, p.id) : [];
-  const pending = useHeldChanges().filter((h) => h.plugin === p.id).length;
   return (
     <SetupCard
       cardKey={plugKey(p)}
@@ -816,15 +812,12 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config; n: number }) {
       head={
         <PluginHead
           p={p}
-          on={on}
           tone={st.tone}
           state={state}
           titleId={`ps-${p.id}`}
-          noSwitch
-          extra={pending > 0 && <span className="chip warn">not applied</span>}
         />
       }
-      actions={<Switch label={on ? "On" : "Off"} title={p.problem ? "It can't run: see below" : ""} checked={on} disabled={!!p.problem && !on} onChange={(v) => setPluginEnabled(p.id, v)} />}
+      actions={<PluginSwitch p={p} on={on} />}
       note={imported && <div className="field-needs set-card-needs">{imported.text}</div>}
     >
       <div className="plugin-card-body stack">
@@ -920,7 +913,7 @@ function PluginSetupCard(props: { p: PluginInfo; c: Config; n: number }) {
 function PluginSettingsForm(props: { p: PluginInfo; m: PluginManifest; settings: PluginValues | undefined; needs: string[]; page?: boolean }) {
   const { p, m } = props;
   return (
-    <Held id={`settings:${p.id}`} name={m.name} plugin={p.id} target={props.page ? { page: p.id } : `plugin-${p.id}-held`} saved={props.settings ?? {}} save={(v) => setPluginSettings(p.id, v)} restarts={!m.live_settings}>
+    <Held id={`settings:${p.id}`} name={m.name} saved={props.settings ?? {}} save={(v) => setPluginSettings(p.id, v)} restarts={!m.live_settings}>
       {(values, set) => <PluginSettingsFields {...props} values={values} set={set} />}
     </Held>
   );
@@ -970,78 +963,36 @@ function PluginSettingsFields(props: { p: PluginInfo; m: PluginManifest; values:
  * system's copy of it, always): held here until Apply, so a restart is one
  * the user chose, not one per field. Discard drops them. Held by form `id`
  * while the page changes; changed when not recording, saved at once.
- * [`HeldChanges`] counts them wherever they are, takes you to each, and
- * applies them all in one save (so plugins restart once).
  */
-export type HeldChange = {
-  values: PluginValues;
-  save: (v: PluginValues) => void;
-  name: string;
-  /** The plugin's id. */
-  plugin: string;
-  /** Where its Apply is: a Setup `need-` id (tab and card follow from it), or a plugin's own page. */
-  target: HeldTarget;
-};
-export type HeldTarget = string | { page: string };
-const held = new Map<string, HeldChange>();
+const held = new Map<string, PluginValues>();
 const heldViews = new Set<() => void>();
-let heldList: (HeldChange & { id: string })[] = [];
-function tellHeld(): void {
-  heldList = [...held].map(([id, h]) => ({ ...h, id }));
-  heldViews.forEach((f) => f());
-}
 
-/** The changes held now, in the order they were made. */
-export function useHeldChanges(): readonly (HeldChange & { id: string })[] {
-  return useSyncExternalStore(
-    (f) => {
-      heldViews.add(f);
-      return () => void heldViews.delete(f);
-    },
-    () => heldList,
-    () => heldList,
-  );
-}
-
-/** Hold a change to form `id`'s plugin settings until it's applied ([`Held`]). */
-export function holdPluginChange(id: string, h: HeldChange): void {
-  held.set(id, h);
-  tellHeld();
-}
-
-/** Save every held change at once: one config save, so the plugins restart once. */
-export function applyHeldChanges(): void {
-  const all = [...held.values()];
-  held.clear();
-  // (Each edits the config as the one before left it; the save that follows is one.)
-  for (const h of all) h.save(h.values);
-  tellHeld();
-}
-
-/** Show where held change `h` is applied: its tab, its card opened, scrolled to and flashed. */
-function showHeld(h: HeldChange): void {
-  if (typeof h.target === "string") showTodo(h.target);
-  else setView("plugin", h.target.page);
-}
-
-function Held(props: { id: string; name: string; plugin: string; target: HeldTarget; saved: PluginValues; save: (v: PluginValues) => void; restarts: boolean; children: (values: PluginValues, change: (v: PluginValues) => void) => ReactNode }) {
+function Held(props: { id: string; name: string; saved: PluginValues; save: (v: PluginValues) => void; restarts: boolean; children: (values: PluginValues, change: (v: PluginValues) => void) => ReactNode }) {
   const recording = useSelect((x) => isRecording(x.phase));
-  const draft = useHeldChanges().find((h) => h.id === props.id)?.values;
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    const f = () => redraw((n) => n + 1);
+    heldViews.add(f);
+    return () => void heldViews.delete(f);
+  }, []);
+  const tell = () => heldViews.forEach((f) => f());
+  const draft = held.get(props.id);
   const change = (v: PluginValues) => {
     if (draft !== undefined || (recording && props.restarts)) {
-      holdPluginChange(props.id, { values: v, save: props.save, name: props.name, plugin: props.plugin, target: props.target });
+      held.set(props.id, v);
+      tell();
     } else props.save(v);
   };
   const done = (apply: boolean) => {
     if (apply && draft !== undefined) props.save(draft);
     held.delete(props.id);
-    tellHeld();
+    tell();
   };
   return (
     <>
       {props.children(draft ?? props.saved, change)}
       {draft !== undefined && (
-        <div className="held-bar" role="status" id={typeof props.target === "string" ? `need-${props.target}` : undefined}>
+        <div className="held-bar" role="status">
           <span className="small">Not applied · Apply restarts {props.name}{recording ? "" : " when recording starts"}</span>
           <button type="button" className="btn primary small" onClick={() => done(true)}>
             Apply
@@ -1052,35 +1003,6 @@ function Held(props: { id: string; name: string; plugin: string; target: HeldTar
         </div>
       )}
     </>
-  );
-}
-
-/**
- * Floating over every page while plugin changes are held: how many, Show
- * (each in turn: its tab, its card opened, its Apply), and Apply all.
- */
-export function HeldChanges() {
-  const list = useHeldChanges();
-  const recording = useSelect((x) => isRecording(x.phase));
-  const next = useRef(0);
-  if (!list.length || !mayEdit()) return null;
-  const names = [...new Set(list.map((h) => h.name))];
-  const show = () => {
-    showHeld(list[next.current % list.length]);
-    next.current++;
-  };
-  return (
-    <div className="held-pill" role="status" aria-live="polite">
-      <span>
-        <b>{list.length}</b> plugin {list.length === 1 ? "change" : "changes"} not applied
-      </span>
-      <button type="button" className="btn ghost small" onClick={show} title={list.length > 1 ? "Each in turn" : undefined}>
-        Show
-      </button>
-      <button type="button" className="btn primary small" onClick={applyHeldChanges} title={`Restarts ${names.length === 1 ? names[0] : "the plugins"} once${recording ? "" : ", when recording starts"}`}>
-        {list.length === 1 ? "Apply" : "Apply all"}
-      </button>
-    </div>
   );
 }
 
@@ -1143,7 +1065,7 @@ function PluginPageOf(props: { p: PluginInfo; m: PluginManifest; c: Config }) {
   return (
     <div className="plugin-page stack">
       <section className="panel" aria-labelledby={`pp-${p.id}`}>
-        <PluginHead p={p} on={on} tone={st.tone} state={state} titleId={`pp-${p.id}`} />
+        <PluginHead p={p} tone={st.tone} state={state} titleId={`pp-${p.id}`} actions={<PluginSwitch p={p} on={on} />} />
         {m.description && <p className="plugin-desc">{m.description}</p>}
         {message && <p className={`small ${st.tone === "bad" ? "bad-text" : st.tone === "warn" ? "warn-text" : "muted"}`}>{message}</p>}
         {on && <PluginNotices p={p} shown={message} />}
@@ -1161,9 +1083,9 @@ function PluginPageOf(props: { p: PluginInfo; m: PluginManifest; c: Config }) {
   );
 }
 
-/** A plugin's name, version, where it came from, state and on/off switch. */
-function PluginHead(props: { p: PluginInfo; on: boolean; tone: string; state: string; titleId: string; extra?: React.ReactNode; noSwitch?: boolean }) {
-  const { p, on } = props;
+/** A plugin's name, version, where it came from and state; `actions` beside them (its On/Off switch). */
+function PluginHead(props: { p: PluginInfo; tone: string; state: string; titleId: string; extra?: React.ReactNode; actions?: React.ReactNode }) {
+  const { p } = props;
   const m = p.manifest;
   return (
     <div className="plugin-head">
@@ -1185,9 +1107,15 @@ function PluginHead(props: { p: PluginInfo; on: boolean; tone: string; state: st
         </div>
         <span className={`plugin-state tone-${props.tone}`}>{props.state}</span>
       </div>
-      {!props.noSwitch && <Switch label={on ? "On" : "Off"} title={p.problem ? "It can't run: see below" : ""} checked={on} disabled={!!p.problem && !on} onChange={(v) => setPluginEnabled(p.id, v)} />}
+      {props.actions}
     </div>
   );
+}
+
+/** A plugin's On/Off switch. */
+function PluginSwitch(props: { p: PluginInfo; on: boolean }) {
+  const { p, on } = props;
+  return <Switch label={on ? "On" : "Off"} title={p.problem ? "It can't run: see below" : ""} checked={on} disabled={!!p.problem && !on} onChange={(v) => setPluginEnabled(p.id, v)} />;
 }
 
 /** M4A for the plugins that upload it (Setup's Recording tab). */
@@ -1335,10 +1263,10 @@ function PluginCard(props: { p: PluginInfo; recording: boolean; listing?: Plugin
     <article className={`plugin-card${on ? "" : " off"}`} aria-labelledby={`pn-${p.id}`}>
       <PluginHead
         p={p}
-        on={on}
         tone={st.tone}
         state={needs.length ? "Needs setting up" : st.text}
         titleId={`pn-${p.id}`}
+        actions={<PluginSwitch p={p} on={on} />}
         extra={
           <>
             {listing && !p.custom && !p.unlistedFrom && <TierChip tier={listing.tier} />}
