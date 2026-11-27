@@ -119,7 +119,10 @@ Plugins are set up in **Setup**, like the rest of the recorder, and their settin
 `config.json` as you type.
 
 - **Settings for the whole recorder** are on Setup's **Plugins** tab. Each installed plugin has a
-  card there with an **On/Off** switch and its settings. The **Set up** button on a plugin's card
+  card there with an **On/Off** switch and its settings. Like the cards on the Systems,
+  Conventional and Radios tabs, each folds to its head (click it), with **Expand all** and
+  **Collapse all** when there are several; a folded card still shows its switch and its state (**Needs setting up**,
+  say). The **Set up** button on a plugin's card
   on the Plugins page takes you there.
 - **Settings for each system** (an upload key, say) are on that system's card, under **Plugins**,
   once the plugin is on. Conventional systems get them too, once they have a channel. The plugin's

@@ -5,6 +5,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Setup → Plugins folds each plugin into a card** (#263, thanks @jschmall), like the Systems,
+  Conventional and Radios tabs: a chevron, **Expand all** / **Collapse all**, open only when there's
+  one. The folded head keeps the **On/Off** switch and the plugin's state.
 - **Find my system scans ranges of your own** (#258, thanks @drfruct). Under the bands, **Other ranges, MHz** takes
   ranges such as `420-450, 433.05-434.79`, scanned beside the bands ticked; each end is read as every frequency field
   reads one (MHz under 10 000, else Hz). Setup and the setup guide share the one picker, and remember the bands and

@@ -109,3 +109,20 @@ test("A system with sites: each is turned on and off, and sets again what the pl
   assert.doesNotMatch(card, /sp-up-east-site7-apiKey/);
   assert.doesNotMatch(card, /<summary>south/);
 });
+
+test("Setup → Plugins: each plugin is a card that folds, its switch beside the head, with Expand all for several", () => {
+  const c = uploaderSetup();
+  c.plugins!.other = { enabled: false };
+  transport.onMessage({ type: "config", config: c, version: 2 });
+  transport.onMessage({ type: "plugins", encoderFound: null, plugins: [plugin("up", {}), plugin("other", {})] });
+  const panel = html(<PluginSetupPanel />);
+  assert.match(panel, />Expand all</);
+  // Two cards, folded (only a list of one starts open), each found again by its import to-do id.
+  assert.equal((panel.match(/class="set-card-toggle" aria-expanded="false"/g) ?? []).length, 2, panel);
+  assert.match(panel, /id="need-plugin-up" data-card="plug:up"/);
+  // The On/Off switch is in the card's actions, not inside the head's toggle button.
+  const toggles = panel.match(/<button type="button" class="set-card-toggle"[\s\S]*?<\/button>/g) ?? [];
+  assert.equal(toggles.length, 2);
+  assert.ok(toggles.every((t) => !t.includes('class="switch')), toggles.join("\n"));
+  assert.equal((panel.match(/class="row set-card-actions"><label class="switch/g) ?? []).length, 2, panel);
+});

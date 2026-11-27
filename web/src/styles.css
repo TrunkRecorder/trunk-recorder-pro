@@ -765,6 +765,11 @@ input.ob-picker-path:hover, input.ob-picker-path:focus { border-color: var(--lin
 .setup .panel-head h2 { font-size: var(--fs-card); font-weight: 650; letter-spacing: -0.01em; text-transform: none; color: var(--text); }
 .setup .plugin-card { border-radius: 14px; padding: 18px 22px; gap: 10px; background: var(--panel); }
 .setup .plugin-card.off { background: transparent; }
+/* A plugin as a Setup card (SetupLayout's Card): its head is the toggle, its body below. */
+.setup .plugin-card.set-card { padding: 0; gap: 0; background: var(--panel); }
+.setup .plugin-card.set-card.off { background: transparent; }
+.setup .plugin-card.set-card .plugin-head { flex: 1; min-width: 0; }
+.plugin-card-body { padding: 16px 22px 18px; gap: 10px; }
 .setup .plugin-head { display: flex; align-items: center; gap: 14px; }
 .setup .plugin-head strong { font-size: var(--fs-card); font-weight: 650; }
 .setup .plugin-state { align-self: flex-start; padding: 1px 10px; border-radius: 999px; font-size: 12.5px; font-weight: 550; background: color-mix(in srgb, currentColor 13%, transparent); }
