@@ -84,6 +84,8 @@ export interface DashSystem {
   status: SystemStatus | null;
   /** Its sites being recorded (a conventional system: none). */
   sites: DashSite[];
+  /** Stopped while recording goes on (its switch off): nothing of it runs, its radios let go of. */
+  stopped: boolean;
   /** Where its copies of calls are counted (`<key>/calls/…`, `<key>/voice/…`): each site's key,
    * or (conventional) each channel's. A system's figures are their sum ([`scoped`]). */
   scopes: string[];
@@ -101,22 +103,32 @@ export interface DashSite {
 /** A site's series key (the recorder's SiteKey::stats_key): a site named as its system is under the system's. */
 export const siteKey = (system: string, site: string) => (site === system ? `sys/${keyPart(system)}` : `sys/${keyPart(system)}/site/${keyPart(site)}`);
 
-/** Every system set up (trunked, then conventional with channels), with its sites and its status while running. */
+/** Every system set up (trunked, then conventional with channels), with its sites and its status while running;
+ * and, while recording, one stopped since Start (its switch turned off: `stopped`). */
 export function dashSystems(s: AppState): DashSystem[] {
   if (!s.config) return [];
-  const out: DashSystem[] = activeSystems(s.config).map((x) => {
-    const status = s.status?.systems.find((y) => y.shortName === x.shortName) ?? null;
-    const sites = x.sites.filter(siteActive).map((site) => {
-      const name = siteNameOf(x, site);
-      return { name, key: siteKey(x.shortName, name), status: status?.sites.find((y) => y.name === name) ?? null };
+  const live = running(s);
+  const statusOf = (name: string) => s.status?.systems.find((y) => y.shortName === name) ?? null;
+  // Off, but part of this recording: stopped while it goes on (or about to be, the switch just turned).
+  const stoppedNow = (name: string) => live && !!statusOf(name);
+  const active = new Set(activeSystems(s.config));
+  const out: DashSystem[] = s.config.systems
+    .filter((x) => active.has(x) || stoppedNow(x.shortName))
+    .map((x) => {
+      const status = statusOf(x.shortName);
+      const sites = x.sites.filter(siteActive).map((site) => {
+        const name = siteNameOf(x, site);
+        return { name, key: siteKey(x.shortName, name), status: status?.sites.find((y) => y.name === name) ?? null };
+      });
+      const stopped = !active.has(x) || !!status?.stopped;
+      return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites, scopes: sites.map((y) => y.key), stopped };
     });
-    return { name: x.shortName, kind: (x.type ?? "p25") as DashSystem["kind"], status, sites, scopes: sites.map((y) => y.key) };
-  });
   for (const c of s.config.conventional) {
-    if (c.enabled === false || !c.channels.some((ch) => ch.enabled)) continue;
-    const status = s.status?.systems.find((y) => y.shortName === c.shortName) ?? null;
+    if (!c.channels.some((ch) => ch.enabled)) continue;
+    if (c.enabled === false && !stoppedNow(c.shortName)) continue;
+    const status = statusOf(c.shortName);
     const scopes = [...new Set(c.channels.filter((ch) => ch.enabled).map((ch) => K.ch(c.shortName, ch.freqHz)))];
-    out.push({ name: c.shortName, kind: "conventional", status, sites: [], scopes });
+    out.push({ name: c.shortName, kind: "conventional", status, sites: [], scopes, stopped: c.enabled === false || !!status?.stopped });
   }
   return out;
 }
@@ -262,6 +274,7 @@ export function worstOf<T>(items: T[], name: (x: T) => string, health: (x: T) =>
  */
 export function systemHealth(s: AppState, x: DashSystem, usual: Record<string, Usual | null> = {}): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
+  if (x.stopped) return { level: "idle", why: "Stopped — the others record on; its radios are free" };
   if (x.kind === "conventional") return OK("Listening on its channels");
   if (!x.sites.length) return { level: "bad", why: "No site set up" };
   return worstOf(x.sites, (site) => site.name, (site) => siteHealth(s, site, usual[K.cc(site, "good")]));
@@ -347,6 +360,7 @@ export function gainFix(s: AppState, dir: "low" | "high", where: string): string
 export function sourceHealth(s: AppState, src: SourceStatus): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (src.ended) return { level: "idle", why: "Ended" };
+  if (src.closed) return { level: "idle", why: "Released: the systems that used it are stopped" };
   const drops = recentAvg(K.src(src.label, "dropped"), 10) ?? 0;
   if (drops > 0) return { level: "bad", why: "Dropping samples — CPU or USB can't keep up; calls lose audio" };
   if (src.lastError && src.lastErrorS && Date.now() / 1000 - src.lastErrorS < 60) return { level: "bad", why: src.lastError };
@@ -510,6 +524,7 @@ export const OUT_OF_BAND = "outOfBand";
 /** A system's calls lost for want of a recorder or a source, last few minutes: which of the two. */
 export function systemRadioHealth(s: AppState, x: DashSystem): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
+  if (x.stopped) return { level: "idle", why: "Stopped" };
   const busy = (recentSum(scoped(x.scopes, "calls/why/noRecorder"), 300) ?? 0) > 0;
   const outside = (recentSum(scoped(x.scopes, "calls/why/noSource"), 300) ?? 0) > 0;
   const at: Place = ["radio", x.name, OUT_OF_BAND];

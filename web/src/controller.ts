@@ -2177,6 +2177,17 @@ export function stop(): void {
   transport.send({ type: "stop" });
 }
 
+/** Stop recording system `shortName` (trunked or conventional), or record it again: its switch, as
+ * Setup's. While recording, the recorder stops or starts it at once, the others recording on, and
+ * lets go of the radios no other system needs (a system off at Start waits for the next one). */
+export function setSystemRunning(shortName: string, on: boolean): void {
+  updateConfig((c) => {
+    for (const s of c.systems) if (s.shortName === shortName) s.enabled = on;
+    for (const v of c.conventional) if (v.shortName === shortName) v.enabled = on;
+  });
+  flushConfig();
+}
+
 // ── live audio ───────────────────────────────────────────────────────────────
 
 /** The short name of the system a call or audio frame names by number (its number this run); "" if unknown. */

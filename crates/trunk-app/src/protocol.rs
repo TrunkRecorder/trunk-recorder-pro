@@ -574,6 +574,13 @@ pub enum Command {
     SetTalkgroup { system: String, talkgroup: u32, edit: TalkgroupEdit },
     Start,
     Stop,
+    /// Stop recording system `system` (a trunked or conventional system's short name), the others
+    /// recording on: its switch (`enabled`) turned off, and, while recording, its calls ended and the
+    /// radios no other system needs let go of at once (no restart).
+    StopSystem { system: String },
+    /// Record system `system` again: its switch turned on, and, while recording, the system started
+    /// at once when it's part of this recording (else at the next Start).
+    StartSystem { system: String },
     Devices,
     FindRadios,
     ListDir { #[serde(default)] path: String },

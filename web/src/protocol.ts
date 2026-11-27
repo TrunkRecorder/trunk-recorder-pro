@@ -917,6 +917,8 @@ export interface SystemStatus {
   callsConcluded: number;
   /** Its sharing with the community directory; null when it isn't shared. */
   share?: ShareStatus | null;
+  /** Stopped while recording goes on (its switch turned off): its calls ended, its sites closed, the radios only it needed let go of. */
+  stopped?: boolean;
   /** Its sites following their control channels, in order (conventional: none). */
   sites: SiteStatus[];
 }
@@ -1054,6 +1056,8 @@ export interface SourceStatus {
   voiceChannels?: number;
   /** Nothing the config lists needs it (other sources reach all it does, or it was placed alongside them) and no call has used it this run: it can probably be removed. */
   unused?: boolean;
+  /** Closed while recording goes on: the systems that needed it were stopped, and the radio is free for anything else. */
+  closed?: boolean;
   /** The ppm that removes `errorPpm` (`settings.ppm` less it, as the radio takes it: an RTL-SDR whole ppm); null until measured. */
   ppmApply?: number | null;
   /** The radio's crystal error, measured from its sample clock against this computer's clock, ppm (+: fast); null until measured (about 10 s). */
@@ -2612,6 +2616,10 @@ export type ToRecorder =
   | { type: "setTalkgroup"; system: string; talkgroup: number; edit: TalkgroupEdit }
   | { type: "start" }
   | { type: "stop" }
+  /** Stop recording system `system` (its short name), the others recording on: its switch turned off and, while recording, its calls ended and the radios no other system needs let go of at once. */
+  | { type: "stopSystem"; system: string }
+  /** Record system `system` again: its switch turned on and, while recording, started at once when it's part of the recording (else at the next Start). */
+  | { type: "startSystem"; system: string }
   | { type: "devices" }
   | { type: "findRadios" }
   /** A folder's subfolders, for the folder picker ("" = the home folder). */

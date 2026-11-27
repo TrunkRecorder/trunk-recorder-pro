@@ -195,6 +195,7 @@ new TrunkClient({ server?, secure?, historyLimit?, token? })
   "connection"  fn(true | false)
  Methods:
   rec.start() / rec.stop()           start / stop recording
+  rec.stopSystem(name) / rec.startSystem(name)   stop / start one system while the others record on (control access)
   rec.listen()                       live audio of every call
   rec.listen({ talkgroup })          one talkgroup's
   rec.listen({ system, talkgroup })  one system's (its short name) talkgroup's

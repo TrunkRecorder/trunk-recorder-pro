@@ -201,6 +201,11 @@ pub enum EngineCmd {
     IqControl { done: mpsc::Sender<(Vec<trunk_core::trunk::tape::ControlTape>, crate::iq_capture::Live)> },
     /// The sites running, each with the source its control channel is on (the gain tuner's systems).
     Sites { done: mpsc::Sender<Vec<trunk_core::trunk::SiteStatus>> },
+    /// Stop (`on` false) or start again a system while the rest goes on ([`Session::set_system_running`]):
+    /// answered with the sources to close, or to open again.
+    SystemRunning { system: SystemId, on: bool, done: mpsc::Sender<Result<Vec<usize>, String>> },
+    /// Source `source` is open again ([`Runner::open_source`]): its samples come in `rx`.
+    SourceReopened { source: usize, rx: mpsc::Receiver<SourceMsg> },
 }
 
 impl Ctx {
@@ -376,6 +381,64 @@ impl Ctx {
         }
     }
 
+    /// Stop (`on` false) or start again system `id` while recording goes on, the other systems
+    /// recording on as they were: its calls end and are saved, its channels close, and the radios
+    /// no system still recording needs are closed and let go of; started, the ones it needs open
+    /// again. Ok(false): not recording, so there's nothing to do now (Start takes the config).
+    /// Err: it isn't part of this recording (turned on since Start: the next Start has it), or
+    /// it couldn't start.
+    pub fn set_system_running(&self, id: SystemId, on: bool) -> Result<bool, String> {
+        let mut l = self.lifecycle.lock().unwrap();
+        let Some(r) = l.recording.as_mut().filter(|r| !r.finished()) else { return Ok(false) };
+        let (done, answer) = mpsc::channel();
+        let told = self.engine.lock().unwrap().as_ref().is_some_and(|tx| tx.send(EngineCmd::SystemRunning { system: id, on, done }).is_ok());
+        if !told {
+            return Ok(false);
+        }
+        let changed = answer.recv_timeout(Duration::from_secs(10)).map_err(|_| "the recording didn't answer".to_string())??;
+        for i in changed {
+            if !on {
+                r.close_source(i);
+                continue;
+            }
+            match r.open_source(i) {
+                Ok(rx) => self.tell_engine(EngineCmd::SourceReopened { source: i, rx }),
+                Err(e) => log::warn!("Source {}: couldn't open it again: {e}", i + 1),
+            }
+        }
+        Ok(true)
+    }
+
+    /// Systems switched on or off (`enabled`) from `old` to `now` while recording: each that's
+    /// part of the recording stops or starts at once ([`Ctx::set_system_running`]), and the run
+    /// then has it so (no restart waits for it). One turned on that isn't waits for the next Start.
+    pub fn live_systems(&self, old: &Config, now: &Config) {
+        let was = |id: SystemId| old.systems.iter().find(|s| s.id == id).map(|s| s.enabled).or_else(|| old.conventional.iter().find(|c| c.id == id).map(|c| c.enabled));
+        let flips: Vec<(SystemId, String, bool)> = now
+            .systems
+            .iter()
+            .map(|s| (s.id, &s.short_name, s.enabled))
+            .chain(now.conventional.iter().map(|c| (c.id, &c.short_name, c.enabled)))
+            .filter(|&(id, _, on)| was(id) == Some(!on))
+            .map(|(id, name, on)| (id, name.clone(), on))
+            .collect();
+        // (Nothing switched: no lock taken. The engine thread edits the config too, a call sign heard.)
+        for (id, name, on) in flips {
+            match self.set_system_running(id, on) {
+                Ok(true) => {
+                    log::info!("{name}: {} while recording goes on", if on { "started" } else { "stopped" });
+                    if let Some(run) = self.run.lock().unwrap().as_mut() {
+                        run.systems.iter_mut().filter(|s| s.id == id).for_each(|s| s.enabled = on);
+                        run.conventional.iter_mut().filter(|c| c.id == id).for_each(|c| c.enabled = on);
+                    }
+                }
+                Ok(false) => {}
+                Err(e) if on => log::info!("{name}: {e}"),
+                Err(_) => {}
+            }
+        }
+    }
+
     /// End a running survey (frees its radio) and tell the browsers.
     pub fn stop_survey(&self) {
         self.end_survey(&mut self.lifecycle.lock().unwrap());
@@ -419,10 +482,23 @@ pub struct Lifecycle {
 }
 
 pub struct Runner {
+    /// Stops the engine and the decoding threads (and, with [`Runner::stop`], every source).
     stop: Arc<AtomicBool>,
+    /// The engine thread (last; the sources' are in `sources`).
     threads: Vec<JoinHandle<()>>,
     /// Each source's live controls (a gain changed in Setup goes through them).
     controls: Vec<Arc<Control>>,
+    /// Each source's thread, with a stop of its own (none: closed while the run goes on, its
+    /// systems stopped: [`Ctx::set_system_running`]).
+    sources: Vec<Option<RunSource>>,
+    /// What each source opens with: its settings and its centre, as at Start.
+    opens: Vec<(Source, f64)>,
+}
+
+/// A source's thread in a recording, and what stops it alone.
+struct RunSource {
+    stop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
 }
 
 /// The gain to set on a source running with `old` now that it is `new`:
@@ -527,9 +603,37 @@ impl Runner {
 
     pub fn stop(self) {
         self.stop.store(true, Ordering::Relaxed);
+        let sources: Vec<RunSource> = self.sources.into_iter().flatten().collect();
+        for s in &sources {
+            s.stop.store(true, Ordering::Relaxed);
+        }
+        for s in sources {
+            let _ = s.thread.join();
+        }
         for t in self.threads {
             let _ = t.join();
         }
+    }
+
+    /// Close source `i` while the run goes on: its thread stopped and gone, the radio let go of.
+    fn close_source(&mut self, i: usize) {
+        if let Some(s) = self.sources.get_mut(i).and_then(Option::take) {
+            s.stop.store(true, Ordering::Relaxed);
+            let _ = s.thread.join();
+        }
+    }
+
+    /// Open source `i` again, as it opened at Start: its samples, from now on, in what's returned.
+    fn open_source(&mut self, i: usize) -> Result<mpsc::Receiver<SourceMsg>, String> {
+        if self.sources.get(i).is_some_and(Option::is_some) {
+            return Err(format!("source {} is open", i + 1));
+        }
+        let (src, center) = self.opens.get(i).ok_or_else(|| format!("no source {}", i + 1))?;
+        let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread = spawn_source(src, i, *center, tx, stop.clone(), self.controls.get(i).cloned(), &format!("source-{i}")).map_err(|e| e.to_string())?;
+        self.sources[i] = Some(RunSource { stop, thread });
+        Ok(rx)
     }
 }
 
@@ -602,25 +706,36 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     let centers = cfg.resolved_centers();
     let controls: Vec<Arc<Control>> = cfg.sources.iter().map(|_| Arc::default()).collect();
     let mut threads = Vec::new();
+    let mut sources: Vec<Option<RunSource>> = Vec::new();
     // A thread that can't be made: what was started is stopped again.
-    let undo = |threads: Vec<JoinHandle<()>>, e: std::io::Error| {
+    let undo = |sources: Vec<Option<RunSource>>, threads: Vec<JoinHandle<()>>, e: std::io::Error| {
         stop.store(true, Ordering::Relaxed);
-        for t in threads {
+        let sources: Vec<RunSource> = sources.into_iter().flatten().collect();
+        sources.iter().for_each(|s| s.stop.store(true, Ordering::Relaxed));
+        for t in sources.into_iter().map(|s| s.thread).chain(threads) {
             let _ = t.join();
         }
         ctx.plugins.stop(Duration::from_secs(2));
         e.to_string()
     };
+    // A radio only systems switched off use is left closed: free for anything else.
+    let closed = session.close_off_systems_sources();
     for (i, (src, center)) in cfg.sources.iter().zip(&centers).enumerate() {
         let (tx, rx) = mpsc::sync_channel::<SourceMsg>(256);
         queues.push(rx);
-        let (stop, center) = (stop.clone(), *center);
-        let spawned = spawn_source(&src, i, center, tx, stop, Some(controls[i].clone()), &format!("source-{i}"));
+        if closed.contains(&i) {
+            sources.push(None);
+            continue;
+        }
+        // (Each source stops by itself too: closed while the run goes on, its systems stopped.)
+        let own = Arc::new(AtomicBool::new(false));
+        let spawned = spawn_source(&src, i, *center, tx, own.clone(), Some(controls[i].clone()), &format!("source-{i}"));
         match spawned {
-            Ok(t) => threads.push(t),
-            Err(e) => return Err(undo(threads, e)),
+            Ok(thread) => sources.push(Some(RunSource { stop: own, thread })),
+            Err(e) => return Err(undo(sources, threads, e)),
         }
     }
+    let opens: Vec<(Source, f64)> = cfg.sources.iter().cloned().zip(centers.iter().copied()).collect();
     let (ctx2, stop2) = (ctx.clone(), stop.clone());
     // The engine's commands: open before its thread is, so none sent meanwhile is lost.
     let ctl = mpsc::channel::<EngineCmd>();
@@ -630,10 +745,10 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
         Ok(t) => threads.push(t),
         Err(e) => {
             *ctx.engine.lock().unwrap() = None;
-            return Err(undo(threads, e));
+            return Err(undo(sources, threads, e));
         }
     }
-    Ok(Runner { stop, threads, controls })
+    Ok(Runner { stop, threads, controls, sources, opens })
 }
 
 /// Where a system's band plan is kept between runs.
@@ -1086,22 +1201,19 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     let taps = ctx.iq.session_began(&cfg);
     ctx.iq.set_rules(crate::iq_rules::spawn(ctx.clone(), &cfg));
     session.want_facts = ctx.iq.has_rules();
-    let feeders: Vec<JoinHandle<()>> = queues
-        .into_iter()
-        .enumerate()
-        .map(|(i, q)| {
-            let (f, ctl, stop) = (session.feeder(i), ctl_tx.clone(), stop.clone());
-            let src = &cfg.sources[i];
-            let paced = !matches!(src.kind, SourceKind::File { realtime: false, .. });
-            if paced {
-                at_ms[i].store(u64::MAX, Ordering::Relaxed);
-            }
-            let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz, samples: Default::default(), paced };
-            let tap = taps[i].clone();
-            std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air, tap)).expect("thread")
-        })
-        .collect();
-    drop(ctl_tx);
+    // Source `i`'s decoding thread, its samples coming in `q` (at Start, or opened again since).
+    let feed = |session: &mut Session, i: usize, q: mpsc::Receiver<SourceMsg>| {
+        let (f, ctl, stop) = (session.feeder(i), ctl_tx.clone(), stop.clone());
+        let src = &cfg.sources[i];
+        let paced = !matches!(src.kind, SourceKind::File { realtime: false, .. });
+        if paced {
+            at_ms[i].store(u64::MAX, Ordering::Relaxed);
+        }
+        let air = Air { at_ms: at_ms.clone(), me: i, rate_hz: src.rate_hz, samples: Default::default(), paced };
+        let tap = taps[i].clone();
+        std::thread::Builder::new().name(format!("dsp-{i}")).spawn(move || feed_source(f, q, ctl, stop, epoch, air, tap)).expect("thread")
+    };
+    let mut feeders: Vec<JoinHandle<()>> = queues.into_iter().enumerate().map(|(i, q)| feed(&mut session, i, q)).collect();
     let dir = PathBuf::from(&cfg.recording.capture_dir);
     // Each system's file rules, by a call's `system` (trunked or conventional), and its id as this
     // run's config has it: what the store files its calls under, a rename meanwhile or not.
@@ -1208,6 +1320,13 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 EngineCmd::IqKeepTapes { on } => session.keep_tapes(on),
                 EngineCmd::Sites { done } => {
                     let _ = done.send(session.sites());
+                }
+                EngineCmd::SystemRunning { system, on, done } => {
+                    let _ = done.send(session.set_system_running(system, on));
+                }
+                EngineCmd::SourceReopened { source, rx } => {
+                    session.source_reopened(source);
+                    feeders.push(feed(&mut session, source, rx));
                 }
             }
             next = rx.try_recv().ok();
@@ -1671,7 +1790,7 @@ mod live_tests {
         *ctx.run.lock().unwrap() = Some(run.clone());
         ctx.phase.lock().unwrap().phase = Phase::Running;
         let controls: Vec<Arc<Control>> = run.sources.iter().map(|_| Arc::default()).collect();
-        ctx.lifecycle.lock().unwrap().recording = Some(Runner { stop: Arc::default(), threads: Vec::new(), controls: controls.clone() });
+        ctx.lifecycle.lock().unwrap().recording = Some(Runner { stop: Arc::default(), threads: Vec::new(), controls: controls.clone(), sources: Vec::new(), opens: Vec::new() });
         (ctx, controls, dir)
     }
 
@@ -2075,5 +2194,105 @@ mod folder_tests {
         assert!(dir.join("ohmarcs/2026/11/22/2-1.wav").exists() && dir.join("ohmarcs/2026/11/22/2-1.json").exists());
         assert_eq!(ctx.recent.lock().unwrap().len(), 1);
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod system_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Two P25 systems, each on a capture of its own played in real time (noise: nothing
+    /// decodes, the sites hunt): "a" on 851 MHz, "b" on 770 MHz.
+    fn two_systems(dir: &Path) -> Config {
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let noise: Vec<u8> = (0..1_000_000 * 2 * 20)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (112 + (seed >> 56) as u8 / 8) as u8
+            })
+            .collect();
+        let (pa, pb) = (dir.join("a.cu8"), dir.join("b.cu8"));
+        fs::write(&pa, &noise).unwrap();
+        fs::write(&pb, &noise).unwrap();
+        let file = |p: &Path, hz: f64| json!({ "type": "file", "path": p.display().to_string(), "centerHz": hz, "rateHz": 1000000, "realtime": true, "format": "cu8" });
+        serde_json::from_value(json!({
+            "sources": [file(&pa, 851e6), file(&pb, 770e6)],
+            "systems": [
+                { "shortName": "a", "sites": [{ "controlChannelsHz": [851012500] }] },
+                { "shortName": "b", "sites": [{ "controlChannelsHz": [770012500] }] }
+            ],
+            "recording": { "captureDir": dir.join("calls").display().to_string() }
+        }))
+        .unwrap()
+    }
+
+    fn open(ctx: &Ctx) -> Vec<bool> {
+        ctx.lifecycle.lock().unwrap().recording.as_ref().map_or(vec![], |r| r.sources.iter().map(Option::is_some).collect())
+    }
+
+    /// Recording two systems, one switched off in Setup stops at once and lets go of its radio;
+    /// the other records on, and no restart waits. Switched on again, it opens its radio again.
+    #[test]
+    fn a_system_switched_off_while_recording_stops_alone_and_frees_its_radio() {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-stop-system-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let ctx = crate::protocol_tests::ctx(two_systems(&dir), &dir);
+        let a = ctx.config.lock().unwrap().id_of("a").unwrap();
+        ctx.begin_recording().unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while ctx.phase.lock().unwrap().phase != Phase::Running && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(open(&ctx), [true, true]);
+        let switch = |on: bool| crate::server::edit_config(&ctx, |c| c.systems[0].enabled = on).unwrap();
+        switch(false);
+        assert_eq!(open(&ctx), [false, true], "a's radio let go of, b's recording on");
+        assert!(!ctx.phase.lock().unwrap().restart_needed, "no restart waits");
+        assert!(!ctx.run.lock().unwrap().as_ref().unwrap().systems[0].enabled, "the run has it off");
+        let sites = || {
+            let (done, answer) = mpsc::channel();
+            ctx.tell_engine(EngineCmd::Sites { done });
+            answer.recv_timeout(Duration::from_secs(5)).unwrap().iter().map(|s| s.system).collect::<Vec<u16>>()
+        };
+        assert_eq!(sites(), [1], "only b's site runs");
+        assert_eq!(ctx.phase.lock().unwrap().phase, Phase::Running);
+        switch(true);
+        assert_eq!(open(&ctx), [true, true], "a's radio open again");
+        assert!(!ctx.phase.lock().unwrap().restart_needed);
+        assert_eq!(sites(), [0, 1]);
+        // Stopped by command too, as an interface asks.
+        assert_eq!(ctx.set_system_running(a, false), Ok(true));
+        assert_eq!(open(&ctx), [false, true]);
+        ctx.stop_recording();
+        assert!(ctx.lifecycle.lock().unwrap().recording.is_none());
+        // Not recording: nothing to do now.
+        assert_eq!(ctx.set_system_running(a, true), Ok(false));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A system off at Start isn't part of the recording: switched on, it waits for a restart.
+    #[test]
+    fn a_system_off_at_start_waits_for_the_next_start() {
+        let dir = std::env::temp_dir().join(format!("trunk-pro-off-at-start-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut cfg = two_systems(&dir);
+        cfg.systems[0].enabled = false;
+        let ctx = crate::protocol_tests::ctx(cfg, &dir);
+        ctx.begin_recording().unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while ctx.phase.lock().unwrap().phase != Phase::Running && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(open(&ctx), [false, true], "the radio only a uses is left closed");
+        crate::server::edit_config(&ctx, |c| c.systems[0].enabled = true).unwrap();
+        assert!(ctx.phase.lock().unwrap().restart_needed, "a restart waits");
+        assert_eq!(open(&ctx), [false, true]);
+        ctx.stop_recording();
+        let _ = fs::remove_dir_all(&dir);
     }
 }

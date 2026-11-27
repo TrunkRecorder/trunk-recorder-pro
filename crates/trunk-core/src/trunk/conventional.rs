@@ -879,6 +879,8 @@ pub struct Conventional {
     bank_cfg: BankConfig,
     chans: Vec<Chan>,
     floors: Vec<Floor>,
+    /// The systems stopped while the run goes on ([`Conventional::park`]): their channels don't open.
+    parked: std::collections::BTreeSet<usize>,
 }
 
 /// A channel's widths, from its mode (and an analog one's bandwidth), worked out once.
@@ -987,7 +989,7 @@ impl Conventional {
                 Floor { slices: vec![0.0; n], scratch: vec![0.0; n], next_s: 0.0, primed: false }
             })
             .collect();
-        Ok(Conventional { cfg, bank_cfg, chans, floors, tape_sink: Tapes::default() })
+        Ok(Conventional { cfg, bank_cfg, chans, floors, tape_sink: Tapes::default(), parked: Default::default() })
     }
 
     /// Whether `channels` can run together: rows on one frequency have one
@@ -1136,7 +1138,7 @@ impl Conventional {
         let dflt = self.cfg.squelch_db;
         let mut bins = Vec::new();
         for (idx, ch) in self.chans.iter_mut().enumerate() {
-            if ch.source != source {
+            if ch.source != source || self.parked.contains(&ch.system) {
                 continue;
             }
             let rules = &CallRules::of(system(ch.system));
@@ -1695,6 +1697,41 @@ impl Conventional {
     /// End of input (at `now_s`): flush the receivers, their last voice
     /// taken as any other ([`Self::collect`], [`Self::slot_call`]), and end
     /// every call.
+    /// Stop system `system`'s channels while the rest go on: an open one's calls end as at
+    /// [`Conventional::finish`], and none opens until [`Conventional::unpark`]. The heads to
+    /// take off their sources, as (source, head).
+    pub fn park<'s>(&mut self, system: usize, now_s: f64, ids: &CallIds, systems: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) -> Vec<(usize, HeadId)> {
+        self.parked.insert(system);
+        let mut heads = Vec::new();
+        for (idx, ch) in self.chans.iter_mut().enumerate().filter(|(_, c)| c.system == system) {
+            if ch.open.is_none() {
+                continue;
+            }
+            let rules = &CallRules::of(systems(ch.system));
+            Self::flush_open(ch, now_s, idx as u32, ids, rules, out);
+            let mut o = ch.open.take().unwrap();
+            if let Some(head) = o.head {
+                heads.push((ch.source, head));
+            }
+            o.tapped(None, now_s, out);
+            keep_tape(&self.tape_sink, &mut o);
+            for l in o.live.into_iter().flatten() {
+                Self::end(l, CallEnd::Stopped, ch.on(idx), ch.tune_ref, out);
+            }
+        }
+        heads
+    }
+
+    /// System `system`'s channels open again as they hear something ([`Conventional::park`]).
+    pub fn unpark(&mut self, system: usize) {
+        self.parked.remove(&system);
+    }
+
+    /// Each channel's (system, source).
+    pub fn sources(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        self.chans.iter().map(|c| (c.system, c.source))
+    }
+
     pub fn finish<'s>(&mut self, now_s: f64, ids: &CallIds, system: &dyn Fn(usize) -> &'s SystemConfig, out: &mut Vec<ConvOut>) {
         for (idx, ch) in self.chans.iter_mut().enumerate() {
             if ch.open.is_none() {

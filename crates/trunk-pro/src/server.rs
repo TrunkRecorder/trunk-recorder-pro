@@ -1609,6 +1609,8 @@ pub(crate) fn apply_config(ctx: &Ctx, old: &crate::config::Config, new: &crate::
             log::info!("{}: changed while recording; the change applies when recording starts next (Stop, then Start)", new.sources[i].title(i));
         }
     }
+    // A system switched on or off while recording: it stops or starts now, the others recording on.
+    ctx.live_systems(old, new);
     ctx.restart_check(new);
     // Interfaces turned on or off, moved, added: served so at once.
     if old.server.interfaces != new.server.interfaces {
@@ -1620,6 +1622,26 @@ pub(crate) fn apply_config(ctx: &Ctx, old: &crate::config::Config, new: &crate::
 }
 
 fn void<T>(_: T) {}
+
+/// System `system` (by short name, trunked or conventional) switched on or off, as Setup's switch
+/// does: saved, and while recording, stopped or started at once ([`apply_config`]).
+async fn switch_system(ctx: &Arc<Ctx>, system: String, on: bool) -> Result<(), String> {
+    let ctx2 = ctx.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut found = false;
+        edit_config(&ctx2, |c| {
+            for s in c.systems.iter_mut().filter(|s| s.short_name == system) {
+                (s.enabled, found) = (on, true);
+            }
+            for v in c.conventional.iter_mut().filter(|v| v.short_name == system) {
+                (v.enabled, found) = (on, true);
+            }
+        })?;
+        if found { Ok(()) } else { Err(format!("no system is named {system:?}")) }
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()))
+}
 
 /// The `plugins` message (asking plugins who they are can take a moment).
 async fn plugins_list(ctx: &Arc<Ctx>) -> ToClient {
@@ -1839,6 +1861,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let _ = tokio::task::spawn_blocking(move || ctx2.stop_recording()).await;
             None
         }
+        // A system's switch, from the dashboard or another interface: while recording it stops or
+        // starts at once, the others recording on ([`Ctx::live_systems`], by way of the config edit).
+        Command::StopSystem { system } => failed(switch_system(ctx, system, false).await),
+        Command::StartSystem { system } => failed(switch_system(ctx, system, true).await),
         Command::Devices => tokio::task::spawn_blocking(devices).await.ok(),
         Command::FindRadios => {
             let sources = ctx.config.lock().unwrap().sources.clone();
@@ -3248,6 +3274,8 @@ mod tests {
             (r#"{"type":"setTalkgroup","system":"x","talkgroup":1,"edit":{}}"#, C),
             (r#"{"type":"start"}"#, C),
             (r#"{"type":"stop"}"#, C),
+            (r#"{"type":"stopSystem","system":"x"}"#, C),
+            (r#"{"type":"startSystem","system":"x"}"#, C),
             (r#"{"type":"devices"}"#, C),
             (r#"{"type":"findRadios"}"#, C),
             (r#"{"type":"listDir"}"#, C),

@@ -8900,6 +8900,10 @@
           "type": "boolean",
           "description": "Nothing the config lists needs it (other sources reach all it does, or it was placed alongside them) and no call has used it this run: it can probably be removed."
         },
+        "closed": {
+          "type": "boolean",
+          "description": "Closed while recording goes on: the systems that needed it were stopped, and the radio is free for anything else."
+        },
         "ppmApply": {
           "type": [
             "number",
@@ -9970,6 +9974,10 @@
           ],
           "description": "Its sharing with the community directory; null when it isn't shared."
         },
+        "stopped": {
+          "type": "boolean",
+          "description": "Stopped while recording goes on (its switch turned off): its calls ended, its sites closed, the radios only it needed let go of."
+        },
         "sites": {
           "type": "array",
           "items": {
@@ -10510,6 +10518,40 @@
           },
           "required": [
             "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "stopSystem"
+            },
+            "system": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "startSystem"
+            },
+            "system": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "system"
           ],
           "additionalProperties": false
         },

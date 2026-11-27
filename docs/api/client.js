@@ -148,6 +148,16 @@ export class TrunkClient {
     this.send({ type: "stop" });
   }
 
+  /** Stop recording one system (its short name), the others recording on; its radios no other system needs are let go of. */
+  stopSystem(system) {
+    this.send({ type: "stopSystem", system });
+  }
+
+  /** Record a system again (started at once while recording, when it's part of the recording). */
+  startSystem(system) {
+    this.send({ type: "startSystem", system });
+  }
+
   /**
    * Costly messages come only when asked for, while you show them:
    * subscribe(["log", "spectrum:0"]) — the control channel log, a radio's

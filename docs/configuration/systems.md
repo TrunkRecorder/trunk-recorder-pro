@@ -35,7 +35,7 @@ a system of its own.)
 | `share` | | `false` | bool | Share it with the community directory while it records. See [Sharing with the directory](#sharing-with-the-directory) |
 | `directory` | | none | object | Set by its first share (or an import from the directory): the directory's record of it, `{ id }`. Shares land on that record. What changes as it's shared (the record's version, when it was last shared) is kept in the store, so sharing doesn't change the config again |
 | `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"`, `"nxdn"` or `"edacs"` (any case). Anything else is refused when the config is read |
-| `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
+| `enabled` | | `true` | bool | `false` keeps it in the config without recording it. Switched while recording (Setup's **Record**, the dashboard's **Stop** / **Start**), it stops or starts this system at once, and the others keep recording; radios no other system needs are let go of ([Stopping one system](../guides/dashboard.md#stopping-one-system)) |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
 | `preferredSite` | | `""` | string | Multi-site: a site's `name` (a site with none: the system's `shortName`), the one to keep calls from for the talkgroups whose row names no `Preferred Site` or `Preferred NAC`. See [Multi-site](#multi-site) |
 | `unitNames` | | empty | object | Which names the system's radios go by. See [Unit names](#unit-names) |

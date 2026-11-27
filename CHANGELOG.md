@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Stop one system without stopping the others, and free its radios.** Before, the only way to stop recording a
+  system was **Stop**, which stops all of them. Turning a system's **Record** switch off while recording only took
+  effect after a Stop and Start, and even then every radio in Setup was opened again, so the one that system used
+  stayed taken. Now, while recording, a system's **Stop** on the dashboard (or its **Record** switch in Setup)
+  stops it at once. Its calls in progress are saved and the other systems keep recording, with no restart. Any
+  radio no other system still needs is closed, so another program can use it, and its card says
+  **Released**. **Start** opens it again and the system picks up where it was. The switch is saved, so the system
+  stays off at the next Start, and Start now leaves its radio closed too. See [Stopping one system](docs/guides/dashboard.md#stopping-one-system).
+  - **API:** `stopSystem` / `startSystem` (by short name) do the same from an interface. `status` gives
+    `stopped` on a system and `closed` on a source.
+
 ## [0.5.2] — 2026-11-26
 
 - **Reset counts** (#262). The totals since Start (a radio's dropped samples and errors, calls, a plugin's sent, skipped,

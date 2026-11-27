@@ -689,6 +689,8 @@ struct Source {
     tune_ppm: f64,
     /// Voice channels opened on it this run.
     voice_channels: u64,
+    /// The systems that opened a voice channel on it this run ([`Engine::sources_needed`]).
+    used_by: BTreeSet<u16>,
     /// Being fed silence for samples that never came ([`Engine::push_gap`]).
     in_gap: bool,
     /// u8 IQ: an I byte whose Q comes in the next buffer.
@@ -702,7 +704,7 @@ impl Source {
     fn new(cfgs: &Arc<[SourceConfig]>, index: usize, history_s: f64) -> Source {
         let c = &cfgs[index];
         let front = if c.audio { Front::Audio(AudioIn::new(history_s)) } else { Front::Air(Channelizer::new(c.rate_hz, MIN_CHANNEL_RATE, history_s)) };
-        Source { cfgs: cfgs.clone(), index, front, errors: VecDeque::new(), seed: None, tune_ppm: 0.0, voice_channels: 0, in_gap: false, half: None, clock_offset_s: 0.0 }
+        Source { cfgs: cfgs.clone(), index, front, errors: VecDeque::new(), seed: None, tune_ppm: 0.0, voice_channels: 0, used_by: BTreeSet::new(), in_gap: false, half: None, clock_offset_s: 0.0 }
     }
     /// Its settings.
     fn cfg(&self) -> &SourceConfig {
@@ -1064,6 +1066,8 @@ struct Radio {
     cfgs: Arc<[SourceConfig]>,
     /// Each system's sources ([`SystemConfig::pins`]), by system.
     pins: Vec<Pins>,
+    /// Sources closed while the run goes on ([`Engine::set_source_online`]): nothing is opened on them.
+    offline: Vec<bool>,
     recordings: HashMap<CallId, Recording>,
     free_nums: Vec<u32>,
     next_num: u32,
@@ -1085,7 +1089,22 @@ impl Radio {
     /// The source `system` receives a channel at `hz` on.
     fn source_for(&self, system: usize, hz: f64) -> Option<usize> {
         let any = Pins::any();
-        self.pins.get(system).unwrap_or(&any).first(self.cfgs.len(), |i| (hz - self.cfgs[i].center_hz).abs() <= self.cfgs[i].usable_half_width())
+        self.pins.get(system).unwrap_or(&any).first(self.cfgs.len(), |i| !self.offline.get(i).copied().unwrap_or(false) && self.reaches(i, hz))
+    }
+
+    /// The source `system` would receive `hz` on with every source open (closed ones too).
+    fn source_for_any(&self, system: usize, hz: f64) -> Option<usize> {
+        let any = Pins::any();
+        self.pins.get(system).unwrap_or(&any).first(self.cfgs.len(), |i| self.reaches(i, hz))
+    }
+
+    fn reaches(&self, i: usize, hz: f64) -> bool {
+        (hz - self.cfgs[i].center_hz).abs() <= self.cfgs[i].usable_half_width()
+    }
+
+    /// The first source still open: the engine's clock follows it.
+    fn first_online(&self) -> Option<usize> {
+        (0..self.cfgs.len()).find(|&i| !self.offline.get(i).copied().unwrap_or(false))
     }
 
     fn rx(&self, source: usize) -> MutexGuard<'_, SourceRx> {
@@ -1204,6 +1223,7 @@ impl SysHost<'_> {
         }
         let s = &mut rx.src;
         s.voice_channels += 1;
+        s.used_by.insert(call.system);
         let rate = s.chz().output_rate();
         let cutoff = kind.cutoff_hz();
         let tuning = s.tuning();
@@ -1452,6 +1472,33 @@ impl Trunk {
             CarrierPlan::Hunt { cutoff_hz } if !self.cfg.control_channels.is_empty() => self.tune(radio, sys, cutoff_hz, 0, events),
             CarrierPlan::Watch { carriers, cutoff_hz, note } if !carriers.is_empty() => self.watch(radio, sys, &carriers, cutoff_hz, note, events),
             _ => Ok(()),
+        }
+    }
+
+    /// Stop listening (its system parked): its calls end, its control channel's heads and taps
+    /// are taken off their sources. [`Trunk::start`] opens them again.
+    fn stop(&mut self, radio: &mut Radio, sys: &SystemConfig, call_events: &mut Vec<CallEvent>) {
+        let mut host = self.host(radio, sys);
+        self.calls.end_all(&mut host, call_events);
+        let heads: Vec<(usize, HeadId)> = match std::mem::replace(&mut self.listening, Listening::Off) {
+            Listening::Hunting(h) => vec![(h.source, h.head)],
+            Listening::Watching(carriers) => carriers.iter().map(|c| (c.source, c.head)).collect(),
+            Listening::Off => vec![],
+        };
+        for (src, head) in heads {
+            let mut rx = radio.rx(src);
+            rx.src.chz_mut().remove_head(head);
+            rx.remove_taps(self.site);
+        }
+        self.cc_hz = None;
+        self.cc_offset_hz = None;
+    }
+
+    /// The frequencies it listens for its control channel on: its list, or the carriers it watches.
+    fn listened_hz(&self) -> Vec<f64> {
+        match self.cc().plan() {
+            CarrierPlan::Watch { carriers, .. } => carriers,
+            _ => self.cfg.control_channels.clone(),
         }
     }
 
@@ -1785,6 +1832,8 @@ struct System {
     cfg: SystemConfig,
     aliases: UnitAliases,
     concluded: u64,
+    /// Stopped while the run goes on ([`Engine::park_system`]): its sites listen to nothing, its calls ended.
+    parked: bool,
 }
 
 /// Everything the engine follows calls with (behind [`Engine`]'s lock).
@@ -1868,6 +1917,7 @@ impl Core {
             rx: Arc::new(rx),
             cfgs: cfgs.clone(),
             pins: cfg.systems.iter().map(|s| s.pins.clone()).collect(),
+            offline: vec![false; cfgs.len()],
             recordings: HashMap::new(),
             free_nums: Vec::new(),
             next_num: 0,
@@ -1917,7 +1967,7 @@ impl Core {
             t.start(&mut radio, sys, &mut events)?;
             trunks.push(t);
         }
-        let systems = std::mem::take(&mut cfg.systems).into_iter().map(|cfg| System { cfg, aliases: UnitAliases::default(), concluded: 0 }).collect();
+        let systems = std::mem::take(&mut cfg.systems).into_iter().map(|cfg| System { cfg, aliases: UnitAliases::default(), concluded: 0, parked: false }).collect();
         Ok(Core {
             systems,
             radio,
@@ -1934,6 +1984,145 @@ impl Core {
             wall: WallEpoch::new(cfg.epoch_ms_at_zero),
             drop_duplicates: cfg.drop_duplicates,
         })
+    }
+
+    /// Stop system `system` while the others go on: its calls end (and are saved as at a Stop),
+    /// its sites and conventional channels close, and nothing of it opens until [`Core::unpark_system`].
+    fn park_system(&mut self, system: u16) -> Result<(), String> {
+        let s = self.systems.get_mut(system as usize).ok_or_else(|| format!("no system {system} in this run"))?;
+        if s.parked {
+            return Ok(());
+        }
+        s.parked = true;
+        for t in self.trunks.iter_mut().filter(|t| t.system == system) {
+            t.stop(&mut self.radio, &self.systems[system as usize].cfg, &mut self.call_events);
+        }
+        self.apply_pending();
+        self.emit_call_events();
+        self.emit_taps();
+        let mut out = std::mem::take(&mut self.conv_out);
+        let heads = self.conv.park(system as usize, self.now_s, &self.call_ids, &|i| &self.systems[i].cfg, &mut out);
+        for (src, head) in heads {
+            if let Some(chz) = self.radio.rx(src).src.front.air_mut() {
+                chz.remove_head(head);
+            }
+        }
+        self.emit_conv(out);
+        Ok(())
+    }
+
+    /// Start parked system `system` again: its sites hunt (or watch) as at the start.
+    fn unpark_system(&mut self, system: u16) -> Result<(), String> {
+        let s = self.systems.get_mut(system as usize).ok_or_else(|| format!("no system {system} in this run"))?;
+        if !s.parked {
+            return Ok(());
+        }
+        s.parked = false;
+        self.conv.unpark(system as usize);
+        let mut result = Ok(());
+        for t in self.trunks.iter_mut().filter(|t| t.system == system) {
+            t.now_s = t.now_s.max(self.now_s);
+            t.last_good_s = t.now_s;
+            if let Err(e) = t.start(&mut self.radio, &self.systems[system as usize].cfg, &mut self.events) {
+                result = Err(e);
+            }
+        }
+        if result.is_err() {
+            let _ = self.park_system(system);
+        }
+        result
+    }
+
+    /// Which sources the systems running need (not parked): a source one of them receives a
+    /// control channel, watched carrier or conventional channel on, or one listed in `extra`
+    /// ((system, Hz): what the platform knows it may use, voice channels), with every source
+    /// open; one with a control channel on it now; or one it opened a voice channel on this run.
+    fn sources_needed(&self, extra: &[(u16, f64)]) -> Vec<bool> {
+        let mut need = vec![false; self.radio.cfgs.len()];
+        let mut mark = |i: Option<usize>| {
+            if let Some(n) = i.and_then(|i| need.get_mut(i)) {
+                *n = true;
+            }
+        };
+        let running = |system: u16| self.systems.get(system as usize).is_some_and(|s| !s.parked);
+        for t in self.trunks.iter().filter(|t| running(t.system)) {
+            for hz in t.listened_hz() {
+                mark(self.radio.source_for_any(t.system as usize, hz));
+            }
+            mark(t.control_source());
+            if let Listening::Watching(carriers) = &t.listening {
+                carriers.iter().for_each(|c| mark(Some(c.source)));
+            }
+        }
+        for &(system, hz) in extra.iter().filter(|(s, _)| running(*s)) {
+            mark(self.radio.source_for_any(system as usize, hz));
+        }
+        for (system, src) in self.conv.sources() {
+            if running(system as u16) {
+                mark(Some(src));
+            }
+        }
+        for (i, r) in self.radio.rx.iter().enumerate() {
+            if r.lock().unwrap().src.used_by.iter().any(|&s| running(s)) {
+                mark(Some(i));
+            }
+        }
+        need
+    }
+
+    /// Park `system`, then close the sources nothing running needs any more: those, now closed.
+    fn stop_system(&mut self, system: u16, extra: &[(u16, f64)]) -> Result<Vec<usize>, String> {
+        self.park_system(system)?;
+        let need = self.sources_needed(extra);
+        let close: Vec<usize> = (0..need.len()).filter(|&i| !need[i] && !self.radio.offline[i]).collect();
+        for &i in &close {
+            self.close_source(i);
+        }
+        Ok(close)
+    }
+
+    /// Unpark `system`, the closed sources it needs open again (and the rest still closed):
+    /// those, to be fed again. Err: it stays stopped, and every source as it was.
+    fn start_system(&mut self, system: u16, extra: &[(u16, f64)]) -> Result<Vec<usize>, String> {
+        let was = std::mem::replace(&mut self.radio.offline, vec![false; self.radio.cfgs.len()]);
+        // A closed source's clock stood still while the engine's went on: it picks up at the
+        // engine's time now (the platform refines its offset as it is fed again).
+        for i in (0..was.len()).filter(|&i| was[i]) {
+            let mut rx = self.radio.rx(i);
+            let s = &mut rx.src;
+            s.clock_offset_s += (self.now_s - s.time()).max(0.0);
+        }
+        if let Err(e) = self.unpark_system(system) {
+            self.radio.offline = was;
+            return Err(e);
+        }
+        let need = self.sources_needed(extra);
+        let open: Vec<usize> = (0..need.len()).filter(|&i| was[i] && need[i]).collect();
+        for i in (0..need.len()).filter(|&i| was[i] && !need[i]) {
+            self.radio.offline[i] = true;
+        }
+        Ok(open)
+    }
+
+    /// Source `i` closed while the run goes on: nothing opens on it, and what's on it (nothing a
+    /// running system needs) is taken off.
+    fn close_source(&mut self, i: usize) {
+        self.radio.offline[i] = true;
+        let mut tapped = Vec::new();
+        let mut rx = self.radio.rx(i);
+        rx.taps.clear();
+        for (_, mut ch) in std::mem::take(&mut rx.channels) {
+            rx.src.chz_mut().remove_head(ch.head);
+            ch.close_taps(&mut tapped);
+            keep_tape(&self.radio.tape_sink, &mut ch);
+        }
+        drop(rx);
+        self.radio.tapped.extend(tapped);
+    }
+
+    /// The sources closed while the run goes on.
+    fn closed_sources(&self) -> Vec<bool> {
+        self.radio.offline.clone()
     }
 
     /// The systems' configs, as they are now.
@@ -2205,6 +2394,10 @@ impl Core {
         for c in self.conv.channels() {
             add(c.system as u16, c.calls, 0, c.open);
         }
+        // A system stopped while the run goes on is still the run's (its card says so).
+        for (i, _) in self.systems.iter().enumerate().filter(|(_, s)| s.parked) {
+            add(i as u16, 0, 0, false);
+        }
         out.sort_by_key(|v| v.system);
         out
     }
@@ -2298,7 +2491,7 @@ impl Core {
             }
         }
         self.apply_pending();
-        if source == 0 {
+        if self.radio.first_online() == Some(source) {
             self.now_s = dsp.time;
         }
         if !self.conv.is_empty() {
@@ -2943,6 +3136,40 @@ impl Engine {
     pub fn seed_tune(&self, source: usize, ppm: f64) {
         self.core().seed_tune(source, ppm)
     }
+    /// Stop system `system` (a call's number) while the others go on: its calls end as at the
+    /// end of input, its control and conventional channels close, and then the sources no
+    /// system still running needs are closed too (nothing opens on them): those, for the
+    /// platform to stop feeding and let go of. A source is needed by a running system when it
+    /// receives one of its control channels, watched carriers or conventional channels, has its
+    /// control channel on it now, had a voice channel of it opened on it this run, or receives
+    /// one of `extra`'s (system, Hz): what the platform knows a system may use (its voice
+    /// channels). Err: no such system.
+    pub fn stop_system(&self, system: u16, extra: &[(u16, f64)]) -> Result<Vec<usize>, String> {
+        self.core().stop_system(system, extra)
+    }
+    /// Start a system [`Engine::stop_system`] stopped, as it started: the closed sources it needs
+    /// are open again, for the platform to feed again. Err (it stays stopped): it couldn't start
+    /// (no control channel inside any source).
+    pub fn start_system(&self, system: u16, extra: &[(u16, f64)]) -> Result<Vec<usize>, String> {
+        self.core().start_system(system, extra)
+    }
+    /// Whether system `system` is stopped ([`Engine::stop_system`]).
+    pub fn parked(&self, system: u16) -> bool {
+        self.core().systems.get(system as usize).is_some_and(|s| s.parked)
+    }
+    /// Source `source` left closed from the start (only systems not recorded would use it): nothing
+    /// opens on it. A system that needs it opens it again ([`Engine::start_system`]).
+    pub fn close_source(&self, source: usize) {
+        let mut core = self.core();
+        if source < core.radio.cfgs.len() {
+            core.close_source(source);
+        }
+    }
+    /// The sources closed while the run goes on ([`Engine::stop_system`]).
+    pub fn closed_sources(&self) -> Vec<bool> {
+        self.core().closed_sources()
+    }
+
     /// End of input: release what the receivers still hold and end every call.
     pub fn finish(&self) {
         self.core().finish()
@@ -3182,6 +3409,29 @@ mod tests {
         let secs = c.audio.len() as f64 / 8000.0;
         assert!((2.0..2.7).contains(&secs), "its voice, and little of the quiet: {secs} s");
         assert!((c.call.start_s - 3.0).abs() < 0.4, "it began when the voice did: {}", c.call.start_s);
+    }
+
+    /// A conventional system stopped mid-call: the call ends then, saved, and its channel
+    /// opens on nothing more until it's started again.
+    #[test]
+    fn a_stopped_conventional_system_ends_its_call_and_opens_on_nothing() {
+        let e = on_a_stream(SystemConfig::conventional("feed"), vec![stream_row(7)]);
+        let mut audio = tone(1000.0, -80.0, 3.0);
+        audio.extend(tone(1000.0, -20.0, 2.0));
+        e.push_audio(0, &audio, 1);
+        assert!(concluded(&e.drain_events()).is_empty(), "still up");
+        assert_eq!(e.stop_system(0, &[]).unwrap(), [0], "its stream, closed");
+        assert!(e.parked(0));
+        let calls = concluded(&e.drain_events()).len();
+        assert_eq!(calls, 1, "the call ended with it");
+        e.push_audio(0, &tone(1000.0, -20.0, 2.0), 1);
+        e.push_audio(0, &tone(1000.0, -80.0, 6.0), 1);
+        assert!(concluded(&e.drain_events()).is_empty(), "nothing opens while it's stopped");
+        assert_eq!(e.start_system(0, &[]).unwrap(), [0]);
+        let mut audio = tone(1000.0, -20.0, 2.0);
+        audio.extend(tone(1000.0, -80.0, 6.0));
+        e.push_audio(0, &audio, 1);
+        assert_eq!(concluded(&e.drain_events()).len(), 1, "started again, it records");
     }
 
     /// The quiet floor is the feed's own: a feed quiet at −100 dBFS opens on voice at −88; one
@@ -3510,6 +3760,75 @@ mod tests {
         let ids = CallIds::default();
         let (x, y) = (ids.clone(), ids);
         assert_eq!([x.next(), y.next(), x.next()], [1, 2, 3]);
+    }
+
+    /// Two systems, each on a source of its own: "a" on 851 MHz (source 0), "b" on 770 MHz (source 1).
+    fn two_systems() -> Core {
+        let src = |hz: f64| SourceConfig { center_hz: hz, rate_hz: 2.4e6, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, audio: false };
+        let site = |cc: f64| SiteConfig { control_channels: vec![cc], ..Default::default() };
+        let cfg = EngineConfig {
+            systems: vec![SystemConfig::trunked("a", vec![site(851.0125e6)]), SystemConfig::trunked("b", vec![site(770.0125e6)])],
+            sources: vec![src(851e6), src(770e6)],
+            ..Default::default()
+        };
+        Core::new(cfg).unwrap()
+    }
+
+    fn grant(e: &mut Core, site: usize, t: f64, tg: u32, f: u64) {
+        handle(e, site, &[Message { kind: MessageType::Grant, time_s: t, talkgroup: tg, freq_hz: f, ..Default::default() }]);
+    }
+
+    /// Stopping a system ends its calls and closes its control channel and the source only it
+    /// needs; the other system goes on, on its own source. Started again, it hunts on that
+    /// source, which is to be fed again.
+    #[test]
+    fn a_system_stops_and_starts_while_the_other_goes_on() {
+        let mut e = two_systems();
+        grant(&mut e, 0, 0.0, 101, 851_500_000);
+        grant(&mut e, 1, 0.0, 201, 770_500_000);
+        e.emit_call_events();
+        e.drain_events();
+        assert_eq!(e.radio.rx(0).channels.len(), 1);
+        assert_eq!(e.stop_system(0, &[]).unwrap(), [0], "a's source, closed");
+        let ended: Vec<u32> = e.drain_events().into_iter().filter_map(|x| if let Event::CopyEnd(c) = x { Some(c.talkgroup) } else { None }).collect();
+        assert_eq!(ended, [101], "a's call ended, b's goes on");
+        assert!(!e.trunks[0].running() && e.trunks[1].running());
+        {
+            let rx = e.radio.rx(0);
+            assert!(rx.channels.is_empty() && rx.taps.is_empty(), "nothing left on the closed source");
+        }
+        assert_eq!(e.closed_sources(), [true, false]);
+        assert_eq!(e.trunks[1].calls.calls.len(), 1);
+        // Nothing opens on a closed source, nor for a stopped system.
+        assert_eq!(e.radio.source_for(1, 851.5e6), None);
+        grant(&mut e, 1, 1.0, 202, 770_600_000);
+        assert_eq!(e.radio.rx(1).channels.len(), 2, "b records on");
+        // (Stopping it twice is stopping it once.)
+        assert_eq!(e.stop_system(0, &[]).unwrap(), Vec::<usize>::new());
+        assert_eq!(e.start_system(0, &[]).unwrap(), [0], "a's source, to be fed again");
+        assert!(e.trunks[0].running() && e.trunks[0].control_source() == Some(0));
+        assert_eq!(e.closed_sources(), [false, false]);
+        assert!(e.stop_system(7, &[]).is_err(), "no such system");
+    }
+
+    /// A source another running system needs stays open: one that receives its control
+    /// channel, that it opened a voice channel on, or that the platform lists for it.
+    #[test]
+    fn a_source_another_system_needs_stays_open() {
+        let mut e = two_systems();
+        // b's call on a's source (pins: any).
+        grant(&mut e, 1, 0.0, 201, 851_600_000);
+        assert_eq!(e.radio.rx(0).channels.len(), 1);
+        assert_eq!(e.stop_system(0, &[]).unwrap(), Vec::<usize>::new(), "b used source 0: it stays");
+        assert_eq!(e.start_system(0, &[]).unwrap(), Vec::<usize>::new(), "nothing was closed");
+        let mut e = two_systems();
+        assert_eq!(e.stop_system(0, &[(1, 851.7e6)]).unwrap(), Vec::<usize>::new(), "b's listed voice channel is on source 0");
+        let mut e = two_systems();
+        assert_eq!(e.stop_system(1, &[]).unwrap(), [1]);
+        assert_eq!(e.stop_system(0, &[]).unwrap(), [0], "both stopped: every source closed");
+        // b starts again: only its own source opens.
+        assert_eq!(e.start_system(1, &[]).unwrap(), [1]);
+        assert_eq!(e.closed_sources(), [true, false]);
     }
 
     /// Three sites grant TG 101: east and west of one system, far of another.

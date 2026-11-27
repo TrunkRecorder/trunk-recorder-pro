@@ -67,7 +67,27 @@ test("Overview: a card per system; one of several sites has a row per site", () 
   const page = text(html);
   assert.match(page, /Control channels .* 2 sites/);
   assert.match(page, /dcfd 851\.0+ .* south 851\.5+/);
-  assert.match(page, /other P25 Control channel — msg\/s Decoded … CC 852\.0+ MHz/, "a system of one site, as before");
+  assert.match(page, /other P25 Stop Control channel — msg\/s Decoded … CC 852\.0+ MHz/, "a system of one site, as before, with its Stop");
+});
+
+test("Overview: a system stopped while recording keeps its card, Stopped, with a Start; its released source says so", () => {
+  const c = defaultConfig();
+  c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000] }), newSystem(c, { shortName: "other", controlChannelsHz: [852_000_000] }));
+  // Its switch turned off in Setup (or by its Stop): the run still has it, stopped.
+  c.systems[1].enabled = false;
+  running(c, [system(0, "dcfd", [site(0, "dcfd", { site: 1 })]), { ...system(1, "other", []), stopped: true }]);
+  const xs = dashSystems(snapshot());
+  assert.deepEqual(xs.map((x) => [x.name, x.stopped]), [["dcfd", false], ["other", true]]);
+  assert.equal(pageHealth(snapshot()).decode.level === "bad", false, "a stopped system is nothing wrong");
+  setView("overview");
+  const page = text(renderToString(<Overview />));
+  assert.match(page, /dcfd P25 Stop /);
+  assert.match(page, /other P25 Start Stopped — The other systems record on/);
+  const src = { index: 1, label: "RTL-SDR 2", centerHz: 852e6, rateHz: 2.4e6, settings: c.sources[0], closed: true } as unknown as SourceStatus;
+  assert.deepEqual(sourceHealth(snapshot(), src), { level: "idle", why: "Released: the systems that used it are stopped" });
+  // Not recording: a system switched off has no card.
+  transport.onMessage({ type: "state", phase: "idle", error: null, ended: false, restartNeeded: false });
+  assert.deepEqual(dashSystems(snapshot()).map((x) => x.name), ["dcfd"]);
 });
 
 test("Decode: a card per site; a system's page picks the site", () => {

@@ -62,6 +62,32 @@ Below that is a card for each system. Click its name to go to its Decode page.
   channels and how many are **Open** (a signal on them now).
 - **Voice lost per frequency · 24 h**: one cell per voice channel, darker where more voice was
   lost. A dark cell or two at one end often means a source's band edge.
+- **Stop** on a card (while recording) stops that system alone: see [Stopping one system](#stopping-one-system).
+
+### Stopping one system
+
+While recording, **Stop** on a system's card (or its **Record** switch in Setup, which is the same
+thing) stops that system at once and leaves the others recording, with no restart:
+
+- Its calls in progress end and are saved, as at a Stop. Its control channels and conventional
+  channels close.
+- Any radio that no system still recording needs is closed and **Released**, so another program
+  can open it. The radio's card says **Released**. A radio that another system also uses stays
+  open for it.
+- The system's card stays, reading **Stopped**, with a **Start** button. **Start** opens its radios
+  again and the system hunts for its control channel as it did at Start. The other systems keep
+  recording through that too.
+
+The switch is saved in the config (`enabled`), so a stopped system stays off at the next Start and
+after the app restarts. Start leaves closed a radio that only systems switched off would receive on,
+so it stays free; a spare radio that no system receives on opens as it always has. A system that was
+off when recording started isn't part of the recording: turning it on shows the restart banner, and
+the next Start records it (and opens its radio).
+
+A radio counts as needed by a system that's still recording when it receives one of that system's
+control channels, watched carriers, conventional channels or listed voice channels, or when a call
+of that system has used it since Start. In the browser version, the switch takes effect at the next
+Start.
 
 On the right are the **Sources** (as on the RF page, smaller), then **Status**: a **Computer**
 line (CPU, memory, disk, RAM spool, internet), a **Plugins** line (sent, failed, queued for each

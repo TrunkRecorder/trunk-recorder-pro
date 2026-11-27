@@ -3348,6 +3348,36 @@ impl Config {
         move |receive_on, hz| receiver(&sources, &placed, &self.pins(receive_on), hz)
     }
 
+    /// The sources only systems switched off would receive on, nothing being recorded needing
+    /// them: a stopped system's radio, which Start leaves closed, free for anything else. A source
+    /// is a system's when it's the one its control, watched, listed voice or conventional channels
+    /// are received on (as the engine chooses, at the centres Start places). One no system
+    /// receives on (a spare placed alongside) isn't: it opens as it always has.
+    pub fn sources_for_off_systems_only(&self) -> Vec<bool> {
+        let n = self.sources.len();
+        let rx = self.receiving(&self.resolved_centers());
+        let (mut on, mut off) = (vec![false; n], vec![false; n]);
+        for sys in &self.systems {
+            let mark = if sys.active() { &mut on } else { &mut off };
+            for s in sys.sites.iter().filter(|s| s.active()) {
+                for hz in s.control_channels_hz.iter().copied().chain(s.watched_channels(sys)).chain(s.voice_hz(sys)) {
+                    if let Some(i) = rx(&sys.receive_on, hz) {
+                        mark[i] = true;
+                    }
+                }
+            }
+        }
+        for v in &self.conventional {
+            for c in v.channels.iter().filter(|c| c.enabled && c.freq_hz > 0.0) {
+                let mark = if v.enabled { &mut on } else { &mut off };
+                if let Some(i) = rx(&c.receive_on, c.freq_hz) {
+                    mark[i] = true;
+                }
+            }
+        }
+        (0..n).map(|i| off[i] && !on[i]).collect()
+    }
+
     /// What a run reads only when it starts: its sources as the radios take
     /// them ([`Source::radio`]), the systems and conventional systems without
     /// what applies while recording (plugins and their delays, sharing and
@@ -4646,6 +4676,21 @@ mod tests {
 
     fn system(name: &str, ccs: &[f64]) -> System {
         System::one_site(name, Site { control_channels_hz: ccs.to_vec(), ..Default::default() })
+    }
+
+    /// A system switched off: the radio only it receives on is left closed at Start; one a system
+    /// being recorded uses too, or a spare no system receives on, isn't.
+    #[test]
+    fn a_radio_only_a_system_switched_off_uses_is_left_closed() {
+        let rtl = |center_hz: f64| Source { kind: SourceKind::Rtlsdr { address: String::new(), bias_tee: false, serial: String::new(), gain_db: 30.0, agc: false, buf_len: 0, buffers: 0 }, center_hz, rate_hz: 2_400_000.0, ppm: 0.0, auto_tune: false, guard_hz: DEFAULT_GUARD_HZ, name: String::new() };
+        let mut c = Config { sources: vec![rtl(851e6), rtl(770e6), rtl(460e6)], systems: vec![system("a", &[851_012_500.0]), system("b", &[770_012_500.0])], ..Default::default() };
+        assert_eq!(c.sources_for_off_systems_only(), [false, false, false], "both recorded; the spare opens as ever");
+        c.systems[1].enabled = false;
+        assert_eq!(c.sources_for_off_systems_only(), [false, true, false], "b's radio");
+        c.systems[0].sites[0].voice_channels_hz = vec![770_500_000.0];
+        assert_eq!(c.sources_for_off_systems_only(), [false, false, false], "a's voice is on it too");
+        c.systems[0].enabled = false;
+        assert_eq!(c.sources_for_off_systems_only(), [true, true, false]);
     }
 
     /// Four auto RTLs for one 800 MHz P25 site wider than one of them: Start

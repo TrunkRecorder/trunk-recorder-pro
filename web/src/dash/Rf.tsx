@@ -115,7 +115,13 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           hint="Lost by the driver (USB or CPU); calls lose audio"
         />
       </div>
-      {src.unused && (
+      {src.closed && (
+        <div className="row src-note">
+          <span className="chip">Released</span>
+          <span className="muted">The systems that used it are stopped: the radio is free. Starting one of them opens it again.</span>
+        </div>
+      )}
+      {src.unused && !src.closed && (
         <div className="row src-note">
           <span className="chip warn">Unused</span>
           <span className="muted">Probably removable</span>
@@ -128,7 +134,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           <span className="muted">{off.why}</span>
         </div>
       )}
-      {k >= 0 && !audio && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
+      {k >= 0 && !audio && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && !src.closed && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
       {!small && (
         <div className="row src-facts">
           {/* (Gain: Setup's — the desktop recorder takes a new gain while recording.) */}

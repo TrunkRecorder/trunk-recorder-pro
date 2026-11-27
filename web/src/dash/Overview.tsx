@@ -3,7 +3,7 @@
 // plugins and the computer in a line each, and what happened lately.
 
 import { formatMhz } from "../config.ts";
-import { can, mayEdit, pluginOn, radioQuery, statsSince, setView, snapshot, start, usePolled, useApp, type AppState } from "../controller.ts";
+import { can, mayEdit, pluginOn, radioQuery, setSystemRunning, statsSince, setView, snapshot, start, usePolled, useApp, type AppState } from "../controller.ts";
 import { Card, Fig, Figs, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
@@ -126,9 +126,26 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
       onWhy={goTo(h)}
       className="sys-card"
       onTitle={() => setView("decode", x.name)}
-      actions={<span className="badge-kind">{st?.modulation ? `${KIND_LABEL[x.kind]} · ${st.modulation}` : KIND_LABEL[x.kind]}</span>}
+      actions={
+        <>
+          <span className="badge-kind">{st?.modulation ? `${KIND_LABEL[x.kind]} · ${st.modulation}` : KIND_LABEL[x.kind]}</span>
+          {live && mayEdit() && (
+            <button
+              className="btn ghost small"
+              onClick={() => setSystemRunning(x.name, x.stopped)}
+              title={x.stopped ? "Record this system again (its radios open again)" : "Stop recording this system alone: the others record on, and its radios are let go of"}
+            >
+              {x.stopped ? "Start" : "Stop"}
+            </button>
+          )}
+        </>
+      }
     >
-      {!live ? (
+      {live && x.stopped ? (
+        <div className="sys-main">
+          <Stat label="Stopped" value="—" sub="The other systems record on. The radios only it used are free for anything else; Start opens them again." />
+        </div>
+      ) : !live ? (
         <Stat
           label="Last 24 h"
           value={dayCalls === null ? "—" : compact(dayCalls)}

@@ -725,10 +725,70 @@ impl Session {
         }
     }
 
-    /// A finite source ran out; true when all have.
+    /// A finite source ran out; true when all have (those closed while the run goes on aside,
+    /// [`Session::set_system_running`]: one closed so ends too, and that's no end of its input).
     pub fn source_ended(&mut self, source: usize) -> bool {
-        self.stats[source].lock().unwrap().ended = true;
-        self.stats.iter().all(|s| s.lock().unwrap().ended)
+        let closed = self.engine.closed_sources();
+        if !closed.get(source).copied().unwrap_or(false) {
+            self.stats[source].lock().unwrap().ended = true;
+        }
+        self.stats.iter().enumerate().all(|(i, s)| s.lock().unwrap().ended || closed.get(i).copied().unwrap_or(false))
+    }
+
+    /// Stop (`on` false) or start again system `id` while the rest of the run goes on: its calls
+    /// end (and are saved), its control and conventional channels close; started, they open as
+    /// at the start. The sources that change with it: when stopping, those no system still
+    /// running needs, now closed, for the caller to stop and let go of; when starting, the closed
+    /// ones it needs, now open, for the caller to open and feed again ([`Session::source_reopened`]).
+    /// Err: it isn't one of this run's systems (a system turned on since Start needs a restart),
+    /// or it couldn't start.
+    pub fn set_system_running(&mut self, id: SystemId, on: bool) -> Result<Vec<usize>, String> {
+        let Some(system) = self.index_of(id) else {
+            return Err("it isn't part of this recording: it starts with the next Start".into());
+        };
+        // What it may use besides its control channels: the voice channels its sites list.
+        let extra: Vec<(u16, f64)> = self.cfg.active_systems().enumerate().flat_map(|(k, sys)| sys.active_sites().flat_map(move |s| s.voice_hz(sys)).map(move |hz| (k as u16, hz))).collect();
+        let name = self.system_name(system).to_string();
+        let changed = if on { self.engine.start_system(system, &extra)? } else { self.engine.stop_system(system, &extra)? };
+        let titles: Vec<String> = changed.iter().map(|&i| self.cfg.sources.get(i).map_or_else(|| format!("Source {}", i + 1), |s| s.title(i))).collect();
+        let text = match (on, titles.is_empty()) {
+            (false, true) => format!("{name}: stopped (its radios go on for the systems still recording)"),
+            (false, false) => format!("{name}: stopped; radios released: {}", titles.join(", ")),
+            (true, true) => format!("{name}: started"),
+            (true, false) => format!("{name}: started; radios opened again: {}", titles.join(", ")),
+        };
+        self.records.push(Record::text(Level::Info, None, text));
+        Ok(changed)
+    }
+
+    /// Leave closed, from the start, the sources only systems switched off would use
+    /// ([`Config::sources_for_off_systems_only`]): those, for the caller not to open.
+    pub fn close_off_systems_sources(&mut self) -> Vec<usize> {
+        let close: Vec<usize> = self.cfg.sources_for_off_systems_only().iter().enumerate().filter(|(_, c)| **c).map(|(i, _)| i).collect();
+        for &i in &close {
+            self.engine.close_source(i);
+            let title = self.cfg.sources[i].title(i);
+            self.records.push(Record::text(Level::Info, None, format!("{title}: left closed, free for anything else (only systems switched off use it)")));
+        }
+        close
+    }
+
+    /// Whether system `id` was stopped while recording goes on ([`Session::set_system_running`]).
+    pub fn system_stopped(&self, id: SystemId) -> bool {
+        self.index_of(id).is_some_and(|i| self.engine.parked(i))
+    }
+
+    /// Source `source` opened again while the run goes on: its clock is fitted afresh (the time
+    /// it was closed is no loss), and it has no end.
+    pub fn source_reopened(&mut self, source: usize) {
+        if let Some(s) = self.stats.get(source) {
+            let mut s = s.lock().unwrap();
+            let live = s.clock.live;
+            let bursty = s.clock.bursty;
+            let samples = s.clock.samples;
+            s.clock = ClockFit { live, bursty, samples, ..Default::default() };
+            (s.ended, s.fed, s.fed_ms, s.arrived, s.rate_mark) = (false, false, None, None, None);
+        }
     }
 
     /// Collect what happened since the last poll; status every 500 ms and
@@ -1553,6 +1613,7 @@ impl Session {
 
     fn status_message(&self, load: f64) -> ToClient {
         let st = self.engine.status();
+        let closed = self.engine.closed_sources();
         let sources: Vec<Value> = self
             .cfg
             .sources
@@ -1576,6 +1637,8 @@ impl Session {
                         "voiceChannels": tune.voice_channels,
                         // Nothing listed needs it and no call has used it: it can probably go.
                         "unused": self.listed.get(i) == Some(&0) && tune.voice_channels == 0,
+                        // Closed while recording goes on: the systems that needed it were stopped.
+                        "closed": closed.get(i).copied().unwrap_or(false),
                         "clockPpm": ss.clock.ppm().map(|p| (p * 100.0).round() / 100.0) })
             })
             .collect();
@@ -1599,6 +1662,7 @@ impl Session {
             .map(|v| {
                 json!({
                     "index": v.system, "shortName": v.short_name, "share": self.share.status_json(&v.short_name),
+                    "stopped": self.engine.parked(v.system),
                     "activeCalls": v.active_calls, "recording": v.recording, "conventionalOpen": v.conventional_open, "callsConcluded": v.calls_concluded,
                     "sites": st.sites.iter().filter(|y| y.system == v.system).map(site_json).collect::<Vec<_>>(),
                 })
