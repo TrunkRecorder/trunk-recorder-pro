@@ -165,10 +165,17 @@ In the config file these are `systemsOff` and `sitesOff` on the plugin's entry, 
 
 ### Changes apply at once
 
-While recording, changing a plugin's settings, turning a plugin on or off, or changing the M4A
-settings restarts the plugins with the new settings (**Changes restart it.**, says the card). The
-old processes get 10 seconds to finish and save their queues, and the new ones start as soon as
-they've exited, so no calls are lost in between.
+While recording, changing a plugin's settings (its own, a system's or site's, the systems it's on
+for, Share decrypted calls) restarts that plugin alone with them; the other plugins carry on. It
+finishes what it was already sent, gets 10 seconds to save its queue and exit, and starts again at
+once, while what comes meanwhile waits for it, so no calls are lost. A plugin that takes its
+settings as it runs isn't restarted at all. Turning a plugin on or off, or changing the M4A
+settings, restarts all of them in the same way.
+
+Settings that would restart a plugin aren't saved as you type while recording: they're held until
+**Apply** (*Not applied · Apply restarts …*, under the form, with **Discard**), so a restart is one
+you chose rather than one per field. They're listed in Setup's **To do**, with **Apply all**, and
+counted by the pill at the bottom of every page; **Show** takes you to each.
 
 ### In the config file
 

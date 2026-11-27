@@ -9,7 +9,7 @@ import { clockAt } from "./fmt.ts";
 import { guideWanted, SetupGuide } from "./Onboarding.tsx";
 import { InterfacesPage } from "./Interfaces.tsx";
 import { PluginPage, PluginsPage, usePluginPages } from "./Plugins.tsx";
-import { Setup } from "./Setup.tsx";
+import { Setup, WaitingPill } from "./Setup.tsx";
 import { SignedInAs } from "./Passkeys.tsx";
 import { Light } from "./charts.tsx";
 import { ListenPage } from "./dash/Listen.tsx";
@@ -248,13 +248,6 @@ export function App() {
               </button>
             </div>
           )}
-          {running && s.restartNeeded && (
-            <div className="banner" role="status">
-              <span>
-                <b>Restart to apply</b> <span className="muted">— some changes take effect on the next Start</span>
-              </span>
-            </div>
-          )}
           {s.ended && s.phase === "idle" && <div className="banner">Replay finished</div>}
           {edit && !running && problem && s.connected && !s.error && !s.runError && s.view !== "setup" && (
             <div className="banner subtle">
@@ -268,6 +261,7 @@ export function App() {
         <main>
           <Page view={s.view} />
         </main>
+        <WaitingPill />
       </div>
     </div>
   );

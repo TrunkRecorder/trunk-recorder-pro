@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock, RwLockReadGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -96,6 +96,29 @@ impl Owed {
     }
 }
 
+/// What of the run a plugin is given: calls decrypted with our keys (`shareDecrypted`), and not
+/// the systems and sites it's turned off for (`systemsOff`, `sitesOff`: nothing about those
+/// systems, nor what's of those sites alone).
+#[derive(Default)]
+struct Scope {
+    share_decrypted: bool,
+    off: BTreeSet<SystemId>,
+    sites_off: BTreeSet<SiteId>,
+}
+
+impl Scope {
+    fn of(s: &Spec) -> Scope {
+        Scope { share_decrypted: s.share_decrypted, off: s.off.clone(), sites_off: s.sites_off.clone() }
+    }
+}
+
+impl Plugin {
+    /// What of the run it's given now.
+    fn scope(&self) -> RwLockReadGuard<'_, Scope> {
+        self.scope.read().unwrap()
+    }
+}
+
 struct Plugin {
     id: String,
     manifest: Manifest,
@@ -113,12 +136,13 @@ struct Plugin {
     started: Mutex<Option<Instant>>,
     /// When everything queued for it, `shutdown` last, was written to it.
     drained_at: Arc<Mutex<Option<Instant>>>,
-    /// It may be given calls decrypted with our keys (`shareDecrypted`); whether it was said when one was withheld.
-    share_decrypted: bool,
-    /// The systems it's turned off for (`systemsOff`): nothing about them is given it.
-    off: BTreeSet<SystemId>,
-    /// The sites it's turned off for (`sitesOff`): what's of them alone isn't given it.
-    sites_off: BTreeSet<SiteId>,
+    /// What of the run it's given (new with its settings: [`PluginHost::renew`]).
+    scope: RwLock<Scope>,
+    /// Its settings changed: its process is to finish what's queued and start again ([`PluginHost::renew`]).
+    renew: Arc<AtomicBool>,
+    /// It was told to stop for that: its exit is no failure, and it starts again at once.
+    renewing: Arc<AtomicBool>,
+    /// Whether it was said when a decrypted call was withheld.
     withheld_said: AtomicBool,
     /// Whether it was said that it isn't streamed the live media of calls it's delayed for.
     audio_held_said: AtomicBool,
@@ -147,6 +171,10 @@ struct Shared {
 /// How long `shutdown` waits for a plugin to read what was queued before
 /// `shutdown` (its grace counts from then).
 const DRAIN_MAX: Duration = Duration::from_secs(30);
+
+/// How long a plugin restarting for new settings ([`PluginHost::renew`]) has to finish and exit,
+/// as a reload gives the plugins it replaces.
+const RENEW_GRACE: Duration = Duration::from_secs(10);
 
 pub struct PluginHost {
     shared: Arc<Shared>,
@@ -251,52 +279,14 @@ impl PluginHost {
                     for k in m.system_overrides.iter().filter(|k| !props.is_some_and(|p| p.contains_key(*k))) {
                         notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("says a system can set \"{k}\" again, but it has no such setting") });
                     }
-                    // Each system's settings, and the plugin's as they are for it.
-                    let mut settings = BTreeMap::new();
-                    // Required settings left empty, and for which systems ("": for none).
-                    let mut unset: Vec<(String, Vec<String>)> = Vec::new();
-                    let mut note_unset = |field: String, system: &str| match unset.iter_mut().find(|(f, _)| *f == field) {
-                        Some((_, on)) => on.push(system.to_string()),
-                        None => unset.push((field, vec![system.to_string()])),
-                    };
-                    let mut own_settings = BTreeMap::new();
-                    let mut site_settings: BTreeMap<SiteId, Value> = BTreeMap::new();
-                    for (id, entry) in std::mem::take(&mut s.systems).into_iter().filter(|(id, _)| !s.off.contains(id)) {
-                        let name = systems.iter().find(|y| y.id == id).map_or_else(|| format!("system {id}"), |y| y.info.short_name.clone());
-                        let (mut own, merged, ignored) = resolve(m.config.as_ref(), &m.system_overrides, &s.config, entry);
-                        for k in ignored {
-                            notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" can't be set for one system (the plugin doesn't offer it); ignored") });
+                    match systems_for(&s, &m, systems, &notes) {
+                        Ok(told) => ready.push((s, m, told)),
+                        // Not set up yet (the interface says so too): it would only fail.
+                        Err(text) => {
+                            notes(Note::State { plugin: s.id.clone(), state: State::Warning, message: text.clone() });
+                            notes(Note::Log { plugin: s.id, level: Level::Warn, text });
                         }
-                        let (sites, ignored) = resolve_sites(m.system_config.as_ref(), &m.site_overrides, &mut own);
-                        for k in ignored {
-                            notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" can't be set for one site (the plugin doesn't offer it); ignored") });
-                        }
-                        site_settings.extend(sites);
-                        for f in unset_required(m.config.as_ref(), merged.as_ref().unwrap_or(&s.config)) {
-                            note_unset(f, &name);
-                        }
-                        if let Some(v) = merged {
-                            settings.insert(id, v);
-                        }
-                        own_settings.insert(id, own);
                     }
-                    s.systems = own_settings;
-                    // (Used by no system: its own settings decide.)
-                    if s.systems.is_empty() {
-                        unset_required(m.config.as_ref(), &s.config).into_iter().for_each(|f| note_unset(f, ""));
-                    }
-                    // Not set up yet (the interface says so too): it would only fail.
-                    if !unset.is_empty() {
-                        let what: Vec<String> = unset
-                            .iter()
-                            .map(|(f, on)| if on.iter().all(|x| x.is_empty()) { f.clone() } else { format!("{f} (for {})", on.join(", ")) })
-                            .collect();
-                        let text = format!("not started: {} {} set", what.join(", "), if unset.len() == 1 { "isn't" } else { "aren't" });
-                        notes(Note::State { plugin: s.id.clone(), state: State::Warning, message: text.clone() });
-                        notes(Note::Log { plugin: s.id, level: Level::Warn, text });
-                        continue;
-                    }
-                    ready.push((s, m, settings, site_settings));
                 }
                 Err(e) => {
                     notes(Note::State { plugin: s.id.clone(), state: State::Error, message: e.clone() });
@@ -304,10 +294,10 @@ impl PluginHost {
                 }
             }
         }
-        let wants_m4a = ready.iter().any(|(_, m, _, _)| m.subscribes(topic::CALL_CONCLUDED) && m.wants_format(format::M4A));
+        let wants_m4a = ready.iter().any(|(_, m, _)| m.subscribes(topic::CALL_CONCLUDED) && m.wants_format(format::M4A));
         let encoder = if wants_m4a { Encoder::find(audio.encoder) } else { None };
         if wants_m4a && encoder.is_none() {
-            let who: Vec<&str> = ready.iter().filter(|(_, m, _, _)| m.wants_format(format::M4A)).map(|(s, _, _, _)| s.id.as_str()).collect();
+            let who: Vec<&str> = ready.iter().filter(|(_, m, _)| m.wants_format(format::M4A)).map(|(s, _, _)| s.id.as_str()).collect();
             let text = if audio.encoder == crate::config::M4aEncoder::None {
                 format!("M4A encoding is off: {} get WAV only", who.join(", "))
             } else {
@@ -319,7 +309,7 @@ impl PluginHost {
         let mut live = false;
         let mut plugins = Vec::new();
         let mut queues = Vec::new();
-        for (s, m, settings, site_settings) in ready {
+        for (s, m, told) in ready {
             topics.calls |= m.subscribes(topic::CALL_START) || m.subscribes(topic::CALL_END);
             topics.call_updates |= m.subscribes(topic::CALL_UPDATE);
             topics.units |= m.subscribes(topic::UNIT);
@@ -340,24 +330,8 @@ impl PluginHost {
             let hello = Hello {
                 api: API_VERSION,
                 host: HostInfo { name: "trunk-pro".into(), version: env!("CARGO_PKG_VERSION").into() },
-                config: s.config,
-                systems: systems
-                    .iter()
-                    .filter(|y| !s.off.contains(&y.id))
-                    .map(|y| SystemInfo {
-                        config: s.systems.get(&y.id).cloned().unwrap_or(Value::Null),
-                        settings: settings.get(&y.id).cloned().unwrap_or(Value::Null),
-                        // (Not those it's off for.)
-                        sites: y
-                            .info
-                            .sites
-                            .iter()
-                            .filter(|t| !s.sites_off.contains(&SiteId(t.id)))
-                            .map(|t| SiteInfo { config: site_settings.get(&SiteId(t.id)).cloned().unwrap_or(Value::Null), ..t.clone() })
-                            .collect(),
-                        ..y.info.clone()
-                    })
-                    .collect(),
+                config: s.config.clone(),
+                systems: told,
                 capture_dir: capture_dir.to_path_buf(),
                 data_dir: data_dir.clone(),
                 audio_formats: formats,
@@ -365,6 +339,7 @@ impl PluginHost {
             // The queue outlives the process: events wait through a (re)start.
             let (tx, rx) = mpsc::sync_channel::<Arc<str>>(QUEUE);
             queues.push(rx);
+            let scope = RwLock::new(Scope::of(&s));
             plugins.push(Plugin {
                 id: s.id,
                 manifest: m,
@@ -379,9 +354,9 @@ impl PluginHost {
                 restarts: AtomicU64::new(0),
                 started: Mutex::new(None),
                 drained_at: Arc::new(Mutex::new(None)),
-                share_decrypted: s.share_decrypted,
-                off: s.off,
-                sites_off: s.sites_off,
+                scope,
+                renew: Default::default(),
+                renewing: Default::default(),
                 withheld_said: AtomicBool::new(false),
                 audio_held_said: AtomicBool::new(false),
             });
@@ -451,7 +426,8 @@ impl PluginHost {
             HostMessage::Status(st) => {
                 let all = line(m);
                 for p in sh.plugins.iter().filter(|p| p.manifest.subscribes(topic::STATUS)) {
-                    let on = |x: &&trunk_recorder_plugin::SystemStatus| !p.off.contains(&sh.id_at(x.scope.index)) && !p.sites_off.contains(&SiteId(x.scope.site_id));
+                    let sc = p.scope();
+                    let on = |x: &&trunk_recorder_plugin::SystemStatus| !sc.off.contains(&sh.id_at(x.scope.index)) && !sc.sites_off.contains(&SiteId(x.scope.site_id));
                     let l = if st.systems.iter().all(|x| on(&x)) {
                         all.clone()
                     } else {
@@ -469,7 +445,8 @@ impl PluginHost {
                 }
                 let all = line(m);
                 for p in sh.plugins.iter().filter(|p| p.manifest.subscribes(topic::TOTALS)) {
-                    let l = match totals_for(totals, |index| p.off.contains(&sh.id_at(index)), |site| p.sites_off.contains(&SiteId(site))) {
+                    let sc = p.scope();
+                    let l = match totals_for(totals, |index| sc.off.contains(&sh.id_at(index)), |site| sc.sites_off.contains(&SiteId(site))) {
                         None => all.clone(),
                         Some(t) => line(&HostMessage::Totals(t)),
                     };
@@ -489,6 +466,44 @@ impl PluginHost {
         if self.shared.wants(t) {
             self.shared.dispatch(t, &line(m), &about, None, life);
         }
+    }
+
+    /// Plugin `specs`' settings changed (its copies, as the config has them now): each copy is
+    /// told to stop behind what's already queued for it, and its process starts again at once with
+    /// them, while the other plugins carry on. What comes meanwhile waits in its queue. False when
+    /// that won't do (a copy more or fewer, one not running, or one that can't start as set):
+    /// restart them all.
+    pub fn renew(&self, specs: Vec<Spec>) -> bool {
+        let Some(id) = specs.first().map(|s| s.id.clone()) else { return false };
+        let running = self.shared.plugins.iter().filter(|p| super::parse_label(&p.id).0 == id).count();
+        if running != specs.len() {
+            return false;
+        }
+        let mut ready = Vec::new();
+        for s in specs {
+            let s = Spec { id: super::copy_label(&s.id, s.copy), ..s };
+            let Some(i) = self.shared.plugins.iter().position(|p| p.id == s.id) else { return false };
+            let p = &self.shared.plugins[i];
+            // (Given up on: its supervisor has gone.)
+            if p.tx.lock().unwrap().is_none() {
+                return false;
+            }
+            let Ok(told) = systems_for(&s, &p.manifest, &self.shared.systems, &self.shared.notes) else { return false };
+            ready.push((i, s, told));
+        }
+        for (i, s, told) in ready {
+            let p = &self.shared.plugins[i];
+            {
+                let mut h = p.hello.lock().unwrap();
+                h.config = s.config.clone();
+                h.systems = told;
+            }
+            *p.scope.write().unwrap() = Scope::of(&s);
+            p.renew.store(true, Ordering::Relaxed);
+            let sh = self.shared.clone();
+            std::thread::Builder::new().name(format!("renew-{}", p.id)).spawn(move || sh.renew_watch(i)).expect("thread");
+        }
+        true
     }
 
     /// Plugin `id` takes `config` as its settings while it runs, if it can
@@ -806,13 +821,36 @@ fn line(m: &HostMessage) -> Arc<str> {
 }
 
 impl Shared {
+    /// Plugin `i` was renewed ([`PluginHost::renew`]): once it's told to stop, it has
+    /// [`RENEW_GRACE`] to exit, or is stopped.
+    fn renew_watch(&self, i: usize) {
+        let p = &self.plugins[i];
+        while p.renew.load(Ordering::Relaxed) && !self.stopping.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // (Not running when asked: it starts with them, nothing to wait for.)
+        if !p.renewing.load(Ordering::Relaxed) {
+            return;
+        }
+        let was = *p.started.lock().unwrap();
+        let until = Instant::now() + RENEW_GRACE;
+        let same = || *p.started.lock().unwrap() == was;
+        while Instant::now() < until && same() && !self.stopping.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if same() && !self.stopping.load(Ordering::Relaxed) && let Some(c) = p.child.lock().unwrap().as_mut() {
+            self.note_log(&p.id, Level::Warn, format!("didn't stop within {} s for its new settings; stopped", RENEW_GRACE.as_secs()));
+            let _ = c.kill();
+        }
+    }
+
     fn note_log(&self, plugin: &str, level: Level, text: impl Into<String>) {
         (self.notes)(Note::Log { plugin: plugin.to_string(), level, text: text.into() });
     }
 
     /// Say, once a run, that `p` is not given decrypted calls, and how to allow it.
     fn say_withheld(&self, p: &Plugin) {
-        if !p.share_decrypted && !p.withheld_said.swap(true, Ordering::Relaxed) {
+        if !p.scope().share_decrypted && !p.withheld_said.swap(true, Ordering::Relaxed) {
             self.note_log(&p.id, Level::Info, "is not given calls decrypted with your keys (Share decrypted calls, on its card in Setup → Plugins, allows it)");
         }
     }
@@ -855,7 +893,11 @@ impl Shared {
     /// system reaches a plugin.
     fn offer(&self, p: &Plugin, t: &str, l: &Arc<str>, about: &About, call: Option<&str>, life: Option<Life>) {
         if !self.may_take(p, about) {
-            if about.decrypted && !p.share_decrypted && !p.off.contains(&about.system) {
+            let withheld = about.decrypted && {
+                let sc = p.scope();
+                !sc.share_decrypted && !sc.off.contains(&about.system)
+            };
+            if withheld {
                 self.say_withheld(p);
             }
             return;
@@ -955,7 +997,8 @@ impl Shared {
     /// The one rule for what's sent ([`Self::offer`]), held ([`Outlet::offer`]),
     /// queried ([`Self::may_have`]) and waited on ([`PluginHost::call_takers`]).
     fn may_take(&self, p: &Plugin, about: &About) -> bool {
-        (!about.decrypted || p.share_decrypted) && !p.off.contains(&about.system) && (about.sites.is_empty() || about.sites.iter().any(|s| !p.sites_off.contains(s)))
+        let sc = p.scope();
+        (!about.decrypted || sc.share_decrypted) && !sc.off.contains(&about.system) && (about.sites.is_empty() || about.sites.iter().any(|s| !sc.sites_off.contains(s)))
     }
 
     /// Whether `p` may be given stored call `c` now, as it would have been
@@ -1005,6 +1048,65 @@ impl Outlet for Shared {
 }
 
 /// Keep plugin `i` running until the host stops, feeding it from `rx`.
+/// What plugin `s` is told of the run's systems: each it's on for, with its settings for it (its
+/// own, and the plugin's as they are for that system) and each site's it's on for. Settings it
+/// can't take are said in its notes. Err: required settings left empty, as said when it isn't started.
+fn systems_for(s: &Spec, m: &Manifest, systems: &[RunSystem], notes: &Notes) -> Result<Vec<SystemInfo>, String> {
+    let mut settings = BTreeMap::new();
+    // Required settings left empty, and for which systems ("": for none).
+    let mut unset: Vec<(String, Vec<String>)> = Vec::new();
+    let mut note_unset = |field: String, system: &str| match unset.iter_mut().find(|(f, _)| *f == field) {
+        Some((_, on)) => on.push(system.to_string()),
+        None => unset.push((field, vec![system.to_string()])),
+    };
+    let mut own_settings = BTreeMap::new();
+    let mut site_settings: BTreeMap<SiteId, Value> = BTreeMap::new();
+    for (id, entry) in s.systems.clone().into_iter().filter(|(id, _)| !s.off.contains(id)) {
+        let name = systems.iter().find(|y| y.id == id).map_or_else(|| format!("system {id}"), |y| y.info.short_name.clone());
+        let (mut own, merged, ignored) = resolve(m.config.as_ref(), &m.system_overrides, &s.config, entry);
+        for k in ignored {
+            notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" can't be set for one system (the plugin doesn't offer it); ignored") });
+        }
+        let (sites, ignored) = resolve_sites(m.system_config.as_ref(), &m.site_overrides, &mut own);
+        for k in ignored {
+            notes(Note::Log { plugin: s.id.clone(), level: Level::Warn, text: format!("{name}: \"{k}\" can't be set for one site (the plugin doesn't offer it); ignored") });
+        }
+        site_settings.extend(sites);
+        for f in unset_required(m.config.as_ref(), merged.as_ref().unwrap_or(&s.config)) {
+            note_unset(f, &name);
+        }
+        if let Some(v) = merged {
+            settings.insert(id, v);
+        }
+        own_settings.insert(id, own);
+    }
+    // (Used by no system: its own settings decide.)
+    if own_settings.is_empty() {
+        unset_required(m.config.as_ref(), &s.config).into_iter().for_each(|f| note_unset(f, ""));
+    }
+    if !unset.is_empty() {
+        let what: Vec<String> = unset.iter().map(|(f, on)| if on.iter().all(|x| x.is_empty()) { f.clone() } else { format!("{f} (for {})", on.join(", ")) }).collect();
+        return Err(format!("not started: {} {} set", what.join(", "), if unset.len() == 1 { "isn't" } else { "aren't" }));
+    }
+    Ok(systems
+        .iter()
+        .filter(|y| !s.off.contains(&y.id))
+        .map(|y| SystemInfo {
+            config: own_settings.get(&y.id).cloned().unwrap_or(Value::Null),
+            settings: settings.get(&y.id).cloned().unwrap_or(Value::Null),
+            // (Not those it's off for.)
+            sites: y
+                .info
+                .sites
+                .iter()
+                .filter(|t| !s.sites_off.contains(&SiteId(t.id)))
+                .map(|t| SiteInfo { config: site_settings.get(&SiteId(t.id)).cloned().unwrap_or(Value::Null), ..t.clone() })
+                .collect(),
+            ..y.info.clone()
+        })
+        .collect())
+}
+
 fn supervise(sh: &Shared, i: usize, mut rx: Receiver<Arc<str>>) {
     let p = &sh.plugins[i];
     while !sh.go.load(Ordering::Relaxed) {
@@ -1021,6 +1123,7 @@ fn supervise(sh: &Shared, i: usize, mut rx: Receiver<Arc<str>>) {
         rx = back;
         *p.started.lock().unwrap() = None;
         let stopping = sh.stopping.load(Ordering::Relaxed);
+        let renewed = p.renewing.swap(false, Ordering::Relaxed);
         // What it said stays true goes with it (a host replacing this one starts afresh).
         if !stopping {
             (sh.notes)(Note::Notice { plugin: p.id.clone(), key: None, state: None, message: String::new() });
@@ -1029,6 +1132,12 @@ fn supervise(sh: &Shared, i: usize, mut rx: Receiver<Arc<str>>) {
             _ if stopping => return,
             // Everything's been sent and the host is stopping.
             Ok(Ended::Drained) => return,
+            // It stopped for new settings: it starts again with them, at once.
+            _ if renewed => {
+                sh.note_log(&p.id, Level::Info, "restarting with its new settings");
+                backoff = Duration::from_secs(1);
+                continue;
+            }
             Err(e) => sh.note_log(&p.id, Level::Error, e),
             Ok(Ended::Exited(Some(EXIT_CONFIG))) => {
                 // It said why (in its status); retrying won't help until the next run.
@@ -1098,7 +1207,11 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
     *p.child.lock().unwrap() = Some(child);
     *p.started.lock().unwrap() = Some(Instant::now());
     let dead = Arc::new(AtomicBool::new(false));
+    // (Starting now, it starts with the settings renewed meanwhile: no need to stop it for them.)
+    p.renew.store(false, Ordering::Relaxed);
     let hello = line(&HostMessage::Hello(p.hello.lock().unwrap().clone()));
+    let bye = line(&HostMessage::Shutdown(Shutdown { grace_s: RENEW_GRACE.as_secs_f64() }));
+    let (renew, renewing) = (p.renew.clone(), p.renewing.clone());
     let dead2 = dead.clone();
     let drained_at = p.drained_at.clone();
     let owed = p.owed.clone();
@@ -1106,6 +1219,12 @@ fn run_once(sh: &Shared, p: &Plugin, rx: Receiver<Arc<str>>) -> (Result<Ended, S
         let mut ok = stdin.write_all(hello.as_bytes()).and_then(|_| stdin.flush()).is_ok();
         let mut drained = false;
         while ok && !dead2.load(Ordering::Relaxed) {
+            // New settings: it stops behind what it was given, and what's queued waits for the next one.
+            if renew.swap(false, Ordering::Relaxed) {
+                renewing.store(true, Ordering::Relaxed);
+                let _ = stdin.write_all(bye.as_bytes()).and_then(|_| stdin.flush());
+                break;
+            }
             let wait = if owed.lock().unwrap().0.is_empty() { Duration::from_millis(100) } else { Duration::ZERO };
             match rx.recv_timeout(wait) {
                 Ok(l) => ok = stdin.write_all(l.as_bytes()).and_then(|_| stdin.flush()).is_ok(),
@@ -1246,9 +1365,9 @@ mod tests {
             restarts: AtomicU64::new(0),
             started: Mutex::new(None),
             drained_at: Arc::new(Mutex::new(None)),
-            share_decrypted,
-            off: Default::default(),
-            sites_off: Default::default(),
+            scope: RwLock::new(Scope { share_decrypted, ..Default::default() }),
+            renew: Default::default(),
+            renewing: Default::default(),
             withheld_said: AtomicBool::new(false),
             audio_held_said: AtomicBool::new(false),
         };
@@ -1314,8 +1433,8 @@ mod tests {
         for p in [&mut all, &mut some] {
             p.manifest.subscribe.extend([topic::STATUS.to_string(), topic::CALL_START.to_string(), topic::UNIT.to_string(), topic::TOTALS.to_string()]);
         }
-        some.off.insert(SystemId(2));
-        some.sites_off.insert(SiteId(5));
+        some.scope.get_mut().unwrap().off.insert(SystemId(2));
+        some.scope.get_mut().unwrap().sites_off.insert(SiteId(5));
         let systems: Vec<RunSystem> = ["a", "b"].iter().enumerate().map(|(i, n)| RunSystem { id: SystemId(i as u32 + 1), info: SystemInfo { index: i as u16, short_name: n.to_string(), ..Default::default() } }).collect();
         let sh = Shared {
             plugins: vec![all, some],
@@ -1435,6 +1554,50 @@ mod tests {
         host.shutdown(Duration::from_secs(1));
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&answer).expect("answered")).unwrap();
         assert_eq!((v["request"].as_u64(), v["next"].as_str()), (Some(7), Some("42:x")), "{v}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// New settings for one plugin restart it alone: it's told to stop behind what it was given,
+    /// starts again at once with them (no failure, no restart counted), and a call that came
+    /// meanwhile reaches the new process. The other plugin's process carries on.
+    #[cfg(unix)]
+    #[test]
+    fn renewed_settings_restart_that_plugin_alone() {
+        use serde_json::json;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("trunk-pro-host-renew-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = |id: &str| {
+            let exe = dir.join(id);
+            let manifest = format!(r#"{{"id":"{id}","name":"{id}","version":"1.0.0","api":1,"subscribe":["call.concluded"]}}"#);
+            let script = format!("#!/bin/sh\nif [ \"$1\" = --describe ]; then echo '{manifest}'; exit 0; fi\nread line\necho \"$line\" >> hellos.jsonl\necho '{{\"type\":\"ready\"}}'\nwhile read l; do case \"$l\" in *'\"type\":\"shutdown\"'*) exit 0;; *) echo \"$l\" >> got.jsonl;; esac; done\n");
+            std::fs::write(&exe, script).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            exe
+        };
+        let spec = |id: &str, server: &str| Spec { id: id.into(), copy: 0, exe: exe(id), config: json!({ "server": server }), systems: BTreeMap::new(), data_dir: Some(dir.join(format!("{id}-data"))), share_decrypted: false, off: Default::default(), sites_off: Default::default() };
+        let systems = vec![RunSystem { id: SystemId(1), info: SystemInfo { index: 0, short_name: "dcfd".into(), kind: "p25".into(), ..Default::default() } }];
+        let mut host = PluginHost::start_when(vec![spec("a", "1"), spec("b", "1")], &super::super::AudioSettings::default(), &systems, &dir, Arc::new(|_| {}), Arc::new(AtomicBool::new(true)), None, None, None);
+        let read = |id: &str, f: &str| std::fs::read_to_string(dir.join(format!("{id}-data/{f}"))).unwrap_or_default();
+        let until = |what: &dyn Fn() -> bool| {
+            let t0 = Instant::now();
+            while !what() && t0.elapsed() < Duration::from_secs(10) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        until(&|| !read("a", "hellos.jsonl").is_empty() && !read("b", "hellos.jsonl").is_empty());
+        assert!(host.renew(vec![spec("a", "2")]));
+        host.concluded(0, "dcfd/after", CallRecord { talkgroup: 5, short_name: "dcfd".into(), ..Default::default() }, CallFiles::default(), false);
+        until(&|| read("a", "hellos.jsonl").lines().count() == 2 && read("a", "got.jsonl").contains("dcfd/after"));
+        let hellos: Vec<Value> = read("a", "hellos.jsonl").lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(hellos.iter().map(|h| h["config"]["server"].as_str().unwrap()).collect::<Vec<_>>(), ["1", "2"], "started again with its new settings");
+        assert!(read("a", "got.jsonl").contains("dcfd/after"), "the call that came meanwhile reached the new process");
+        assert_eq!(read("b", "hellos.jsonl").lines().count(), 1, "the other plugin carried on");
+        assert!(host.process_stats().iter().all(|p| p.restarts == 0), "no failure, no restart counted");
+        // One that isn't running can't be renewed: they all restart.
+        assert!(!host.renew(vec![spec("c", "1")]));
+        host.shutdown(Duration::from_secs(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

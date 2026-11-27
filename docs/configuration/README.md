@@ -209,7 +209,7 @@ then Start). A few apply at once:
 | Applies at once | Applies at the next Start | Applies when the app restarts |
 |---|---|---|
 | A trunked system's talkgroup file: an Ignore or Priority change takes effect immediately | Sources, systems, conventional channels, squelch | `server.bind`, `server.port` |
-| Plugin settings (`plugins`, each system's `plugins`) and `recording.m4a`: running plugins restart with them, except a change only to a plugin's recorder-wide `settings`, which is sent to the running plugin when it takes settings that way. The `.m4a` that **Keep .m4a** keeps uses the new `m4a` from the next Start | Recording rules, `filenameFormat`, `captureDir` | |
+| Plugin settings (`plugins`, each system's `plugins`): the plugin changed restarts with them, alone, except a change only to its recorder-wide `settings`, which is sent to it when it takes settings that way. Turning one on or off and `recording.m4a` restart them all. The `.m4a` that **Keep .m4a** keeps uses the new `m4a` from the next Start | Recording rules, `filenameFormat`, `captureDir` | |
 | `log` settings, `monitor` (the hosts checked, the time server, the Checks switch, the update check) | `recording.ramSpool` (the interface says "from the next start") | |
 | `server.allowedOrigins`, `server.interfaces` (an interface moves to its new port at once), `server.auth` from the interface (`trunk-pro access` edits the file: at the restart) | A linked `channelFile` is re-read at every Start | |
 

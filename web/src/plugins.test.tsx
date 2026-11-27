@@ -126,3 +126,49 @@ test("Setup → Plugins: each plugin is a card that folds, its switch beside the
   assert.ok(toggles.every((t) => !t.includes('class="switch')), toggles.join("\n"));
   assert.equal((panel.match(/class="row set-card-actions"><label class="switch/g) ?? []).length, 2, panel);
 });
+
+test("What's waiting: held plugin changes beside the import's to-dos and a restart, each with where it is", async () => {
+  const { holdChange, snapshot } = await import("./controller.ts");
+  const { waiting } = await import("./todo.ts");
+  const { WaitingPill } = await import("./Setup.tsx");
+  uploaderSetup();
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] });
+  transport.onMessage({ type: "state", phase: "running", error: null, ended: false, restartNeeded: true });
+  assert.equal(html(<WaitingPill />), '<div class="waiting-pill" role="status" aria-live="polite"><span><b>1</b> to do</span><button type="button" class="btn ghost small">Show</button></div>', "a restart alone: nothing to apply");
+  holdChange({ form: { kind: "settings", plugin: "up" }, name: "Up", values: { server: "https://b", apiKey: "k" } });
+  holdChange({ form: { kind: "copy", plugin: "up", system: 0, copy: 0 }, name: "Up", values: { label: "E" } });
+  holdChange({ form: { kind: "site", plugin: "up", system: 1, copy: 0, site: 7 }, name: "Up", values: { k: 1 } });
+  const all = waiting(snapshot());
+  assert.deepEqual(all.map((w) => [w.title, w.target ?? null]), [
+    ["Up: not applied", "plugin-up-held"],
+    ["Up: not applied", "sysplug-east-up-0-copy-held"],
+    ["Up: not applied", "sysplug-west-up-0-site7-held"],
+    ["Restart to apply", null],
+  ]);
+  // The same form again replaces what it held.
+  holdChange({ form: { kind: "copy", plugin: "up", system: 0, copy: 0 }, name: "Up", values: { label: "E2" } });
+  assert.equal(snapshot().held.length, 3);
+  assert.match(html(<WaitingPill />), /<b>4<\/b> to do.*>Apply all</);
+  // Its Apply bar is where Show takes you.
+  assert.match(html(<PluginSetupPanel />), /class="held-bar" role="status" id="need-plugin-up-held"/);
+});
+
+test("Apply all saves every held change in one config save, so each plugin restarts once", async () => {
+  const { applyHeld, holdChange, snapshot } = await import("./controller.ts");
+  const sent: { type: string; config?: Config }[] = [];
+  transport.send = (m) => void sent.push(m as { type: string; config?: Config });
+  uploaderSetup();
+  transport.onMessage({ type: "state", phase: "running", error: null, ended: false, restartNeeded: false });
+  applyHeld();
+  holdChange({ form: { kind: "settings", plugin: "up" }, name: "Up", values: { server: "https://b", apiKey: "k" } });
+  holdChange({ form: { kind: "copy", plugin: "up", system: 0, copy: 0 }, name: "Up", values: { label: "E" } });
+  const before = sent.filter((m) => m.type === "setConfig").length;
+  applyHeld();
+  assert.equal(snapshot().held.length, 0);
+  await new Promise((r) => setTimeout(r, 400));
+  const saves = sent.filter((m) => m.type === "setConfig").slice(before);
+  assert.equal(saves.length, 1, "one save");
+  const saved = saves[0].config!;
+  assert.equal(saved.plugins!.up.settings!.server, "https://b");
+  assert.deepEqual(saved.systems[0].plugins?.up, { label: "E" });
+});

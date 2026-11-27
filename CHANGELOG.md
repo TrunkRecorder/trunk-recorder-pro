@@ -5,6 +5,17 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
+  system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
+  only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the
+  new settings, while what comes meanwhile waits for it. Turning a plugin on or off, a copy more or fewer, or the M4A
+  settings still restart them all.
+- **One To do list for everything waiting on you** (from #264, thanks @jlutz33). Setup's list (it was *Finish the
+  import*) now also has plugin changes held until **Apply**, each with **Show**, **Apply** and **Discard**, and
+  **Apply all** (one save, so each plugin restarts once), and **Restart to apply** when a change waits for the next
+  Start (the banner it replaces). Each Setup tab counts what's on it, and a pill at the bottom of every page says how
+  many (*3 to do*) with **Show** for each in turn. **Show** also opens a folded site section it's in.
+
 - **Setup → Plugins folds each plugin into a card** (#263, thanks @jschmall), like the Systems,
   Conventional and Radios tabs: a chevron, **Expand all** / **Collapse all**, open only when there's
   one. The folded head keeps the **On/Off** switch and the plugin's state.
