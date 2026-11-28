@@ -24,7 +24,7 @@ use trunk_app::config::SampleFormat;
 
 use super::net::{timed_out, CONNECT, POLL, SILENT};
 use super::{Caps, Deadline, Rates};
-use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Silence, Sink, Tunable};
 
 #[derive(Clone, Debug)]
 pub struct SpyserverConfig {
@@ -455,7 +455,7 @@ pub fn key(server: &str) -> String {
 impl Info {
     /// What it said of the receiver behind it, as a radio's [`Caps`]: its model, the rates it offers, its gain steps (0 up).
     fn caps(&self) -> Caps {
-        Caps { model: self.model(), rates: Rates::List(self.offered()), gains: (0..=self.max_gain).map(f64::from).collect() }
+        Caps { model: self.model(), rates: Rates::List(self.offered()), gains: trunk_app::gain::Reported { steps: (0..=self.max_gain).map(f64::from).collect(), ..Default::default() } }
     }
 }
 
@@ -588,7 +588,7 @@ fn run(c: &mut Client, mut pending: Vec<u8>, sink: &mut Sink, stop: &AtomicBool,
     c.sock.set_read_timeout(Some(POLL)).map_err(|e| format!("{}: {e}", c.name))?;
     let mut buf = vec![0u8; 64 << 10];
     let mut samples: Vec<Complex32> = Vec::new();
-    let mut heard = Instant::now();
+    let mut silence = Silence::new(SILENT);
     let mut pinged = Instant::now();
     // Messages the server skipped (it does when a client falls behind) show as a gap in the sequence.
     let mut last_seq: Option<u32> = None;
@@ -611,14 +611,10 @@ fn run(c: &mut Client, mut pending: Vec<u8>, sink: &mut Sink, stop: &AtomicBool,
         match c.sock.read(&mut buf) {
             Ok(0) => return Err(format!("{}: the server closed the connection (another client may have taken the receiver, or it lost it)", c.name)),
             Ok(n) => {
-                heard = Instant::now();
+                silence.heard(Instant::now());
                 pending.extend_from_slice(&buf[..n]);
             }
-            Err(e) if timed_out(&e) => {
-                if heard.elapsed() > SILENT {
-                    return Err(format!("{}: no samples for {} s", c.name, SILENT.as_secs()));
-                }
-            }
+            Err(e) if timed_out(&e) => silence.check(&c.name, Instant::now())?,
             Err(e) => return Err(format!("{}: {e}", c.name)),
         }
         let mut at = 0;
@@ -638,7 +634,7 @@ fn run(c: &mut Client, mut pending: Vec<u8>, sink: &mut Sink, stop: &AtomicBool,
                     }
                     last_seq = Some(h.sequence);
                     last_len = samples.len() as u64;
-                    if !sink.iq(&samples, dropped, heard) {
+                    if !sink.iq(&samples, dropped, silence.last()) {
                         return Ok(());
                     }
                 }
@@ -853,7 +849,7 @@ mod tests {
         let caps = ask(&address).unwrap();
         assert_eq!(caps.model, "Airspy R2 / Mini");
         assert_eq!(caps.rates, Rates::List(vec![2_500_000, 1_250_000, 625_000, 312_500, 156_250]), "whole Hz, the ones under 100 kHz left out");
-        assert_eq!((caps.gains.len(), caps.gains[0], caps.gains[21]), (22, 0.0, 21.0), "its gain steps, 0 to its highest");
+        assert_eq!((caps.gains.steps.len(), caps.gains.steps[0], caps.gains.steps[21]), (22, 0.0, 21.0), "its gain steps, 0 to its highest");
         let (_, settings) = server.join().unwrap();
         assert!(settings.is_empty(), "{settings:?}");
         assert!(ask("127.0.0.1:1").is_err(), "nothing there");

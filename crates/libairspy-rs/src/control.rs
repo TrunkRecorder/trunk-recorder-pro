@@ -34,6 +34,19 @@ const SENSITIVITY_MIXER_GAINS: [u8; GAIN_COUNT] =
 const SENSITIVITY_LNA_GAINS: [u8; GAIN_COUNT] =
     [14, 14, 14, 14, 14, 14, 14, 14, 14, 13, 12, 12, 9, 9, 8, 7, 6, 5, 3, 2, 1, 0];
 
+/// The LNA, mixer and VGA gains `airspy_set_sensitivity_gain` (or else
+/// `airspy_set_linearity_gain`) writes for `value`: clamped, the index
+/// reversed, as [`Device::set_linearity_gain`] does. (For a radio reached
+/// another way, SoapySDR's elements say.)
+pub fn composite_gains(sensitivity: bool, value: u8) -> [u8; 3] {
+    let idx = GAIN_COUNT - 1 - usize::from(value).min(GAIN_COUNT - 1);
+    if sensitivity {
+        [SENSITIVITY_LNA_GAINS[idx], SENSITIVITY_MIXER_GAINS[idx], SENSITIVITY_VGA_GAINS[idx]]
+    } else {
+        [LINEARITY_LNA_GAINS[idx], LINEARITY_MIXER_GAINS[idx], LINEARITY_VGA_GAINS[idx]]
+    }
+}
+
 /// The shortest half-band kernel the converters take: a centre tap and
 /// one tap either side.
 pub const MIN_KERNEL_LEN: usize = 3;

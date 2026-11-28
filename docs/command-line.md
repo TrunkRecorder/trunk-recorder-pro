@@ -362,7 +362,11 @@ what the radio's systems decode while it is set:
   refused, whatever it decoded.
 
 The setting's score (0 to 100) is the systems' average with the weakest counted twice, so a gain
-that helps the strong systems a little at a weak one's cost isn't chosen. The systems scored are
+that helps the strong systems a little at a weak one's cost isn't chosen. A system the radio
+receives at several sites is scored the same way site by site: its control channel score is its
+sites' average with the weakest site counted twice (and the SNR tie-break below is its weakest
+site's), and each site is shown under it (`county · North`). Added together, one site decoding in
+full hid another decoding half. The systems scored are
 those whose control channels the recorder receives on that radio, or only `--systems`. The radio's
 other systems are still watched then, and shown (the scored ones starred), and protected: a
 candidate that costs one of them more than `--protect` points (5 by default) on average over the
@@ -383,7 +387,7 @@ standard error of the rounds' differences.
 one gain it can't score better at another, however close to the noise it is: on one RTL-SDR at
 490 MHz, 16.6 dB and 25.4 dB both decoded 99.8 %, but the control channel's SNR went from 13.6 to
 20.3 dB. So a candidate that decodes no worse (by less than `--margin`) is also better when the
-weakest scored system's control channel SNR is higher by more than 2 dB and by more than twice the
+weakest scored system's (or site's) control channel SNR is higher by more than 2 dB and by more than twice the
 standard error of the rounds' differences: that margin is what a fade takes. A candidate takes `rounds × 2 × (settle + slice)`
 seconds: 114 by default.
 
@@ -401,6 +405,9 @@ trying a setting twice.
 | Airspy, HydraSDR | **Linearity** or **sensitivity** (the mode it is in, or `--mode`): the table's step (0–21), by 3, then 1. Linearity gives up the LNA and mixer before the VGA, what wins against strong signals. **Manual**: the LNA (0–14), then the mixer (0–15), by 3 then 1, and the VGA last, down first, kept to 12 (higher with the LNA up saturates the ADC); AGC off |
 | HackRF | The LNA first (0–40 dB, by 8), then the VGA (by 6 dB, then 2, to 40 dB), the RF amp last, and tried on only with the LNA at 24 dB or under: it adds little and puts strong signals at the mixer (more than −5 dBm at the input damages a HackRF) |
 | RTL-SDR | The tuner's gain table (0–49.6 dB; the LNA and mixer together, the VGA fixed), about 5 dB at a time, then one entry; AGC off |
+| Airspy through SoapySDR (`driver=airspy` or `remote:driver=airspy`, as behind SoapyRemote) | As an Airspy, **linearity** unless `--mode` says otherwise: each table step is set as SoapyAirspy's LNA, MIX and VGA elements, the values libairspy uses; **manual** searches those three elements as an Airspy's stages. Never the overall gain: SoapySDR fills the stages with it front first (31 is LNA 15, MIX 15, VGA 1, and anything over 45 the same), which no Airspy table does. AGC off |
+| Other SoapySDR | When the radio reported its gain elements as it opened: one axis per element, by the name its driver gave it (a LimeSDR's LNA / TIA / PGA, an SDRplay's IFGR / RFGR, a MIXER …), in the steps it reported, a seventh of each at a time, then one step: an LNA first, then a mixer, the others as the radio listed them, a VGA last and down first; an AMP after them, never set higher than it is. Else the overall gain, as below, which then needs setting |
+| SoapySDR, either way | The radio must go back exactly as it was after each trial: by its overall gain (which sets every element again, then the ones the source sets), or, with no overall gain, by every element the search moves being set in the source. Otherwise it isn't tuned, and says which to set |
 | bladeRF, USRP, SoapySDR | The overall gain, which the driver shares over the stages front first: by 6 dB, then 1. Its AGC must be off (that takes a Stop and Start), and a SoapySDR radio needs an overall gain set |
 
 At the end the best is compared with the starting setting once more, and recommended only if it is
@@ -436,7 +443,7 @@ The frequency correction is Setup's (its **Set correction to**), not this comman
 | `--source N` | the only one | The radio, by its number in Setup's list (from 1). Needed when there are several |
 | `--systems a,b` | every system on the radio | Score only these (short names); the others are still watched and guarded |
 | `--protect points` | 5 | With `--systems`: the most one of the radio's other systems may lose (0–100 scale). `off` or `0` allows any loss |
-| `--try stage=value,…` | | Compare this one setting with the one the radio has, and nothing else: `lna=11,mixer=10,vga=9` (Airspy manual), `step=16` (Airspy linearity or sensitivity), `lna=32,vga=24,amp=on` (HackRF), `gain=33.8` (RTL-SDR, bladeRF, USRP, SoapySDR). With `--apply`, kept if it is clearly better |
+| `--try stage=value,…` | | Compare this one setting with the one the radio has, and nothing else: `lna=11,mixer=10,vga=9` (Airspy manual), `step=16` (Airspy linearity or sensitivity), `lna=32,vga=24,amp=on` (HackRF), `gain=33.8` (RTL-SDR, bladeRF, USRP, SoapySDR by its overall gain), `step=14` (an Airspy through SoapySDR), `lna=20,tia=9` (SoapySDR by its elements' names, any case). With `--apply`, kept if it is clearly better |
 | `--slice s` | 15 | How long each side of a round is measured (at least 5) |
 | `--rounds n` | 3 | Rounds per comparison (2 to 20). More rounds tell smaller differences apart |
 | `--settle s` | 4 | How long a gain runs before it is measured |
