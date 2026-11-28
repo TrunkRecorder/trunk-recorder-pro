@@ -60,7 +60,7 @@ The importer reads Trunk Recorder's keys and writes this app's. A key not listed
 | `error` (Hz) | Converted to `ppm` at the source's center frequency, sign reversed (`error: 3000` at 770 MHz → `ppm: -4`) |
 | `autoTune` | `autoTune` |
 
-USRP, Airspy, HydraSDR, bladeRF and SoapySDR sources need their driver installed on this computer; the review says so.
+USRP, bladeRF and SoapySDR sources need their driver installed on this computer; the review says so. Airspy and HydraSDR sources need nothing: their driver is built in.
 
 ### Trunked systems
 

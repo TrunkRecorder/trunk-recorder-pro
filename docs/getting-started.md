@@ -63,8 +63,8 @@ other program that might be using it, such as SDR#, SDR++, GQRX or rtl_tcp. Only
 use a radio at a time.
 
 RTL-SDR dongles work with nothing else installed (on Windows, after the one-time WinUSB driver
-install with Zadig; on Linux, after the udev rule), and so do HackRF Ones and Airspy R2 / Minis. USRP,
-HydraSDR, bladeRF and SoapySDR radios need their makers' drivers: see [Other radios](install/other-radios.md).
+install with Zadig; on Linux, after the udev rule), and so do HackRF Ones, Airspy R2 / Minis and HydraSDR RFOnes. USRP,
+bladeRF and SoapySDR radios need their makers' drivers: see [Other radios](install/other-radios.md).
 
 To see what Trunk Recorder Pro can find from a terminal:
 
@@ -73,7 +73,7 @@ trunk-pro devices
 ```
 
 It lists the RTL-SDRs (with their serial numbers), HackRFs, Airspys and HydraSDRs, bladeRFs and
-SoapySDR devices, and whether the optional USRP, Airspy, HydraSDR, bladeRF and SoapySDR drivers
+SoapySDR devices, and whether the optional USRP, bladeRF and SoapySDR drivers
 are installed. Add `--usrp` to search for USRPs too.
 
 ## First launch: the setup guide

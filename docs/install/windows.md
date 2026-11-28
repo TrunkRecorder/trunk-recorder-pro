@@ -85,7 +85,7 @@ only and plugins are told so.
 
 ## Other radios
 
-Airspy R2 / Minis work with nothing else installed (an Airspy installs its own WinUSB driver: no Zadig, no DLLs). USRPs (with Ettus's UHD installer) and SoapySDR
+Airspy R2 / Minis and HydraSDR RFOnes work with nothing else installed (each installs its own WinUSB driver: no Zadig, no DLLs). USRPs (with Ettus's UHD installer) and SoapySDR
 devices (PothosSDR) work too. See [Other radios](other-radios.md).
 
 ## Uninstalling
