@@ -1019,7 +1019,7 @@ fn serve(a: &Args) {
     use std::sync::{Arc, Mutex};
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
-    let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
+    let mut cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     let (hub, _) = tokio::sync::broadcast::channel(4096);
     logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level, hub.clone());
@@ -1028,6 +1028,14 @@ fn serve(a: &Args) {
     }
     // (Asked for and not possible: not served over plain HTTP instead.)
     let tls = cfg.server.tls.as_ref().map(|t| tls::Tls::new(t, &config_path).unwrap_or_else(|e| fatal(&format!("{}: HTTPS (server.tls): {e}", config_path.display()))));
+    // The call store, and new systems numbered above every one it keeps anything for: a config
+    // restored from before a system was removed would give that system's id, which the store
+    // still keeps its calls, names and history under, to the next new one.
+    let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
+    if cfg.keep_ids_from(db.first_free_system_id()) {
+        log::info!("{}: new systems are numbered from {}, above those the call store keeps", config_path.display(), db.first_free_system_id());
+        cfg.numbered = true;
+    }
     // An older config, upgraded: saved so (the old one kept beside it), and told.
     if !cfg.notes.is_empty() {
         match trunk_app::migrate::save(&cfg, &config_path) {
@@ -1089,7 +1097,6 @@ fn serve(a: &Args) {
     let ui_url = dev.as_ref().map(|d| format!("{}://{host}:{}/", cfg.server.scheme(), d.port));
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
-    let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
     // (The systems first: everything kept is kept by their ids.)
     db.set_systems(&cfg);
     kept::load_registry(&db, &shared);
