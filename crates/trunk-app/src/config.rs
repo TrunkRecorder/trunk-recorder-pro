@@ -297,6 +297,18 @@ pub const RTL_TCP_PORT: u16 = 1234;
 /// The port `spyserver` listens on out of the box.
 pub const SPYSERVER_PORT: u16 = 5555;
 
+/// SoapySDR's `key=value,…` (a source's device arguments, or its device settings), trimmed;
+/// a part without `=` or a key is left out.
+pub fn soapy_pairs(s: &str) -> Vec<(String, String)> {
+    s.split(',').filter_map(|p| p.split_once('=')).map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).filter(|(k, _)| !k.is_empty()).collect()
+}
+
+/// Whether SoapySDR device arguments `args` open a radio of `driver` (any case): `driver=…`,
+/// or, with `remote`, also `remote:driver=…` (the driver behind SoapyRemote, on another machine).
+pub fn soapy_driver_is(args: &str, driver: &str, remote: bool) -> bool {
+    soapy_pairs(args).iter().any(|(k, v)| (k.eq_ignore_ascii_case("driver") || remote && k.eq_ignore_ascii_case("remote:driver")) && v.eq_ignore_ascii_case(driver))
+}
+
 /// A network source's `address` as `host:port`: a port left off is `default_port`.
 /// An IPv6 address is written in brackets (`[fe80::1]` or `[fe80::1]:5555`), as
 /// anywhere else, so that its colons aren't taken for a port's.

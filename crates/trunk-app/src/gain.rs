@@ -26,10 +26,24 @@
 //!   2 dB, to 40 dB), the RF amp last and only tried on with the LNA at
 //!   24 dB or under: it adds little and puts strong signals at the mixer
 //!   (more than −5 dBm at the input damages it).
-//! - **bladeRF, USRP, SoapySDR**: the overall gain, which the driver
+//! - **An Airspy through SoapySDR** (SoapyAirspy, here or behind SoapyRemote):
+//!   libairspy's linearity (or sensitivity) table, as for an Airspy, each step
+//!   set as SoapyAirspy's LNA, MIX and VGA elements; in manual, those three as
+//!   an Airspy's stages. Never its overall gain: SoapySDR fills the stages
+//!   front first with it (31 is LNA 15, MIX 15, VGA 1, and anything over 45
+//!   the same as 45), which no Airspy table does.
+//! - **Another SoapySDR radio that reported its gain elements**: one axis per
+//!   element, by the name its driver gave it (MIXER, TIA, IFGR …), in the
+//!   steps it reported: an LNA first, then a mixer, the others as listed, a VGA
+//!   last; an AMP after them and never higher than it is set.
+//! - Through SoapySDR the radio must go back exactly as it was after each
+//!   trial: by its overall gain, or, with none set, by every element searched
+//!   being set in the source; else the tuner refuses it.
+//! - **bladeRF, USRP, other SoapySDR**: the overall gain, which the driver
 //!   shares out over the stages front first (libbladeRF's and UHD's gain
 //!   groups, the AD9361's table). 6 dB, then 1 dB.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use sdr_core::gain::Stage;
@@ -53,7 +67,115 @@ pub const HACKRF_VGA: (u16, u16) = (62, 2);
 /// The HackRF's RF amp, dB, when on.
 pub const HACKRF_AMP_DB: u16 = 14;
 
-/// Something a search moves: a stage, a step of the radio's own table, or one overall gain.
+/// libairspy's composite gain tables (airspy.c's `airspy_linearity_*_gains` and
+/// `airspy_sensitivity_*_gains`, as crates/libairspy-rs has them): LNA, mixer, VGA,
+/// indexed as libairspy indexes them, entry 21 − step.
+#[rustfmt::skip]
+const AIRSPY_LINEARITY: [[u8; 22]; 3] = [
+    [14, 14, 14, 13, 12, 10, 9, 9, 8, 9, 8, 6, 5, 3, 1, 0, 0, 0, 0, 0, 0, 0],
+    [12, 12, 11, 9, 8, 7, 6, 6, 5, 0, 0, 1, 0, 0, 2, 2, 1, 1, 1, 1, 0, 0],
+    [13, 12, 11, 11, 11, 11, 11, 10, 10, 10, 10, 10, 10, 10, 10, 10, 9, 8, 7, 6, 5, 4],
+];
+#[rustfmt::skip]
+const AIRSPY_SENSITIVITY: [[u8; 22]; 3] = [
+    [14, 14, 14, 14, 14, 14, 14, 14, 14, 13, 12, 12, 9, 9, 8, 7, 6, 5, 3, 2, 1, 0],
+    [12, 12, 12, 12, 11, 10, 10, 9, 9, 8, 7, 4, 4, 4, 3, 2, 2, 1, 0, 0, 0, 0],
+    [13, 12, 11, 10, 9, 8, 7, 6, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+];
+
+/// The LNA, mixer and VGA steps libairspy sets for step `step` (0–21, higher is more
+/// gain) of its sensitivity table, or else its linearity table.
+pub fn airspy_preset(sensitivity: bool, step: u8) -> [u8; 3] {
+    let t = if sensitivity { &AIRSPY_SENSITIVITY } else { &AIRSPY_LINEARITY };
+    let i = usize::from(AIRSPY_STEP_MAX - step.min(AIRSPY_STEP_MAX));
+    [t[0][i], t[1][i], t[2][i]]
+}
+
+/// SoapyAirspy's names for an Airspy's LNA, mixer and VGA.
+const SOAPY_AIRSPY: [&str; 3] = ["LNA", "MIX", "VGA"];
+
+/// An Airspy behind SoapySDR (SoapyAirspy, on this machine or through SoapyRemote): device
+/// arguments with `driver=airspy` or `remote:driver=airspy`.
+pub fn soapy_airspy(args: &str) -> bool {
+    crate::config::soapy_driver_is(args, "airspy", true)
+}
+
+/// The stage a SoapySDR gain element is, by its name, as a stage is written ([`Knob::from_key`]:
+/// LNA, MIX or MIXER, PGA, VGA, AMP, any case). Others (IFGR, RFGR, TIA, …) none.
+fn soapy_stage(element: &str) -> Option<Stage> {
+    Knob::from_key(element)?.stage()
+}
+
+/// A SoapySDR source's gain for element `element` (its name in any case), if it sets one.
+pub fn soapy_gain(gains: &BTreeMap<String, f64>, element: &str) -> Option<f64> {
+    gains.iter().find(|(k, _)| k.eq_ignore_ascii_case(element)).map(|(_, v)| *v)
+}
+
+/// Set a SoapySDR source's gain for `element`: under the name it has it by (any case), else `element`.
+pub fn set_soapy_gain(gains: &mut BTreeMap<String, f64>, element: &str, v: f64) {
+    let k = gains.keys().find(|k| k.eq_ignore_ascii_case(element)).cloned().unwrap_or_else(|| element.to_string());
+    gains.insert(k, v);
+}
+
+/// The gains a radio reported when it was opened, where they aren't its kind's own: `steps`, the
+/// gains it can be set to (an RTL-SDR's tuner behind `rtl_tcp`, dB; a SpyServer's steps, 0 up);
+/// `elements`, a SoapySDR radio's gain elements.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Reported {
+    pub steps: Vec<f64>,
+    pub elements: Vec<ReportedStage>,
+}
+
+/// A gain element a SoapySDR radio reported when it was opened: its name and range.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportedStage {
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    /// 0: not said (1 is used).
+    pub step: f64,
+}
+
+impl ReportedStage {
+    fn values(&self) -> Vec<f64> {
+        let step = if self.step >= 0.1 { self.step } else { 1.0 };
+        let n = ((self.max - self.min) / step + 1e-6).floor().max(0.0) as usize;
+        (0..=n.min(200)).map(|k| self.min + k as f64 * step).collect()
+    }
+}
+
+/// The most gain elements a SoapySDR source's gain carries (its whole state goes with every change).
+pub const SOAPY_MAX_ELEMENTS: usize = 8;
+
+/// The elements of `reported` searched, each under its own name, front first: an LNA, then a
+/// mixer, then the others (TIA, PGA, IFGR …) as the radio listed them, a VGA, and an AMP last.
+/// Only those with a range, and a name that fits ([`ElementName`]).
+fn soapy_axes(reported: &[ReportedStage]) -> Vec<(ElementName, &ReportedStage)> {
+    let mut v: Vec<(ElementName, &ReportedStage)> = reported.iter().filter(|r| r.max > r.min).filter_map(|r| Some((ElementName::new(&r.name)?, r))).collect();
+    let order = |n: &ElementName| match soapy_stage(n.as_str()) {
+        Some(Stage::Lna) => 0,
+        Some(Stage::Mixer) => 1,
+        Some(Stage::Vga) => 3,
+        Some(Stage::Amp) => 4,
+        _ => 2,
+    };
+    v.sort_by_key(|(n, _)| order(n));
+    v
+}
+
+/// An Airspy's LNA, mixer and VGA through SoapySDR: its elements as set, else as SoapySDR
+/// fills them from the overall gain (front first, LNA 0–15, then MIX, then VGA).
+fn soapy_airspy_stages(gains: &BTreeMap<String, f64>, gain_db: Option<f64>) -> [f64; 3] {
+    let mut left = gain_db.unwrap_or(0.0).max(0.0);
+    SOAPY_AIRSPY.map(|e| {
+        let filled = left.min(15.0);
+        left -= filled;
+        soapy_gain(gains, e).unwrap_or(filled)
+    })
+}
+
+/// Something a search moves: a stage, a step of the radio's own table, one overall gain, or a
+/// SoapySDR gain element by its own name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Knob {
     Stage(StageKey),
@@ -61,6 +183,37 @@ pub enum Knob {
     Step,
     /// The overall gain, dB (the driver shares it out).
     Db,
+    /// A SoapySDR gain element, by the name its driver gave it (MIXER, TIA, IFGR …).
+    Element(ElementName),
+}
+
+/// A SoapySDR gain element's name, as its driver spells it, kept inline (so a gain can be
+/// copied like the others'): 1–15 printable ASCII characters, no `,` or `=`.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ElementName {
+    len: u8,
+    bytes: [u8; 15],
+}
+
+impl ElementName {
+    /// None: a name that doesn't fit (empty, longer than 15, or not plain ASCII).
+    pub fn new(name: &str) -> Option<ElementName> {
+        let ok = !name.is_empty() && name.len() <= 15 && name.bytes().all(|b| b.is_ascii_graphic() && b != b',' && b != b'=');
+        ok.then(|| {
+            let mut bytes = [0; 15];
+            bytes[..name.len()].copy_from_slice(name.as_bytes());
+            ElementName { len: name.len() as u8, bytes }
+        })
+    }
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("")
+    }
+}
+
+impl fmt::Debug for ElementName {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:?}", self.as_str())
+    }
 }
 
 /// [`Stage`], ordered and hashable as a key.
@@ -80,20 +233,31 @@ impl Knob {
             _ => None,
         }
     }
-    /// Its key: a stage's (`lna`, `vga`, `amp`…), `step`, `gain`.
-    pub fn key(self) -> &'static str {
+    /// Its key: a stage's (`lna`, `vga`, `amp`…), `step`, `gain`, or a SoapySDR element's name.
+    pub fn key(&self) -> &str {
         match (self, self.stage()) {
+            (Knob::Element(e), _) => e.as_str(),
             (_, Some(s)) => s.key(),
             (Knob::Step, _) => "step",
             _ => "gain",
         }
     }
+    /// A stage's key, `step`, `gain`; any other name, a SoapySDR element's (as written).
     pub fn from_key(k: &str) -> Option<Knob> {
         match k.trim().to_ascii_lowercase().as_str() {
             "step" => Some(Knob::Step),
             "gain" | "db" => Some(Knob::Db),
             "mix" => Some(Stage::Mixer.into()),
-            k => Stage::from_key(k).map(Knob::from),
+            lower => Stage::from_key(lower).map(Knob::from).or_else(|| ElementName::new(k.trim()).map(Knob::Element)),
+        }
+    }
+    /// Whether `k` (as written, [`Knob::from_key`]) names this knob: the same, or a SoapySDR element by its name in
+    /// any case, or by the stage it is (`lna`, `mix` for an element named LNA, MIX or MIXER).
+    fn named_by(&self, k: &Knob) -> bool {
+        match (self, k) {
+            (Knob::Element(e), Knob::Element(n)) => e.as_str().eq_ignore_ascii_case(n.as_str()),
+            (Knob::Element(e), k) => k.stage().is_some_and(|s| soapy_stage(e.as_str()) == Some(s)),
+            _ => self == k,
         }
     }
 }
@@ -143,6 +307,7 @@ impl fmt::Display for Setting {
             .0
             .iter()
             .map(|(k, v)| match (k, k.stage()) {
+                (Knob::Element(e), _) => format!("{} {v}", e.as_str()),
                 (_, Some(Stage::Amp)) => format!("AMP {}", if *v > 0.0 { "on" } else { "off" }),
                 (_, Some(s)) => format!("{} {v}", s.label()),
                 (Knob::Step, _) => format!("step {v}"),
@@ -220,6 +385,10 @@ enum PlanKind {
     Hackrf,
     /// A SpyServer's gain step.
     Index,
+    /// An Airspy through SoapySDR: a step of libairspy's table, set as its LNA, MIX and VGA elements.
+    SoapyAirspyTable(AirspyGain),
+    /// A SoapySDR radio's elements, one axis each, by name ([`Knob::Element`]).
+    SoapyStages,
     /// bladeRF, USRP, SoapySDR: the overall gain.
     Overall,
 }
@@ -243,13 +412,13 @@ fn airspy_gains(k: &SourceKind) -> Option<&AirspyGains> {
 impl GainPlan {
     /// The plan for source `src`. `mode`: an Airspy's other gain mode than the one it's in.
     pub fn of(src: &Source, mode: Option<AirspyGain>) -> Result<GainPlan, String> {
-        Self::of_with(src, mode, None)
+        Self::of_with(src, mode, &Reported::default())
     }
 
-    /// [`GainPlan::of`], given `steps`: the gains its radio reported when it was opened, where they aren't the
-    /// kind's own (an RTL-SDR's tuner's table, dB, as `rtl_tcp` names the tuner; a SpyServer's steps, 0 up).
-    pub fn of_with(src: &Source, mode: Option<AirspyGain>, steps: Option<&[f64]>) -> Result<GainPlan, String> {
-        let steps = steps.filter(|s| s.len() > 1);
+    /// [`GainPlan::of`], given what its radio reported when it was opened ([`Reported`]).
+    pub fn of_with(src: &Source, mode: Option<AirspyGain>, reported: &Reported) -> Result<GainPlan, String> {
+        let steps = Some(reported.steps.as_slice()).filter(|s| s.len() > 1);
+        let elements = reported.elements.as_slice();
         let (kind, axes, moves, about): (PlanKind, Vec<Axis>, Vec<Move>, Vec<&str>) = match &src.kind {
             // Its tuner's table: an R820T's, or another the radio reported (an E4000 behind `rtl_tcp`).
             SourceKind::Rtlsdr { .. } => {
@@ -308,6 +477,62 @@ impl GainPlan {
                     "the RF amp last, tried on only with the LNA at 24 dB or under (more than -5 dBm at the input damages the HackRF)",
                 ],
             ),
+            // An Airspy through SoapySDR: as an Airspy, its stages set as SoapyAirspy's elements; never the overall gain.
+            SourceKind::Soapy { args, agc: false, .. } if soapy_airspy(args) => {
+                let el = |i: usize| Knob::Element(ElementName::new(SOAPY_AIRSPY[i]).expect("a short name"));
+                match mode.unwrap_or(AirspyGain::Linearity) {
+                    AirspyGain::Manual => (
+                        PlanKind::SoapyStages,
+                        vec![
+                            Axis::of(el(0), range(0, AIRSPY_LNA_MAX.into(), 1)),
+                            Axis::of(el(1), range(0, AIRSPY_STAGE_MAX.into(), 1)),
+                            Axis::of(el(2), range(0, AIRSPY_STAGE_MAX.into(), 1)).up_to(12.0),
+                        ],
+                        vec![mv(0, 3, Dir::Up), mv(1, 3, Dir::Up), mv(2, 3, Dir::Down), mv(0, 1, Dir::Up), mv(1, 1, Dir::Up), mv(2, 1, Dir::Down)],
+                        vec![
+                            "the Airspy's LNA first, then its mixer (SoapySDR's LNA and MIX elements): 3 steps, then 1",
+                            "the VGA last, only for the ADC's level, to 12; not the overall gain (SoapySDR fills the stages with it front first)",
+                        ],
+                    ),
+                    m => (
+                        PlanKind::SoapyAirspyTable(m),
+                        vec![Axis::of(Knob::Step, range(0, AIRSPY_STEP_MAX.into(), 1))],
+                        vec![mv(0, 3, Dir::Up), mv(0, 1, Dir::Up)],
+                        vec![if m == AirspyGain::Sensitivity {
+                            "the sensitivity table's step, as libairspy sets it, through SoapySDR's LNA, MIX and VGA elements: 3, then 1"
+                        } else {
+                            "the linearity table's step, as libairspy sets it, through SoapySDR's LNA, MIX and VGA elements: 3, then 1 (not the overall gain, which SoapySDR fills front first)"
+                        }],
+                    ),
+                }
+            }
+            // Another SoapySDR radio that said which gain elements it has: one axis each, by its own name, the front first.
+            SourceKind::Soapy { agc: false, gains, .. } if !soapy_axes(elements).is_empty() => {
+                let found = soapy_axes(elements);
+                // An AMP is never set higher than it is (on, it puts strong signals at the mixer): only down, or left.
+                let amp = |n: &ElementName| soapy_stage(n.as_str()) == Some(Stage::Amp);
+                let axes: Vec<Axis> = found
+                    .iter()
+                    .map(|(n, r)| {
+                        let a = Axis::of(Knob::Element(*n), r.values());
+                        if amp(n) { a.up_to(soapy_gain(gains, n.as_str()).unwrap_or(r.min)) } else { a }
+                    })
+                    .collect();
+                let down = |n: &ElementName| amp(n) || soapy_stage(n.as_str()) == Some(Stage::Vga);
+                let dir = |i: usize| if down(&found[i].0) { Dir::Down } else { Dir::Up };
+                let coarse = axes.iter().enumerate().map(|(i, a)| mv(i, (a.values.len() / 7).max(1), dir(i)));
+                let fine = axes.iter().enumerate().map(|(i, _)| mv(i, 1, dir(i)));
+                let moves = coarse.chain(fine).collect();
+                (
+                    PlanKind::SoapyStages,
+                    axes,
+                    moves,
+                    vec![
+                        "each gain element the radio reported, by its own name, the front first (an LNA, then a mixer, then the others as it listed them, a VGA last): a seventh of each at a time, then one step",
+                        "an AMP last, and never higher than it is set (on, it puts strong signals at the mixer)",
+                    ],
+                )
+            }
             SourceKind::Bladerf { .. } | SourceKind::Usrp { .. } | SourceKind::Soapy { .. } => {
                 let top = match &src.kind {
                     SourceKind::Usrp { .. } => 76,
@@ -323,21 +548,64 @@ impl GainPlan {
             SourceKind::File { .. } => return Err("a capture file has no gain".into()),
             SourceKind::Stream { .. } => return Err("a stream has no gain".into()),
         };
-        if let SourceKind::Soapy { gain_db: None, .. } = &src.kind {
-            return Err("this SoapySDR radio has no overall gain set (its gain is left as the device has it): set one in Setup first".into());
+        if let (SourceKind::Soapy { gain_db: None, agc: false, .. }, PlanKind::Overall) = (&src.kind, kind) {
+            return Err("this SoapySDR radio has no overall gain set (its gain is left as the device has it), and hasn't said which gain elements it has (it says when it's opened): set a gain in Setup first".into());
         }
         if matches!(&src.kind, SourceKind::Bladerf { agc: true, .. } | SourceKind::Usrp { agc: true, .. } | SourceKind::Soapy { agc: true, .. }) {
             return Err("its AGC is on, and switching that off takes a restart: turn AGC off in Setup, Stop and Start, then tune".into());
         }
-        Ok(GainPlan { axes, moves, about: about.into_iter().map(String::from).collect(), kind })
+        // The radio has to go back exactly as it was after each trial: by its overall gain (which sets every element
+        // again), or, with none set, by every element the search moves being set in the source.
+        let plan = GainPlan { axes, moves, about: about.into_iter().map(String::from).collect(), kind };
+        let names = plan.elements();
+        if let SourceKind::Soapy { gain_db, gains, .. } = &src.kind
+            && !names.is_empty()
+        {
+            let unset: Vec<&str> = names.iter().copied().filter(|n| soapy_gain(gains, n).is_none()).collect();
+            if gain_db.is_none() && !unset.is_empty() {
+                return Err(format!(
+                    "it has no overall gain set and no gain set for {}, so it couldn't be put back as it is after a trial: set its overall gain, or those, in Setup first",
+                    unset.join(", ")
+                ));
+            }
+            let all = gains.len() + unset.len();
+            if all > SOAPY_MAX_ELEMENTS || gains.keys().map(String::as_str).chain(names.iter().copied()).any(|n| ElementName::new(n).is_none()) {
+                return Err(format!("it has {all} gain elements set or searched, or a name longer than 15 characters: the tuner takes {SOAPY_MAX_ELEMENTS} at most"));
+            }
+        }
+        Ok(plan)
+    }
+
+    /// The SoapySDR gain elements it sets, by name: SoapyAirspy's three for a step of libairspy's
+    /// table, else each axis's element. None for other radios.
+    fn elements(&self) -> Vec<&str> {
+        match self.kind {
+            PlanKind::SoapyAirspyTable(_) => SOAPY_AIRSPY.to_vec(),
+            _ => self.axes.iter().filter(|a| matches!(a.knob, Knob::Element(_))).map(|a| a.knob.key()).collect(),
+        }
     }
 
     /// Where `src`'s gain is, as a place on each axis (the nearest value).
     pub fn point(&self, src: &Source) -> Point {
-        self.axes.iter().map(|a| a.nearest(self.read(src, a.knob))).collect()
+        self.axes.iter().enumerate().map(|(i, a)| a.nearest(self.read(src, i))).collect()
     }
 
-    fn read(&self, src: &Source, knob: Knob) -> f64 {
+    fn read(&self, src: &Source, axis: usize) -> f64 {
+        let knob = self.axes[axis].knob;
+        if let SourceKind::Soapy { args, gains, gain_db, .. } = &src.kind {
+            return match self.kind {
+                // The table's step nearest the stages it has.
+                PlanKind::SoapyAirspyTable(m) => {
+                    let now = soapy_airspy_stages(gains, *gain_db);
+                    let off = |step: u8| airspy_preset(m == AirspyGain::Sensitivity, step).iter().zip(now).map(|(t, n)| (f64::from(*t) - n).abs()).sum::<f64>();
+                    (0..=AIRSPY_STEP_MAX).min_by(|a, b| off(*a).total_cmp(&off(*b))).map_or(0.0, f64::from)
+                }
+                // (An Airspy's elements as SoapySDR filled them, where it sets none.)
+                PlanKind::SoapyStages if soapy_airspy(args) => soapy_airspy_stages(gains, *gain_db)[axis.min(2)],
+                PlanKind::SoapyStages => soapy_gain(gains, knob.key()).unwrap_or(self.axes[axis].values[0]),
+                _ => gain_db.unwrap_or(0.0),
+            };
+        }
         let g = airspy_gains(&src.kind);
         match (&src.kind, knob, knob.stage()) {
             (SourceKind::Rtlsdr { gain_db, .. }, ..) => *gain_db,
@@ -372,6 +640,17 @@ impl GainPlan {
             (SourceKind::Hackrf { lna_db, vga_db, amp, .. }, PlanKind::Hackrf) => (*lna_db, *vga_db, *amp) = (v(0) as u16, v(1) as u16, v(2) > 0.0),
             (SourceKind::Bladerf { gain_db, .. } | SourceKind::Usrp { gain_db, .. }, PlanKind::Overall) => *gain_db = v(0),
             (SourceKind::Soapy { gain_db, .. }, PlanKind::Overall) => *gain_db = Some(v(0)),
+            // The step's stages as SoapyAirspy's elements (they replace what the overall gain filled).
+            (SourceKind::Soapy { gains, .. }, PlanKind::SoapyAirspyTable(m)) => {
+                for (e, level) in SOAPY_AIRSPY.iter().zip(airspy_preset(m == AirspyGain::Sensitivity, v(0) as u8)) {
+                    set_soapy_gain(gains, e, level.into());
+                }
+            }
+            (SourceKind::Soapy { gains, .. }, PlanKind::SoapyStages) => {
+                for (i, a) in self.axes.iter().enumerate() {
+                    set_soapy_gain(gains, a.knob.key(), v(i));
+                }
+            }
             _ => {}
         }
         s
@@ -386,7 +665,7 @@ impl GainPlan {
     pub fn point_of(&self, start: &Point, s: &Setting) -> Result<Point, String> {
         let mut p = start.clone();
         for (k, v) in &s.0 {
-            let i = self.axes.iter().position(|a| a.knob == *k).ok_or_else(|| format!("this radio's stages are {}", self.axes.iter().map(|a| a.knob.key()).collect::<Vec<_>>().join(", ")))?;
+            let i = self.axes.iter().position(|a| a.knob.named_by(k)).ok_or_else(|| format!("this radio's stages are {}", self.axes.iter().map(|a| a.knob.key()).collect::<Vec<_>>().join(", ")))?;
             p[i] = self.axes[i].nearest(*v);
         }
         Ok(p)
@@ -579,10 +858,8 @@ mod tests {
     #[test]
     fn an_rtl_sdr_walks_its_tuners_table_on_usb_or_the_network() {
         let s = src(serde_json::json!({ "type": "rtlsdr", "address": "pi", "gainDb": 30, "agc": true }));
-        // An R820T's, unless it reported another (an empty list is none).
-        for reported in [None, Some(&[][..])] {
-            assert_eq!(GainPlan::of_with(&s, None, reported).unwrap().axes[0].values, R82XX_DB.to_vec());
-        }
+        // An R820T's, unless it reported another.
+        assert_eq!(GainPlan::of_with(&s, None, &Reported::default()).unwrap().axes[0].values, R82XX_DB.to_vec());
         let plan = GainPlan::of(&s, None).unwrap();
         let p = plan.point(&s);
         assert_eq!(R82XX_DB[p[0]], 29.7);
@@ -590,7 +867,7 @@ mod tests {
         assert_eq!((gain_db, agc), (29.7, false));
         // An E4000's own 14 steps (dB) behind `rtl_tcp`, and coarser moves for a shorter table.
         let e4000 = [-1.0, 1.5, 4.0, 6.5, 9.0, 11.5, 14.0, 16.5, 19.0, 21.5, 24.0, 29.0, 34.0, 42.0];
-        let plan = GainPlan::of_with(&s, None, Some(&e4000)).unwrap();
+        let plan = GainPlan::of_with(&s, None, &Reported { steps: e4000.to_vec(), ..Default::default() }).unwrap();
         assert_eq!(plan.axes[0].values, e4000);
         assert_eq!((plan.moves[0].step, plan.moves[1].step), (2, 1));
         assert_eq!(GainPlan::of(&s, None).unwrap().moves[0].step, 4, "about 5 dB on an R820T, as before");
@@ -601,7 +878,7 @@ mod tests {
         let s = src(serde_json::json!({ "type": "spyserver", "address": "pi", "gain": 14 }));
         assert!(GainPlan::of(&s, None).unwrap_err().contains("hasn't said"), "not asked yet");
         let steps: Vec<f64> = (0..=21).map(f64::from).collect();
-        let plan = GainPlan::of_with(&s, None, Some(&steps)).unwrap();
+        let plan = GainPlan::of_with(&s, None, &Reported { steps: steps.to_vec(), ..Default::default() }).unwrap();
         assert_eq!(plan.point(&s), vec![14]);
         assert_eq!((plan.moves[0].step, plan.moves[1].step), (3, 1));
         let SourceKind::Spyserver { gain, .. } = plan.apply(&s, &vec![9]).kind else { panic!() };
@@ -614,6 +891,91 @@ mod tests {
         assert!(GainPlan::of(&src(serde_json::json!({ "type": "usrp", "gainDb": 40, "agc": false })), None).is_ok());
         assert!(GainPlan::of(&src(serde_json::json!({ "type": "bladerf", "agc": true })), None).unwrap_err().contains("AGC"));
         assert!(GainPlan::of(&src(serde_json::json!({ "type": "soapy", "agc": false })), None).unwrap_err().contains("overall gain"));
+    }
+
+    /// An Airspy through SoapySDR (here behind SoapyRemote) is searched along libairspy's table, each step set as
+    /// SoapyAirspy's LNA, MIX and VGA elements: never along the overall gain, which SoapySDR fills front first.
+    #[test]
+    fn an_airspy_through_soapysdr_is_searched_along_libairspys_table() {
+        let args = "driver=remote,remote=tcp://server:55132,remote:driver=airspy,remote:prot=tcp";
+        let s = src(serde_json::json!({ "type": "soapy", "args": args, "agc": false, "gainDb": 31 }));
+        let plan = GainPlan::of(&s, None).unwrap();
+        assert_eq!(plan.axes.iter().map(|a| a.knob).collect::<Vec<_>>(), [Knob::Step], "no overall gain axis");
+        // libairspy's linearity step 14 is entry 7: LNA 9, mixer 6, VGA 10.
+        let SourceKind::Soapy { gains, gain_db, .. } = plan.apply(&s, &vec![14]).kind else { panic!() };
+        assert_eq!(gains, BTreeMap::from([("LNA".into(), 9.0), ("MIX".into(), 6.0), ("VGA".into(), 10.0)]));
+        assert_eq!(gain_db, Some(31.0), "left as it was: the elements replace what it filled");
+        let applied = plan.apply(&s, &vec![14]);
+        assert_eq!(plan.point(&applied), vec![14], "read back from the elements");
+        // An overall 31 is LNA 15, MIX 15, VGA 1 to SoapySDR: no table step, so the start isn't one of its settings.
+        assert_ne!(plan.apply(&s, &plan.point(&s)), s);
+        // Sensitivity: its own table (step 21 is entry 0: LNA 14, mixer 12, VGA 13); no gainDb needed when its
+        // three elements are set (a trial is undone by setting them back).
+        let staged = src(serde_json::json!({ "type": "soapy", "args": "driver=airspy", "agc": false, "gains": { "LNA": 5, "MIX": 5, "VGA": 5 } }));
+        let plan = GainPlan::of(&staged, Some(AirspyGain::Sensitivity)).unwrap();
+        let SourceKind::Soapy { gains, .. } = plan.apply(&staged, &vec![21]).kind else { panic!() };
+        assert_eq!(gains, BTreeMap::from([("LNA".into(), 14.0), ("MIX".into(), 12.0), ("VGA".into(), 13.0)]));
+        // Neither an overall gain nor its elements: it couldn't be put back after a trial, so it isn't tuned.
+        let bare = src(serde_json::json!({ "type": "soapy", "args": "driver=airspy", "agc": false }));
+        assert!(GainPlan::of(&bare, None).unwrap_err().contains("couldn't be put back"));
+        // Manual: the three elements as an Airspy's stages, the VGA kept to 12; names as the source has them.
+        let named = src(serde_json::json!({ "type": "soapy", "args": args, "agc": false, "gains": { "lna": 10, "MIX": 10, "VGA": 10 } }));
+        let plan = GainPlan::of(&named, Some(AirspyGain::Manual)).unwrap();
+        assert_eq!(plan.point(&named), vec![10, 10, 10]);
+        assert_eq!(plan.axes[2].hi, 12);
+        let SourceKind::Soapy { gains, .. } = plan.apply(&named, &vec![11, 9, 7]).kind else { panic!() };
+        assert_eq!(gains, BTreeMap::from([("lna".into(), 11.0), ("MIX".into(), 9.0), ("VGA".into(), 7.0)]));
+        assert_eq!(plan.setting(&vec![11, 9, 7]).to_string(), "LNA 11 · MIX 9 · VGA 7");
+    }
+
+    /// libairspy's tables as airspy.c has them, entry 21 − step (trunk-pro checks them against libairspy-rs's own).
+    #[test]
+    fn libairspys_tables_are_read_from_the_end() {
+        assert_eq!(airspy_preset(false, 21), [14, 12, 13]);
+        assert_eq!(airspy_preset(false, 0), [0, 0, 4]);
+        assert_eq!(airspy_preset(true, 0), [0, 0, 4]);
+        assert_eq!(airspy_preset(false, 30), airspy_preset(false, 21), "clamped as libairspy clamps");
+    }
+
+    /// Another SoapySDR radio that reported its gain elements is searched stage by stage: the elements named as a
+    /// stage, the front first, in the steps it reported; the others, and an AMP, stay as set.
+    #[test]
+    fn a_soapysdr_radio_is_searched_by_the_elements_it_reported() {
+        let el = |name: &str, min: f64, max: f64, step: f64| ReportedStage { name: name.into(), min, max, step };
+        // As the radio listed them: TIA, a mixer called MIXER, LNA, AMP, IFGR.
+        let reported = [el("TIA", 0.0, 12.0, 3.0), el("MIXER", 0.0, 15.0, 1.0), el("LNA", 0.0, 30.0, 1.0), el("AMP", 0.0, 14.0, 14.0), el("IFGR", 20.0, 59.0, 1.0)];
+        let s = src(serde_json::json!({ "type": "soapy", "args": "driver=lime", "agc": false, "gainDb": 20, "gains": { "AMP": 14 } }));
+        let plan = GainPlan::of_with(&s, None, &Reported { elements: reported.to_vec(), ..Default::default() }).unwrap();
+        // One axis each, by its own name: an LNA, a mixer, the others as listed, an AMP last.
+        assert_eq!(plan.axes.iter().map(|a| a.knob.key()).collect::<Vec<_>>(), ["LNA", "MIXER", "TIA", "IFGR", "AMP"]);
+        assert_eq!((plan.axes[3].values[0], plan.axes[3].values.len()), (20.0, 40));
+        assert_eq!(plan.axes[4].hi, 1, "the AMP at most as it is (on)");
+        assert_eq!(plan.point(&s), vec![0, 0, 0, 0, 1]);
+        let SourceKind::Soapy { gains, gain_db, .. } = plan.apply(&s, &vec![10, 6, 2, 5, 0]).kind else { panic!() };
+        let want = [("AMP", 0.0), ("IFGR", 25.0), ("LNA", 10.0), ("MIXER", 6.0), ("TIA", 6.0)];
+        assert_eq!(gains, BTreeMap::from(want.map(|(k, v)| (k.to_string(), v))), "MIXER stays MIXER");
+        assert_eq!(gain_db, Some(20.0));
+        assert_eq!(plan.setting(&vec![10, 6, 2, 5, 0]).to_string(), "LNA 10 · MIXER 6 · TIA 6 · IFGR 25 · AMP 0");
+        assert_eq!(plan.moves[0], mv(0, 4, Dir::Up), "a seventh of the LNA's 31 steps");
+        assert_eq!(plan.point_of(&plan.point(&s), &Setting::parse("tia=9, mix=3").unwrap()).unwrap(), vec![0, 3, 3, 0, 1], "by name in any case, or by stage");
+        // An AMP not set: never switched on.
+        let off = src(serde_json::json!({ "type": "soapy", "args": "driver=lime", "agc": false, "gainDb": 20 }));
+        assert_eq!(GainPlan::of_with(&off, None, &Reported { elements: reported.to_vec(), ..Default::default() }).unwrap().axes[4].hi, 0);
+        // No overall gain: every element searched must be set, or a trial couldn't be undone.
+        let two = [el("LNA", 0.0, 30.0, 1.0), el("TIA", 0.0, 12.0, 3.0)];
+        let partial = src(serde_json::json!({ "type": "soapy", "args": "driver=lime", "agc": false, "gains": { "LNA": 20 } }));
+        let e = GainPlan::of_with(&partial, None, &Reported { elements: two.to_vec(), ..Default::default() }).unwrap_err();
+        assert!(e.contains("couldn't be put back") && e.contains("TIA"), "{e}");
+        let full = src(serde_json::json!({ "type": "soapy", "args": "driver=lime", "agc": false, "gains": { "LNA": 20, "TIA": 9 } }));
+        assert!(GainPlan::of_with(&full, None, &Reported { elements: two.to_vec(), ..Default::default() }).is_ok());
+        // More elements than a gain carries.
+        let many: Vec<ReportedStage> = (1..=9).map(|i| el(&format!("G{i}"), 0.0, 10.0, 1.0)).collect();
+        assert!(GainPlan::of_with(&s, None, &Reported { elements: many.to_vec(), ..Default::default() }).unwrap_err().contains("at most"));
+        // Nothing reported (not opened yet), and no overall gain: nothing to search.
+        assert!(GainPlan::of(&partial, None).unwrap_err().contains("which gain elements"));
+        // Its AGC on: as before.
+        let agc = src(serde_json::json!({ "type": "soapy", "args": "driver=lime", "agc": true }));
+        assert!(GainPlan::of_with(&agc, None, &Reported { elements: reported.to_vec(), ..Default::default() }).unwrap_err().contains("AGC"));
     }
 
     #[test]

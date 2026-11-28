@@ -6,13 +6,13 @@
 use std::ffi::{c_char, c_int, c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, Deadline, DriverInfo, Handed};
-use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Silence, Sink, Tunable};
 
 type Handle = *mut c_void;
 type Err = c_int;
@@ -262,6 +262,9 @@ impl crate::sdr::Radio for UsrpConfig {
 /// ~260 ms (256 still lost ~100 ms an hour on a Mac). Kept when `args` sets its own.
 const RECV_FRAMES: usize = 1024;
 
+/// A USRP that has sent no samples for this long has stopped ([`Silence`]).
+const SILENT: Duration = Duration::from_secs(3);
+
 pub(crate) fn device_args(args: &str) -> String {
     if args.split(',').any(|kv| kv.trim().starts_with("num_recv_frames=")) {
         return args.to_string();
@@ -460,7 +463,7 @@ fn stream_once(cfg: &UsrpConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option
         s.streaming = true;
 
         let mut next_t: Option<f64> = None;
-        let mut timeouts = 0;
+        let mut silence = Silence::new(SILENT);
         while !stop.load(Ordering::Relaxed) {
             if let Some(c) = ctl
                 && c.apply(&mut s, cfg.center_hz, sink)? == Applied::Closed
@@ -474,15 +477,14 @@ fn stream_once(cfg: &UsrpConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option
             check(a, "receive", (a.rx_streamer_recv)(s.rx, &mut ptr, per, &mut s.md, 1.0, false, &mut n))?;
             let mut code = 0;
             (a.rx_metadata_error_code)(s.md, &mut code);
+            // A read without samples, timed out or not, is nothing yet: only SILENT of them is an error.
+            // (One that came back at once with none, MD_NONE, used to count as samples.)
             match code {
-                MD_NONE | MD_OVERFLOW => timeouts = 0,
-                MD_TIMEOUT => {
-                    timeouts += 1;
-                    if timeouts >= 3 {
-                        return Err("USRP: no samples for 3 s".into());
-                    }
+                MD_NONE | MD_OVERFLOW | MD_TIMEOUT if n == 0 => {
+                    silence.check("USRP", Instant::now())?;
                     continue;
                 }
+                MD_NONE | MD_OVERFLOW => silence.heard(Instant::now()),
                 c => return Err(format!("USRP: receive error 0x{c:x}")),
             }
             // Samples lost (an overflow, 'O') show as a jump in the packet time.
@@ -501,11 +503,8 @@ fn stream_once(cfg: &UsrpConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option
                 }
                 next_t = Some(t + n as f64 / cfg.rate_hz);
             }
-            if n == 0 {
-                continue;
-            }
             buf.vec().truncate(n);
-            if !sink.send(Block::Iq(buf), dropped, std::time::Instant::now()) {
+            if !sink.send(Block::Iq(buf), dropped, Instant::now()) {
                 return Ok(());
             }
         }

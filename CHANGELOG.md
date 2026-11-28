@@ -13,10 +13,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   (`sys/<short>/notSaved/why/<why>`, and per site and channel), and a call whose files couldn't be written now counts
   as not saved (it was counted as saved). A recorded call whose voice turned out encrypted is now `encrypted` rather
   than `silent`, in capture rules' `call.not_saved` too.
-- **Each system keeps its own control channel log.** The log the interface keeps was one list of the newest 2,000
-  lines of every system, so a busy system's lines pushed out a quiet one's within seconds: its log showed a few
-  lines, which then disappeared. Each system now keeps its newest 500 lines (and the recorder's own lines theirs),
-  in order, whatever the others do.
+
+- **A USRP that sends nothing is noticed.** A read that came back at once with no samples and no error counted as
+  samples, so a USRP doing that forever was never given up on and reopened: it went quiet without a word. Now every
+  radio's read loop asks one question, how long since its last samples (`Silence`), whatever its reads without any
+  came back as, and gives up past its limit as before (RTL-SDR, HackRF and Airspy 2 s, rtl_tcp, SpyServer and USRP
+  3 s, bladeRF and SoapySDR 10 s). A HackRF read that returns no samples without timing out counts toward that too.
 
 - **A radio behind SoapyRemote streams.** SoapyRemote's server sends from the moment the stream is set up, before
   the radio starts, so a remote Airspy's first reads return 0 samples. A read of 0 was taken as success: the
@@ -31,6 +33,24 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   Which kind of receiver carries a signal is now one rule, the receiver bank's, for the Overview, the Decode page, a
   call's frequency error and the survey: the kind detected, or, with both running, the one decoding with fewer
   corrections (frame counts can't tell: the CQPSK receiver decodes clean C4FM about as well), or a site's only kind.
+
+- **`trunk-pro tune` tunes a SoapySDR radio stage by stage, an Airspy through SoapySDR along libairspy's table.**
+  It could only move a SoapySDR radio's overall gain, refused one without it, and, with gain stages set, each
+  trial was undone at once (the stages are set again after the overall gain). An Airspy through SoapySDR (here or
+  behind SoapyRemote: `driver=airspy` or `remote:driver=airspy`) is now searched as an Airspy is, along the
+  linearity table (or `--mode sensitivity` / `manual`), each step set as SoapyAirspy's LNA, MIX and VGA elements
+  with the values libairspy uses, and never along the overall gain, which SoapySDR fills front first (31 is LNA 15,
+  MIX 15, VGA 1; over 45 all the same). Another SoapySDR radio is searched by the gain elements it reports when
+  opened, one axis per element by the name its driver gave it (MIXER, TIA, IFGR …), the front first, an AMP never
+  set higher than it is. Each trial carries the radio's whole gain, so the setting it had puts every element back
+  exactly; a radio with no overall gain and an element the search moves left unset isn't tuned (it couldn't be put
+  back), and says which to set. Gain stages also change live from Setup now, as the overall gain did.
+- **The gain tuner scores a multi-site system site by site.** A system the radio receives at several sites had its
+  sites' control channels added together: P25 coverage summed past 100 % and counted as 100, so one site decoding in
+  full hid another decoding half, often the very site the gain is tuned for. Each site is now scored on its own and
+  the system's control channel is their average with the weakest site counted twice, as the weakest system is
+  across systems; the SNR tie-break is the weakest site's. `trunk-pro tune` and the Tune gain report show each
+  site's figures under its system (`county · North`).
 
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
@@ -63,6 +83,10 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Docs: the log on Raspberry Pi OS** (#256, thanks @jjc-wx). Its journal is in RAM only, so `journalctl --user -u
   trunk-pro` finds nothing; the Pi guide and Troubleshooting now give `journalctl --user-unit trunk-pro -f`, and how to
   see the log in colour.
+- **Each system keeps its own control channel log.** The log the interface keeps was one list of the newest 2,000
+  lines of every system, so a busy system's lines pushed out a quiet one's within seconds: its log showed a few
+  lines, which then disappeared. Each system now keeps its newest 500 lines (and the recorder's own lines theirs),
+  in order, whatever the others do.
 
 ## [0.5.2] — 2026-11-26
 
