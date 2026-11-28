@@ -146,6 +146,7 @@ mod toolkit;
 #[cfg(test)]
 mod protocol_tests;
 mod survey;
+mod tetratool;
 mod tool;
 mod tune;
 mod unlock;

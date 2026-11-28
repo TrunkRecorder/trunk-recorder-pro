@@ -38,11 +38,14 @@ pub struct Options {
     pub df_beta: f32,
     /// Symbol rate: 4800 (Phase 1, [`super::c4fm::SYMBOL_RATE`]) or 6000 (Phase 2 H-DQPSK, [`crate::p25::phase2::SYMBOL_RATE`]).
     pub baud: f64,
+    /// Don't look for P25's sync words: whoever frames the symbols says when they sync
+    /// ([`Cqpsk::synced`]), and undoes the carrier estimate's quarter turns.
+    pub external_sync: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { eq_taps: 0, eq_mu: 0.02, soft_amplitude: true, coherent: false, pll_kp: 0.04, baud: c4fm::SYMBOL_RATE, df_beta: 0.0 }
+        Options { eq_taps: 0, eq_mu: 0.02, soft_amplitude: true, coherent: false, pll_kp: 0.04, baud: c4fm::SYMBOL_RATE, df_beta: 0.0, external_sync: false }
     }
 }
 
@@ -344,6 +347,9 @@ impl Cqpsk {
             rel_hi: r.im.abs() * norm,
             rel_lo: r.re.abs() * norm,
         });
+        if self.opt.external_sync {
+            return;
+        }
         self.sr = ((self.sr << 2) | dib as u64) & 0xFFFF_FFFF_FFFF;
         // Frame sync: Phase 1's 48 bits, or Phase 2's 40-bit S-ISCH.
         let (fs, inv, mask, len, turned) = if self.opt.baud > 5000.0 {
@@ -422,6 +428,16 @@ const fn turned(fs: u64, len: u64, j: u64) -> u64 {
 }
 
 impl Cqpsk {
+    /// A frame synced ([`Options::external_sync`]), its steps `turn` quarters on: the carrier
+    /// estimate stands that much further off, from the next symbol on.
+    pub fn synced(&mut self, turn: u8) {
+        self.syncs += 1;
+        self.last_sync = self.symbols;
+        if turn & 3 != 0 {
+            self.quarter = (self.quarter + (turn & 3) as i32 + 1).rem_euclid(4) - 1;
+        }
+    }
+
     /// Whether `other` filters the same way (sample rate, symbol rate):
     /// given the same IQ, its matched filter output is this one's.
     pub fn same_front(&self, other: &Cqpsk) -> bool {

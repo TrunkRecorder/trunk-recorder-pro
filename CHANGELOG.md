@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **TETRA decoding tools** (the first part of TETRA trunked mode). `trunk-pro tool tetrascan` lists the TETRA carriers in
+  a capture with their cells, `tool tetra` prints one carrier's cell, system information and calls, and `tool tetravoice`
+  plays a call's speech frames. The speech codec (ACELP, a port of mbelib-neo's decoder) needs two tables from ETSI's
+  EN 300 395-2 archive, which don't come with the app: `--tetra-codec` takes the archive. Recording TETRA systems comes
+  in a later change. See [Command line](docs/command-line.md#tool-tetrascan-tetra-and-tetravoice).
+
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the
