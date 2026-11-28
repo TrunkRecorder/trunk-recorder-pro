@@ -2952,6 +2952,15 @@ impl Config {
         self.assign_ids_of_systems() || sites
     }
 
+    /// Keep [`Config::next_system_id`] at `floor` or above: ids something else
+    /// already holds (the call store, for systems removed since) are never given
+    /// to a new system. Whether it moved.
+    pub fn keep_ids_from(&mut self, floor: u32) -> bool {
+        let moved = self.next_system_id < floor;
+        self.next_system_id = self.next_system_id.max(floor);
+        moved
+    }
+
     fn assign_site_ids(&mut self) -> bool {
         let given = self.systems.iter().flat_map(|s| &s.sites).map(|s| s.id.0).max().unwrap_or(0);
         let mut next = self.next_site_id.max(given + 1);
@@ -4008,6 +4017,12 @@ mod tests {
         assert_eq!(c.system_ids().collect::<Vec<_>>(), [(SystemId(8), "a"), (SystemId(10), "d"), (SystemId(11), "c")], "a new one past the removed 7; a copied id made its own");
         let saved = serde_json::to_value(&c).unwrap();
         assert_eq!((saved["systems"][0]["id"].as_u64(), saved["nextSystemId"].as_u64()), (Some(8), Some(12)));
+        // Ids something else still keeps (the call store's, for systems removed since) aren't given either.
+        assert!(!c.keep_ids_from(5) && c.next_system_id == 12, "already above");
+        assert!(c.keep_ids_from(20));
+        c.systems.push(System { short_name: "e".into(), ..Default::default() });
+        c.assign_system_ids();
+        assert_eq!(c.id_of("e"), Some(SystemId(20)));
     }
 
     #[test]

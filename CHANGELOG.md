@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A system added after restoring an older config gets an id of its own.** `nextSystemId` stayed above the ids in
+  the config, not those in the call store: a config restored from before a system was removed gave the next new
+  system the removed one's id, and that system's calls, talkgroup and radio names, registry and history showed as
+  the new one's. New systems are now numbered above every system the call store keeps data for, when the recorder
+  starts (it says so in the log, and saves the config) and whenever the config is saved.
+
 - **A radio behind SoapyRemote streams.** SoapyRemote's server sends from the moment the stream is set up, before
   the radio starts, so a remote Airspy's first reads return 0 samples. A read of 0 was taken as success: the
   stream ended without a word and was opened again at once, which made a new backlog of empty reads, about 8

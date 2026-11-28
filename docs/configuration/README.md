@@ -90,7 +90,7 @@ with `--config` files in different folders never share band plans, talker aliase
 | `keys` | | `{}` | object | P25 encryption key sources, by name: where each set of keys is read from. [Encryption keys](systems.md#encryption-keys-keys) |
 | `pluginDelays` | | `[]` | array | How long plugins wait for calls, for every system. [Delays](plugins.md#delays) |
 | `diagnostics` | | `{}` | object | Rules that capture what the radios receive when something goes wrong: `captureDir`, `rules` and `budget`. [Capture rules](../guides/captures.md#capture-rules) |
-| `nextSystemId`, `nextSiteId` | | | number | Kept by the app so a system or site id is never given twice. Leave them alone. |
+| `nextSystemId`, `nextSiteId` | | | number | Kept by the app so a system or site id is never given twice. Leave them alone. A config restored from an older copy is fine: new systems are still numbered above every one the call store keeps data for. |
 
 ## A minimal config
 

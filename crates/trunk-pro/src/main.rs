@@ -1019,7 +1019,7 @@ fn serve(a: &Args) {
     use std::sync::{Arc, Mutex};
     let config_path = paths::config_path(a.get("config"));
     paths::init(&config_path);
-    let cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
+    let mut cfg = config::Config::load(&config_path).unwrap_or_else(|e| fatal(&e));
     let level = a.get("log-level").map(|l| trunk_app::log::Level::parse(l).unwrap_or_else(|| fatal(&format!("--log-level {l}: trace, debug, info, warning, error or fatal"))));
     let (hub, _) = tokio::sync::broadcast::channel(4096);
     logging::init(&cfg.log, config_path.parent().unwrap_or(Path::new(".")), level, hub.clone());
@@ -1092,6 +1092,14 @@ fn serve(a: &Args) {
     let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
     // (The systems first: everything kept is kept by their ids.)
     db.set_systems(&cfg);
+    // (A config restored from before a system was removed would give that system's id,
+    // which the store still keeps calls, names and history under, to the next new one.)
+    if cfg.keep_ids_from(db.first_free_system_id()) {
+        log::info!("{}: new systems are numbered from {}, above those the call store keeps", config_path.display(), cfg.next_system_id);
+        if let Err(e) = cfg.save(&config_path) {
+            log::warn!("{}: couldn't save it ({e})", config_path.display());
+        }
+    }
     kept::load_registry(&db, &shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::new(statstore::memory_minutes(&db))));
     let store = statstore::Store::start(series.clone(), db.clone(), cfg.storage.stats_days, cfg.storage.low_write);

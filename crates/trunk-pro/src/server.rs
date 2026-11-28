@@ -1652,6 +1652,19 @@ impl Listen {
 }
 
 /// `msg` as an error message, if there is one.
+/// A config to be saved gives new systems ids above every one the call store
+/// keeps anything for, not only above its own: one restored from before a
+/// system was removed would give that system's id again, and its calls, names
+/// and history would show as the new system's.
+fn from_free_ids(db: &crate::db::Db, config: &mut serde_json::Value) {
+    let floor = db.first_free_system_id();
+    if let Some(c) = config.as_object_mut()
+        && c.get("nextSystemId").and_then(serde_json::Value::as_u64).unwrap_or(0) < u64::from(floor)
+    {
+        c.insert("nextSystemId".into(), floor.into());
+    }
+}
+
 fn failed(msg: Result<(), String>) -> Option<ToClient> {
     msg.err().map(ToClient::error)
 }
@@ -1686,7 +1699,10 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || runtime::calls_query(&ctx2, id, &query)).await.ok()
         }
-        Command::SetConfig { config, version } => match Config::from_value(config) {
+        Command::SetConfig { mut config, version } => match Config::from_value({
+            from_free_ids(&ctx.db, &mut config);
+            config
+        }) {
             Ok(c) if crate::iq_rules::check_all(&c.diagnostics).is_err() => {
                 let error = crate::iq_rules::check_all(&c.diagnostics).err();
                 Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error })
@@ -2167,6 +2183,38 @@ mod tests {
             Some(ToClient::ConfigSaved { version: 2, error: Some(_) }) => {}
             r => panic!("not refused: {:?}", r.map(|m| m.to_value())),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A system added to a config restored from before another was removed
+    /// isn't given the removed one's id, which the call store still keeps its
+    /// calls, names and history under: it's numbered above every stored one.
+    #[tokio::test]
+    async fn a_new_system_isnt_given_a_removed_ones_id() {
+        use super::{command, Subs};
+        use trunk_app::protocol::{Command, ToClient};
+        let dir = std::env::temp_dir().join(format!("trunk-pro-freeid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = crate::protocol_tests::conventional_config();
+        let ctx = crate::protocol_tests::ctx(cfg, &dir);
+        // The store keeps system 2, gone from the config, whose next id is still 2.
+        let before = trunk_app::Config::from_json(r#"{"conventional":[{"shortName":"conv","id":1,"channels":[]},{"shortName":"gone","id":2,"channels":[]}]}"#).unwrap();
+        ctx.db.set_systems(&before);
+        ctx.db.set_systems(&ctx.config.lock().unwrap());
+        ctx.db.flush().unwrap();
+        assert_eq!(ctx.config.lock().unwrap().next_system_id, 2);
+        assert_eq!(ctx.db.first_free_system_id(), 3);
+        let (mut listen, mut subs) = (None, Subs { ctx: ctx.clone(), topics: Default::default() });
+        let mut edited = serde_json::to_value(&*ctx.config.lock().unwrap()).unwrap();
+        edited["conventional"].as_array_mut().unwrap().push(serde_json::json!({ "shortName": "new", "channels": [{ "freqHz": 155300000 }] }));
+        match command(&ctx, Command::SetConfig { config: edited, version: 1 }, &mut listen, &mut subs).await {
+            Some(ToClient::ConfigSaved { error: None, .. }) => {}
+            r => panic!("not saved: {:?}", r.map(|m| m.to_value())),
+        }
+        let c = ctx.config.lock().unwrap();
+        let id = |name: &str| c.conventional.iter().find(|s| s.short_name == name).map(|s| s.id.0);
+        assert_eq!((id("conv"), id("new"), c.next_system_id), (Some(1), Some(3), 4));
+        drop(c);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

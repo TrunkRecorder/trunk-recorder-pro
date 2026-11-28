@@ -439,6 +439,13 @@ impl Db {
         self.store()?.system_names()
     }
 
+    /// The lowest id a new system may have: above every system the store keeps
+    /// anything for, those gone from the config too. 0: none, or no store.
+    pub fn first_free_system_id(&self) -> u32 {
+        let top = self.system_names().ok().and_then(|s| s.iter().map(|(id, _)| *id).max());
+        top.and_then(|id| u32::try_from(id + 1).ok()).unwrap_or(0)
+    }
+
     /// Every system the store has, and how much of each it keeps ([`Store::data_systems`]).
     pub fn data_systems(&self) -> Result<Vec<(i64, String, trunk_app::protocol::DataCounts)>, String> {
         self.store()?.data_systems()
