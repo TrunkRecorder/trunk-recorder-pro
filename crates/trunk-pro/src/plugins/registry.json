@@ -2,6 +2,36 @@
   "format": 1,
   "plugins": [
     {
+      "id": "acars",
+      "name": "ACARS",
+      "description": "Decodes ACARS messages from airband data channels.",
+      "repository": "https://github.com/TrunkRecorder/trunk-plugin-acars",
+      "license": "GPL-2.0-or-later",
+      "tier": "official",
+      "version": "0.1.0",
+      "api": 1,
+      "tag": "v0.1.0",
+      "commit": "d38447f6db340ddb576178e987f88e5f1bd609f0",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-acars/releases/download/v0.1.0/acars-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "d96ce1a9900b0ef5d136eedda42bc738c98526ef4f981ce4e10dc59dc5f9f327"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-acars/releases/download/v0.1.0/acars-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "bc3f12a0692c4fc77aca7add2d20ca9cf652f87a8a811f5162ffadb35388502b"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-acars/releases/download/v0.1.0/acars-0.1.0-universal-apple-darwin.tar.gz",
+          "sha256": "0137d1e12493df887b11caa92de5cc83eb29991e5d196e494829b82a614247da"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-acars/releases/download/v0.1.0/acars-0.1.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "abb3177e0fc531cc5a6a51f0a872e55c77b5d08c8ea8bb55a49bb843d02312b1"
+        }
+      }
+    },
+    {
       "id": "broadcastify",
       "name": "Broadcastify Calls",
       "description": "Uploads recorded calls to Broadcastify Calls.",
@@ -69,26 +99,26 @@
       "repository": "https://github.com/jschmall/icecast-endpoint",
       "license": "MIT",
       "tier": "community",
-      "version": "0.5.3",
+      "version": "0.6.0",
       "api": 1,
-      "tag": "v0.5.3",
-      "commit": "e2fa5b61690e005d3a6c359c2fbe8156151f1fbb",
+      "tag": "v0.6.0",
+      "commit": "10bf3698192fabac22921877d93f4d162f73b92d",
       "assets": {
         "x86_64-unknown-linux-gnu": {
-          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.3/icecast-endpoint-0.5.3-x86_64-unknown-linux-gnu.tar.gz",
-          "sha256": "d19b6b7e8f886d88b471bb194e103ed24587106e94ee5ba0e59ec9d581d74fc4"
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.6.0/icecast-endpoint-0.6.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "893973865ccbd6d973008e90a42c56da6eecde467107c33dc3a385a4bccd425c"
         },
         "aarch64-unknown-linux-gnu": {
-          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.3/icecast-endpoint-0.5.3-aarch64-unknown-linux-gnu.tar.gz",
-          "sha256": "6201d0567bcd7fbb4d02d16fa4ba1effae2af59c28f5ab491bbde362bb89458e"
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.6.0/icecast-endpoint-0.6.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "1f512e59a7cd354b1bdfc20331a95eae09684cfb0fbf83143ac0dae4d831c606"
         },
         "universal-apple-darwin": {
-          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.3/icecast-endpoint-0.5.3-universal-apple-darwin.tar.gz",
-          "sha256": "a541069576e7adab128676f8a28015a4c48d4f6f7b80d14d9f00f45212036c7b"
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.6.0/icecast-endpoint-0.6.0-universal-apple-darwin.tar.gz",
+          "sha256": "40398c2a3f82b0d5a40e47f76d6e097735e947e4391dbbfcaa83c12108f475a6"
         },
         "x86_64-pc-windows-msvc": {
-          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.5.3/icecast-endpoint-0.5.3-x86_64-pc-windows-msvc.zip",
-          "sha256": "ecee55b4f31706bb0b531b00dd4fceee74da4e781163969c38541a349ac9c1ef"
+          "url": "https://github.com/jschmall/icecast-endpoint/releases/download/v0.6.0/icecast-endpoint-0.6.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "3ab0c22f36712ac07b3bbc60ad997bad62cf18d4347ae9bf49cd5b9295bd6a7c"
         }
       }
     },
@@ -210,6 +240,36 @@
         "x86_64-pc-windows-msvc": {
           "url": "https://github.com/TrunkRecorder/trunk-plugin-openmhz/releases/download/v0.1.12/openmhz-0.1.12-x86_64-pc-windows-msvc.zip",
           "sha256": "ec125d81686f475325eb55779d8e71136e5d13a14ef0da649454bb7f59015a53"
+        }
+      }
+    },
+    {
+      "id": "pager",
+      "name": "Pager",
+      "description": "Decodes POCSAG and FLEX pages from data channels.",
+      "repository": "https://github.com/TrunkRecorder/trunk-plugin-pager",
+      "license": "GPL-2.0-or-later",
+      "tier": "official",
+      "version": "0.1.0",
+      "api": 1,
+      "tag": "v0.1.0",
+      "commit": "e146f708691e40f27a4004b1db09dae163ddc626",
+      "assets": {
+        "x86_64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-pager/releases/download/v0.1.0/pager-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
+          "sha256": "3b3be0459f301084fe1ecd51673e28c117ada69d62fffe305b702c2bd8d1b080"
+        },
+        "aarch64-unknown-linux-gnu": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-pager/releases/download/v0.1.0/pager-0.1.0-aarch64-unknown-linux-gnu.tar.gz",
+          "sha256": "39943801cd824f284ff61e69b1bd50715ef3d098d085b640605a188822ad4a2c"
+        },
+        "universal-apple-darwin": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-pager/releases/download/v0.1.0/pager-0.1.0-universal-apple-darwin.tar.gz",
+          "sha256": "4e967bf6a9c4d0f4c7377096e3c4c36d5fc21b0a12b8eaaa311153d3a6835f41"
+        },
+        "x86_64-pc-windows-msvc": {
+          "url": "https://github.com/TrunkRecorder/trunk-plugin-pager/releases/download/v0.1.0/pager-0.1.0-x86_64-pc-windows-msvc.zip",
+          "sha256": "7dc67712e0d55393a308d35a16f7561bfbda6b0f38a3a7279b7b05469e528aa9"
         }
       }
     },
