@@ -10,7 +10,7 @@ import { clearSeries, feedSeries } from "../series.ts";
 import { coverage, dashSystems, pageHealth, rangesFor, sourceHealth, type DetailedSite } from "./data.ts";
 import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
-import { DmrSites } from "./Systems.tsx";
+import { DmrSites, LtrSites } from "./Systems.tsx";
 import { eventText, Overview } from "./Overview.tsx";
 import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
@@ -120,7 +120,7 @@ test("Decode: a site's neighbours by address (status); its patches once watched 
   const tg = (talkgroup: number, alphaTag = "") => ({ talkgroup, alphaTag });
   transport.onMessage({
     type: "decodeDetail", system: "dcfd", channels: [],
-    sites: [{ index: 1, name: "south", dmr: null, nxdn: null }],
+    sites: [{ index: 1, name: "south", dmr: null, nxdn: null, ltr: null }],
     patches: [{ supergroup: tg(60001), members: [tg(100, "Fire Dispatch"), tg(200)] }],
   });
   const page = text(renderToString(<DecodePage />));
@@ -177,6 +177,23 @@ test("Decode: a DMR carrier sending control blocks is the rest channel where the
   assert.equal(chip("Hytera XPT", { lsn: 1, freqHz: 463_375_000 }), "rest");
   assert.equal(chip("DMR Capacity Plus", { lsn: 3, freqHz: null }), "rest");
   assert.equal(chip("DMR Connect Plus", null), "control");
+});
+
+test("Decode: an LTR site's repeaters, the LCN each is and its call", () => {
+  const ltr = {
+    flavor: "LTR Standard",
+    site: null,
+    channels: [{ lcn: 1, freqHz: 851_012_500, configured: true }, { lcn: 2, freqHz: 851_512_500, configured: false }],
+    unknownChannels: [7],
+    carriers: [
+      { freqHz: 851_012_500, heard: false, lcn: 1, call: null },
+      { freqHz: 851_512_500, heard: true, lcn: 2, call: { talkgroup: { talkgroup: 102_033, alphaTag: "Yard" }, source: 0 } },
+    ],
+  };
+  const page = text(renderToString(<LtrSites sites={[{ label: "s", ltr } as unknown as DetailedSite]} />));
+  assert.ok(page.includes("LTR Standard"), page);
+  assert.ok(page.includes("2 (learned)") && page.includes("Yard"), page);
+  assert.ok(page.includes("LCNs not known: 7"), page);
 });
 
 test("Decode: a site's FCC call sign, once its control channel has said it", () => {

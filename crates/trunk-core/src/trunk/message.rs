@@ -75,6 +75,16 @@ impl LastCall {
     }
 }
 
+/// A channel of a [`ChannelTable`], for the dashboard: its number (a DMR or
+/// LTR LCN, an NXDN channel), frequency, and where that came from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChannelEntry {
+    pub number: u32,
+    pub hz: u64,
+    /// From the config's table (else learned from the air).
+    pub configured: bool,
+}
+
 /// A site's channel numbers' frequencies (DMR LCNs, NXDN channels): the
 /// config's, which stand, and what the air taught, kept between runs.
 #[derive(Clone, Debug, Default)]
@@ -114,6 +124,14 @@ impl ChannelTable {
         self.learned.retain(|_, h| *h != hz);
         self.learned.insert(n, hz);
         true
+    }
+
+    /// Every channel it knows, in number order: the config's, then (beyond it) the air's.
+    pub fn entries(&self) -> Vec<ChannelEntry> {
+        let mut out: Vec<ChannelEntry> = self.configured.iter().map(|(&number, &hz)| ChannelEntry { number, hz, configured: true }).collect();
+        out.extend(self.learned().map(|(number, hz)| ChannelEntry { number, hz, configured: false }));
+        out.sort_by_key(|c| c.number);
+        out
     }
 
     /// What was learned, to keep: `channel=hz` lines ([`table_to_string`]).

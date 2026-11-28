@@ -303,7 +303,7 @@ pub struct SystemInfo {
     /// folder, and what users know it by (it changes when it's renamed).
     /// Every event carries it.
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr" | "conventional"
     pub kind: String,
     /// What people call it ("County Public Safety"); empty when the user gave no name.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -607,7 +607,7 @@ pub struct CallRecord {
     /// "digital" | "digital tdma" | "analog"
     pub audio_type: String,
     /// The kind of system it came on, as [`SystemInfo::kind`] has it: "p25" |
-    /// "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional" (this recorder's addition).
+    /// "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr" | "conventional" (this recorder's addition).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub system_type: String,
     /// What its voice was: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96"

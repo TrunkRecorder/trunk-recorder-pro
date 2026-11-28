@@ -42,7 +42,8 @@ Before you start, look the system up on [RadioReference](https://www.radiorefere
 Search for your county, then pick the system you want to record. Take note of:
 
 - **System Type.** Trunk Recorder Pro records P25 (Phase 1 and Phase 2), Motorola SmartNet /
-  SmartZone, trunked DMR (Capacity Plus, Capacity Max, Connect Plus, Tier III), NXDN and EDACS. It also
+  SmartZone, trunked DMR (Capacity Plus, Capacity Max, Connect Plus, Tier III), NXDN, EDACS and LTR
+  (Standard, LTR-Net, Passport). It also
   records conventional (non-trunked) channels; see [Conventional channels](guides/conventional.md).
 - **The control channels.** On a site's frequency list, control channels are marked in red, or
   with a "c". A site usually has one active control channel and one or more alternates.
@@ -148,8 +149,8 @@ If you know the control channels, press **Add a system** on the **Systems** tab 
 
 - **Short name**: the folder its calls go in (letters, digits, `.`, `_` and `-`).
 - **Name**: optional, for display.
-- **Type**: **P25**, **SmartNet / SmartZone**, **EDACS (analog / ProVoice)**, **DMR (trunked)** or
-  **NXDN (trunked)**.
+- **Type**: **P25**, **SmartNet / SmartZone**, **EDACS (analog / ProVoice)**, **DMR (trunked)**,
+  **NXDN (trunked)** or **LTR / LTR-Net / Passport**.
 
 Then, on its site under **Sites** (open it):
 

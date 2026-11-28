@@ -333,3 +333,85 @@ export function NxdnSites(props: { sites: DetailedSite[] }) {
     </section>
   );
 }
+
+/** Each LTR site's repeaters: the LCN each is, heard lately, and the call on it now. */
+export function LtrSites(props: { sites: DetailedSite[] }) {
+  const sites = props.sites.filter((x) => x.ltr);
+  return (
+    <section className="panel">
+      <header className="panel-head">
+        <h2>LTR</h2>
+      </header>
+      {sites.map((x) => {
+        const d = x.ltr!;
+        const offTable = d.channels.filter((e) => !d.carriers.some((c) => c.freqHz === e.freqHz));
+        return (
+          <div key={x.label} className="stack">
+            <div className="row small">
+              {props.sites.length > 1 && <b>{x.label}</b>}
+              <span>{d.flavor ?? "Not heard yet"}</span>
+              {d.site != null && <span className="mono">Site {d.site}</span>}
+            </div>
+            <div className="table-wrap">
+              <table className="calls">
+                <thead>
+                  <tr>
+                    <th>MHz</th>
+                    <th>LCN</th>
+                    <th>Call</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.carriers.map((c) => {
+                    const ch = d.channels.find((e) => e.freqHz === c.freqHz);
+                    return (
+                      <tr key={c.freqHz}>
+                        <td className="mono">
+                          {formatMhz(c.freqHz)}
+                          {c.heard && <span className="chip ok small">heard</span>}
+                        </td>
+                        <td className="mono small">{ch ? `${ch.lcn}${ch.configured ? "" : " (learned)"}` : "—"}</td>
+                        <td className="small">
+                          {c.call ? (
+                            <span>
+                              {tgText(c.call.talkgroup)}
+                              {c.call.source ? <span className="muted"> · {c.call.source}</span> : null}
+                            </span>
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {offTable.length > 0 && (
+              <div className="row small">
+                <span className="muted">Also in the LCN table:</span>
+                {offTable.map((e) => (
+                  <span key={e.lcn} className="chip mono">
+                    {e.lcn} → {formatMhz(e.freqHz)}
+                    {e.configured ? "" : " (learned)"}
+                  </span>
+                ))}
+              </div>
+            )}
+            {d.unknownChannels.length > 0 && (
+              <p className="why why-warn small">
+                LCNs not known:{" "}
+                {d.unknownChannels.map((c) => (
+                  <b key={c} className="mono">
+                    {c}{" "}
+                  </b>
+                ))}
+                <Info label="Unknown LCNs">A call was named on these, and no repeater is known to be them yet. Each is learned from its repeater's own words; or add it to the LCN table in Setup.</Info>
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}

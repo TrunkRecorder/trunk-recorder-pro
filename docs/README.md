@@ -44,6 +44,7 @@ message, and the developer pages cover the internals. Other pages link to them.
 - [Trunked DMR](guides/dmr.md), with Hytera XPT
 - [NXDN](guides/nxdn.md)
 - EDACS: [its keys](configuration/systems.md#edacs) (no guide yet)
+- LTR: [its keys](configuration/systems.md#ltr) (no guide yet)
 - [Conventional channels](guides/conventional.md)
 - [Tones, NACs and colour codes](guides/tones.md): splitting a shared frequency
 
