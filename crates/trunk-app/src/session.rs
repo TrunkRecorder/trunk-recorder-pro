@@ -140,6 +140,24 @@ pub type LocalOffset = fn(i64) -> i32;
 /// What sees each of the engine's events as a session handles it ([`Session::watch`]).
 pub type EventWatch = Box<dyn FnMut(&Event, &Engine) + Send>;
 
+/// The radio a source opened, as it says it is ([`Session::source_opened`]): its serial and
+/// model, each "" when it doesn't say. A source naming no serial (the first found) learns which
+/// it got only so.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
+pub struct OpenedRadio {
+    pub serial: String,
+    pub model: String,
+}
+
+impl std::fmt::Display for OpenedRadio {
+    /// "Blog V4 · SN 00000201", either part alone, or "" when it said neither.
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let sn = (!self.serial.is_empty()).then(|| format!("SN {}", self.serial));
+        let parts: Vec<&str> = [Some(self.model.as_str()).filter(|m| !m.is_empty()), sn.as_deref()].into_iter().flatten().collect();
+        f.write_str(&parts.join(" · "))
+    }
+}
+
 /// A source's counts this run ([`Session::source_counts`]).
 #[derive(Clone, Debug, Default)]
 pub struct SourceCounts {
@@ -149,6 +167,8 @@ pub struct SourceCounts {
     pub rate_measured: f64,
     /// The gain its radio is set to, when that isn't the gain asked for ([`Session::source_gain`]).
     pub gain_set: Option<String>,
+    /// The radio it opened last ([`Session::source_opened`]).
+    pub opened: Option<OpenedRadio>,
 }
 
 #[derive(Default, Clone)]
@@ -161,6 +181,8 @@ struct SourceStats {
     last_error_s: f64,
     rate_measured: f64,
     gain_set: Option<String>,
+    /// The radio it opened last ([`Session::source_opened`]).
+    opened: Option<OpenedRadio>,
     /// Its radio released while recording ([`Session::source_released`]).
     released: bool,
     /// The newest buffer's arrival (ms) and the samples to its end; and the
@@ -740,6 +762,22 @@ impl Session {
         }
     }
 
+    /// Source `source` opened `radio`: the log says which when it's another than last time
+    /// (the first open, or a different radio after one was swapped), and the status shows it.
+    pub fn source_opened(&mut self, source: usize, radio: OpenedRadio) {
+        let Some(st) = self.stats.get(source) else { return };
+        let mut st = st.lock().unwrap();
+        if st.opened.as_ref() == Some(&radio) {
+            return;
+        }
+        let title = self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source));
+        let what = radio.to_string();
+        if !what.is_empty() {
+            self.records.push(Record::text(Level::Info, None, format!("{title}: opened {what}")));
+        }
+        st.opened = Some(radio);
+    }
+
     /// A finite source ran out; true when all have.
     pub fn source_ended(&mut self, source: usize) -> bool {
         self.stats[source].lock().unwrap().ended = true;
@@ -954,7 +992,7 @@ impl Session {
             .iter()
             .map(|s| {
                 let s = s.lock().unwrap();
-                SourceCounts { samples: s.samples, dropped: s.dropped, errors: s.errors, rate_measured: s.rate_measured, gain_set: s.gain_set.clone() }
+                SourceCounts { samples: s.samples, dropped: s.dropped, errors: s.errors, rate_measured: s.rate_measured, gain_set: s.gain_set.clone(), opened: s.opened.clone() }
             })
             .collect()
     }
@@ -1640,6 +1678,8 @@ impl Session {
                 // An error long past isn't news (its count stays).
                 let recent = ss.last_error.as_ref().filter(|_| ss.last_error_s == 0.0 || self.meas.now() - ss.last_error_s < ERROR_SHOWN_S);
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured, "gainSet": ss.gain_set,
+                        // The radio it opened: which, when it names none (the first found).
+                        "opened": ss.opened,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
                         "released": ss.released,
                         "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneSeeded": tune.seeded,

@@ -316,6 +316,8 @@ fn stream_once(cfg: &AirspyConfig, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl:
     let d = open(lib, &cfg.serial)?;
     let (caps, version) = identify(lib, &d);
     let what = name(lib, &caps.model);
+    // (Its serial as Setup lists and a source names it.)
+    sink.opened(d.partid_serialno().map(|id| format!("{:016X}", serial_of(&id.serial_no))).unwrap_or_default(), &what);
     if !caps.rates.allows(cfg.rate_hz) {
         return Err(super::rate_refusal(&what, &caps.rates, cfg.rate_hz));
     }

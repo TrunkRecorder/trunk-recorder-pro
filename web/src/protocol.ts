@@ -894,6 +894,12 @@ export interface InterfaceListing {
 }
 
 
+/** The radio a running source opened: its serial and model, each "" when it doesn't say. */
+export interface OpenedRadio {
+  serial: string;
+  model: string;
+}
+
 export interface Device {
   index: number;
   serial: string;
@@ -1073,6 +1079,8 @@ export interface SourceStatus {
   released?: boolean;
   /** The settings it runs with (Setup's may have changed since Start: they apply at the next). */
   settings: Source;
+  /** The radio it opened last, as the radio says ("" where it doesn't): which one, when `settings` names none (the first found). Absent until it opens. */
+  opened?: OpenedRadio | null;
   /** Its frequency error, ppm (+: signals come in high), against `settings.ppm`: the median of its last control channel and call measurements; null until measured. */
   errorPpm?: number | null;
   /** Voice channels opened on it this run. */

@@ -6458,6 +6458,23 @@
       ],
       "additionalProperties": false
     },
+    "OpenedRadio": {
+      "type": "object",
+      "properties": {
+        "serial": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serial",
+        "model"
+      ],
+      "additionalProperties": false,
+      "description": "The radio a running source opened: its serial and model, each \"\" when it doesn't say."
+    },
     "Origin": {
       "type": "object",
       "properties": {
@@ -9783,6 +9800,17 @@
         "settings": {
           "$ref": "#/definitions/Source",
           "description": "The settings it runs with (Setup's may have changed since Start: they apply at the next)."
+        },
+        "opened": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OpenedRadio"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The radio it opened last, as the radio says (\"\" where it doesn't): which one, when `settings` names none (the first found). Absent until it opens."
         },
         "errorPpm": {
           "type": [

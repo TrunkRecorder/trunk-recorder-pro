@@ -46,6 +46,16 @@ fn release(version: &str) -> Option<(u32, u32)> {
     Some((parts.next()?.parse().ok()?, parts.next()?.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok()?))
 }
 
+/// An open HackRF's product and serial, from its label ("HackRF One (serial 0000…)": sdr-hackrf
+/// says them no other way); the serial "" when it reports none.
+#[cfg_attr(windows, allow(dead_code))]
+fn product_serial(label: &str) -> (&str, &str) {
+    match label.strip_suffix(')').and_then(|l| l.rsplit_once(" (serial ")) {
+        Some((product, serial)) => (product, if serial == "?" { "" } else { serial }),
+        None => (label, ""),
+    }
+}
+
 /// Attached HackRFs, for the browser: [{serial, label}].
 #[cfg(windows)]
 pub fn devices() -> Vec<serde_json::Value> {
@@ -122,7 +132,7 @@ mod native {
     use sdr_core::Iq;
     use sdr_hackrf::blocking::{HackRf, Stream};
 
-    use super::{release, HackrfConfig, FIRMWARE_MIN};
+    use super::{product_serial, release, HackrfConfig, FIRMWARE_MIN};
     use crate::radio::Deadline;
     use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Silence, Sink, Stages, StreamCheck, Tunable};
 
@@ -172,6 +182,8 @@ mod native {
         let what = name.clone();
         let mut h = crate::radio::open(&name, Deadline::Quick, true, move || HackRf::open(&spec).map_err(|e| format!("open {what}: {e}")))?;
         let version = h.version_string().unwrap_or_default();
+        let (product, serial) = product_serial(h.label());
+        sink.opened(serial, product);
         if release(&version).is_some_and(|r| r < FIRMWARE_MIN) {
             return Err(format!(
                 "{name}'s firmware ({version}) is older than {}.{:02}, which streaming needs: update it (hackrf_spiflash; see the HackRF documentation's \"Updating Firmware\")",
@@ -243,5 +255,12 @@ mod tests {
         assert_eq!(release("git-5b8ad4c"), None);
         assert!(release("2018.01.1").is_some_and(|r| r < FIRMWARE_MIN));
         assert!(!release("2021.03.1").is_some_and(|r| r < FIRMWARE_MIN));
+    }
+
+    #[test]
+    fn product_and_serial_from_label() {
+        assert_eq!(product_serial("HackRF One (serial 0000000000000000a06063c8234e925f)"), ("HackRF One", "0000000000000000a06063c8234e925f"));
+        assert_eq!(product_serial("HackRF (serial ?)"), ("HackRF", ""));
+        assert_eq!(product_serial("HackRF One"), ("HackRF One", ""));
     }
 }

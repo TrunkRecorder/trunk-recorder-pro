@@ -389,6 +389,7 @@ fn stream_once(cfg: &UsrpConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option
     .0;
     s.ppm = cfg.ppm;
     let (board, serial) = s.board();
+    sink.opened(serial.as_str(), board.as_str());
     let b2xx = board.starts_with("B2");
     // SAFETY: UHD C API calls on handles this session owns.
     unsafe {

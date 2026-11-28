@@ -160,6 +160,7 @@ fn radios(cfg: &Config, live: &Live) -> Vec<Value> {
                 v["errors"] = json!(c.errors);
                 v["measuredRateHz"] = json!(c.rate_measured);
                 v["gainSet"] = json!(c.gain_set);
+                v["opened"] = json!(c.opened);
             }
             if let Some(r) = live.status.sources.get(i) {
                 v["frequencyErrorPpm"] = json!(r.error_ppm);

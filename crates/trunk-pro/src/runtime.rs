@@ -1199,6 +1199,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 // (The one place a radio's gain set is weighed against the gain asked for.)
                 EngineCmd::Source(SourceMsg::Gain { source, asked, set }) => session.source_gain(source, &asked.to_string(), (!asked.same(&set)).then(|| set.to_string())),
                 EngineCmd::Source(SourceMsg::Released { source, released }) => session.source_released(source, released),
+                EngineCmd::Source(SourceMsg::Opened { source, radio }) => session.source_opened(source, radio),
                 EngineCmd::Source(SourceMsg::End { source }) => {
                     if session.source_ended(source) {
                         // (Not "ended" when the user stopped it: the file thread ends on stop too.)
