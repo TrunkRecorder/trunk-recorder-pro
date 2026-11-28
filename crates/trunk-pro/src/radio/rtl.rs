@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use rtlsdr_nusb::{Device, GainConfig, MaybeFuture, RawIq, RxBuffers, RxStream};
 
 use super::Deadline;
-use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, StreamCheck, Tunable, Wire};
+use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Silence, Sink, StreamCheck, Tunable, Wire};
 
 #[derive(Clone, Debug)]
 pub struct RtlConfig {
@@ -33,6 +33,9 @@ pub struct RtlConfig {
 /// About this much is kept in flight when only the transfer size is set:
 /// what the driver's 128 × 16 KiB default holds, about 440 ms at 2.4 MS/s.
 const RTL_IN_FLIGHT: usize = 2 << 20;
+
+/// A dongle that has sent no samples for this long has stopped ([`Silence`]).
+const SILENT: Duration = Duration::from_secs(2);
 
 impl RtlConfig {
     /// The USB transfers to ask for: as set, else the driver's; a size alone
@@ -232,6 +235,7 @@ fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<
     let mut rx = dev.rx_stream_with(cfg.rx_buffers()).map_err(|e| format!("{name} USB transfers: {e}"))?;
     rx.start().wait().map_err(|e| format!("{name}: {e}"))?;
     let mut check = StreamCheck::new(cfg.rate_hz as f64);
+    let mut silence = Silence::new(SILENT);
     let result = loop {
         if stop.load(Ordering::Relaxed) {
             break Ok(());
@@ -243,13 +247,20 @@ fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<
                 Ok(_) => {}
             }
         }
-        match rx.next_block(Some(Duration::from_secs(2))).wait() {
-            Ok(Some(block)) => match take(&mut check, sink, block.raw_bytes(), block.dropped_samples(), Instant::now()) {
-                Err(e) => break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in")),
-                Ok(false) => break Ok(()),
-                Ok(true) => {}
-            },
-            Ok(None) => break Err(format!("{name}: no samples for 2 s")),
+        match rx.next_block(Some(SILENT)).wait() {
+            Ok(Some(block)) => {
+                silence.heard(Instant::now());
+                match take(&mut check, sink, block.raw_bytes(), block.dropped_samples(), Instant::now()) {
+                    Err(e) => break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in")),
+                    Ok(false) => break Ok(()),
+                    Ok(true) => {}
+                }
+            }
+            Ok(None) => {
+                if let Err(e) = silence.check(&name, Instant::now()) {
+                    break Err(e);
+                }
+            }
             Err(e) => break Err(format!("{name} USB: {e}")),
         }
     };

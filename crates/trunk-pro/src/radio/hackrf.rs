@@ -124,7 +124,10 @@ mod native {
 
     use super::{release, HackrfConfig, FIRMWARE_MIN};
     use crate::radio::Deadline;
-    use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, Stages, StreamCheck, Tunable};
+    use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Silence, Sink, Stages, StreamCheck, Tunable};
+
+    /// A HackRF that has sent no samples for this long has stopped ([`Silence`]).
+    const SILENT: std::time::Duration = std::time::Duration::from_secs(2);
 
     /// What a HackRF is set to, each stage's dB on its steps, by its driver's account
     /// (the radio can't be asked).
@@ -191,7 +194,7 @@ mod native {
         let mut check = StreamCheck::new(cfg.rate_hz);
         let mut iq = vec![Iq::default(); stream.max_num_samps().max(16_384)];
         let mut bytes = Vec::with_capacity(iq.len() * 2);
-        let mut timeouts = 0;
+        let mut silence = Silence::new(SILENT);
         let result = loop {
             if stop.load(Ordering::Relaxed) {
                 break Ok(());
@@ -207,14 +210,13 @@ mod native {
                 Ok(i) => i,
                 Err(e) => break Err(format!("{name} USB: {e}")),
             };
-            if info.timed_out && info.n_samples == 0 {
-                timeouts += 1;
-                if timeouts >= 2 {
-                    break Err(format!("{name}: no samples for 2 s"));
+            if info.n_samples == 0 {
+                if let Err(e) = silence.check(&name, Instant::now()) {
+                    break Err(e);
                 }
                 continue;
             }
-            timeouts = 0;
+            silence.heard(Instant::now());
             let dropped = info.link.map_or(0, |l| l.inferred_lost_samples);
             match super::take(&mut check, sink, &mut bytes, &iq[..info.n_samples], dropped, Instant::now()) {
                 Err(e) => break Err(format!("{name} {e}; reopening it. If this keeps happening, unplug it and plug it back in")),
