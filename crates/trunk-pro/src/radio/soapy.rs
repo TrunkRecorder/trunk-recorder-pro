@@ -627,8 +627,8 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
     }
 }
 
-/// How long a stream may give nothing but empty reads (readStream 0) before it's an error, and so a reopen.
-const EMPTY_FOR: Duration = Duration::from_secs(10);
+/// A stream that has given no samples for this long (reads timing out or empty) has stopped: an error, and so a reopen.
+const SILENT: Duration = Duration::from_secs(10);
 
 /// An open, started stream's reads into `sink`, in blocks of `per` samples, until `stop`, the receiver
 /// going, or an error. `read` is SoapySDR's readStream (samples read, or an error code), `now` the clock,
@@ -636,9 +636,10 @@ const EMPTY_FOR: Duration = Duration::from_secs(10);
 ///
 /// A read of 0 is nothing yet, not success: SoapyRemote's server starts sending at `setupStream`, before
 /// the stream is activated, so a remote Airspy's first reads are a backlog of empty packets. Those are
-/// read on (each still waits on the network) and only [`EMPTY_FOR`] of nothing else is an error. Taking
-/// 0 as success ended the stream at once, without a word, and [`crate::sdr::run_with`] opened it again,
-/// which made a new backlog: about 8 reopens a second and no samples.
+/// read on (each still waits on the network), as reads that time out are: only [`SILENT`] without a
+/// sample is an error. Taking 0 as success ended the stream at once, without a word, and
+/// [`crate::sdr::run_with`] opened it again, which made a new backlog: about 8 reopens a second and no
+/// samples.
 #[allow(clippy::too_many_arguments)]
 fn pump<T: Tunable>(
     d: &mut T,
@@ -654,9 +655,8 @@ fn pump<T: Tunable>(
 ) -> Result<(), String> {
     let mut stamps = Stamps::new(cfg.rate_hz);
     let mut overflowed = false;
-    let mut timeouts = 0;
-    // Since when the reads have been empty, and whether that was said.
-    let mut empty_since: Option<Instant> = None;
+    // The last sample (or the start), and whether an empty read was said.
+    let mut heard = now();
     let mut said_empty = false;
     while !stop.load(Ordering::Relaxed) {
         if let Some(c) = ctl
@@ -671,8 +671,7 @@ fn pump<T: Tunable>(
             let (mut flags, mut t) = (0 as c_int, 0 as c_longlong);
             let n = read(&mut buf.vec()[got..], &mut flags, &mut t);
             if n > 0 {
-                timeouts = 0;
-                empty_since = None;
+                heard = now();
                 dropped += stamps.read(n as usize, (flags & HAS_TIME != 0).then_some(t));
                 if overflowed && !stamps.timed() {
                     // No timestamps (or none to go by): an overflow lost about one transfer.
@@ -682,25 +681,20 @@ fn pump<T: Tunable>(
                 got += n as usize;
                 continue;
             }
+            if now().duration_since(heard) >= SILENT {
+                return Err(format!("SoapySDR: no samples for {} s", SILENT.as_secs()));
+            }
             match n {
                 0 => {
                     if !std::mem::replace(&mut said_empty, true) {
                         log::warn!("SoapySDR: the stream's first reads are empty (SoapyRemote sends before the radio starts): reading on");
                     }
-                    if now().duration_since(*empty_since.get_or_insert_with(&now)) >= EMPTY_FOR {
-                        return Err(format!("SoapySDR: the stream gave nothing but empty reads for {} s", EMPTY_FOR.as_secs()));
-                    }
                     if stop.load(Ordering::Relaxed) {
                         break;
                     }
                 }
-                TIMEOUT => {
-                    timeouts += 1;
-                    if timeouts >= 3 {
-                        return Err("SoapySDR: no samples for 3 s".into());
-                    }
-                    break;
-                }
+                // Back to look at stop and the controls.
+                TIMEOUT => break,
                 OVERFLOW => overflowed = true,
                 CORRUPTION | TIME_ERROR => {}
                 e => return failed(e),
@@ -1027,25 +1021,32 @@ mod tests {
         assert_eq!(opened, 1, "the samples came on the first open");
     }
 
-    /// Nothing but empty reads is an error after [`EMPTY_FOR`], not a quiet end (which reopened at once).
+    /// No samples for [`SILENT`] is an error, not a quiet end (which reopened at once): empty reads
+    /// (100 ms each on the network), reads timing out (1 s each), or the two mixed, on the one clock.
     #[test]
-    fn nothing_but_empty_reads_is_an_error_after_10_s() {
-        let (tx, rx) = std::sync::mpsc::sync_channel(64);
-        let mut sink = Sink::new(0, tx, 1e6, true);
-        let t0 = Instant::now();
-        let clock = std::cell::Cell::new(t0);
-        // Each read waits 100 ms on the network for an empty packet.
-        let read = |_: &mut [Complex32], _: &mut c_int, _: &mut c_longlong| {
-            clock.set(clock.get() + Duration::from_millis(100));
-            0
-        };
-        let r = pump(&mut Still, &soapy(1e6), 10_000, 1000, &mut sink, &AtomicBool::new(false), None, || clock.get(), read, failed);
-        let e = r.expect_err("an error, not Ok (a reopen without a word)");
-        assert!(e.contains("empty reads for 10 s"), "{e}");
-        let waited = clock.get() - t0;
-        assert!(waited >= EMPTY_FOR && waited <= EMPTY_FOR + Duration::from_millis(200), "{waited:?}");
-        drop(sink);
-        assert!(rx.try_recv().is_err(), "nothing sent");
+    fn no_samples_for_10_s_is_an_error() {
+        let empty = (0, Duration::from_millis(100));
+        let timeout = (TIMEOUT, Duration::from_secs(1));
+        for (name, reads) in [("empty", [empty, empty]), ("timing out", [timeout, timeout]), ("mixed", [empty, timeout])] {
+            let (tx, rx) = std::sync::mpsc::sync_channel(64);
+            let mut sink = Sink::new(0, tx, 1e6, true);
+            let t0 = Instant::now();
+            let clock = std::cell::Cell::new(t0);
+            let mut n = 0;
+            let read = |_: &mut [Complex32], _: &mut c_int, _: &mut c_longlong| {
+                let (code, waits) = reads[n % 2];
+                n += 1;
+                clock.set(clock.get() + waits);
+                code
+            };
+            let r = pump(&mut Still, &soapy(1e6), 10_000, 1000, &mut sink, &AtomicBool::new(false), None, || clock.get(), read, failed);
+            let e = r.expect_err(name);
+            assert!(e.contains("no samples for 10 s"), "{name}: {e}");
+            let waited = clock.get() - t0;
+            assert!(waited >= SILENT && waited <= SILENT + Duration::from_secs(1), "{name}: {waited:?}");
+            drop(sink);
+            assert!(rx.try_recv().is_err(), "{name}: nothing sent");
+        }
     }
 
     /// Samples between spells of empty reads start the 10 s again: two spells of 9.5 s are no error.

@@ -9,8 +9,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   the radio starts, so a remote Airspy's first reads return 0 samples. A read of 0 was taken as success: the
   stream ended without a word and was opened again at once, which made a new backlog of empty reads, about 8
   times a second, and no samples ever arrived. A read of 0 is now "nothing yet": the reads go on (the log says
-  so once), samples arrive on the first open, and only 10 s of nothing but empty reads is an error (and a reopen
-  after the usual back-off).
+  so once), samples arrive on the first open. A SoapySDR radio is given up on (and reopened after the usual
+  back-off) after 10 s without a sample, whether its reads time out or come back empty; it was 3 s of timeouts.
 
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
