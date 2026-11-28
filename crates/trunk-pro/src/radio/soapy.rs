@@ -15,7 +15,8 @@ use std::time::Duration;
 use libloading::Library;
 use num_complex::Complex32;
 
-use trunk_app::gain::ReportedStage;
+use trunk_app::config::{soapy_driver_is, soapy_pairs};
+use trunk_app::gain::{Reported, ReportedStage};
 
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
 use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
@@ -110,7 +111,7 @@ fn rates_of(ranges: &[(f64, f64)]) -> Option<Rates> {
 }
 
 /// Its key among the radios [`super::known`]: its device arguments, as a source names it.
-fn key(args: &str) -> String {
+pub(super) fn key(args: &str) -> String {
     format!("soapy:{}", args.trim())
 }
 
@@ -413,11 +414,6 @@ pub struct SoapyConfig {
     pub ppm: f64,
 }
 
-/// "a=1, b = 2" → [("a","1"), ("b","2")].
-fn pairs(s: &str) -> Vec<(String, String)> {
-    s.split(',').filter_map(|p| p.split_once('=')).map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).filter(|(k, _)| !k.is_empty()).collect()
-}
-
 impl crate::sdr::Radio for SoapyConfig {
     const BACKOFF: Duration = Duration::from_secs(3);
     fn retune_to(&mut self, hz: f64) {
@@ -462,21 +458,9 @@ fn take_gain(stages: &mut Vec<(String, f64)>, g: Gain) -> Option<Option<f64>> {
     }
 }
 
-/// The gain elements each SoapySDR radio reported when it was last opened, by its key ([`key`]).
-fn reported() -> &'static Mutex<HashMap<String, Vec<ReportedStage>>> {
-    static R: OnceLock<Mutex<HashMap<String, Vec<ReportedStage>>>> = OnceLock::new();
-    R.get_or_init(Default::default)
-}
-
-/// The gain elements the radio `args` opens reported when it was last opened in this run (none: not
-/// opened yet, or its SoapySDR can't say): what the gain tuner searches ([`trunk_app::gain::GainPlan::of_reported`]).
-pub fn reported_stages(args: &str) -> Vec<ReportedStage> {
-    reported().lock().unwrap_or_else(|e| e.into_inner()).get(&key(args)).cloned().unwrap_or_default()
-}
-
 /// A USRP through SoapyUHD gets the bigger receive buffer a direct one does.
 fn device_args(args: &str) -> String {
-    if pairs(args).iter().any(|(k, v)| k == "driver" && v == "uhd") {
+    if soapy_driver_is(args, "uhd", false) {
         super::uhd::device_args(args)
     } else {
         args.to_string()
@@ -629,15 +613,10 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
     d.ppm = cfg.ppm;
     // SAFETY: SoapySDR C API calls on the device and stream `d` owns.
     unsafe {
-        // What it runs at, for the list of radios and the refusal.
+        // What it runs at, for the list of radios and the refusal; its gain elements, for the gain tuner.
         let rates = d.rates();
         if let Some(r) = &rates {
-            super::remember(&key(&cfg.args), Caps { model: String::new(), rates: r.clone(), gains: Vec::new() });
-        }
-        // Its gain elements, for the gain tuner.
-        let elements = d.elements();
-        if !elements.is_empty() {
-            reported().lock().unwrap_or_else(|e| e.into_inner()).insert(key(&cfg.args), elements);
+            super::remember(&key(&cfg.args), Caps { model: String::new(), rates: r.clone(), gains: Reported { elements: d.elements(), ..Default::default() } });
         }
         check(a, "sample rate", (a.set_sample_rate)(d.dev, RX, 0, cfg.rate_hz))?;
         let actual = (a.get_sample_rate)(d.dev, RX, 0);
@@ -651,7 +630,7 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
             let ant = CString::new(cfg.antenna.as_str()).map_err(|e| e.to_string())?;
             check(a, "antenna", (a.set_antenna)(d.dev, RX, 0, ant.as_ptr()))?;
         }
-        for (k, v) in pairs(&cfg.settings) {
+        for (k, v) in soapy_pairs(&cfg.settings) {
             let (ck, cv) = (CString::new(k.as_str()).map_err(|e| e.to_string())?, CString::new(v.as_str()).map_err(|e| e.to_string())?);
             check(a, &format!("setting {k}"), (a.write_setting)(d.dev, ck.as_ptr(), cv.as_ptr()))?;
         }
@@ -1063,7 +1042,7 @@ mod tests {
         let run = source(serde_json::json!({ "args": "driver=lime", "gainDb": 20 }));
         let mut radio = Running::open(lime(), &run);
         assert_eq!(radio.fake.now(), [20.0, 0.0, 0.0]);
-        let plan = GainPlan::of_reported(&run, None, None, &reported).unwrap();
+        let plan = GainPlan::of_with(&run, None, &trunk_app::gain::Reported { elements: reported.to_vec(), ..Default::default() }).unwrap();
         assert_eq!(radio.set(&run, &plan.apply(&run, &vec![10, 7, 3])), [10.0, 7.0, 9.0], "set by their own names");
         assert_eq!(radio.set(&run, &run), [20.0, 0.0, 0.0], "and back");
     }
@@ -1093,7 +1072,7 @@ mod tests {
         assert!(abi_at_least_08("1.0"));
         assert_eq!(module_name("/opt/homebrew/lib/SoapySDR/modules0.8/librtlsdrSupport.so"), "rtlsdr");
         assert_eq!(module_name(r"C:\PothosSDR\lib\SoapySDR\modules0.8\sdrPlaySupport.dll"), "sdrPlay");
-        assert_eq!(pairs("LNA=32, VGA = 20,,bad"), vec![("LNA".into(), "32".into()), ("VGA".into(), "20".into())]);
+        assert_eq!(soapy_pairs("LNA=32, VGA = 20,,bad"), vec![("LNA".into(), "32".into()), ("VGA".into(), "20".into())]);
         assert_eq!(device_args("driver=uhd,serial=31A"), "driver=uhd,serial=31A,num_recv_frames=1024");
         assert_eq!(device_args("driver=hackrf"), "driver=hackrf");
     }

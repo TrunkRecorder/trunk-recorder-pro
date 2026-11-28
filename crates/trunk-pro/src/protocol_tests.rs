@@ -795,7 +795,7 @@ fn live_voice_is_the_plugin_topics_chunk() {
 
 /// Sources on the network for a list of radios: a SpyServer remembered as opened, an `rtl_tcp` nothing answers at.
 fn network_sources() -> Vec<trunk_app::config::Source> {
-    crate::radio::remember(&crate::radio::spyserver::key("spy.test"), crate::radio::Caps { model: "Airspy R2 / Mini".into(), rates: crate::radio::Rates::List(vec![2_500_000, 1_250_000]), gains: (0..=21).map(f64::from).collect() });
+    crate::radio::remember(&crate::radio::spyserver::key("spy.test"), crate::radio::Caps { model: "Airspy R2 / Mini".into(), rates: crate::radio::Rates::List(vec![2_500_000, 1_250_000]), gains: trunk_app::gain::Reported { steps: (0..=21).map(f64::from).collect(), ..Default::default() } });
     let src = |kind: serde_json::Value| -> trunk_app::config::Source { serde_json::from_value(kind).unwrap() };
     vec![
         src(json!({ "type": "spyserver", "address": "spy.test", "centerHz": 0, "rateHz": 2500000 })),

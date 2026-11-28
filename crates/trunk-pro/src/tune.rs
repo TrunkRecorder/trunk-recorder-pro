@@ -122,12 +122,8 @@ pub fn start(ctx: &Arc<Ctx>, req: TuneRequest) -> Result<Option<ToClient>, Strin
         let k = cfg.same_radio(i, &run.sources).ok_or_else(|| format!("{title} isn't recording (it was added since Start)."))?;
         (k, run.sources[k].clone())
     };
-    // (The gains its radio said it has, where they aren't its kind's own; a SoapySDR radio's gain elements.)
-    let elements = match &base.kind {
-        crate::config::SourceKind::Soapy { args, .. } => crate::radio::soapy::reported_stages(args),
-        _ => vec![],
-    };
-    let plan = GainPlan::of_reported(&base, req.mode, crate::radio::reported_gains(&base).as_deref(), &elements).map_err(|e| format!("{title}: {e}"))?;
+    // (The gains its radio said it has, where they aren't its kind's own: a SoapySDR radio's gain elements too.)
+    let plan = GainPlan::of_with(&base, req.mode, &crate::radio::reported_gains(&base)).map_err(|e| format!("{title}: {e}"))?;
     let start = plan.point(&base);
     let as_it_is = plan.apply(&base, &start) != base;
     if crate::runtime::live_gain(&base, &plan.apply(&base, &start)).is_none() {
