@@ -5,10 +5,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A radio behind SoapyRemote streams.** SoapyRemote's server sends from the moment the stream is set up, before
+  the radio starts, so a remote Airspy's first reads return 0 samples. A read of 0 was taken as success: the
+  stream ended without a word and was opened again at once, which made a new backlog of empty reads, about 8
+  times a second, and no samples ever arrived. A read of 0 is now "nothing yet": the reads go on (the log says
+  so once), samples arrive on the first open. A SoapySDR radio is given up on (and reopened after the usual
+  back-off) after 10 s without a sample, whether its reads time out or come back empty; it was 3 s of timeouts.
+
 - **A P25 site set to `fsk4` reads "C4FM".** The modulation shown on the Overview and Decode pages counted frames
   by each receiver's place in the bank, the first two as CQPSK, so a `fsk4` site, whose only receiver is C4FM, read
   "CQPSK" (and the Decode page went to show a CQPSK phase error rather than its eye opening). Frames are now counted by the
   kind of receiver that found them; `qpsk` and `auto` sites read as before.
+
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the
