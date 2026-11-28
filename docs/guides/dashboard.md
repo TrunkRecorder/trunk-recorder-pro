@@ -113,7 +113,8 @@ on it this run. That's what goes quiet while it's released.
 card shows **Released** with **Resume**, and a site whose control channel was on it shows idle
 **Radio released** instead of a red light. The other radios keep recording. To the recorder a
 released radio is one that went quiet, as an unplugged one does. Its sites hunt for their control
-channel and come back once it's on the air again.
+channel and come back once it's on the air again. Losing it raises no **Control lost** event, and
+a gain tune of that radio stops (one can't start until it's resumed).
 
 **Resume** opens the radio again at the centre and gain it had, with the source's settings from
 Start. A replacement therefore needs the same serial, or the source's serial has to be blank. Releasing isn't saved: **Stop**, or the next Start, opens it again. A radio you don't want

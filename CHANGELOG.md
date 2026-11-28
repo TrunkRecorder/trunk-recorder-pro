@@ -8,7 +8,8 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Release a radio while recording, to swap or look at it.** Before, working on one radio meant **Stop**, which
   stops every system. Now, while recording, **Release** on a radio's card (RF page) closes it and the other radios
   keep recording. The card lists what's on it (its sites' control channels, the voice channels it has opened),
-  shows **Released**, and its sites show idle **Radio released** rather than a red light. **Resume** opens it again
+  shows **Released**, and its sites show idle **Radio released** rather than a red light (and raise no
+  **Control lost** event); a gain tune of it stops. **Resume** opens it again
   at the centre and gain it had (a replacement needs the same serial, or a blank one in its source). It isn't
   saved: Stop or the next Start opens it again. See [Releasing a radio](docs/guides/dashboard.md#releasing-a-radio).
   - **API:** `releaseRadio` / `resumeRadio` (`source`: its `index` in `status.sources`); `status.sources[].released`;

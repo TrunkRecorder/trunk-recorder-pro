@@ -543,7 +543,15 @@ impl Ctx {
             return Err(format!("{}: only a radio can be released", src.title(k)));
         }
         r.controls.get(k).ok_or("the radio isn't recording")?.hold(on);
+        if on {
+            self.tune.released(&src.label());
+        }
         Ok(())
+    }
+
+    /// Whether the run's source `k` is released ([`Ctx::release_radio`]).
+    pub fn radio_released(&self, k: usize) -> bool {
+        self.lifecycle.lock().unwrap().recording.as_ref().and_then(|r| r.controls.get(k)).is_some_and(|c| c.held())
     }
 }
 
@@ -1771,6 +1779,9 @@ mod live_tests {
         let (ctx, controls, dir) = recording(&run, "release");
         ctx.release_radio(0, true).unwrap();
         assert!(controls[0].held());
+        // (A gain tuned on a released radio would be scored on nothing.)
+        let tune = crate::tune::start(&ctx, trunk_app::tune::TuneRequest { source: 0, ..Default::default() });
+        assert!(tune.unwrap_err().contains("released"));
         ctx.release_radio(0, false).unwrap();
         assert!(!controls[0].held());
         assert!(ctx.release_radio(1, true).unwrap_err().contains("only a radio"));

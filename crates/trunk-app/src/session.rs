@@ -721,6 +721,7 @@ impl Session {
     pub fn source_released(&mut self, source: usize, released: bool) {
         let Some(st) = self.stats.get(source) else { return };
         st.lock().unwrap().released = released;
+        self.meas.released(source, released);
         let title = self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source));
         let text = if released { format!("{title}: radio released (Resume opens it again)") } else { format!("{title}: radio resumed") };
         self.records.push(Record::text(Level::Info, None, text));
