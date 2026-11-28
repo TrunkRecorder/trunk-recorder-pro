@@ -1202,7 +1202,7 @@ pub(crate) async fn greeting(ctx: &Arc<Ctx>, access: ApiAccess, user: Option<Str
         (control.then(|| json!(crate::radio::rtl::devices())), crate::radio::radios_json(false, &sources, false), runtime::history(&ctx2), kept_now(&ctx2))
     })
     .await;
-    let (devices, radios, history, kept) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new(), next: None }, Vec::new()));
+    let (devices, radios, history, kept) = found.unwrap_or((None, Value::Null, ToClient::History { entries: Vec::new(), next: None, dropped: Vec::new() }, Vec::new()));
     let mut m = greeting_now(ctx, devices, radios, history, kept);
     if control {
         m.push(plugins_list(ctx).await);

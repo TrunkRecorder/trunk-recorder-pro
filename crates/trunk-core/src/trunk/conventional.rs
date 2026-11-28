@@ -1090,11 +1090,22 @@ impl Conventional {
 
     /// Copy `c` of a call on one of its channels ended, having decoded `frames` ([`CopyTally::copy_end`]).
     pub fn copy_end(&mut self, c: &Call, frames: FrameCount) {
-        // (A stream's channels, which have no frequency, by their rows' talkgroups.)
-        let on = |h: &Chan| h.freq_hz.round() as u64 == c.freq_hz && (h.pick.is_none() || h.rows.iter().any(|r| r.talkgroup == Some(c.talkgroup)));
-        if let Some(ch) = self.chans.iter_mut().find(|h| h.system == c.system as usize && on(h)) {
+        if let Some(ch) = self.chan_of(c) {
             ch.tally.copy_end(c, frames);
         }
+    }
+
+    /// Call `c`, recorded on one of its channels, wasn't kept ([`CopyTally::not_saved`]).
+    pub fn not_saved(&mut self, c: &Call, why: super::calls::NotSaved) {
+        if let Some(ch) = self.chan_of(c) {
+            ch.tally.not_saved(why);
+        }
+    }
+
+    /// The channel call `c` is on (a stream's channels, which have no frequency, by their rows' talkgroups).
+    fn chan_of(&mut self, c: &Call) -> Option<&mut Chan> {
+        let on = |h: &Chan| h.freq_hz.round() as u64 == c.freq_hz && (h.pick.is_none() || h.rows.iter().any(|r| r.talkgroup == Some(c.talkgroup)));
+        self.chans.iter_mut().find(|h| h.system == c.system as usize && on(h))
     }
 
     /// Calls in progress.

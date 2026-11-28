@@ -423,11 +423,13 @@ its sites' and channels'.
 | `<site>/cc/{good,bad,airSym,syncLossSym}` | Control channel blocks decoded and lost; the symbols of air the good ones account for, and of time without frame sync (P25; `SiteScope::symbol_rate`) |
 | `<site>/cc/{locked,snr,phaseErr,signal,noise}` | Gauges: decoding (1/0), its level over the floor beside it, its symbols' phase error |
 | `<site>/calls/{started,recorded}`, `<site>/calls/why/<reason>` | Each copy of a call, when it ends, by what finally became of it: `ignored`, `unknownTg`, `encrypted`, `noSource`, `noRecorder`, `noFrequency` |
+| `<site>/notSaved/why/<why>` | Calls recorded there and not kept: `silent`, `short`, `encrypted` |
 | `<site>/voice/<imbe\|ambe>/{frames,bad,errors}` | The vocoder frames of every copy recorded (saved or not), by codec |
 | `<channel>/{calls,voice}/…` | As for a site, with `calls/skipped`: transmissions no row took |
 | `<channel>/{open,signal,closed,noise,snr}` | Gauges: open (1/0), its level while open and while closed, the floor beside it, open over the floor |
 | `src/<label>/{samples,dropped,clipPct,ppm,tune}` | Each radio: samples and samples lost (their `s`: seconds running, and seconds losing any), clipping, its frequency error and AutoTune's correction |
 | `sys/<short name>/{calls,airMs,audioBytes,notSaved,dup}` | Each system's calls (once each, however many sites heard them) |
+| `sys/<short name>/notSaved/why/<why>` | Its calls not saved, by why: `silent`, `short`, `encrypted`, `writeFailed` (adding up to `notSaved`) |
 
 `<site>` is the site's `key` (`sys/<short name>`, or `sys/<short name>/site/<site>` for a system
 of several), `<channel>` a channel's (`sys/<short name>/ch/<Hz>`), and `src/<label>` a radio's. A

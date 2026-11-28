@@ -109,7 +109,8 @@ pub struct BankConfig {
     /// hard decisions only, for comparisons.
     pub soft: bool,
     /// With both kinds of receiver (`modulation: auto`): find which the
-    /// channel needs, then run only that ([`Detect`]). Off: both, always.
+    /// channel needs, then run only that ([`Detect`]). Off: both, always
+    /// (which decodes better is still counted, for [`Bank::modulation`]).
     pub detect: bool,
 }
 
@@ -123,6 +124,8 @@ impl Default for BankConfig {
 const KINDS: usize = 2;
 const CQPSK_KIND: usize = 0;
 const C4FM_KIND: usize = 1;
+/// Frames found before [`Bank::modulation`] names the kind carrying them.
+const MODULATION_FRAMES: u64 = 8;
 
 /// Frame slots seen before a kind is chosen, at the least; with no clear
 /// winner by the most, the better one (C4FM on a tie) is taken.
@@ -270,7 +273,8 @@ impl<F: Framing> Bank<F> {
         let rx = Self::receivers(rate, cfg, cq, c4fm);
         let both = rx.iter().any(|r| Self::kind(r) == CQPSK_KIND) && rx.iter().any(|r| Self::kind(r) == C4FM_KIND);
         Bank {
-            detect: (cfg.detect && both).then(Detect::default),
+            // (Counted with both kinds; `cfg.detect` says whether the other then stops.)
+            detect: both.then(Detect::default),
             rate,
             cfg,
             cqpsk: cq,
@@ -355,12 +359,48 @@ impl<F: Framing> Bank<F> {
         self.release(true, out);
     }
 
+    /// The kind of receiver carrying the signal: the one detected; with both
+    /// kinds, the one with fewer NID corrections so far ([`Detect`]: frame
+    /// counts can't tell, the CQPSK receiver decodes clean C4FM about as
+    /// well); with one kind, that one, once it has found frames.
+    fn leading_kind(&self) -> Option<usize> {
+        if let Some(d) = &self.detect {
+            if let Some(k) = d.locked {
+                return Some(k);
+            }
+            if d.slots > 0 {
+                return Some(if d.errs[CQPSK_KIND] <= d.errs[C4FM_KIND] { CQPSK_KIND } else { C4FM_KIND });
+            }
+        }
+        let (q, c) = self.best_frames();
+        (q + c > 0).then_some(if q > 0 { CQPSK_KIND } else { C4FM_KIND })
+    }
+
+    /// The most frames one receiver of each kind found, CQPSK and C4FM: by
+    /// kind, not place (a `fsk4` bank's C4FM receiver is its first).
+    fn best_frames(&self) -> (u64, u64) {
+        self.rx.iter().fold((0, 0), |(q, c), r| if Self::kind(r) == CQPSK_KIND { (q.max(r.frames), c) } else { (q, c.max(r.frames)) })
+    }
+
+    /// What's carrying the signal, as shown: "CQPSK" or "C4FM"
+    /// ([`Bank::leading_kind`]), or "" before one receiver has found
+    /// [`MODULATION_FRAMES`] frames.
+    pub fn modulation(&self) -> &'static str {
+        let (q, c) = self.best_frames();
+        match self.leading_kind() {
+            _ if q.max(c) < MODULATION_FRAMES => "",
+            Some(CQPSK_KIND) => "CQPSK",
+            Some(_) => "C4FM",
+            None => "",
+        }
+    }
+
     /// How far above the channel the carrier is, Hz, from whichever receiver
-    /// measures it, of the kind decoding best so far ([`Detect`]'s NID
-    /// corrections): one kind's receiver on the other's signal measures it
-    /// wrong (C4FM through the CQPSK receiver sits on its quarter-turn edge).
+    /// measures it, of the kind carrying the signal ([`Bank::leading_kind`]):
+    /// one kind's receiver on the other's signal measures it wrong (C4FM
+    /// through the CQPSK receiver sits on its quarter-turn edge).
     pub fn offset_hz(&self) -> Option<f32> {
-        let best = self.detect.as_ref().filter(|d| d.slots > 0).map(|d| if d.errs[CQPSK_KIND] <= d.errs[C4FM_KIND] { CQPSK_KIND } else { C4FM_KIND });
+        let best = self.leading_kind();
         let read = |r: &Rx<F>| match &r.demod {
             Demod::Cqpsk(c) => c.offset_hz(),
             Demod::Other(d) => d.offset_hz(),
@@ -507,7 +547,9 @@ impl<F: Framing> Bank<F> {
         }
         let (q, c) = (d.errs[CQPSK_KIND], d.errs[C4FM_KIND]);
         let clear = |w: u32, l: u32| w + DETECT_MARGIN <= l && w as f32 <= DETECT_SHARE * l as f32;
-        d.locked = if clear(q, c) {
+        d.locked = if !self.cfg.detect {
+            None
+        } else if clear(q, c) {
             Some(CQPSK_KIND)
         } else if clear(c, q) {
             Some(C4FM_KIND)

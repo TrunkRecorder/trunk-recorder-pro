@@ -1140,6 +1140,7 @@ fn serve(a: &Args) {
         phase: Mutex::new(runtime::PhaseInfo::default()),
         run: Mutex::new(None),
         recent: Mutex::new(std::collections::VecDeque::new()),
+        dropped: Mutex::new(std::collections::VecDeque::new()),
         db,
         quit: tokio::sync::Notify::new(),
         interfaces_due: tokio::sync::Notify::new(),

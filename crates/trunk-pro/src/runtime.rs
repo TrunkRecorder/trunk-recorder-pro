@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::{Local, Offset, TimeZone};
 use serde_json::Value;
 use tokio::sync::broadcast;
-use trunk_app::protocol::{body, Audience, ToClient};
+use trunk_app::protocol::{body, Audience, DroppedCall, ToClient};
 use trunk_app::saving::Saved;
 use trunk_app::{Feeder, Output, Session};
 
@@ -114,6 +114,8 @@ pub struct Ctx {
     /// the live list (`history`, `callFiles`), kept whether or not the call
     /// store is open. The store keeps the record; queries merge the two.
     pub recent: Mutex<VecDeque<StoredCall>>,
+    /// This run's calls lost lately (newest first), as sent: the greeting's `history.dropped`.
+    pub dropped: Mutex<VecDeque<DroppedCall>>,
     /// The call store: every finished call, indexed (off when it can't be opened).
     pub db: crate::db::Db,
     /// Signalled by a browser's `quit`.
@@ -186,6 +188,8 @@ pub enum EngineCmd {
     ShareSystem(trunk_app::config::System),
     /// How a system's share went.
     Shared { short_name: String, result: Result<Option<trunk_app::share::Linked>, String> },
+    /// A call of system `system` concluded, whose files then couldn't be written: not saved after all.
+    WriteFailed { system: u16 },
     /// Forget system `system`'s (none: every system's) talker aliases and
     /// radio registry, as `units` and `registry` say (deleted in Setup →
     /// Data): here, so nothing the session holds of them is saved after.
@@ -305,6 +309,8 @@ impl Ctx {
             self.end_survey(&mut l);
         }
         self.set_phase(Phase::Starting, None, false);
+        // (A run's lost calls are its own.)
+        self.dropped.lock().unwrap().clear();
         match start(self.clone(), cfg) {
             Ok(r) => {
                 l.recording = Some(r);
@@ -1189,6 +1195,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     session.set_share(&sys);
                 }
                 EngineCmd::Shared { short_name, result } => session.share_done(&short_name, now_ms(), result),
+                EngineCmd::WriteFailed { system } => session.write_failed(system),
                 EngineCmd::Forget { system, units, registry, done } => {
                     if units {
                         session.forget_units(system);
@@ -1316,32 +1323,38 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
     let folders = &ctx.folders;
     let mut spool_ok = spooled.is_some();
     let at = |b: &Path, ext: &str| PathBuf::from(format!("{}.{ext}", b.display()));
-    let mut put = |kept: bool, ext: &str, bytes: &[u8]| -> Option<PathBuf> {
+    let mut put = |kept: bool, ext: &str, bytes: &[u8]| -> Result<PathBuf, trunk_app::files::Problem> {
         if let Some(s) = spooled.as_ref().filter(|_| !kept && spool_ok) {
             let p = at(s, ext);
             if folders.spool.write(&p, bytes).is_ok() {
-                return Some(p);
+                return Ok(p);
             }
             spool_ok = false;
         }
         let p = at(&base, ext);
-        folders.recordings.write(&p, bytes).ok().map(|_| p)
+        folders.recordings.write(&p, bytes).map(|_| p)
     };
     // (The first that fails ends it: the folder says why, once, and counts it.)
     let written = 'w: {
-        let wav = match p.write_wav.then(|| put(keep_wav, "wav", &f.wav)) {
-            Some(None) => break 'w None,
-            w => w.flatten(),
+        let wav = match p.write_wav.then(|| put(keep_wav, "wav", &f.wav)).transpose() {
+            Err(e) => break 'w Err(e),
+            Ok(w) => w,
         };
-        let json = match p.write_json.then(|| put(keep_json, "json", json.as_bytes())) {
-            Some(None) => break 'w None,
-            j => j.flatten(),
+        let json = match p.write_json.then(|| put(keep_json, "json", json.as_bytes())).transpose() {
+            Err(e) => break 'w Err(e),
+            Ok(j) => j,
         };
-        Some((wav, json))
+        Ok((wav, json))
     };
-    let Some((wav_at, json_at)) = written else {
-        log::debug!("Call {} not saved", f.rel);
-        return;
+    let (wav_at, json_at) = match written {
+        Ok(w) => w,
+        // Not saved after all: counted so, and said as any call lost is.
+        Err(e) => {
+            log::debug!("Call {} not saved", f.rel);
+            ctx.tell_engine(EngineCmd::WriteFailed { system: f.system });
+            call_dropped(ctx, DroppedCall::write_failed(&f.record, e.to_string()));
+            return;
+        }
     };
     // Where the rest goes (made later, or not at all): the folder, and the path.
     let place = |kept: bool, ext: &str| match spooled.as_ref().filter(|_| !kept && spool_ok) {
@@ -1415,6 +1428,7 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
     for o in out.drain(..) {
         match o {
             Output::Fact { on, facts } => ctx.iq.fact(crate::iq_rules::Fact { on, facts }),
+            Output::Message(ToClient::CallDropped(d)) => call_dropped(ctx, d),
             Output::Message(m) => {
                 if matches!(m, ToClient::Heard { .. }) {
                     *ctx.heard_last.lock().unwrap() = Some(m.clone());
@@ -1509,6 +1523,19 @@ pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
 
 /// Calls the interface's history list is given.
 pub const HISTORY: usize = 300;
+/// Lost calls the greeting gives: at most this many, lost in the last [`DROPPED_FOR_S`].
+const DROPPED_KEPT: usize = 200;
+const DROPPED_FOR_S: f64 = 30.0 * 60.0;
+
+/// A call lost (`callDropped`): to the interfaces, and kept for the greeting.
+fn call_dropped(ctx: &Ctx, d: DroppedCall) {
+    {
+        let mut l = ctx.dropped.lock().unwrap();
+        l.push_front(d.clone());
+        l.truncate(DROPPED_KEPT);
+    }
+    publish(&ctx.hub, ToClient::CallDropped(d));
+}
 /// Calls kept in the live list.
 const RECENT_KEPT: usize = 500;
 
@@ -1564,10 +1591,12 @@ fn store_error(ctx: &Ctx, what: &str, e: &str) {
     }
 }
 
-/// The `history` message: the newest calls ([`calls`]).
+/// The `history` message: the newest calls ([`calls`]), and this run's lost lately.
 pub fn history(ctx: &Ctx) -> ToClient {
     let page = calls(ctx, &CallsQuery { limit: Some(HISTORY), ..Default::default() });
-    ToClient::History { entries: page.entries, next: page.next }
+    let since = crate::clock::unix_s() - DROPPED_FOR_S;
+    let dropped = ctx.dropped.lock().unwrap().iter().take_while(|d| d.lost_at() >= since).cloned().collect();
+    ToClient::History { entries: page.entries, next: page.next, dropped }
 }
 
 /// Calls by `q` (system, talkgroup, radio, time; paged by its cursor),
