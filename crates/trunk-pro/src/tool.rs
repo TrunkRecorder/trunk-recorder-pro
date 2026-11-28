@@ -45,7 +45,7 @@ use crate::toolkit::{hex, AudioOut, Capture};
 use crate::{die, Args};
 
 pub fn run(a: &Args) {
-    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|corpus|voice|frames|p2|smartnet|dmr|dmrscan|dmrsynth|nxdn|nxdnscan|nxdnsynth|p25synth|perf|snr|revoice|sdr|tones … (trunk-pro --help)"));
+    let mode = a.positional.first().map(String::as_str).unwrap_or_else(|| die("tool cc|corpus|voice|frames|p2|smartnet|dmr|dmrscan|dmrsynth|nxdn|nxdnscan|nxdnsynth|tetra|tetrascan|tetravoice|p25synth|perf|snr|revoice|sdr|tones … (trunk-pro --help)"));
     match mode {
         "cc" | "voice" | "frames" => run_p25(a, mode),
         "corpus" => crate::corpus::run(a),
@@ -59,13 +59,16 @@ pub fn run(a: &Args) {
         "nxdn" => crate::nxdntool::run(a),
         "nxdnscan" => crate::nxdntool::run_scan(a),
         "nxdnsynth" => crate::nxdntool::run_synth(a),
+        "tetra" => crate::tetratool::run(a),
+        "tetrascan" => crate::tetratool::run_scan(a),
+        "tetravoice" => crate::tetratool::run_voice(a),
         "p25synth" => crate::p25synth::run(a),
         "perf" => crate::perftool::run(a),
         "snr" => crate::snrtool::run(a),
         "revoice" => run_revoice(a),
         "sdr" => run_sdr(a),
         "tones" => run_tones(a),
-        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|dmrsynth|nxdn|nxdnscan|nxdnsynth|p25synth|perf|snr|revoice|sdr|tones)")),
+        _ => die(&format!("tool {mode}: no such tool (cc|voice|frames|p2|smartnet|dmr|dmrscan|dmrsynth|nxdn|nxdnscan|nxdnsynth|tetra|tetrascan|tetravoice|p25synth|perf|snr|revoice|sdr|tones)")),
     }
 }
 

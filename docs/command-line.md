@@ -474,6 +474,9 @@ stdout with a summary on stderr. Where a tool takes `--rate`, `--fs` is accepted
 | `tool smartnet` | One SmartNet control channel's messages |
 | `tool dmrscan` | Every DMR carrier in a capture |
 | `tool dmr` | One DMR channel's link control, CSBKs and calls |
+| `tool tetrascan` | Every TETRA carrier in a capture, with its cell |
+| `tool tetra` | One TETRA carrier's cell, calls and MAC messages |
+| `tool tetravoice` | TETRA speech frames to audio, with ETSI's codec tables |
 | `tool nxdnscan` | Every NXDN carrier in a capture |
 | `tool nxdn` | One NXDN channel's messages |
 | `tool revoice` | Run a call's saved vocoder frames through the vocoder again |
@@ -534,6 +537,26 @@ trunk-pro tool dmr <capture.cu8> --center Hz --rate Hz --freq Hz [--bursts] [--a
 `dmrscan` checks every 6.25 kHz channel and lists those with DMR on them, with sync counts, colour
 codes and what they carry. `dmr` prints one channel's messages; `--bursts` prints every burst, and
 `--audio` writes a slot's voice (8 kHz, 32-bit float).
+
+### tool tetrascan, tetra and tetravoice
+
+```bash
+trunk-pro tool tetrascan <capture.cu8> --center Hz [--rate Hz] [--seconds N] [--step 12500]
+trunk-pro tool tetra <capture.cu8> --center Hz --freq Hz [--rate Hz] [--messages] [--speech prefix]
+trunk-pro tool tetravoice <in.chd> <out.pcm> --tetra-codec <folder or .zip>
+```
+
+TETRA trunked mode, downlink (EN 300 392-2). `tetrascan` runs every channel through the π/4-DQPSK
+receiver and lists the carriers with a cell on them: its country and network codes, colour code,
+location area and main carrier, and what the carrier holds. `tetra` prints one carrier's cell,
+system information and calls (`--messages`: every MAC-RESOURCE); `--speech` writes each call's
+speech frames to `<prefix>-<n>.chd`, in the standard's layout (EN 300 395-2 clause 8).
+
+`tetravoice` turns those frames into audio (8 kHz, 16-bit). The speech codec needs two tables that
+aren't in this repository: ETSI publishes them in the archive for
+[EN 300 395-2](https://www.etsi.org/deliver/etsi_en/300300_300399/30039502/), and `--tetra-codec`
+takes that archive as it is (`en_30039502v….zip`), a folder holding it, or the two files from it
+(`CLSP_334.TAB`, `ENER_QUA.TAB`).
 
 ### tool nxdnscan and nxdn
 

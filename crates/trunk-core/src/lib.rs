@@ -43,6 +43,7 @@ pub mod smartnet;
 pub mod sitecheck;
 pub mod survey;
 pub mod tables;
+pub mod tetra;
 pub mod trunk;
 pub mod wav;
 
