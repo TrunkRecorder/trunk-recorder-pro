@@ -51,8 +51,8 @@
 //!     --squelch dB (open threshold above the noise floor, default 8)
 //!
 //! trunk-pro devices [--usrp [args]]
-//!     List RTL-SDRs, Airspys and SoapySDR devices, whether the USRP (UHD),
-//!     Airspy and SoapySDR drivers are installed, and SoapySDR's modules;
+//!     List RTL-SDRs, Airspys and SoapySDR devices, whether the USRP (UHD)
+//!     and SoapySDR drivers are installed, and SoapySDR's modules;
 //!     --usrp also searches for USRPs.
 //! trunk-pro capture <out.cu8> --freq Hz --rate Hz [--gain dB] [--ppm 0] [--serial S] [--seconds 10]
 //!     Record raw u8 IQ, like rtl_sdr.

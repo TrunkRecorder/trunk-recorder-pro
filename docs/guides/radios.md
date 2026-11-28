@@ -2,7 +2,7 @@
 
 This page explains how Trunk Recorder Pro uses your radios (it calls them *sources*): how much
 spectrum each covers, where it is tuned, gain, frequency correction, and running several at once.
-Installing drivers for USRP, Airspy, HydraSDR, bladeRF and SoapySDR radios is covered in
+Installing drivers for USRP, bladeRF and SoapySDR radios is covered in
 [Other radios](../install/other-radios.md); every source key is listed in the
 [configuration reference](../configuration/sources.md).
 
