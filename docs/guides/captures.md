@@ -88,7 +88,7 @@ The presets cover the common problems. You can add your own as JSON, under `diag
 
 | `on` | What a condition can name |
 |---|---|
-| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `start_time`, `stop_time` (Unix s), `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `voice` (`p25`, `dmr`, `fm`, …), `tdma_slot`, `units` (how many radios), `unit_ids`, `recorder`, `source`; `call.not_saved` also `not_saved` (`silent` or `short`), `audio_s`, `frames`, `bad_frames` |
+| `call.end`, `call.not_saved` | `call.system`, `site`, `talkgroup`, `freq`, `start_time`, `stop_time` (Unix s), `call_length`, `clean_voice_pct`, `snr`, `signal`, `noise`, `freq_error`, `encrypted`, `decrypted`, `emergency`, `analog`, `voice` (`p25`, `dmr`, `fm`, …), `tdma_slot`, `units` (how many radios), `unit_ids`, `recorder`, `source`; `call.not_saved` also `not_saved` (`silent`, `short` or `encrypted`), `audio_s`, `frames`, `bad_frames` |
 | `control.lost`, `control.regained` | `control.system`, `site`, `freq_hz` |
 | `source.clipping`, `source.drops`, `source.quiet` | `source.index`, `pct`, `per_s`, `peak_db` (quiet: the last minute's peaks, dBFS) |
 | `note.warning` | `note.system`, `site`, `text` |

@@ -34,6 +34,88 @@ pub fn body(v: Value) -> Body {
     }
 }
 
+/// A call lost: recorded and then not kept, or followed and never recorded
+/// for want of a radio (`callDropped`, and the greeting's `history.dropped`).
+/// Calls passed over on purpose (an encrypted grant, a talkgroup not on the
+/// list) aren't lost.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DroppedCall {
+    /// Its call's number: a saved call's `call_num`, `status.calls[].id`.
+    pub call_num: u64,
+    /// Its system's short name.
+    pub system: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    pub talkgroup: u32,
+    /// Its talkgroup's name ("": none).
+    pub alpha_tag: String,
+    pub freq_hz: u64,
+    /// The source it was recorded on (by its place in the config); none when it wasn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<usize>,
+    /// Unix seconds.
+    pub start_time: f64,
+    /// Seconds from its grant until it was lost.
+    pub length_s: f64,
+    pub stage: DropStage,
+    /// `notSaved`: a [`trunk_core::trunk::NotSaved`] key; `notRecorded`: a
+    /// [`trunk_core::trunk::calls::Reason`] key (`noSource`, `noRecorder`).
+    pub why: &'static str,
+    /// The recorder's own words (a write's error).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// dBFS while recorded, and its voice frames and how many were bad
+    /// (`notSaved` only; a call whose files failed has no frame counts).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub noise: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voice_frames: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bad_frames: Option<u64>,
+}
+
+/// Where a [`DroppedCall`] was lost.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DropStage {
+    /// Recorded, then not kept.
+    NotSaved,
+    /// Never recorded.
+    NotRecorded,
+}
+
+impl DroppedCall {
+    /// A saved call's record whose files couldn't be written (`detail`: why).
+    pub fn write_failed(r: &trunk_recorder_plugin::CallRecord, detail: String) -> DroppedCall {
+        DroppedCall {
+            call_num: r.call_num,
+            system: r.short_name.clone(),
+            site: Some(r.site.clone()).filter(|s| !s.is_empty()),
+            talkgroup: r.talkgroup,
+            alpha_tag: r.talkgroup_tag.clone(),
+            freq_hz: r.freq,
+            source: usize::try_from(r.source_num).ok(),
+            start_time: r.start_time_ms as f64 / 1000.0,
+            length_s: r.call_length,
+            stage: DropStage::NotSaved,
+            why: trunk_core::trunk::NotSaved::WriteFailed.key(),
+            detail: Some(detail),
+            signal: r.signal,
+            noise: r.noise,
+            voice_frames: None,
+            bad_frames: None,
+        }
+    }
+
+    /// When it was lost (Unix s).
+    pub fn lost_at(&self) -> f64 {
+        self.start_time + self.length_s
+    }
+}
+
 /// Where a recording run is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +160,8 @@ pub enum ToClient {
         /// Where older calls go on from (a `callsQuery` `cursor`), if there are any.
         #[serde(skip_serializing_if = "Option::is_none")]
         next: Option<String>,
+        /// This run's calls lost lately, newest first (then `callDropped` for each new one).
+        dropped: Vec<DroppedCall>,
     },
     /// A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV):
     /// one for each system with some, on connecting (then `unitAlias` for each new one).
@@ -124,6 +208,8 @@ pub enum ToClient {
     Log { lines: Vec<Value> },
     /// A call stored: its history entry.
     Concluded { entry: Value },
+    /// A call lost, as it was ([`DroppedCall`]).
+    CallDropped(DroppedCall),
     /// A call's upload plugins are done and it kept other files than its entry said.
     CallFiles { path: String, audio: bool, json: bool },
     UnitAlias { system: String, unit: u32, alias: String },
@@ -830,7 +916,7 @@ mod tests {
             assert_eq!(m.audience(), Audience::Control, "{}", m.kind());
         }
         let everyone = [
-            "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "unitEvent", "spectrum", "log", "concluded", "callFiles",
+            "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "unitEvent", "spectrum", "log", "concluded", "callDropped", "callFiles",
             "unitAlias", "mdcUnits", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
             "decodeDetail", "monitorEvent", "subscribed", "statsResult", "radioResult", "callsResult", "dataSummary", "iqCaptures", "iqCaptureReview", "iqRuleChecked", "dataDeleted", "dataCompacted", "tokenCreated", "quit",
         ];

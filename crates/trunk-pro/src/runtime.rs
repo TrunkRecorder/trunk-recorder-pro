@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use chrono::{Local, Offset, TimeZone};
 use serde_json::Value;
 use tokio::sync::broadcast;
-use trunk_app::protocol::{body, Audience, ToClient};
+use trunk_app::protocol::{body, Audience, DroppedCall, ToClient};
 use trunk_app::saving::Saved;
 use trunk_app::{Feeder, Output, Session};
 
@@ -31,7 +31,7 @@ use crate::config::{AirspyGain, AirspyGains, Config, SampleFormat, Source, Sourc
 use trunk_app::protocol::Phase;
 use crate::plugins::{self, FileRules, PluginHost};
 use crate::radio::{airspy, bladerf, hackrf, rtl, soapy, spyserver, stream, uhd};
-use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SourceMsg, Stage, Stages};
+use crate::sdr::{self, Block, Control, Gain, Inbox, Preset, SoapyGain, SourceMsg, Stage, Stages};
 
 /// A message for the connected browsers, serialized once for all of them.
 pub enum Out {
@@ -114,6 +114,8 @@ pub struct Ctx {
     /// the live list (`history`, `callFiles`), kept whether or not the call
     /// store is open. The store keeps the record; queries merge the two.
     pub recent: Mutex<VecDeque<StoredCall>>,
+    /// This run's calls lost lately (newest first), as sent: the greeting's `history.dropped`.
+    pub dropped: Mutex<VecDeque<DroppedCall>>,
     /// The call store: every finished call, indexed (off when it can't be opened).
     pub db: crate::db::Db,
     /// Signalled by a browser's `quit`.
@@ -186,6 +188,8 @@ pub enum EngineCmd {
     ShareSystem(trunk_app::config::System),
     /// How a system's share went.
     Shared { short_name: String, result: Result<Option<trunk_app::share::Linked>, String> },
+    /// A call of system `system` concluded, whose files then couldn't be written: not saved after all.
+    WriteFailed { system: u16 },
     /// Forget system `system`'s (none: every system's) talker aliases and
     /// radio registry, as `units` and `registry` say (deleted in Setup →
     /// Data): here, so nothing the session holds of them is saved after.
@@ -305,6 +309,8 @@ impl Ctx {
             self.end_survey(&mut l);
         }
         self.set_phase(Phase::Starting, None, false);
+        // (A run's lost calls are its own.)
+        self.dropped.lock().unwrap().clear();
         match start(self.clone(), cfg) {
             Ok(r) => {
                 l.recording = Some(r);
@@ -454,9 +460,16 @@ pub fn live_gain(old: &Source, new: &Source) -> Option<Gain> {
             (*lna_db, *vga_db, *amp) = (*l, *v, *a);
             Gain::Stages(hackrf_gain(*l, *v, *a))
         }
-        (SourceKind::Soapy { gain_db, agc: false, .. }, SourceKind::Soapy { gain_db: Some(g), agc: false, .. }) => {
-            *gain_db = Some(*g);
-            Gain::Db(*g as f32)
+        // Its whole gain, overall and elements by name (the gain tuner's trials, and the setting it had after them).
+        // Without an overall gain, what the new gain doesn't set can't be put back: an element dropped, or the
+        // overall gain itself, waits for the start.
+        (SourceKind::Soapy { gain_db, gains, agc: false, .. }, SourceKind::Soapy { gain_db: g, gains: gs, agc: false, .. }) => {
+            if g.is_none() && (gain_db.is_some() || gains.keys().any(|k| !gs.contains_key(k))) {
+                return None;
+            }
+            let whole = SoapyGain::new(*g, gs)?;
+            (*gain_db, *gains) = (*g, gs.clone());
+            Gain::Soapy(whole)
         }
         _ => return None,
     };
@@ -1189,6 +1202,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     session.set_share(&sys);
                 }
                 EngineCmd::Shared { short_name, result } => session.share_done(&short_name, now_ms(), result),
+                EngineCmd::WriteFailed { system } => session.write_failed(system),
                 EngineCmd::Forget { system, units, registry, done } => {
                     if units {
                         session.forget_units(system);
@@ -1316,32 +1330,38 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
     let folders = &ctx.folders;
     let mut spool_ok = spooled.is_some();
     let at = |b: &Path, ext: &str| PathBuf::from(format!("{}.{ext}", b.display()));
-    let mut put = |kept: bool, ext: &str, bytes: &[u8]| -> Option<PathBuf> {
+    let mut put = |kept: bool, ext: &str, bytes: &[u8]| -> Result<PathBuf, trunk_app::files::Problem> {
         if let Some(s) = spooled.as_ref().filter(|_| !kept && spool_ok) {
             let p = at(s, ext);
             if folders.spool.write(&p, bytes).is_ok() {
-                return Some(p);
+                return Ok(p);
             }
             spool_ok = false;
         }
         let p = at(&base, ext);
-        folders.recordings.write(&p, bytes).ok().map(|_| p)
+        folders.recordings.write(&p, bytes).map(|_| p)
     };
     // (The first that fails ends it: the folder says why, once, and counts it.)
     let written = 'w: {
-        let wav = match p.write_wav.then(|| put(keep_wav, "wav", &f.wav)) {
-            Some(None) => break 'w None,
-            w => w.flatten(),
+        let wav = match p.write_wav.then(|| put(keep_wav, "wav", &f.wav)).transpose() {
+            Err(e) => break 'w Err(e),
+            Ok(w) => w,
         };
-        let json = match p.write_json.then(|| put(keep_json, "json", json.as_bytes())) {
-            Some(None) => break 'w None,
-            j => j.flatten(),
+        let json = match p.write_json.then(|| put(keep_json, "json", json.as_bytes())).transpose() {
+            Err(e) => break 'w Err(e),
+            Ok(j) => j,
         };
-        Some((wav, json))
+        Ok((wav, json))
     };
-    let Some((wav_at, json_at)) = written else {
-        log::debug!("Call {} not saved", f.rel);
-        return;
+    let (wav_at, json_at) = match written {
+        Ok(w) => w,
+        // Not saved after all: counted so, and said as any call lost is.
+        Err(e) => {
+            log::debug!("Call {} not saved", f.rel);
+            ctx.tell_engine(EngineCmd::WriteFailed { system: f.system });
+            call_dropped(ctx, DroppedCall::write_failed(&f.record, e.to_string()));
+            return;
+        }
     };
     // Where the rest goes (made later, or not at all): the folder, and the path.
     let place = |kept: bool, ext: &str| match spooled.as_ref().filter(|_| !kept && spool_ok) {
@@ -1415,6 +1435,7 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
     for o in out.drain(..) {
         match o {
             Output::Fact { on, facts } => ctx.iq.fact(crate::iq_rules::Fact { on, facts }),
+            Output::Message(ToClient::CallDropped(d)) => call_dropped(ctx, d),
             Output::Message(m) => {
                 if matches!(m, ToClient::Heard { .. }) {
                     *ctx.heard_last.lock().unwrap() = Some(m.clone());
@@ -1509,6 +1530,19 @@ pub fn call_files(ctx: &Ctx, rel: &str, audio: bool, json: bool) {
 
 /// Calls the interface's history list is given.
 pub const HISTORY: usize = 300;
+/// Lost calls the greeting gives: at most this many, lost in the last [`DROPPED_FOR_S`].
+const DROPPED_KEPT: usize = 200;
+const DROPPED_FOR_S: f64 = 30.0 * 60.0;
+
+/// A call lost (`callDropped`): to the interfaces, and kept for the greeting.
+fn call_dropped(ctx: &Ctx, d: DroppedCall) {
+    {
+        let mut l = ctx.dropped.lock().unwrap();
+        l.push_front(d.clone());
+        l.truncate(DROPPED_KEPT);
+    }
+    publish(&ctx.hub, ToClient::CallDropped(d));
+}
 /// Calls kept in the live list.
 const RECENT_KEPT: usize = 500;
 
@@ -1564,10 +1598,12 @@ fn store_error(ctx: &Ctx, what: &str, e: &str) {
     }
 }
 
-/// The `history` message: the newest calls ([`calls`]).
+/// The `history` message: the newest calls ([`calls`]), and this run's lost lately.
 pub fn history(ctx: &Ctx) -> ToClient {
     let page = calls(ctx, &CallsQuery { limit: Some(HISTORY), ..Default::default() });
-    ToClient::History { entries: page.entries, next: page.next }
+    let since = crate::clock::unix_s() - DROPPED_FOR_S;
+    let dropped = ctx.dropped.lock().unwrap().iter().take_while(|d| d.lost_at() >= since).cloned().collect();
+    ToClient::History { entries: page.entries, next: page.next, dropped }
 }
 
 /// Calls by `q` (system, talkgroup, radio, time; paged by its cursor),
@@ -1735,6 +1771,20 @@ mod live_tests {
         assert_eq!(g, Some(Gain::Stages(hackrf_gain(24, 20, true))), "a HackRF's stages, live");
         assert_eq!(g.unwrap().to_string(), "AMP on · LNA 24 · VGA 20");
         assert_eq!(manual(0, 0, 7, true).to_string(), "AGC · VGA 7");
+        // SoapySDR: its whole gain, overall and elements by their own names (the tuner's trials, and back).
+        let soapy = |gain: Option<f64>, gains: serde_json::Value| src("soapy", json!({ "args": "driver=remote,remote:driver=airspy", "centerHz": 852e6, "rateHz": 10e6, "agc": false, "gainDb": gain, "gains": gains }));
+        let whole = |gain: Option<f64>, gains: serde_json::Value| Gain::Soapy(SoapyGain::new(gain, &serde_json::from_value(gains).unwrap()).unwrap());
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(25.0), json!({}))), Some(whole(Some(25.0), json!({}))), "its overall gain, live");
+        let trial = json!({ "LNA": 9, "MIXER": 6, "TIA": 10 });
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(31.0), trial.clone())), Some(whole(Some(31.0), trial.clone())), "its elements, by name");
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(31.0), json!({}))), Some(whole(Some(31.0), json!({}))), "as it was: the overall gain alone, so a trial's elements are filled again");
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(20.0), json!({ "LNA": 9 }))), Some(whole(Some(20.0), json!({ "LNA": 9 }))), "both at once");
+        assert_eq!(live_gain(&soapy(None, json!({ "LNA": 9, "IFGR": 40 })), &soapy(None, json!({ "LNA": 11, "IFGR": 30 }))), Some(whole(None, json!({ "LNA": 11, "IFGR": 30 }))), "elements alone");
+        assert_eq!(live_gain(&soapy(None, json!({ "LNA": 9 })), &soapy(None, json!({}))), None, "no overall gain: an element dropped can't be put back live");
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(None, json!({ "LNA": 9 }))), None, "nor the overall gain");
+        let long = json!({ "AN_ELEMENT_NAMED_TOO_LONG": 1 });
+        assert_eq!(live_gain(&soapy(Some(31.0), json!({})), &soapy(Some(31.0), long)), None, "a name a gain can't carry waits");
+        assert_eq!(whole(Some(31.0), trial).to_string(), "31 dB · LNA 9 · MIXER 6 · TIA 10");
     }
 
     #[test]

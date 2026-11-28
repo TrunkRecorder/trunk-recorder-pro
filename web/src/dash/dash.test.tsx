@@ -34,7 +34,7 @@ function running(c: Config, systems: SystemStatus[], calls: Partial<CallView>[] 
   const greeting: FromRecorder[] = [
     { type: "state", phase: "running", error: null, ended: false, restartNeeded: false },
     { type: "config", config: c, version: 1 },
-    { type: "history", entries: [] },
+    { type: "history", entries: [], dropped: [] },
     { type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys", "history"] },
   ];
   clearSeries();

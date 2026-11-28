@@ -35,7 +35,7 @@ mod transfer;
 mod transport;
 
 pub use board::PartIdSerial;
-pub use control::MIN_KERNEL_LEN;
+pub use control::{MIN_KERNEL_LEN, composite_gains};
 pub use conversion::Samples;
 pub use device::{Device, Family, RFONE_RF_PORTS, list_devices, list_family};
 pub use error::{Error, Result};

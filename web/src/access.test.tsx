@@ -47,7 +47,7 @@ function hello(c: Config, access: ApiAccess, user?: string, phase: Phase = "idle
   const greeting: FromRecorder[] = [
     { type: "state", phase, error: null, ended: false, restartNeeded: false },
     { type: "config", config: c, version: 1 },
-    { type: "history", entries: [] },
+    { type: "history", entries: [], dropped: [] },
     { type: "hello", version: "test", platform: "test", api: 1, access, ...(user ? { user } : {}), surveyBands: [], capabilities: ["service", "drivers", "plugins", "interfaces", "host", "keys", "history"] },
   ];
   transport.onConnection(true);

@@ -70,7 +70,7 @@ impl Drop for Slot {
 }
 
 fn names_sdrplay(args: &str) -> bool {
-    args.split(',').filter_map(|kv| kv.split_once('=')).any(|(k, v)| k.trim().eq_ignore_ascii_case("driver") && v.trim().eq_ignore_ascii_case("sdrplay"))
+    trunk_app::config::soapy_driver_is(args, "sdrplay", false)
 }
 
 /// `sdrplay_api_Open` from the API library already in the process, if any.
