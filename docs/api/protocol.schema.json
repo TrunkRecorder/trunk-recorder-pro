@@ -404,6 +404,7 @@
             "dmr",
             "nxdn",
             "edacs",
+            "ltr",
             "conventional"
           ],
           "description": "The kind of system it came on (absent in calls saved before)."
@@ -3324,9 +3325,10 @@
                             "smartnet",
                             "dmr",
                             "nxdn",
-                            "edacs"
+                            "edacs",
+                            "ltr"
                           ],
-                          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
+                          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list. \"ltr\": an LTR Standard, LTR-Net or Passport site (voice analog FM): every repeater listed as a control channel is watched; `lcnTableHz` names their LCNs (else learned from the air)."
                         },
                         {
                           "type": "null"
@@ -5790,6 +5792,121 @@
       "additionalProperties": false,
       "description": "The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings)."
     },
+    "LtrSiteStatus": {
+      "type": "object",
+      "properties": {
+        "flavor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "LTR Standard",
+            "LTR-Net",
+            "Passport",
+            null
+          ],
+          "description": "As its words show (null: not known yet)."
+        },
+        "site": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "LTR-Net's site ID, Passport's site number."
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "lcn": {
+                "type": "number"
+              },
+              "freqHz": {
+                "type": "number"
+              },
+              "configured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "lcn",
+              "freqHz",
+              "configured"
+            ],
+            "additionalProperties": false
+          },
+          "description": "LCN → frequency: from the config, or learned from the air."
+        },
+        "unknownChannels": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "LCNs a call was named on whose frequency isn't known yet."
+        },
+        "carriers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "freqHz": {
+                "type": "number"
+              },
+              "heard": {
+                "type": "boolean"
+              },
+              "lcn": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "call": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "talkgroup": {
+                        "$ref": "#/definitions/TalkgroupName"
+                      },
+                      "source": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "talkgroup",
+                      "source"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "freqHz",
+              "heard",
+              "lcn",
+              "call"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Every repeater: heard lately, the LCN it is, and the call on it now."
+        }
+      },
+      "required": [
+        "flavor",
+        "site",
+        "channels",
+        "unknownChannels",
+        "carriers"
+      ],
+      "additionalProperties": false
+    },
     "MonitorSettings": {
       "type": "object",
       "properties": {
@@ -8042,7 +8159,7 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air."
+          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air. LTR: each repeater's LCN (1–20; Passport's up to 2047) → frequency; the rest is learned."
         },
         "dmrChannelsHz": {
           "type": "array",
@@ -8119,13 +8236,25 @@
             }
           ],
           "description": "An NXDN site."
+        },
+        "ltr": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LtrSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An LTR site."
         }
       },
       "required": [
         "index",
         "name",
         "dmr",
-        "nxdn"
+        "nxdn",
+        "ltr"
       ],
       "additionalProperties": false,
       "description": "One running site's detail (decodeDetail): what its control channel announces."
@@ -9650,9 +9779,10 @@
             "smartnet",
             "dmr",
             "nxdn",
-            "edacs"
+            "edacs",
+            "ltr"
           ],
-          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list. \"ltr\": an LTR Standard, LTR-Net or Passport site (voice analog FM): every repeater listed as a control channel is watched; `lcnTableHz` names their LCNs (else learned from the air)."
         },
         "listenS": {
           "type": "number"
@@ -10101,9 +10231,10 @@
             "smartnet",
             "dmr",
             "nxdn",
-            "edacs"
+            "edacs",
+            "ltr"
           ],
-          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list. \"ltr\": an LTR Standard, LTR-Net or Passport site (voice analog FM): every repeater listed as a control channel is watched; `lcnTableHz` names their LCNs (else learned from the air)."
         },
         "nxdnType": {
           "type": "string",

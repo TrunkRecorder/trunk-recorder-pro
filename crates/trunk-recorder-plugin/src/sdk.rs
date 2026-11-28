@@ -124,7 +124,7 @@ pub struct System<C, S> {
     pub id: u32,
     /// Unique among the recorder's systems, and what users know it by (it changes when it's renamed).
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr" | "conventional"
     pub kind: String,
     /// What people call it; empty when the user gave no name.
     pub name: String,

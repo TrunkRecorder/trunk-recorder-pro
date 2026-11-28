@@ -11,7 +11,7 @@ import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, DmrSiteStatus, FreqRow, SeriesData, SiteStatus } from "../protocol.ts";
 import { modeInfo } from "../modes.ts";
 import { change, coverage, dashSystems, K, KIND_LABEL, recentAvg, recentSum, running, runningSites, siteHealth, sourceName, sumSeries, systemHealth, useHistory, useRanges, useUsual, val, voiceKeys, type DashSite, type DashSystem, type Usual } from "./data.ts";
-import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
+import { DmrSites, hex, LtrSites, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 import { callsCounted, sinceLabel } from "./counts.ts";
 
 /** `a / b` step by step (errors per frame from the two rates). */
@@ -409,6 +409,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
       {live && <Patches patches={live.patches} />}
       {here.some((y) => y.dmr) && <DmrSites sites={here} />}
       {here.some((y) => y.nxdn) && <NxdnSites sites={here} />}
+      {here.some((y) => y.ltr) && <LtrSites sites={here} />}
     </div>
   );
 }
@@ -466,7 +467,9 @@ export function SiteIdentityLine(props: { kind: DashSystem["kind"]; st: SiteStat
             ["System", id.sysId != null ? hex(id.sysId) : null],
             ["Site", id.site],
           ]
-        : [
+        : kind === "ltr"
+          ? [["Site", id.site, "LTR-Net's site ID, Passport's site number"]]
+          : [
             ["NAC", hex(id.nac)],
             ["WACN", hex(id.wacn)],
             ["SysID", hex(id.sysId)],
