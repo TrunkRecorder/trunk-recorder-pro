@@ -133,15 +133,17 @@ pub fn usb_memory_hint(e: &str) -> String {
 /// The sample rates a radio runs at, as it said when opened (trunk-app's: Setup and advice read it too).
 pub use trunk_app::rates::Rates;
 use trunk_app::config::{Source, SourceKind};
+use trunk_app::gain::Reported;
 
 /// What a radio said it is when it was opened: its model ("R2", "bladeRF 2.0"), rates, and gains
-/// where they aren't its kind's own (an RTL-SDR's tuner behind `rtl_tcp`, a SpyServer's steps).
+/// where they aren't its kind's own (an RTL-SDR's tuner behind `rtl_tcp`, a SpyServer's steps, a
+/// SoapySDR radio's gain elements).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Caps {
     pub model: String,
     pub rates: Rates,
     /// The gains it can be set to ([`trunk_app::gain::GainPlan::of_with`]); empty: its kind's.
-    pub gains: Vec<f64>,
+    pub gains: Reported,
 }
 
 impl Caps {
@@ -154,8 +156,8 @@ impl Caps {
             Rates::List(v) => j["rates"] = serde_json::json!(v),
             Rates::Range { min, max } => j["rateRange"] = serde_json::json!([min, max]),
         }
-        if !self.gains.is_empty() {
-            j["gains"] = serde_json::json!(self.gains);
+        if !self.gains.steps.is_empty() {
+            j["gains"] = serde_json::json!(self.gains.steps);
         }
     }
 }
@@ -392,9 +394,14 @@ pub fn network_json(sources: &[Source], ask: bool) -> Vec<serde_json::Value> {
 }
 
 /// The gains `src`'s radio said it can be set to when it was last opened, where they aren't its kind's own (an
-/// RTL-SDR's tuner behind `rtl_tcp`, a SpyServer's steps): what the gain-tuning tool walks.
-pub fn reported_gains(src: &Source) -> Option<Vec<f64>> {
-    known(&on_network(src)?.key).map(|c| c.gains).filter(|g| !g.is_empty())
+/// RTL-SDR's tuner behind `rtl_tcp`, a SpyServer's steps, a SoapySDR radio's gain elements): what the gain-tuning
+/// tool walks. Empty: not opened yet in this run, or its kind's own.
+pub fn reported_gains(src: &Source) -> Reported {
+    let key = match &src.kind {
+        SourceKind::Soapy { args, .. } => soapy::key(args),
+        _ => on_network(src).map(|n| n.key).unwrap_or_default(),
+    };
+    known(&key).map(|c| c.gains).unwrap_or_default()
 }
 
 fn bladerf_json() -> serde_json::Value {
@@ -494,7 +501,7 @@ mod tests {
         assert!(blade.allows(10e6) && !blade.allows(0.5e6) && !blade.allows(80e6));
         assert_eq!(rate_refusal("bladeRF 2.0", &blade, 80e6), "this bladeRF 2.0 runs at 0.521–61.44 MSPS, not 80: pick one in that range in Setup → Radios");
         let mut j = serde_json::json!({ "serial": "1" });
-        Caps { model: "bladeRF 2.0".into(), rates: blade, gains: Vec::new() }.add_to(&mut j);
+        Caps { model: "bladeRF 2.0".into(), rates: blade, gains: Reported::default() }.add_to(&mut j);
         assert_eq!(j, serde_json::json!({ "serial": "1", "model": "bladeRF 2.0", "rateRange": [520_834.0, 61_440_000.0] }));
     }
 

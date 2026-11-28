@@ -27,6 +27,24 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   call's frequency error and the survey: the kind detected, or, with both running, the one decoding with fewer
   corrections (frame counts can't tell: the CQPSK receiver decodes clean C4FM about as well), or a site's only kind.
 
+- **`trunk-pro tune` tunes a SoapySDR radio stage by stage, an Airspy through SoapySDR along libairspy's table.**
+  It could only move a SoapySDR radio's overall gain, refused one without it, and, with gain stages set, each
+  trial was undone at once (the stages are set again after the overall gain). An Airspy through SoapySDR (here or
+  behind SoapyRemote: `driver=airspy` or `remote:driver=airspy`) is now searched as an Airspy is, along the
+  linearity table (or `--mode sensitivity` / `manual`), each step set as SoapyAirspy's LNA, MIX and VGA elements
+  with the values libairspy uses, and never along the overall gain, which SoapySDR fills front first (31 is LNA 15,
+  MIX 15, VGA 1; over 45 all the same). Another SoapySDR radio is searched by the gain elements it reports when
+  opened, one axis per element by the name its driver gave it (MIXER, TIA, IFGR …), the front first, an AMP never
+  set higher than it is. Each trial carries the radio's whole gain, so the setting it had puts every element back
+  exactly; a radio with no overall gain and an element the search moves left unset isn't tuned (it couldn't be put
+  back), and says which to set. Gain stages also change live from Setup now, as the overall gain did.
+- **The gain tuner scores a multi-site system site by site.** A system the radio receives at several sites had its
+  sites' control channels added together: P25 coverage summed past 100 % and counted as 100, so one site decoding in
+  full hid another decoding half, often the very site the gain is tuned for. Each site is now scored on its own and
+  the system's control channel is their average with the weakest site counted twice, as the weakest system is
+  across systems; the SNR tie-break is the weakest site's. `trunk-pro tune` and the Tune gain report show each
+  site's figures under its system (`county · North`).
+
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the

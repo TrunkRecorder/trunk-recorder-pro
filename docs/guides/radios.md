@@ -160,7 +160,9 @@ On an Airspy, **Linearity** is best near transmitters and **Sensitivity** for we
 A gain changed in Setup while recording applies at once on an RTL-SDR, an Airspy or a HydraSDR
 (AGC on or off too, and an Airspy's preset or stages), on a HackRF (its LNA, VGA and amp), and on
 a USRP, bladeRF or SoapySDR device for the gain in dB with AGC off (AGC on or off there applies at
-the next start); the log says the gain each took.
+the next start), and on a SoapySDR device for its gain stages too, by name, with AGC off (without an
+overall gain, removing a stage or the overall gain applies at the next start); the log says the
+gain each took.
 Anything else about a radio applies when recording starts next: Stop, then Start.
 
 How to set it:
@@ -169,8 +171,9 @@ How to set it:
   listening to the control channel and keeps the lowest one within 1 dB of the best signal that
   doesn't clip. See [Find my system](find-my-system.md#gain).
 - **Let `trunk-pro tune` do it.** While recording, `trunk-pro tune` tries gains on the radio,
-  following a plan for its kind (an Airspy along its linearity table, an RTL-SDR along its tuner's
-  gains, a HackRF's LNA before its VGA and its amp last), and scores each by what that radio's
+  following a plan for its kind (an Airspy along its linearity table, here or through SoapySDR,
+  an RTL-SDR along its tuner's gains, a HackRF's LNA before its VGA and its amp last, another
+  SoapySDR radio by its gain elements), and scores each by what that radio's
   systems decode: control channel first, then voice. Nothing is saved while it tries; the radio
   goes back unless you pass `--apply`. See the [command line](../command-line.md#tune).
 - **Watch the dashboard.** While recording, a source's line warns *Gain too high · 2.1% clipping*
