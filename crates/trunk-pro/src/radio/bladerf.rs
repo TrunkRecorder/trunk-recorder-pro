@@ -9,13 +9,13 @@
 use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libloading::Library;
 use num_complex::Complex32;
 
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
-use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Control, Gain, Radio, Regained, Retuned, Silence, Sink, Tunable};
 
 type Dev = *mut c_void;
 
@@ -71,6 +71,9 @@ const GAIN_MGC: c_int = 1;
 const META_FLAG_RX_NOW: u32 = 1 << 31;
 const META_STATUS_OVERRUN: u32 = 1 << 0;
 const ERR_TIMEOUT: c_int = -6;
+
+/// A bladeRF that has sent no samples for this long has stopped ([`Silence`]): about three 3.5 s reads.
+const SILENT: Duration = Duration::from_secs(10);
 
 struct Api {
     _lib: Library,
@@ -410,7 +413,7 @@ fn stream_once(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
 
         let mut raw = vec![0i16; per * 2];
         let mut next_t: Option<u64> = None;
-        let mut timeouts = 0;
+        let mut silence = Silence::new(SILENT);
         while !stop.load(Ordering::Relaxed) {
             if let Some(c) = ctl {
                 match c.apply(&mut d, cfg.center_hz, sink)? {
@@ -423,15 +426,12 @@ fn stream_once(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
             let mut md = Metadata { timestamp: 0, flags: META_FLAG_RX_NOW, status: 0, actual_count: 0, reserved: [0; 32] };
             let r = (a.sync_rx)(d.dev, raw.as_mut_ptr() as *mut c_void, per as c_uint, &mut md, 3500);
             if r == ERR_TIMEOUT {
-                timeouts += 1;
-                if timeouts >= 3 {
-                    return Err("bladeRF: no samples for 10 s (unplugged?)".into());
-                }
+                silence.check("bladeRF", Instant::now()).map_err(|e| format!("{e} (unplugged?)"))?;
                 continue;
             }
             check(a, "receive", r)?;
-            let at = std::time::Instant::now();
-            timeouts = 0;
+            let at = Instant::now();
+            silence.heard(at);
             let n = if md.status & META_STATUS_OVERRUN != 0 { (md.actual_count as usize).min(per) } else { per };
             // Samples lost (an overrun) show as a jump in the sample counter.
             let mut dropped = 0u64;
