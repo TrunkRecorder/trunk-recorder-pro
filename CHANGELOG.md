@@ -5,6 +5,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Each system keeps its own control channel log.** The log the interface keeps was one list of the newest 2,000
+  lines of every system, so a busy system's lines pushed out a quiet one's within seconds: its log showed a few
+  lines, which then disappeared. Each system now keeps its newest 500 lines (and the recorder's own lines theirs),
+  in order, whatever the others do.
+
 - **A radio behind SoapyRemote streams.** SoapyRemote's server sends from the moment the stream is set up, before
   the radio starts, so a remote Airspy's first reads return 0 samples. A read of 0 was taken as success: the
   stream ended without a word and was opened again at once, which made a new backlog of empty reads, about 8

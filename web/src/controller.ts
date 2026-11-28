@@ -422,6 +422,26 @@ transport.onMessage = (m: FromRecorder) => {
   for (const f of messageHooks) f(m);
 };
 
+/** Lines kept for each system's control channel log (and for the recorder's own lines).
+ *  Kept apart, so a quiet system's aren't pushed out by busy ones'. */
+export const LOG_PER_SYSTEM = 500;
+
+/** The log with `add` after it: the newest LOG_PER_SYSTEM of each system's lines, in order. */
+export function keepLog(log: LogLine[], add: LogLine[], per = LOG_PER_SYSTEM): LogLine[] {
+  const all = log.concat(add);
+  const seen = new Map<string, number>();
+  const kept: LogLine[] = [];
+  for (let i = all.length - 1; i >= 0; i--) {
+    const key = all[i].system ?? "";
+    const n = seen.get(key) ?? 0;
+    if (n < per) {
+      seen.set(key, n + 1);
+      kept.push(all[i]);
+    }
+  }
+  return kept.reverse();
+}
+
 function take(m: FromRecorder): void {
   switch (m.type) {
     // The greeting's end: everything before it said how things are now.
@@ -483,7 +503,7 @@ function take(m: FromRecorder): void {
     }
     case "log":
       // (Each system's page shows its own: enough that a quiet one's aren't pushed out by a busy one.)
-      set({ log: [...state.log, ...m.lines].slice(-2000) });
+      set({ log: keepLog(state.log, m.lines) });
       break;
     case "concluded":
       set({ history: [m.entry, ...state.history].slice(0, 500), mdcUnits: mdcHeard(state.mdcUnits, [m.entry]) });
