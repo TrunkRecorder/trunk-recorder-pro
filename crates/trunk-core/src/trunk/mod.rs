@@ -27,7 +27,7 @@ pub mod units;
 pub mod voice;
 pub mod wall;
 
-pub use calls::{Call, CallConfig, CallId, CallSource, Flags, Policy, Voice};
+pub use calls::{Call, CallConfig, CallId, CallSource, Flags, NotSaved, Policy, Voice};
 pub use engine::{SiteId, SystemId};
 pub use control::{Protocol, ProtocolStatus};
 pub use conventional::{check_channels, heard_code, Access, ConvChannel, ConvConfig, ConvMode};

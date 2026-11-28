@@ -33,7 +33,7 @@ pub struct CallFacts {
     /// How many radios talked on it, and which.
     pub units: usize,
     pub unit_ids: Vec<u32>,
-    /// Why it wasn't saved: "silent" (no audio kept) or "short" (under its system's minimum); "" when it was.
+    /// Why it wasn't saved ([`trunk_core::trunk::NotSaved::key`]: "silent", "short", "encrypted"); "" when it was.
     pub not_saved: String,
     /// Seconds of audio it had, and its voice frames and how many were bad (`call.not_saved`; a saved call's are in its file).
     pub audio_s: f64,
