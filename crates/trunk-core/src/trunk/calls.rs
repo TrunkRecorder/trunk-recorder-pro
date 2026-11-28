@@ -192,6 +192,36 @@ impl Reason {
     }
 }
 
+/// Why a recorded call wasn't kept: the counterpart of [`Reason`] for calls
+/// that were recorded. As series keys and messages name it ([`NotSaved::key`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotSaved {
+    /// No audio decoded, and its system doesn't keep silent calls.
+    Silent,
+    /// Shorter than its system's minimum (`minCallS`), once transmissions
+    /// shorter than `minTransmissionS` were left out.
+    Short,
+    /// Its voice turned out encrypted after it was recorded (the grant didn't
+    /// say), and its system doesn't record encrypted calls.
+    Encrypted,
+    /// Its files couldn't be written (the platform's: the engine never says it).
+    WriteFailed,
+}
+
+impl NotSaved {
+    pub const ALL: [NotSaved; 4] = [NotSaved::Silent, NotSaved::Short, NotSaved::Encrypted, NotSaved::WriteFailed];
+
+    /// `notSaved/why/<key>`, `callDropped.why`, and the capture rules' `call.not_saved`.
+    pub fn key(self) -> &'static str {
+        match self {
+            NotSaved::Silent => "silent",
+            NotSaved::Short => "short",
+            NotSaved::Encrypted => "encrypted",
+            NotSaved::WriteFailed => "writeFailed",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CallSource {
     pub src: u32,

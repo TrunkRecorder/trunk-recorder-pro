@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use trunk_core::metrics::{key_part, system_key, Scoped, Sink};
 use trunk_core::dsp::inband::signal::{Heard, Signal};
-use trunk_core::trunk::{CallId, Engine, Event, MessageType, SystemId};
+use trunk_core::trunk::{CallId, Engine, Event, MessageType, NotSaved, SystemId};
 
 use crate::config::Config;
 use crate::protocol::ToClient;
@@ -352,6 +352,17 @@ impl Stats {
         }
     }
 
+    /// A recorded call of system `name` (its short name) not kept, for `why`:
+    /// `notSaved`, the total, and `notSaved/why/<why>` beside it.
+    pub fn call_not_saved(&mut self, name: &str, why: NotSaved) {
+        self.not_saved(&system_key(name), why);
+    }
+
+    fn not_saved(&mut self, sys: &str, why: NotSaved) {
+        self.tally.add(format!("{sys}/notSaved"), 1);
+        self.tally.add(format!("{sys}/notSaved/why/{}", why.key()), 1);
+    }
+
     /// One of the session's events. `id`, `name`: its system's id and short name.
     pub fn observe(&mut self, ev: &Event, id: SystemId, name: &str, engine: &Engine, out: &mut Vec<Output>) {
         let t = self.now as i64;
@@ -424,7 +435,7 @@ impl Stats {
                 self.day.audio_bytes += bytes;
                 self.shared.radio.lock().unwrap().concluded(id, record, t);
             }
-            Event::NotSaved(_) => self.tally.add(format!("{sys}/notSaved"), 1),
+            Event::NotSaved(u) => self.not_saved(&sys, u.why),
             Event::Duplicate { .. } => self.tally.add(format!("{sys}/dup"), 1),
             _ => {}
         }
