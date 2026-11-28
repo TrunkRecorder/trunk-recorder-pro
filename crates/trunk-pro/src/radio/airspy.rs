@@ -18,7 +18,7 @@ use libairspy_rs::commands::SampleType;
 use libairspy_rs::{Device, Error, Family, Samples};
 
 use super::{ppm_corrected, Caps, Deadline, DriverInfo, Rates};
-use crate::sdr::{Applied, Control, Gain, Preset, Regained, Retuned, Sink, Stage, Stages, Tunable};
+use crate::sdr::{Applied, Control, Gain, Preset, Regained, Retuned, Silence, Sink, Stage, Stages, Tunable};
 
 /// The family a source's radio is of: which USB ids, serials and firmware are its.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -341,7 +341,7 @@ fn stream_once(cfg: &AirspyConfig, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl:
     live.d.start_rx_polled().map_err(|e| said("start", &e))?;
     log::info!("{what} {serial} (firmware {}): {:.4} MHz, {:.3} MSPS, {}", version.trim(), cfg.center_hz / 1e6, cfg.rate_hz / 1e6, cfg.gain);
     let wait = Duration::from_millis(if ctl.is_some() { 10 } else { 100 });
-    let mut heard = Instant::now();
+    let mut silence = Silence::new(SILENT);
     loop {
         if stop.load(Ordering::Relaxed) {
             return Ok(());
@@ -357,10 +357,9 @@ fn stream_once(cfg: &AirspyConfig, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl:
             _ => true,
         });
         match open {
-            Ok(Some(true)) => heard = Instant::now(),
+            Ok(Some(true)) => silence.heard(Instant::now()),
             Ok(Some(false)) => return Ok(()),
-            Ok(None) if heard.elapsed() < SILENT => {}
-            Ok(None) => return Err(format!("{what}: no samples for {} s", SILENT.as_secs())),
+            Ok(None) => silence.check(&what, Instant::now())?,
             Err(_) => return Err(format!("{} stopped streaming (unplugged?)", lib.brand())),
         }
     }

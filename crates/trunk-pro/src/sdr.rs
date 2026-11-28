@@ -563,6 +563,47 @@ pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>
     }
 }
 
+/// How long a radio's stream has gone without samples. Each driver's read loop notes every read that
+/// brought some ([`Silence::heard`]) and, after one that didn't (timed out, empty, …), asks
+/// [`Silence::check`]: an error once there have been none for its limit, and so a reopen. Counting
+/// timeouts instead missed reads that come back at once with nothing (SoapyRemote's first packets, a
+/// USRP's), and taking an empty read as success reopened the radio without a word.
+#[derive(Clone, Copy, Debug)]
+pub struct Silence {
+    limit: Duration,
+    last: Instant,
+}
+
+impl Silence {
+    /// For a stream started at `at` that may go `limit` without a sample.
+    pub fn since(limit: Duration, at: Instant) -> Silence {
+        Silence { limit, last: at }
+    }
+    /// For a stream started now.
+    pub fn new(limit: Duration) -> Silence {
+        Silence::since(limit, Instant::now())
+    }
+    /// A read at `at` brought samples.
+    pub fn heard(&mut self, at: Instant) {
+        self.last = at;
+    }
+    /// When samples last came (or the stream started).
+    pub fn last(&self) -> Instant {
+        self.last
+    }
+    /// Whether, at `at`, there have been none for the limit.
+    pub fn over(&self, at: Instant) -> bool {
+        at.saturating_duration_since(self.last) >= self.limit
+    }
+    /// After a read without samples, at `at`: "{name}: no samples for N s" once there have been none for the limit.
+    pub fn check(&self, name: &str, at: Instant) -> Result<(), String> {
+        if self.over(at) {
+            return Err(format!("{name}: no samples for {} s", self.limit.as_secs()));
+        }
+        Ok(())
+    }
+}
+
 /// Watches a radio's raw 8-bit stream for the ways a stuck one fails while
 /// still "streaming" — a frozen waterfall at the full rate, nothing dropped.
 /// Live RF never repeats itself (the noise alone sees to that), so a block
@@ -752,6 +793,18 @@ mod tests {
         assert!(Gain::Stages(s).same(&Gain::Stages(s)) && !Gain::Stages(s).same(&Gain::Stages(s.with(Stage::Vga, 28.0))));
         assert!(!Gain::Stages(s).same(&Gain::Stages(s.with(Stage::Amp, 0.0))), "a stage one has, the other hasn't");
         assert!(!Gain::Agc.same(&Gain::Db(30.0)));
+    }
+
+    /// Only the time since the last samples counts, however the reads without any came back.
+    #[test]
+    fn silence_is_the_time_since_the_last_samples() {
+        let t0 = Instant::now();
+        let mut s = Silence::since(Duration::from_secs(3), t0);
+        assert_eq!(s.check("USRP", t0 + Duration::from_millis(2900)), Ok(()));
+        s.heard(t0 + Duration::from_secs(2));
+        assert_eq!(s.check("USRP", t0 + Duration::from_millis(4900)), Ok(()), "samples start it again");
+        assert_eq!(s.check("USRP", t0 + Duration::from_secs(5)), Err("USRP: no samples for 3 s".into()));
+        assert_eq!(s.last(), t0 + Duration::from_secs(2));
     }
 
     /// A gain changed while running: the radio says what it set, and the sink tells it with what was asked.

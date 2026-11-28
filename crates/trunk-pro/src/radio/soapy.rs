@@ -19,7 +19,7 @@ use trunk_app::config::{soapy_driver_is, soapy_pairs};
 use trunk_app::gain::{Reported, ReportedStage};
 
 use super::{cstr, ppm_corrected, Caps, Deadline, DriverInfo, Handed, Rates};
-use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Sink, Tunable};
+use crate::sdr::{Applied, Block, Control, Gain, Radio, Regained, Retuned, Silence, Sink, Tunable};
 
 type Dev = *mut c_void;
 type Stream = *mut c_void;
@@ -677,7 +677,7 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
     }
 }
 
-/// A stream that has given no samples for this long (reads timing out or empty) has stopped: an error, and so a reopen.
+/// A stream that has given no samples for this long (reads timing out or empty) has stopped ([`Silence`]): an error, and so a reopen.
 const SILENT: Duration = Duration::from_secs(10);
 
 /// An open, started stream's reads into `sink`, in blocks of `per` samples, until `stop`, the receiver
@@ -705,8 +705,8 @@ fn pump<T: Tunable>(
 ) -> Result<(), String> {
     let mut stamps = Stamps::new(cfg.rate_hz);
     let mut overflowed = false;
-    // The last sample (or the start), and whether an empty read was said.
-    let mut heard = now();
+    // Since the last samples (or the start), and whether an empty read was said.
+    let mut silence = Silence::since(SILENT, now());
     let mut said_empty = false;
     while !stop.load(Ordering::Relaxed) {
         if let Some(c) = ctl
@@ -721,7 +721,7 @@ fn pump<T: Tunable>(
             let (mut flags, mut t) = (0 as c_int, 0 as c_longlong);
             let n = read(&mut buf.vec()[got..], &mut flags, &mut t);
             if n > 0 {
-                heard = now();
+                silence.heard(now());
                 dropped += stamps.read(n as usize, (flags & HAS_TIME != 0).then_some(t));
                 if overflowed && !stamps.timed() {
                     // No timestamps (or none to go by): an overflow lost about one transfer.
@@ -731,9 +731,7 @@ fn pump<T: Tunable>(
                 got += n as usize;
                 continue;
             }
-            if now().duration_since(heard) >= SILENT {
-                return Err(format!("SoapySDR: no samples for {} s", SILENT.as_secs()));
-            }
+            silence.check("SoapySDR", now())?;
             match n {
                 0 => {
                     if !std::mem::replace(&mut said_empty, true) {

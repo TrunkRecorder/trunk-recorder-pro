@@ -13,6 +13,13 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   (`sys/<short>/notSaved/why/<why>`, and per site and channel), and a call whose files couldn't be written now counts
   as not saved (it was counted as saved). A recorded call whose voice turned out encrypted is now `encrypted` rather
   than `silent`, in capture rules' `call.not_saved` too.
+
+- **A USRP that sends nothing is noticed.** A read that came back at once with no samples and no error counted as
+  samples, so a USRP doing that forever was never given up on and reopened: it went quiet without a word. Now every
+  radio's read loop asks one question, how long since its last samples (`Silence`), whatever its reads without any
+  came back as, and gives up past its limit as before (RTL-SDR, HackRF and Airspy 2 s, rtl_tcp, SpyServer and USRP
+  3 s, bladeRF and SoapySDR 10 s). A HackRF read that returns no samples without timing out counts toward that too.
+
 - **A radio behind SoapyRemote streams.** SoapyRemote's server sends from the moment the stream is set up, before
   the radio starts, so a remote Airspy's first reads return 0 samples. A read of 0 was taken as success: the
   stream ended without a word and was opened again at once, which made a new backlog of empty reads, about 8
@@ -489,7 +496,6 @@ Recording first. The default, and the Docker image's, are already full paths.
   longer read: give those sites their accounts in their rows on the system's card.
 - **Held plugin items** (delayed calls) from before this release are dropped, and a multi-site call's copies share one
   `call_num`.
-
 
 ## [0.3.9] — 2026-11-20
 

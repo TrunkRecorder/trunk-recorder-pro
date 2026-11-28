@@ -26,7 +26,7 @@ use rtlsdr_nusb::TunerKind;
 use super::net::{read_up_to, timed_out, CONNECT, POLL, SILENT};
 use super::rtl::RtlConfig;
 use super::{Caps, Deadline, Rates};
-use crate::sdr::{Applied, Control, Gain, Regained, Retuned, Sink, Tunable, Wire};
+use crate::sdr::{Applied, Control, Gain, Regained, Retuned, Silence, Sink, Tunable, Wire};
 
 /// How long to wait for the first bytes after the greeting, to see whether they're an `RSP0` block (a
 /// server that has nothing to send yet has none).
@@ -255,7 +255,7 @@ pub(super) fn stream_once(cfg: &RtlConfig, server: &str, sink: &mut Sink, stop: 
     // A byte left over when a read ends between an I and its Q: the pair is whole at the next read. (Sent
     // apart, they would swap I and Q for the rest of the stream.)
     let mut carry: Option<u8> = None;
-    let mut heard = Instant::now();
+    let mut silence = Silence::new(SILENT);
     let mut ahead = std::mem::take(&mut conn.first);
     let result = loop {
         if stop.load(Ordering::Relaxed) {
@@ -283,8 +283,8 @@ pub(super) fn stream_once(cfg: &RtlConfig, server: &str, sink: &mut Sink, stop: 
                 Ok(0) => break Err(format!("{name}: the server closed the connection")),
                 Ok(n) => n,
                 Err(e) if timed_out(&e) => {
-                    if heard.elapsed() > SILENT {
-                        break Err(format!("{name}: no samples for {} s", SILENT.as_secs()));
+                    if let Err(e) = silence.check(&name, Instant::now()) {
+                        break Err(e);
                     }
                     continue;
                 }
@@ -292,7 +292,7 @@ pub(super) fn stream_once(cfg: &RtlConfig, server: &str, sink: &mut Sink, stop: 
             }
         };
         let now = Instant::now();
-        heard = now;
+        silence.heard(now);
         let mut end = start + got;
         carry = None;
         if end % 2 == 1 {
