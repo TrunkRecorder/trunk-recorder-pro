@@ -3,7 +3,7 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems, autoTuneOn, configIndex, siteActive, labelKind, siteNameOf, sourceShort, sourcesShown, usableHalfWidth, type SourceShown } from "../config.ts";
+import { activeSystems, autoTuneOn, configIndex, siteActive, siteNameOf, SOURCE_KINDS, sourceTitle, usableHalfWidth } from "../config.ts";
 import { isRecording, can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
 import { dur, keyPart, num, pct, signed } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
@@ -434,22 +434,19 @@ export function platformHealth(s: AppState): Health {
 
 export function rfHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  return worstOf(s.sources, (x) => sourceShown(s, x).short, (x) => sourceHealth(s, x));
-}
-
-/** Running source `src` as the dashboard shows it: kind and name in the line, its label on hover (sourcesShown). */
-export function sourceShown(s: Pick<AppState, "sources" | "config">, src: SourceStatus): SourceShown {
-  return sourcesShown(s.sources, s.config)[s.sources.indexOf(src)] ?? { short: src.settings ? sourceShort(src.settings) : labelKind(src.label), full: src.label };
+  return worstOf(s.sources, (x) => sourceName(s, x), (x) => sourceHealth(s, x));
 }
 
 /**
- * A source named by its label (as an event names it) as the dashboard shows it: while it runs, as sourcesShown
- * shows it; a source no longer running (changed, removed, an earlier run's) by the kind its label names. Never the
- * label itself: that goes on hover (eventTip).
+ * Running source `src` as the dashboard calls it: its title, as Setup and every message call it ("Source 2 (roof)",
+ * Source::title, by the name Setup has now), and its kind ("Source 2 (roof) · RTL-SDR"). Not its label: a
+ * SoapySDR's is its whole device arguments, which goes on hover. A source the config no longer has: its label.
  */
-export function sourceNamer(s: Pick<AppState, "sources" | "config">): (label: string) => string {
-  const shown = sourcesShown(s.sources, s.config);
-  return (label) => shown[s.sources.findIndex((x) => x.label === label)]?.short ?? labelKind(label);
+export function sourceName(s: Pick<AppState, "sources" | "config">, src: SourceStatus): string {
+  const k = s.config ? configIndex(s.sources, s.config, src) : -1;
+  if (k < 0) return src.label;
+  const kind = src.settings && SOURCE_KINDS[src.settings.type]?.label;
+  return kind ? `${sourceTitle(s.config!, k)} · ${kind}` : sourceTitle(s.config!, k);
 }
 
 export function decodeHealth(s: AppState): Health {

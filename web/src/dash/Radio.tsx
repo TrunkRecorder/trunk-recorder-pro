@@ -15,7 +15,7 @@ import type { CallEntry, CipherSeen, LengthHistogram, Origin, OutOfBandRow, Radi
 import { playable, playNow } from "../listen.ts";
 import { ActiveCalls, aliasOf, Log, unitIdOf } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
-import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, scoped, sourceShown, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
+import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, scoped, sourceName, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
 type Hours = "24" | "168";
 const HOURS: { v: Hours; label: string }[] = [
@@ -382,7 +382,7 @@ function OutOfBand({ s, sys, rows, hours, focus }: { s: AppState; sys: DashSyste
                           <HeatStrip v={r.hourly} titles={r.hourly.map((v, i) => `${hourLabel(hours)(i)}: ${v} calls`)} />
                         </td>
                         <td className="small">{ago(r.last)}</td>
-                        <td>{c ? <Clip text={sourceShown(s, c.src).short} title={c.src.label} /> : "—"}</td>
+                        <td>{c ? <Clip text={sourceName(s, c.src)} title={c.src.label} /> : "—"}</td>
                         <td title="Past the source's usable edge">{!c ? "—" : c.beyondHz > 0 ? <Fig v={c.beyondHz >= 1e6 ? num(c.beyondHz / 1e6, 2) : num(c.beyondHz / 1000, 1)} u={c.beyondHz >= 1e6 ? "MHz" : "kHz"} level="warn" /> : <span className="muted">covers it now</span>}</td>
                       </tr>
                     );

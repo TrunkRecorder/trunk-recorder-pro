@@ -112,9 +112,10 @@ two would overlap; an adjacent site has a fainter line, and its address shows wh
 is on it, as the readout under the pointer names any line. Calls are tagged on a row of their
 own below, and the tag fades after a few seconds.
 
-The dashboard names a source by its kind and the name Setup gives it ("Airspy · roof"), or by
-its kind alone when it has none, with its number when two would read the same; the radio's full
-label (for SoapySDR, its device arguments) is on hover.
+The dashboard calls a source as Setup does, with its kind ("Source 2 (roof) · Airspy",
+"Source 3 · RTL-SDR"); the radio's full label (for SoapySDR, its device arguments) is on hover.
+The Lately feed calls a source what it was called when the event happened. On the band overview,
+too, an adjacent site's address shows when the pointer is on its line.
 
 Click a source's name for its own page, which adds:
 

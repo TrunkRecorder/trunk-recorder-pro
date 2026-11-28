@@ -2,12 +2,12 @@
 // control channel decoding as usual, what's on the air), the sources, the
 // plugins and the computer in a line each, and what happened lately.
 
-import { formatMhz, labelKind } from "../config.ts";
+import { formatMhz } from "../config.ts";
 import { can, mayEdit, pluginOn, radioQuery, statsSince, setView, snapshot, start, usePolled, useApp, type AppState } from "../controller.ts";
 import { Card, Fig, Figs, HeatStrip, LiveSpark, Light, Meter, Sparkline, Stat, SystemTag, Trend } from "../charts.tsx";
 import { ago, bytes, compact, hmm, mhz, ms, num, pct } from "../fmt.ts";
 import type { FreqRow, MonitorEvent, RadioSummary } from "../protocol.ts";
-import { FOLDER_LABEL, change, connections, connectionsSummary, gainFix, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, scoped, sourceNamer, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
+import { FOLDER_LABEL, change, connections, connectionsSummary, gainFix, goTo, rateOver, dashSystems, K, KIND_LABEL, pluginHealth, platformHealth, scoped, spoolRemovedFix, recentAvg, running, systemOverallHealth, total, useHistory, usualOf, useUsual, val, type DashSystem, type Usual } from "./data.ts";
 import { SourceCard } from "./Rf.tsx";
 import { SiteRows } from "./Systems.tsx";
 import { BAD_MAX, badLevel, voiceBadPct } from "./Decode.tsx";
@@ -218,9 +218,9 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
 
 // ── events ───────────────────────────────────────────────────────────────────
 
-/** `namer`: what to call a source the event names by its label (sourceNamer: kind and name); by default the kind its label names. The label is the tooltip's (eventTip). */
-export function eventText(e: MonitorEvent, namer: (label: string) => string = labelKind): string {
-  const source = (label: string | undefined) => (label === undefined ? label : namer(label));
+export function eventText(e: MonitorEvent): string {
+  // A source by what it was called then ("Source 2 (roof)"), its radio on hover (eventTip).
+  const source = () => e.title ?? e.source;
   switch (e.kind) {
     case "tgFirstSeen":
       return `${e.system}: new talkgroup ${e.alphaTag || e.talkgroup}`;
@@ -233,13 +233,13 @@ export function eventText(e: MonitorEvent, namer: (label: string) => string = la
     case "controlRegained":
       return `${e.system}${e.site ? ` site ${e.site}` : ""}: control channel back`;
     case "sourceDrops":
-      return `${source(e.source)}: dropping samples`;
+      return `${source()}: dropping samples`;
     case "sourceClipping":
-      return `${source(e.source)}: gain too high · ${e.pct}% clipping`;
+      return `${source()}: gain too high · ${e.pct}% clipping`;
     case "sourceQuiet":
-      return `${source(e.source)}: gain may be low · peaks ${e.peakDb} dBFS`;
+      return `${source()}: gain may be low · peaks ${e.peakDb} dBFS`;
     case "sourceRecovered":
-      return `${source(e.source)}: clean again`;
+      return `${source()}: clean again`;
     case "pluginHealth":
       return `${e.plugin}: ${e.state}${e.message ? ` — ${e.message}` : ""}`;
     case "linkDown":
@@ -317,7 +317,7 @@ function eventPlace(e: MonitorEvent): () => void {
   }
 }
 
-export function EventFeed({ events, limit = 12, source }: { events: MonitorEvent[]; limit?: number; source?: (label: string) => string }) {
+export function EventFeed({ events, limit = 12 }: { events: MonitorEvent[]; limit?: number }) {
   const shown = [...events].reverse().slice(0, limit);
   return (
     <Card title="Lately" className="events">
@@ -329,7 +329,7 @@ export function EventFeed({ events, limit = 12, source }: { events: MonitorEvent
             <li key={`${e.t}-${i}`}>
               <button className="linkish feed-item" onClick={eventPlace(e)} title={eventTip(e)}>
                 <Light level={e.level === "info" ? "idle" : e.level} />
-                <span className="feed-text">{eventText(e, source)}</span>
+                <span className="feed-text">{eventText(e)}</span>
                 <span className="muted small">{ago(e.t)}</span>
               </button>
             </li>
@@ -470,7 +470,7 @@ export function Overview() {
           <h2 className="section-title">Status</h2>
           {can("host") && <PlatformLine s={s} />}
           {can("plugins") && mayEdit() && <PluginsLine s={s} />}
-          <EventFeed events={s.events} source={sourceNamer(s)} />
+          <EventFeed events={s.events} />
         </div>
       </div>
     </div>

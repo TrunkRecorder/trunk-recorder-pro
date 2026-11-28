@@ -50,7 +50,7 @@ test("Waterfall: site names on the trace; an adjacent site's address only on hov
   assert.match(shown, /lcra\/Seguin/);
   assert.match(shown, /lcra\/New Braunfels/);
   assert.doesNotMatch(shown, /BEE00:954:1-1/, "the address isn't printed on the trace");
-  assert.match(html, /class="mk mk-cc faint"[^>]*title="Adjacent site BEE00:954:1-1/, "its line says it on hover");
+  assert.match(html, /class="mk mk-cc faint"/, "its line stays (the readout names it on hover)");
   // The two close site names: one on the top row, the other a row down.
   assert.match(html, /top:4px[^"]*">lcra\/Seguin</);
   assert.match(html, /top:22px[^"]*">lcra\/New Braunfels</);

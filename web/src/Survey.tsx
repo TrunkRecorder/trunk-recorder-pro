@@ -772,7 +772,7 @@ export function SurveyPanel(props: { c: Config }) {
                   {sv.stage === "monitoring" && <span className="muted small"> · {sv.monitor.elapsedS.toFixed(0)} s</span>}
                 </span>
               </div>
-              {sv.stage === "monitoring" && s.surveySpectrum && <Waterfall radio={s.surveySpectrum} label="Survey" ccs={[{ hz: sv.monitor.heardHz, label: "CC", color: "var(--accent)" }]} calls={[]} />}
+              {sv.stage === "monitoring" && s.surveySpectrum && <Waterfall radio={s.surveySpectrum} label="Survey" ccs={[{ hz: sv.monitor.heardHz, label: "CC", color: "var(--accent)", title: "The control channel heard" }]} calls={[]} />}
               <MonitorView m={sv.monitor} sug={sv.suggest} c={c} source={sv.source ?? -1} onDone={() => setOpen(false)} sought={sought} />
             </>
           )}

@@ -19,8 +19,8 @@ export interface CcMark {
   color: string;
   /** An adjacent site's, not one followed here: drawn fainter, its label below. */
   faint?: boolean;
-  /** What hovering it says (absent: "Control channel <label>"). */
-  title?: string;
+  /** What hovering it says ("Station 1 control channel", "Adjacent site … announced by …"). */
+  title: string;
 }
 
 const ROWS = 160;
@@ -197,14 +197,11 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
   const adjacent = props.ccs.filter((m) => m.faint && inView(pos(m.hz)));
   const calls = props.calls.filter((c) => inView(pos(c.freqHz)));
   const callText = (c: CallView) => String(c.alphaTag || c.patched?.find((t) => t.alphaTag)?.alphaTag || c.talkgroup);
+  const callTip = (c: CallView) => `${c.systemName} · TG ${c.talkgroup}${c.alphaTag ? ` (${c.alphaTag})` : ""}`;
   const sitePlaces = stackLabels(sites.map((m) => ({ at: pos(m.hz), px: labelPx(m.label) })), width, SITE_ROWS);
   const callPlaces = stackLabels(calls.map((c) => ({ at: pos(c.freqHz), px: labelPx(callText(c)) + (props.multi ? 12 : 0) })), width, CALL_ROWS);
-  // What hovering a line says (the markers themselves don't take the pointer: the readout does).
-  const hovered = [
-    ...sites.map((m) => ({ at: pos(m.hz), tip: m.title ?? `Control channel ${m.label}` })),
-    ...adjacent.map((m) => ({ at: pos(m.hz), tip: m.title ?? `Control channel ${m.label}` })),
-    ...calls.map((c) => ({ at: pos(c.freqHz), tip: `${c.systemName} · TG ${c.talkgroup}${c.alphaTag ? ` (${c.alphaTag})` : ""}` })),
-  ];
+  // What hovering a line says: the readout does (the markers don't take the pointer).
+  const hovered = [...[...sites, ...adjacent].map((m) => ({ at: pos(m.hz), tip: m.title })), ...calls.map((c) => ({ at: pos(c.freqHz), tip: callTip(c) }))];
   const near = hover !== null ? nearestMark(hovered.map((x) => x.at), hover, width) : -1;
   const placed = (p: Placed, top: number) => ({ top: `${top + p.row * 18}px`, ...(p.left ? { left: "auto", right: "3px" } : {}) });
 
@@ -223,15 +220,15 @@ export function Waterfall(props: { radio: Spectrum | undefined; label?: string; 
         <canvas ref={fall} className="wf-fall" aria-label="Waterfall of the source bandwidth" />
         <div className="wf-markers">
           {sites.map((m, i) => (
-            <span key={`${m.label}-${m.hz}`} className="mk mk-cc" style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }} title={m.title ?? `Control channel ${m.label}`}>
+            <span key={`${m.label}-${m.hz}`} className="mk mk-cc" style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }}>
               <i style={{ color: m.color, ...placed(sitePlaces[i], SITE_TOP) }}>{m.label}</i>
             </span>
           ))}
           {adjacent.map((m) => (
-            <span key={`${m.label}-${m.hz}`} className="mk mk-cc faint" style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }} title={m.title ?? `Control channel ${m.label}`} />
+            <span key={`${m.label}-${m.hz}`} className="mk mk-cc faint" style={{ left: `${pos(m.hz)}%`, borderLeftColor: m.color }} />
           ))}
           {calls.map((c, i) => (
-            <span key={c.id} className={`mk mk-call mk-${c.state}${c.encrypted ? " mk-enc" : ""}`} style={{ left: `${pos(c.freqHz)}%` }} title={`${c.systemName} · TG ${c.talkgroup}`}>
+            <span key={c.id} className={`mk mk-call mk-${c.state}${c.encrypted ? " mk-enc" : ""}`} style={{ left: `${pos(c.freqHz)}%` }}>
               <i style={placed(callPlaces[i], CALL_TOP)}>
                 {props.multi && <SystemDot color={props.colorOf?.(c.systemName) ?? "var(--line)"} />}
                 {callText(c)}
