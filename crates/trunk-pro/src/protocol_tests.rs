@@ -141,6 +141,41 @@ fn a_recording_sessions_messages() {
     check_all("FromRecorder", &msgs);
 }
 
+/// A system's log lines come on its own topic (`log:<shortName>`, its Radio system page's) with only its lines, and
+/// on `log` with every line (the recorder's own too): each only while something watches it.
+#[test]
+fn a_systems_log_lines_come_on_its_own_topic() {
+    let run = |topics: &[&str]| {
+        let mut s = Session::new(conventional_config(), &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        s.set_topics(trunk_app::stats::Topics::new(topics.iter().map(|t| t.to_string())));
+        let (mut out, mut logs) = (Vec::new(), Vec::new());
+        let mut take = |out: &mut Vec<Output>| {
+            for o in out.drain(..) {
+                if let Output::Topic { topic, msg: ToClient::Log { lines } } = o {
+                    logs.push((topic, lines));
+                }
+            }
+        };
+        air(2_400_000.0, 4.5, |iq, t| {
+            s.push_iq(0, iq, 0, 1.75e12 + t * 1000.0);
+            s.poll(1.75e12 + t * 1000.0, &mut out);
+            take(&mut out);
+        });
+        s.source_error(0, "a test error");
+        s.poll(1.75e12 + 5000.0, &mut out);
+        s.finish(&mut out);
+        take(&mut out);
+        logs
+    };
+    let own = run(&["log:conv"]);
+    assert!(own.iter().any(|(_, l)| !l.is_empty()), "its lines");
+    assert!(own.iter().all(|(t, l)| t == "log:conv" && l.iter().all(|l| l.system.as_deref() == Some("conv"))), "{own:?}");
+    let all = run(&["log"]);
+    assert!(all.iter().all(|(t, _)| t == "log"));
+    assert!(all.iter().flat_map(|(_, l)| l).any(|l| l.system.is_none() && l.text.contains("a test error")), "the recorder's own line too");
+    assert!(run(&["log:other"]).is_empty(), "another system's page: none of these");
+}
+
 /// An RTL-SDR hands over 131,072 samples at a time (55 ms at 2.4 MS/s), each
 /// a few ms late: the rate shown for it holds steady, not a chunk more or less
 /// a window; and falls when it goes quiet.
@@ -676,7 +711,7 @@ fn the_servers_messages() {
         ToClient::UnitNames { system: "dcfd".into(), unit_names: trunk_core::trunk::replace_rows(&[], trunk_core::trunk::read_unit_names("1234,Engine 12\n/^7(\\d{3})$/,Medic $1\n").unit_names, Some(&trunk_core::trunk::Origin { name: "units.csv".into(), at: 1_762_500_000, ..Default::default() })) },
         ToClient::UnitNameEdited { system: "dcfd".into(), unit: 1234, name: "Bus 14".into(), origin: trunk_core::trunk::Origin::edited(1_762_500_000) },
         // What the recorder itself logs (logging::to_browsers).
-        ToClient::Log { lines: vec![json!({ "timeS": 0, "time": 1_750_000_000.5, "level": "warning", "kind": "error", "text": "No RAM spool" })] },
+        ToClient::Log { lines: vec![trunk_app::protocol::LogLine { time: Some(1_750_000_000.5), level: Some("warning"), kind: "error".into(), text: "No RAM spool".into(), ..Default::default() }] },
     ];
     let msgs: Vec<Value> = greeting.into_iter().chain(msgs.iter().map(ToClient::to_value)).chain(queries).chain(ctx.shared.recent_events()).collect();
     let _ = std::fs::remove_dir_all(&dir);

@@ -125,7 +125,8 @@ export interface AppState {
   load: number;
   calls: CallView[];
   spectra: Spectrum[];
-  log: LogLine[];
+  /** Each system's control channel log, by short name: the lines that came while its page showed it. */
+  log: Record<string, LogLine[]>;
   history: CallEntry[];
   /** Each system's radios' talker aliases, by short name. */
   units: Record<string, UnitAliases>;
@@ -259,7 +260,7 @@ let state: AppState = {
   load: 0,
   calls: [],
   spectra: [],
-  log: [],
+  log: {},
   history: [],
   units: {},
   mdcUnits: {},
@@ -423,6 +424,19 @@ transport.onMessage = (m: FromRecorder) => {
   for (const f of messageHooks) f(m);
 };
 
+/** Lines kept of each system's control channel log. */
+export const LOG_KEPT = 2000;
+
+/** `log` with `lines` added: each system's own, the newest LOG_KEPT, so one system's never push out another's.
+ *  (The recorder's own lines, no system's, aren't shown on any page.) */
+export function withLog(log: Record<string, LogLine[]>, lines: LogLine[], kept = LOG_KEPT): Record<string, LogLine[]> {
+  const add: Record<string, LogLine[]> = {};
+  for (const l of lines) if (l.system) (add[l.system] ??= []).push(l);
+  const out = { ...log };
+  for (const [sys, more] of Object.entries(add)) out[sys] = [...(log[sys] ?? []), ...more].slice(-kept);
+  return out;
+}
+
 function take(m: FromRecorder): void {
   switch (m.type) {
     // The greeting's end: everything before it said how things are now.
@@ -436,7 +450,7 @@ function take(m: FromRecorder): void {
       for (const u of unanswered) sendNameEdit(u);
       break;
     case "state":
-      set({ phase: m.phase, runError: m.error, ended: m.ended, restartNeeded: m.restartNeeded, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
+      set({ phase: m.phase, runError: m.error, ended: m.ended, restartNeeded: m.restartNeeded, ...(m.phase === "starting" ? { calls: [], log: {}, status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
       // A new run counts from nothing: what it counts is all since the reset.
       if (m.phase === "starting") keepCountsReset((k) => !runCounted(k));
       if (m.phase === "idle") set({ nowPlaying: null, stats: null });
@@ -483,8 +497,8 @@ function take(m: FromRecorder): void {
       break;
     }
     case "log":
-      // (Each system's page shows its own: enough that a quiet one's aren't pushed out by a busy one.)
-      set({ log: [...state.log, ...m.lines].slice(-2000) });
+      // (Each system's page shows its own, from its own topic: log:<shortName>.)
+      set({ log: withLog(state.log, m.lines) });
       break;
     case "concluded":
       set({ history: [m.entry, ...state.history].slice(0, 500), mdcUnits: mdcHeard(state.mdcUnits, [m.entry]) });

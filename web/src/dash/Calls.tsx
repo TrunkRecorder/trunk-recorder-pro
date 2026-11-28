@@ -215,8 +215,8 @@ export function Log({ s, system }: { s: AppState; system: string }) {
   const [show, setShow] = useState<"calls" | "all">("calls");
   // Every control message as a line costs the recorder: only while it's open.
   const [open, setOpen] = useState(false);
-  useTopic(open ? "log" : null);
-  const mine = s.log.filter((l) => l.system === system);
+  useTopic(open ? `log:${system}` : null);
+  const mine = s.log[system] ?? [];
   const lines = show === "all" ? mine : mine.filter((l) => /grant|update|control|patch|status|sysid|adjacent|error|note|alias|plugin|duplicate/.test(l.kind));
   return (
     <details className="panel log" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>

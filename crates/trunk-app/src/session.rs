@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, TalkgroupName, UnitEvent};
 
-use crate::protocol::{DropStage, DroppedCall, ToClient};
+use crate::protocol::{log_topic, DropStage, DroppedCall, LogLine, ToClient};
 use trunk_core::trunk::calls::Reason;
 
 pub enum Output {
@@ -397,7 +397,7 @@ pub struct Session {
     busy: Vec<Arc<AtomicU64>>,
     /// The dashboard's measurements ([`crate::stats`]).
     meas: Stats,
-    log: Vec<Value>,
+    log: Vec<LogLine>,
     /// Log records not yet handed out.
     records: Vec<Record>,
     /// What the config set to receive on a source that isn't one, left out of this run, and why ([`Session::left_out`]).
@@ -711,7 +711,7 @@ impl Session {
             s.last_error_s = self.meas.now();
         }
         let text = format!("{}: {error}", self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source)));
-        self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text }));
+        self.log.push(LogLine { time_s: self.engine.status().now_s, kind: "error".into(), text: text.clone(), ..Default::default() });
         self.records.push(Record::text(Level::Error, None, text));
     }
 
@@ -1291,15 +1291,30 @@ impl Session {
         trunk_recorder_plugin::Totals { time: self.meas.now(), since, series: self.meas.totals(), sites, channels, sources, clock }
     }
 
+    /// Each system's lines to those watching it (`log:<shortName>`: its Radio system page's
+    /// control channel log), and every line to those watching them all (`log`).
     fn flush_log(&mut self, out: &mut Vec<Output>) {
-        if !self.log.is_empty() {
-            out.push(Output::Topic { topic: "log".into(), msg: ToClient::Log { lines: std::mem::take(&mut self.log) } });
+        if self.log.is_empty() {
+            return;
+        }
+        let lines = std::mem::take(&mut self.log);
+        let mut each: std::collections::BTreeMap<&str, Vec<LogLine>> = Default::default();
+        for l in &lines {
+            if let Some(sys) = l.system.as_deref().filter(|s| self.meas.topics.has(&log_topic(s))) {
+                each.entry(sys).or_default().push(l.clone());
+            }
+        }
+        for (sys, lines) in each {
+            out.push(Output::Topic { topic: log_topic(sys), msg: ToClient::Log { lines } });
+        }
+        if self.meas.topics.has("log") {
+            out.push(Output::Topic { topic: "log".into(), msg: ToClient::Log { lines } });
         }
     }
 
-    /// The control channel log's lines are made only while someone shows it.
-    fn logging(&self) -> bool {
-        self.meas.topics.has("log")
+    /// A system's control messages are made log lines only while someone shows them.
+    fn logging(&self, system: &str) -> bool {
+        self.meas.topics.has("log") || self.meas.topics.has(&log_topic(system))
     }
 
     fn handle(&mut self, ev: Event, out: &mut Vec<Output>) {
@@ -1333,15 +1348,15 @@ impl Session {
                     }
                 }
                 self.records.push(Record::text(Level::Trace, Some(&self.site_label(system, Some(site))), m.meta.clone()));
-                if self.logging() {
-                    self.log.push(json!({ "timeS": m.time_s, "kind": m.kind.as_str(), "text": m.meta, "system": name, "site": self.site_name(Some(site)) }))
+                if self.logging(&name) {
+                    self.log.push(LogLine { time_s: m.time_s, kind: m.kind.as_str().into(), text: m.meta, site: self.site_name(Some(site)), system: Some(name), ..Default::default() })
                 }
             }
             Event::ControlChannel { site, freq_hz } => {
                 let system = self.system_of(site);
                 let name = self.system_name(system).to_string();
                 self.records.push(Record { level: Level::Info, system: Some(self.site_label(system, Some(site))), call: None, body: Body::ControlChannel { freq_hz: freq_hz as f64 } });
-                self.log.push(json!({ "timeS": 0, "kind": "control", "text": format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6), "system": name, "site": self.site_name(Some(site)) }))
+                self.log.push(LogLine { kind: "control".into(), text: format!("Control channel {:.5} MHz", freq_hz as f64 / 1e6), site: self.site_name(Some(site)), system: Some(name), ..Default::default() })
             }
             Event::Note { system, site, level, text } => {
                 let name = self.system_name(system).to_string();
@@ -1353,7 +1368,7 @@ impl Session {
                     NoteLevel::Warning => (Level::Warning, "error"),
                 };
                 self.records.push(Record::text(level, Some(&self.site_label(system, site)), text.clone()));
-                self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": kind, "text": text, "system": name, "site": self.site_name(site) }))
+                self.log.push(LogLine { time_s: self.engine.status().now_s, kind: kind.into(), text, site: self.site_name(site), system: Some(name), ..Default::default() })
             }
             Event::Audio(audio) => {
                 if !self.want_audio {
@@ -1429,7 +1444,7 @@ impl Session {
                 let tag = if t.alpha_tag.is_empty() { String::new() } else { format!(" {}", t.alpha_tag) };
                 let text = format!("TG {}{tag}: {}{}", t.talkgroup, pattern.text, if named.is_empty() { String::new() } else { format!(" = {named}") });
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(t.system, t.site)), text.clone()));
-                self.log.push(json!({ "timeS": t.time_s, "kind": "tonePattern", "text": text, "system": name, "site": self.site_name(t.site) }));
+                self.log.push(LogLine { time_s: t.time_s, kind: "tonePattern".into(), text, site: self.site_name(t.site), system: Some(name.clone()), ..Default::default() });
                 if self.plugin_topics.tone_patterns {
                     let alpha_tag = t.alpha_tag.clone();
                     let time = (self.wall(t.time_s) * 1000.0).round() / 1000.0;
@@ -1440,7 +1455,7 @@ impl Session {
             Event::UnitAlias { system, unit, alias, talkgroup } => {
                 let name = self.system_name(system).to_string();
                 self.records.push(Record::text(Level::Info, Some(&name), format!("Unit {unit} is \"{alias}\" (TG {talkgroup})")));
-                self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "alias", "text": format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), "system": name }));
+                self.log.push(LogLine { time_s: self.engine.status().now_s, kind: "alias".into(), text: format!("Unit {unit} is \"{alias}\" (TG {talkgroup})"), system: Some(name.clone()), ..Default::default() });
                 out.push(Output::Message(ToClient::UnitAlias { system: name, unit, alias }));
             }
             Event::UnitPosition { system, unit, lat, lon, talkgroup } => {
@@ -1448,8 +1463,8 @@ impl Session {
                 let name = self.system_name(system).to_string();
                 let text = if talkgroup == 0 { format!("Unit {unit} at {lat:.5}, {lon:.5}") } else { format!("Unit {unit} at {lat:.5}, {lon:.5} (TG {talkgroup})") };
                 self.records.push(Record::text(Level::Trace, Some(&name), text.clone()));
-                if self.logging() {
-                    self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "position", "text": text, "system": name }));
+                if self.logging(&name) {
+                    self.log.push(LogLine { time_s: self.engine.status().now_s, kind: "position".into(), text, system: Some(name), ..Default::default() });
                 }
             }
             Event::Duplicate { call, kept } => {
@@ -1457,7 +1472,7 @@ impl Session {
                 let (kept_at, also_at) = (self.site_name(kept.site), self.site_name(call.site));
                 let text = format!("TG {}{tag} was heard on sites {kept_at} and {also_at}: saved {kept_at}'s copy", call.talkgroup);
                 self.records.push(Record::text(Level::Info, Some(&self.site_label(call.system, call.site)), text.clone()));
-                self.log.push(json!({ "timeS": call.start_s, "kind": "duplicate", "text": text, "system": self.system_name(call.system), "site": also_at }));
+                self.log.push(LogLine { time_s: call.start_s, kind: "duplicate".into(), text, system: Some(self.system_name(call.system).to_string()), site: also_at, ..Default::default() });
             }
             Event::CopyStart(c) => {
                 let short = self.system_name(c.system).to_string();
@@ -2052,7 +2067,7 @@ mod tone_tests {
         let heard = trunk_core::trunk::PatternHeard { system: 0, site: None, call_id: 7, talkgroup: 1, alpha_tag: "Fire Dispatch".into(), src: 0, pattern, signals: vec!["FD_PAGE".into()], decrypted: false, time_s: 1.0 };
         let mut out = Vec::new();
         s.handle(Event::TonePattern(heard), &mut out);
-        assert!(s.log.iter().any(|l| l["kind"] == "tonePattern" && l["text"].as_str().is_some_and(|t| t.starts_with("TG 1 Fire Dispatch: "))), "{:?}", s.log);
+        assert!(s.log.iter().any(|l| l.kind == "tonePattern" && l.text.starts_with("TG 1 Fire Dispatch: ")), "{:?}", s.log);
         let plugin = out.iter().find_map(|o| match o { Output::Plugin(HostMessage::TonePattern(e)) => Some(e.alpha_tag.clone()), _ => None });
         assert_eq!(plugin.as_deref(), Some("Fire Dispatch"));
         let feed = out.iter().find_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => b.get("alphaTag").cloned(), _ => None });
