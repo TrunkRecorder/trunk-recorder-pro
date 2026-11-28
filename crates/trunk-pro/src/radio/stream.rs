@@ -20,7 +20,7 @@ use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlyS
 use symphonia::core::meta::MetadataOptions;
 use trunk_core::dsp::fm::{AudioResampler, AUDIO_RATE};
 
-use crate::sdr::{Control, Gain, Radio, Sink};
+use crate::sdr::{Control, Gain, Radio, Silence, Sink};
 
 /// Connecting, s; and how long a read may wait before the stop is looked at.
 const CONNECT: Duration = Duration::from_secs(15);
@@ -68,7 +68,7 @@ impl Radio for StreamConfig {
             None => None,
             Some(v) => Some(v.to_str().ok().and_then(|v| v.trim().parse::<usize>().ok()).filter(|&v| v > 0).ok_or("it gave a bad ICY metadata interval")?),
         };
-        let body = Body { inner: Mutex::new(response.into_body().into_reader()), stop: stop.clone(), heard: Instant::now() };
+        let body = Body { inner: Mutex::new(response.into_body().into_reader()), stop: stop.clone(), heard: Silence::new(SILENT) };
         let input = Icy { inner: body, interval, audio_left: interval.unwrap_or(0), meta_left: None };
         decode(input, extension(&url), stop, &mut |audio, channels| sink.audio(audio, channels, Instant::now()))
     }
@@ -79,7 +79,7 @@ impl Radio for StreamConfig {
 struct Body<R> {
     inner: Mutex<R>,
     stop: Arc<AtomicBool>,
-    heard: Instant,
+    heard: Silence,
 }
 
 impl<R: Read> Read for Body<R> {
@@ -92,10 +92,10 @@ impl<R: Read> Read for Body<R> {
             match inner.read(out) {
                 Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the server closed the stream")),
                 Ok(n) => {
-                    self.heard = Instant::now();
+                    self.heard.heard(Instant::now());
                     return Ok(n);
                 }
-                Err(e) if timed_out(&e) && self.heard.elapsed() < SILENT => continue,
+                Err(e) if timed_out(&e) && !self.heard.over(Instant::now()) => continue,
                 Err(e) if timed_out(&e) => return Err(io::Error::new(io::ErrorKind::TimedOut, format!("nothing from the server for {} s", SILENT.as_secs()))),
                 Err(e) => return Err(e),
             }

@@ -591,9 +591,13 @@ impl Silence {
     pub fn last(&self) -> Instant {
         self.last
     }
+    /// Whether, at `at`, there have been none for the limit.
+    pub fn over(&self, at: Instant) -> bool {
+        at.saturating_duration_since(self.last) >= self.limit
+    }
     /// After a read without samples, at `at`: "{name}: no samples for N s" once there have been none for the limit.
     pub fn check(&self, name: &str, at: Instant) -> Result<(), String> {
-        if at.saturating_duration_since(self.last) >= self.limit {
+        if self.over(at) {
             return Err(format!("{name}: no samples for {} s", self.limit.as_secs()));
         }
         Ok(())
