@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Every lost call says why.** A call recorded and then not kept, or followed and never recorded for want of a radio,
+  now comes to interfaces as a `callDropped` message, once, as the recorder decides: its talkgroup, frequency, times,
+  `stage` (`notSaved` or `notRecorded`) and `why` (`silent`, `short`, `encrypted`, `writeFailed`; `noSource`,
+  `noRecorder`), with the signal, noise and voice frames it had, and a failed write's error. A connection's greeting
+  brings the last 30 minutes of them (`history.dropped`). `notSaved` now has a series per reason beside it
+  (`sys/<short>/notSaved/why/<why>`, and per site and channel), and a call whose files couldn't be written now counts
+  as not saved (it was counted as saved). A recorded call whose voice turned out encrypted is now `encrypted` rather
+  than `silent`, in capture rules' `call.not_saved` too.
 - **A radio behind SoapyRemote streams.** SoapyRemote's server sends from the moment the stream is set up, before
   the radio starts, so a remote Airspy's first reads return 0 samples. A read of 0 was taken as success: the
   stream ended without a word and was opened again at once, which made a new backlog of empty reads, about 8

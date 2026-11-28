@@ -21,7 +21,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use trunk_recorder_plugin::{CallInfo, HostMessage, SystemStatus as PluginSystemStatus, TalkgroupName, UnitEvent};
 
-use crate::protocol::ToClient;
+use crate::protocol::{DropStage, DroppedCall, ToClient};
+use trunk_core::trunk::calls::Reason;
 
 pub enum Output {
     /// A message for the interface.
@@ -1488,10 +1489,23 @@ impl Session {
                 }
                 let r = self.call_record(Level::Info, &u.call, Body::Dropped);
                 self.records.push(r);
+                let d = DroppedCall {
+                    source: Some(u.on.source),
+                    signal: u.reception.signal_db(),
+                    noise: u.reception.noise_db(),
+                    voice_frames: Some(u.frames),
+                    bad_frames: Some(u.bad_frames),
+                    ..self.dropped(&u.call, u.call_num as u64, DropStage::NotSaved, u.why.key())
+                };
+                out.push(Output::Message(ToClient::CallDropped(d)));
             }
             Event::CallEnd(c) => {
                 if self.plugin_topics.calls {
                     out.push(Output::Plugin(HostMessage::CallEnd(self.call_info(&c))));
+                }
+                // Followed, and never recorded for want of a radio (calls passed over on purpose aren't lost).
+                if let Some(why) = c.reason.filter(|r| !c.recording && matches!(r, Reason::NoSource | Reason::NoRecorder)) {
+                    out.push(Output::Message(ToClient::CallDropped(self.dropped(&c, c.id as u64, DropStage::NotRecorded, why.key()))));
                 }
             }
             Event::CallUpdate(c) => {
@@ -1500,6 +1514,36 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Call `c` (its call's number `call_num`), lost at `stage` for `why`: what
+    /// any lost call says (what it had when recorded is the caller's).
+    fn dropped(&self, c: &Call, call_num: u64, stage: DropStage, why: &'static str) -> DroppedCall {
+        DroppedCall {
+            call_num,
+            system: self.system_name(c.system).to_string(),
+            site: Some(self.site_name(c.site)).filter(|s| !s.is_empty()),
+            talkgroup: c.talkgroup,
+            alpha_tag: c.talkgroup_info.as_ref().map_or(String::new(), |t| t.alpha_tag.clone()),
+            freq_hz: c.freq_hz,
+            source: None,
+            start_time: self.wall_of(c.start_s, c.start_s),
+            length_s: (c.last_update_s - c.start_s).max(0.0),
+            stage,
+            why,
+            detail: None,
+            signal: None,
+            noise: None,
+            voice_frames: None,
+            bad_frames: None,
+        }
+    }
+
+    /// A call of system `system` saved by the engine whose files then couldn't be
+    /// written (the platform writes them): counted as not saved.
+    pub fn write_failed(&mut self, system: u16) {
+        let name = self.system_name(system).to_string();
+        self.meas.call_not_saved(&name, trunk_core::trunk::NotSaved::WriteFailed);
     }
 
     /// A call not saved, as capture rules see it.
@@ -1528,7 +1572,7 @@ impl Session {
             tdma_slot: c.voice.slot().unwrap_or(0) as i64,
             units: units.len(),
             unit_ids: units,
-            not_saved: u.why.to_string(),
+            not_saved: u.why.key().to_string(),
             audio_s: u.audio_s,
             frames: u.frames,
             bad_frames: u.bad_frames,
@@ -1960,6 +2004,32 @@ mod tone_tests {
         assert_eq!(plugin.as_deref(), Some("Fire Dispatch"));
         let feed = out.iter().find_map(|o| match o { Output::Message(ToClient::MonitorEvent(b)) => b.get("alphaTag").cloned(), _ => None });
         assert_eq!(feed, Some(json!("Fire Dispatch")));
+    }
+
+    /// A call lost says so once, with why: recorded and not kept (with what it
+    /// had), or never recorded for want of a radio; one passed over on purpose doesn't.
+    #[test]
+    fn a_lost_call_is_said_once_with_why() {
+        use trunk_core::trunk::record::{RecordedOn, Reception};
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "wood", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire Dispatch" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let call = |id, reason| Call { id, talkgroup: 1, freq_hz: 155_200_000, start_s: 1.0, last_update_s: 16.0, reason, ..Default::default() };
+        let unsaved = trunk_core::trunk::Unsaved { call: Call { recording: true, ..call(7, None) }, call_num: 7, why: trunk_core::trunk::NotSaved::Silent, audio_s: 0.0, frames: 0, bad_frames: 0, on: RecordedOn { recorder: 0, source: 0 }, reception: Reception::default() };
+        let mut out = Vec::new();
+        s.handle(Event::NotSaved(unsaved), &mut out);
+        s.handle(Event::CallEnd(call(8, Some(Reason::NoRecorder))), &mut out);
+        s.handle(Event::CallEnd(call(9, Some(Reason::Encrypted))), &mut out);
+        let dropped: Vec<Value> = out.iter().filter_map(|o| match o { Output::Message(m @ ToClient::CallDropped(_)) => Some(m.to_value()), _ => None }).collect();
+        assert_eq!(dropped.len(), 2, "the encrypted grant isn't lost: {dropped:?}");
+        let pick = |v: &Value| (v["callNum"].clone(), v["system"].clone(), v["stage"].clone(), v["why"].clone(), v["lengthS"].clone());
+        assert_eq!(pick(&dropped[0]), (json!(7), json!("wood"), json!("notSaved"), json!("silent"), json!(15.0)));
+        assert_eq!((&dropped[0]["source"], &dropped[0]["voiceFrames"], dropped[0].get("site")), (&json!(0), &json!(0), None), "what it had; a conventional call has no site");
+        assert_eq!(pick(&dropped[1]), (json!(8), json!("wood"), json!("notRecorded"), json!("noRecorder"), json!(15.0)));
+        assert_eq!((dropped[1].get("source"), dropped[1].get("voiceFrames")), (None, None), "never recorded");
     }
 
     /// An RTL-SDR whose samples hardly move (the corpus capture at 25 dB:
