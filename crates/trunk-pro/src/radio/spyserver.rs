@@ -579,6 +579,7 @@ fn stream_once(cfg: &SpyserverConfig, sink: &mut Sink, stop: &AtomicBool, ctl: O
         let cfg = cfg.clone();
         super::open(&name, Deadline::Loads, false, move || connect(&cfg))?
     };
+    sink.opened(format!("{:08X}", client.info.serial), client.info.model());
     let result = start(&mut client, cfg).and_then(|()| run(&mut client, pending, sink, stop, ctl, cfg.center_hz));
     client.shutdown();
     result

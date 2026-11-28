@@ -87,6 +87,9 @@ struct Api {
     get_gain: Option<unsafe extern "C" fn(Dev, c_int, usize) -> f64>,
     set_antenna: unsafe extern "C" fn(Dev, c_int, usize, *const c_char) -> c_int,
     write_setting: unsafe extern "C" fn(Dev, *const c_char, *const c_char) -> c_int,
+    /// What the open device says it is (its hardware key, "R820T"; its info, often a serial).
+    hardware_key: Option<unsafe extern "C" fn(Dev) -> *mut c_char>,
+    hardware_info: Option<unsafe extern "C" fn(Dev) -> Kwargs>,
 }
 
 /// SoapySDRRange.
@@ -180,6 +183,8 @@ fn api() -> Result<&'static Api, String> {
                 get_gain: opt!("SoapySDRDevice_getGain"),
                 set_antenna: f!("SoapySDRDevice_setAntenna"),
                 write_setting: f!("SoapySDRDevice_writeSetting"),
+                hardware_key: opt!("SoapySDRDevice_getHardwareKey"),
+                hardware_info: opt!("SoapySDRDevice_getHardwareInfo"),
                 _lib: lib,
             })
         }
@@ -552,6 +557,23 @@ impl Device {
                 .collect()
         }
     }
+    /// What it says it is: its serial (its hardware info's, else the one `args` name) and its
+    /// hardware key ("R820T", "HackRF One"); each "" when neither says.
+    fn identity(&self, args: &str) -> (String, String) {
+        // SAFETY: an open device; the string and the kwargs are the library's, freed here.
+        unsafe {
+            let model = self.a.hardware_key.map(|f| owned(self.a, f(self.dev))).unwrap_or_default();
+            let info = self.a.hardware_info.map_or_else(Vec::new, |f| {
+                let mut k = f(self.dev);
+                let v = kwargs(&k);
+                (self.a.kwargs_clear)(&mut k);
+                v
+            });
+            let named = args.split(',').filter_map(|p| p.split_once('=')).map(|(k, v)| (k.trim().to_string(), v.trim().to_string()));
+            let serial = info.into_iter().chain(named).find(|(k, v)| k == "serial" && !v.is_empty()).map(|(_, v)| v).unwrap_or_default();
+            (serial, model)
+        }
+    }
     /// The overall gain it's set to, when its SoapySDR can say.
     fn gain_set(&self) -> Option<Gain> {
         // SAFETY: an open device.
@@ -611,6 +633,8 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
     })?;
     let mut d = d.0;
     d.ppm = cfg.ppm;
+    let (serial, model) = d.identity(&cfg.args);
+    sink.opened(serial, model);
     // SAFETY: SoapySDR C API calls on the device and stream `d` owns.
     unsafe {
         // What it runs at, for the list of radios and the refusal; its gain elements, for the gain tuner.

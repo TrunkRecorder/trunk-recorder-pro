@@ -227,6 +227,7 @@ fn stream_once(cfg: &RtlConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Option<
         })?
     };
     let serial = dev.info().descriptor.serial.clone();
+    sink.opened(serial.clone().unwrap_or_default(), dev.info().descriptor.product.clone().unwrap_or_default());
     if let Some(s) = &serial {
         OPEN.lock().unwrap().insert(s.clone());
     }

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use num_complex::Complex32;
 use trunk_app::gain::{ElementName, SOAPY_MAX_ELEMENTS};
+use trunk_app::session::OpenedRadio;
 
 use crate::radio::priority;
 
@@ -33,6 +34,9 @@ pub enum SourceMsg {
     /// can say, else as its driver set it), as it opened or as it changed,
     /// and the gain it was asked for.
     Gain { source: usize, asked: Gain, set: Gain },
+    /// Source `source` opened this radio (each time it opens one: a reopen after an error may
+    /// find another, when it names none).
+    Opened { source: usize, radio: OpenedRadio },
     /// A finite source (a capture file) has no more data.
     End { source: usize },
     /// Source `source`'s radio was let go of ([`Control::hold`]: closed, nothing opens it) or,
@@ -254,6 +258,13 @@ impl Sink {
         if let (Some(asked), Some(set)) = (asked, set) {
             let _ = self.tx.try_send(SourceMsg::Gain { source: self.source, asked, set });
         }
+    }
+
+    /// The radio it opened ([`SourceMsg::Opened`]): its serial and model, either "" when it
+    /// doesn't say. (Never waits: it's said once an open, before any samples.)
+    pub fn opened(&mut self, serial: impl Into<String>, model: impl Into<String>) {
+        let radio = OpenedRadio { serial: serial.into().trim().to_string(), model: model.into().trim().to_string() };
+        let _ = self.tx.try_send(SourceMsg::Opened { source: self.source, radio });
     }
 
     /// A change the radio made ([`SourceMsg::Tuned`]): after the samples before it.

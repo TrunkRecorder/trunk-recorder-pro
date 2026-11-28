@@ -450,6 +450,26 @@ export function rfHealth(s: AppState): Health {
 }
 
 /**
+ * The serial of the radio running source `src` opened, and whether the source names none (`first`: it took
+ * the first one found, so this is the only place that says which); null before it opens, or when its radio
+ * gives no serial (a network one, named by its address).
+ */
+export function openedSerial(src: SourceStatus): { serial: string; first: boolean } | null {
+  const sn = src.opened?.serial;
+  if (!sn) return null;
+  const st = src.settings;
+  const named = "serial" in st ? st.serial : "args" in st ? st.args : null;
+  return { serial: sn, first: named !== null && !named.trim() };
+}
+
+/** Running source `src`'s hover: its label, and the radio it opened ("RTL-SDR (first) — opened Blog V4 · SN 00000201"). */
+export function sourceHover(src: SourceStatus): string {
+  const o = src.opened;
+  const what = o ? [o.model, o.serial && `SN ${o.serial}`].filter(Boolean).join(" · ") : "";
+  return what ? `${src.label} — opened ${what}` : src.label;
+}
+
+/**
  * Running source `src` as the dashboard calls it: its title, as Setup and every message call it ("Source 2 (roof)",
  * Source::title, by the name Setup has now), and its kind ("Source 2 (roof) · RTL-SDR"). Not its label: a
  * SoapySDR's is its whole device arguments, which goes on hover. A source the config no longer has: its label.

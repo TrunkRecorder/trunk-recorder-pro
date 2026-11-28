@@ -242,6 +242,8 @@ pub(super) fn stream_once(cfg: &RtlConfig, server: &str, sink: &mut Sink, stop: 
         super::open(&name.clone(), Deadline::Loads, false, move || connect(&name, &server))?
     };
     log::info!("{name}: connected, a {} tuner with {} gain steps", tuner_name(conn.greeting.tuner_code), conn.greeting.gains);
+    // (No serial: the server is the radio's name, in its label.)
+    sink.opened("", tuner_name(conn.greeting.tuner_code));
     let set = configure(&mut conn, cfg)?;
     match (cfg.gain_db, set) {
         (Some(asked), Gain::Db(step)) if conn.steps.is_some() && (asked - step).abs() > 0.05 => log::info!("{name}: gain {asked} dB is set to the nearest step the tuner has, {step} dB"),

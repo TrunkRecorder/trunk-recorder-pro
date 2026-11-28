@@ -12,7 +12,7 @@ import { compact, dur, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, GainSetting, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall, type CcMark } from "../Waterfall.tsx";
 import { AdviceNote, useSourceAdvice } from "../sourceAdvice.tsx";
-import { gainOff, K, onRadio, recentAvg, running, runningSites, sourceHealth, sourceName, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
+import { gainOff, K, onRadio, openedSerial, recentAvg, running, runningSites, sourceHealth, sourceHover, sourceName, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
 import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
@@ -66,10 +66,11 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
   const audio = !!SOURCE_KINDS[src.settings.type]?.audio;
   // Called by its title and kind ("Source 2 (roof) · SoapySDR"); its label, the radio (a SoapySDR's whole device arguments), on hover.
   const name = sourceName(s, src);
+  const sn = openedSerial(src);
   // A radio (not a capture file or a stream) can be released while recording, to swap or look at it.
   const releasable = src.settings.type !== "file" && src.settings.type !== "stream" && mayEdit() && can("releaseRadio") && running(s) && !src.ended;
   return (
-    <Card title={<span title={src.label}>{name}</span>} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{audio ? `Audio · ${num(src.rateHz / 1e3, 0)} kHz` : `${mhz(src.centerHz, 3)} MHz · ${num(src.rateHz / 1e6, 2)} MS/s`}</span>}>
+    <Card title={<span title={sourceHover(src)}>{name}</span>} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<>{sn && <span className="badge-kind" title={sn.first ? "Names no serial: the first free radio, this one" : "The serial it opened"}>SN {sn.serial}{sn.first ? " · first free" : ""}</span>}<span className="badge-kind">{audio ? `Audio · ${num(src.rateHz / 1e3, 0)} kHz` : `${mhz(src.centerHz, 3)} MHz · ${num(src.rateHz / 1e6, 2)} MS/s`}</span></>}>
       <div className={small ? "src-grid small" : "src-grid"}>
         <Stat
           label={audio ? "Quiet floor" : "Noise floor"}
@@ -451,7 +452,7 @@ function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: stri
   const name = sourceName(s, src);
   return (
     <Card
-      title={title ?? <span title={src.label}>Waterfall · {name}</span>}
+      title={title ?? <span title={sourceHover(src)}>Waterfall · {name}</span>}
       className="wf-card"
       actions={
         <label className="toggle small">

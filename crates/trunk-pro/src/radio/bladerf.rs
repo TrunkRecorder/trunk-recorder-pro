@@ -356,7 +356,9 @@ fn stream_once(cfg: &BladerfConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Opt
         // What it is and the rates it runs at, for the list of radios and the refusal.
         let mut info: DevInfo = std::mem::zeroed();
         let mut range: *const Range = std::ptr::null();
-        if (a.get_devinfo)(d.dev, &mut info) == 0 && (a.get_sample_rate_range)(d.dev, RX0, &mut range) == 0 && !range.is_null() {
+        let known = (a.get_devinfo)(d.dev, &mut info) == 0;
+        sink.opened(if known { carr(&info.serial) } else { String::new() }, if known && !carr(&info.product).is_empty() { carr(&info.product) } else { board.clone() });
+        if known && (a.get_sample_rate_range)(d.dev, RX0, &mut range) == 0 && !range.is_null() {
             let r = &*range;
             let caps = Caps { model: carr(&info.product), rates: Rates::Range { min: r.min as f64 * r.scale as f64, max: r.max as f64 * r.scale as f64 }, gains: Default::default() };
             super::remember(&key(&carr(&info.serial)), caps.clone());

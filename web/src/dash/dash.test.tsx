@@ -731,6 +731,23 @@ test("RF: a source whose gain may be low suggests so (no warning) and offers Tun
   assert.equal(eventText({ type: "monitorEvent", t: 0, level: "warn", kind: "sourceQuiet", source: "RTL-SDR SN 1", peakDb: -32 }), "RTL-SDR SN 1: gain may be low · peaks -32 dBFS");
 });
 
+test("RF: each source card shows the serial its radio opened, and says so when the source names none (first free)", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string): Source => ({ type: "rtlsdr", serial, gainDb: 30, agc: false, biasTee: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0 });
+  c.sources = [rtl("00000201"), rtl(""), rtl("")];
+  running(c, []);
+  const st = (i: number, label: string, opened?: SourceStatus["opened"]): SourceStatus => ({ index: i, label, centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: c.sources[i], opened });
+  const sources = [st(0, "RTL-SDR 00000201", { serial: "00000201", model: "Blog V4" }), st(1, "RTL-SDR (first)", { serial: "00000091", model: "RTL2838UHIDIR" }), st(2, "RTL-SDR (first)")];
+  transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources, load: 0, calls: [] });
+  setView("rf");
+  const html = renderToString(<RfPage />);
+  const page = text(html);
+  assert.match(page, /SN 00000201(?! · first free)/, "named in Setup: the serial alone");
+  assert.match(page, /SN 00000091 · first free/, "named none: which one it took");
+  assert.equal(page.match(/SN \d+/g)?.length, 2, "not opened yet: no serial to show");
+  assert.match(html, /title="RTL-SDR \(first\) — opened RTL2838UHIDIR · SN 00000091"/, "the hover names the radio too");
+});
+
 test("RF: a source nothing needs says it can probably go; one in use doesn't", () => {
   const c = defaultConfig();
   const rtl = (serial: string, centerHz: number): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, biasTee: false, centerHz, rateHz: 2_400_000, ppm: 0 });
