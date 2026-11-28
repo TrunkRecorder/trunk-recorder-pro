@@ -195,6 +195,7 @@ new TrunkClient({ server?, secure?, historyLimit?, token? })
   "connection"  fn(true | false)
  Methods:
   rec.start() / rec.stop()           start / stop recording
+  rec.releaseRadio(i) / rec.resumeRadio(i)  close radio i while recording (swap it), open it again
   rec.listen()                       live audio of every call
   rec.listen({ talkgroup })          one talkgroup's
   rec.listen({ system, talkgroup })  one system's (its short name) talkgroup's
@@ -337,7 +338,7 @@ From the recorder:
                access: "listen" | "control", what this connection may do; user: who signed in
                capabilities: what it can do beyond recording, of "service" (quit, files by path, log,
                M4A), "drivers" (USRP/Airspy/SoapySDR), "plugins", "interfaces", "host", "keys",
-               "tuneGain", "calls" (the call store: callsQuery), "history" (statsQuery further back than a
+               "tuneGain", "releaseRadio", "calls" (the call store: callsQuery), "history" (statsQuery further back than a
                week: 30d, 90d, 1y). The desktop app has all ("calls" and "history" while its
                call store is open); the browser build none. Show only what works.
   config       { config, version }: on connecting, and when someone changes it

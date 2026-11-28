@@ -6,13 +6,13 @@
 
 import { useState } from "react";
 import { autoTuneOn, configIndex, formatGain, formatMhz, placeText, SOURCE_KINDS, sourceTitle, systemColor, usableHalfWidth } from "../config.ts";
-import { can, mayEdit, setView, tuneGain, tuneStop, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
+import { can, mayEdit, releaseRadio, setView, tuneGain, tuneStop, useApp, useTopic, web, type AppState, type StatsRange } from "../controller.ts";
 import { BackBar, Card, Choice, Fig, Figs, Hint, Info, LiveSpark, Meter, Stat, TimeSeries, useWidth, type Line } from "../charts.tsx";
 import { compact, dur, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, GainSetting, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall, type CcMark } from "../Waterfall.tsx";
 import { AdviceNote, useSourceAdvice } from "../sourceAdvice.tsx";
-import { gainOff, K, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
+import { gainOff, K, onRadio, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
 import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
@@ -64,6 +64,8 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
   const n = sourceCounts(s, src);
   // A stream: audio, demodulated already — no band, gain, crystal or ADC to show.
   const audio = !!SOURCE_KINDS[src.settings.type]?.audio;
+  // A radio (not a capture file or a stream) can be released while recording, to swap or look at it.
+  const releasable = src.settings.type !== "file" && src.settings.type !== "stream" && mayEdit() && can("releaseRadio") && running(s) && !src.ended;
   return (
     <Card title={k >= 0 ? `${sourceTitle(s.config!, k)} · ${src.label}` : src.label} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{audio ? `Audio · ${num(src.rateHz / 1e3, 0)} kHz` : `${mhz(src.centerHz, 3)} MHz · ${num(src.rateHz / 1e6, 2)} MS/s`}</span>}>
       <div className={small ? "src-grid small" : "src-grid"}>
@@ -115,7 +117,14 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           hint="Lost by the driver (USB or CPU); calls lose audio"
         />
       </div>
-      {src.unused && (
+      {src.released && (
+        <div className="row src-note">
+          <span className="chip">Released</span>
+          <span className="muted">Closed while the others record on: swap or look at it, then Resume. Stop or the next Start opens it again too.</span>
+        </div>
+      )}
+      {releasable && (!small || src.released) && <ReleaseRadio s={s} src={src} />}
+      {src.unused && !src.released && (
         <div className="row src-note">
           <span className="chip warn">Unused</span>
           <span className="muted">Probably removable</span>
@@ -128,7 +137,7 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
           <span className="muted">{off.why}</span>
         </div>
       )}
-      {k >= 0 && !audio && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
+      {k >= 0 && !audio && (!small || off) && mayEdit() && can("tuneGain") && running(s) && !src.ended && !src.released && <TuneGain s={s} k={k} off={off?.dir ?? null} />}
       {!small && (
         <div className="row src-facts">
           {/* (Gain: Setup's — the desktop recorder takes a new gain while recording.) */}
@@ -146,6 +155,25 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
         </div>
       )}
     </Card>
+  );
+}
+
+/** Release / Resume for radio `src` while recording, and what's on it (what releasing it cuts). */
+function ReleaseRadio({ s, src }: { s: AppState; src: SourceStatus }) {
+  const on = onRadio(s, src);
+  return (
+    <div className="row src-note">
+      {src.released ? (
+        <button className="btn primary small" title="Open the radio again, at the centre and gain it had" onClick={() => releaseRadio(src.index, false)}>
+          Resume
+        </button>
+      ) : (
+        <button className="btn ghost small" title="Close the radio so it can be swapped or looked at; the other radios record on. Not saved." onClick={() => releaseRadio(src.index, true)}>
+          Release
+        </button>
+      )}
+      <span className="muted">{on.length ? `${src.released ? "Was on it" : "On it"}: ${on.join(", ")}` : "Nothing on it now"}</span>
+    </div>
   );
 }
 

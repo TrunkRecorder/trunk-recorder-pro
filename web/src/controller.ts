@@ -2246,6 +2246,11 @@ export function stop(): void {
   transport.send({ type: "stop" });
 }
 
+/** Release the run's radio `source` while recording (closed, to swap or look at it; the others record on), or resume it. Not saved. */
+export function releaseRadio(source: number, release: boolean): void {
+  transport.send({ type: release ? "releaseRadio" : "resumeRadio", source });
+}
+
 // ── live audio ───────────────────────────────────────────────────────────────
 
 /** The short name of the system a call or audio frame names by number (its number this run); "" if unknown. */

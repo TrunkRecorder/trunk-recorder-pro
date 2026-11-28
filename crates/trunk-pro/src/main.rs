@@ -988,7 +988,7 @@ fn capture(a: &Args) {
                 dropped += d;
             }
             Ok(sdr::SourceMsg::Error { error, .. }) => eprintln!("{error}"),
-            Ok(sdr::SourceMsg::Samples { .. } | sdr::SourceMsg::Tuned { .. } | sdr::SourceMsg::Gain { .. }) => {}
+            Ok(sdr::SourceMsg::Samples { .. } | sdr::SourceMsg::Tuned { .. } | sdr::SourceMsg::Gain { .. } | sdr::SourceMsg::Released { .. }) => {}
             Ok(sdr::SourceMsg::End { .. }) | Err(_) => break,
         }
     }

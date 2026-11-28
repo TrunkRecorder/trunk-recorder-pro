@@ -7,7 +7,7 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, dashSystems, pageHealth, rangesFor, sourceHealth, type DetailedSite } from "./data.ts";
+import { coverage, dashSystems, pageHealth, rangesFor, siteHealth, sourceHealth, type DetailedSite } from "./data.ts";
 import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
 import { DmrSites, LtrSites } from "./Systems.tsx";
@@ -658,6 +658,33 @@ test("RF: a HackRF's stages, and the sample clock's error once measured", () => 
   status(1.234);
   assert.match(text(renderToString(<RfPage />)), /Clock vs PC \+1\.23 ppm/);
   assert.match(text(renderToString(<RfPage />)), /LNA 24 · VGA 30 · amp/);
+});
+
+test("RF: a radio is released and resumed while recording; its card says what's on it, its site is idle", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string, centerHz: number): Source => ({ type: "rtlsdr", serial, gainDb: 30, agc: false, biasTee: false, centerHz, rateHz: 2_400_000, ppm: 0 });
+  c.sources = [rtl("1", 851_000_000), rtl("2", 852_000_000), { type: "file", path: "x.cu8", centerHz: 853_000_000, rateHz: 2_400_000, realtime: true } as unknown as Source];
+  c.systems.push(newSystem(c, { shortName: "dcfd", controlChannelsHz: [851_000_000] }), newSystem(c, { shortName: "other", controlChannelsHz: [852_000_000] }));
+  const systems = [system(0, "dcfd", [site(0, "dcfd", { site: 1 })]), system(1, "other", [{ ...site(1, "other", { site: 1 }), source: 1 }])];
+  running(c, systems);
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: ["service", "drivers", "releaseRadio"] });
+  const status = (i: number, label: string, more: Partial<SourceStatus> = {}): SourceStatus =>
+    ({ index: i, label, centerHz: c.sources[i].centerHz, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: c.sources[i], ...more });
+  const sources = [status(0, "RTL-SDR SN 1", { voiceChannels: 3 }), status(1, "RTL-SDR SN 2", { released: true }), status(2, "x.cu8")];
+  transport.onMessage({ type: "status", status: { systems, recording: 0 } as unknown as EngineStatus, sources, load: 0, calls: [] });
+  assert.deepEqual(sourceHealth(snapshot(), sources[1]), { level: "idle", why: "Radio released — Resume opens it again" });
+  assert.deepEqual(siteHealth(snapshot(), { name: "other", key: "sys/other", status: systems[1].sites[0] }), { level: "idle", why: "Radio released" }, "not a red light");
+  assert.notEqual(siteHealth(snapshot(), { name: "dcfd", key: "sys/dcfd", status: systems[0].sites[0] }).why, "Radio released");
+  setView("rf");
+  let page = text(renderToString(<RfPage />));
+  assert.match(page, /Release On it: dcfd control channel, 3 voice channels opened this run/);
+  assert.match(page, /Released Closed while the others record on.* Resume Was on it: other control channel/);
+  assert.equal(page.match(/ Release /g)?.length, 1, "a capture file has no Release");
+  // A recorder that can't (the browser build): no buttons, the chip still says so.
+  transport.onMessage({ type: "hello", version: "test", platform: "test", api: 1, access: "control", surveyBands: [], capabilities: [] });
+  page = text(renderToString(<RfPage />));
+  assert.doesNotMatch(page, / Release | Resume |On it:/);
+  assert.match(page, /Released Closed/);
 });
 
 test("RF: a source whose gain may be low suggests so (no warning) and offers Tune gain; the tuning's progress, then what it kept", () => {
