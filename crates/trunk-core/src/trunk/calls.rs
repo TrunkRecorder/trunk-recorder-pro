@@ -206,10 +206,13 @@ pub enum NotSaved {
     Encrypted,
     /// Its files couldn't be written (the platform's: the engine never says it).
     WriteFailed,
+    /// Its system keeps what's decoded from its calls and not their audio (`dataOnly`), and
+    /// nothing was decoded from it (the platform's, as [`NotSaved::WriteFailed`] is).
+    NoData,
 }
 
 impl NotSaved {
-    pub const ALL: [NotSaved; 4] = [NotSaved::Silent, NotSaved::Short, NotSaved::Encrypted, NotSaved::WriteFailed];
+    pub const ALL: [NotSaved; 5] = [NotSaved::Silent, NotSaved::Short, NotSaved::Encrypted, NotSaved::WriteFailed, NotSaved::NoData];
 
     /// `notSaved/why/<key>`, `callDropped.why`, and the capture rules' `call.not_saved`.
     pub fn key(self) -> &'static str {
@@ -218,6 +221,7 @@ impl NotSaved {
             NotSaved::Short => "short",
             NotSaved::Encrypted => "encrypted",
             NotSaved::WriteFailed => "writeFailed",
+            NotSaved::NoData => "noData",
         }
     }
 }

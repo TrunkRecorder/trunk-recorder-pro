@@ -49,6 +49,16 @@ impl Output {
             })
             .collect()
     }
+    /// Everything it made of calls ([`Host::product`]), in order.
+    pub fn products(&self) -> Vec<crate::Product> {
+        self.messages
+            .iter()
+            .filter_map(|m| match m {
+                PluginMessage::CallProduct(p) => Some(p.clone()),
+                _ => None,
+            })
+            .collect()
+    }
     /// (level, message) of each log line.
     pub fn logs(&self) -> Vec<(Level, String)> {
         self.messages

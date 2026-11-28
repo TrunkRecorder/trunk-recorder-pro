@@ -324,7 +324,7 @@ mod tests {
         first.batch_for_test("insert into systems (id, short_name, kind) values (1, 'a', 'p25');
             insert into talkgroups (system_id, number, alpha_tag, mode, description, tag, category, priority, preferred_nac, preferred_site, ignore, sort_order, comment, origin, origin_name, origin_at)
               values (1, 101, 'Fire', 'D', '', '', '', 1, 0, '', false, 0, '', 'file', 'x.csv', 5);
-            drop table unit_names; alter table talkgroups drop column origin, drop column origin_name, drop column origin_at;
+            drop table call_products; drop table unit_names; alter table talkgroups drop column origin, drop column origin_name, drop column origin_at;
             update schema_version set version = 8");
         drop(first);
         let again = Store::new(Box::new(PostgresBackend::open_in(&url, Some("t_pg_v8".into())).unwrap()));

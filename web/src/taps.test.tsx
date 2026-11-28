@@ -19,7 +19,7 @@ const plugin = (id: string, subscribe: string[]): PluginInfo => ({
 });
 
 test("Signal taps: the list is the recorder's", () => {
-  assert.deepEqual(signalTaps().map((t) => [t.id, t.carries]), [["fm.discriminator", "samples"], ["voice.air", "frames"], ["voice.frames", "frames"], ["voice.errors", "notes"]]);
+  assert.deepEqual(signalTaps().map((t) => [t.id, t.carries]), [["fm.discriminator", "samples"], ["am.envelope", "samples"], ["voice.air", "frames"], ["voice.frames", "frames"], ["voice.errors", "notes"]]);
 });
 
 test("Signal taps: saved rows can be edited; a plugin's are automatic", () => {

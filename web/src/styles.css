@@ -1598,3 +1598,8 @@ table.taps tr.auto td { color: var(--muted); }
 .src-facts { gap: 6px 18px; margin-top: 10px; font-size: 14px; }
 .line-list li .figs.inline { gap: 4px 12px; font-size: 13.5px; }
 .counts-reset { display: inline-flex; gap: 2px; }
+
+/* What plugins made of a call (dash/Products.tsx): a line each under its row. */
+.products { list-style: none; margin: 2px 0 4px; padding: 0 8px; display: flex; flex-direction: column; gap: 2px; grid-column: 1 / -1; }
+.products li { display: flex; align-items: baseline; gap: 8px; font-size: 13px; border: 0; padding: 0; }
+.products .product-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }

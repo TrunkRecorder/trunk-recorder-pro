@@ -43,6 +43,7 @@ plugin fails**).
 | `archiveM4a` | | `false` | bool | Per system. **Keep .m4a**: keep an `.m4a` of each call. Needs an encoder: see `m4a`. An `.m4a` is still made for a plugin that uploads M4A (OpenMHz, say) whether this is on or not; off, that one is deleted once the plugins are done |
 | `callLog` | | `true` | bool | Per system. **Keep call JSON**: the same, for the call JSON |
 | `archiveFilesOnFailure` | | `true` | bool | Per system. **Keep when a plugin fails**: a plugin's failure keeps every file the call has (WAV, M4A, JSON) whatever the three above say (a skip doesn't) |
+| `dataOnly` | | `false` | bool | Per system. **Data only**: for channels that carry data, not voice (pagers, ACARS). A call is kept only when a plugin decoded something from it (a [product](../developer/plugins/events.md#products): a page, a message), and then without its audio: no `.wav` or `.m4a` is kept and it isn't handed to the plugins that upload calls. One nothing was decoded from isn't saved (`noData`) |
 | `filenameFormat` | | `""` | string | Per system. Folders and file names under `captureDir`. See [File names](#file-names) |
 | `dropDuplicateCalls` | | `true` | bool | Multi-site: a call heard on several sites of one system is saved once, keeping the cleanest copy or the talkgroup's Preferred Site. See [systems.md](systems.md#multi-site) |
 | `vocoder` | | `"fixed"` | string | The IMBE voice decoder for P25 Phase 1 (trunked and conventional): `"fixed"` (also `"fixed-point"`; usually sounds most natural), `"enhanced"` or `"mbelib"` (any case; anything else is refused when the config is read) |
@@ -111,6 +112,7 @@ beside the rows in **Setup → Recording → Advanced → Signal taps**.
 | Tap | From | Files | What it is |
 |---|---|---|---|
 | `fm.discriminator` | Analog FM channels | `.wav` + `.jsonl` | The FM demodulator's output before de-emphasis, the voice filters and the CTCSS notch: 16-bit mono at 22,050 Hz, ±5 kHz deviation as half of full scale, while the squelch is open. What `multimon-ng` and its kind decode POCSAG, FLEX and other data from |
+| `am.envelope` | AM channels (airband) | `.wav` + `.jsonl` | The AM detector's output over the carrier's level, before the voice filters, the limiter and the squelch tail: 16-bit mono at 22,050 Hz, full modulation as half of full scale, while the carrier is up. What ACARS and other airband data is decoded from |
 | `voice.air` | Digital voice channels: P25 (Phase 1 and 2), DMR, NXDN, EDACS ProVoice | `.jsonl` | Each voice frame as it came off the air: error-corrected, **not** decrypted (encrypted voice stays encrypted, whether or not the recorder has its key), with its place in the superframe, its bit errors and the encryption (`algid`, `keyid`, `mi`) it is under, as far as the air has said |
 | `voice.frames` | Digital voice channels | `.sdr` + `.jsonl` | Each voice frame the vocoder was given: after error correction and, where the recorder has the key, decryption, with its bit errors and what the vocoder made of it. To hear a transmission through another vocoder (`trunk-pro tool revoice`), or in MimoSDR: the `.sdr` is its call file ([sdr-stream](https://github.com/MimoCAD/sdr-stream)), written for P25 and DMR (NXDN and ProVoice, which the format doesn't cover, have the `.jsonl` alone) |
 | `voice.errors` | Digital voice channels | `.jsonl` | No data, only figures: for each frame vocoded, the bit errors corrected and what the vocoder made of it (`voice`, `repeat`, `muted`, …) |
@@ -160,7 +162,7 @@ above. A rule left out follows the global `recording`.
 | Key | Type |
 |---|---|
 | `callTimeoutS`, `minCallS`, `maxCallS`, `minTransmissionS`, `digitalLevelDb`, `analogLevelDb` | number |
-| `conversationMode`, `recordUnknown`, `recordEncrypted`, `recordUnitToUnit`, `keepSilentCalls`, `normalizeAudio`, `archiveWav`, `archiveM4a`, `callLog`, `archiveFilesOnFailure` | bool |
+| `conversationMode`, `recordUnknown`, `recordEncrypted`, `recordUnitToUnit`, `keepSilentCalls`, `normalizeAudio`, `archiveWav`, `archiveM4a`, `callLog`, `archiveFilesOnFailure`, `dataOnly` | bool |
 | `filenameFormat` | string |
 
 Other keys in a system's `recording` (`captureDir`, `vocoder` and the like) are recorder-wide only;

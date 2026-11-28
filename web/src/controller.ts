@@ -93,6 +93,7 @@ import { talkgroupsReplace, unitNamesReplace } from "./rules.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
 import { confirmed } from "./asking.ts";
+import { withProduct } from "./products.ts";
 
 export interface AppState {
   connected: boolean;
@@ -490,6 +491,9 @@ function take(m: FromRecorder): void {
       break;
     case "callFiles":
       set({ history: state.history.map((e) => (e.path === m.path ? { ...e, audio: m.audio, json: m.json } : e)) });
+      break;
+    case "product":
+      set({ history: withProduct(state.history, m) });
       break;
     case "heard":
       set({ heard: m.heard });

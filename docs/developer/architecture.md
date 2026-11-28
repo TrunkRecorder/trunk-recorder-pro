@@ -1174,6 +1174,28 @@ The Rust SDK (`Plugin`, `run`, `CallQueue`, `TalkgroupFilter`, the form hints in
 `testing.rs`) is described for plugin authors in [Writing plugins](../plugins/writing-plugins.md),
 and every type on [docs.rs](https://docs.rs/trunk-recorder-plugin).
 
+### 8.10 Call products (`trunk-pro/src/products.rs`, `trunk-recorder-plugin/src/product.rs`)
+
+What a plugin makes of a call (a transcript, decoded pages, ACARS messages) comes back as
+`call.product` and is the call's from then on. Design notes: `research/call-products.md`.
+
+- **The types** are the SDK's: `Product` (the call, `by`, `time`, `ProductData`), the known
+  kinds (`Transcript`, `Page`, `AcarsMessage`) and `Other` for a kind this build has no type for,
+  kept as its JSON. Every kind has a `text()`.
+- **Which call**: a transmission id (a plugin handed the concluded call) or a running call's id
+  (a decoder on a tap). `Products` is the ledger: products of running calls wait in `live` until
+  `concluded` (called by `finish_one` once the call is listed) gives them their transmission id,
+  or `dropped` takes them; the last 2,048 concluded calls are remembered, an older one is found
+  in the store by the path the plugin gives.
+- **Kept** (`keep`): `Change::Product` → table `call_products` (by transmission id, deleted with
+  the calls that have it; not written in low-write mode), a line in `<call>.products.jsonl` when
+  the call's JSON is kept, the call's entry in the live list, `ToClient::Product`, and
+  `PluginHost::product` to plugins subscribed to `product.<kind>` under the call's rules
+  (system off, `shareDecrypted`). `calls_of` attaches them to every `StoredCall` it reads.
+- **Data only** (`recording.dataOnly`, per system): `finish_one` waits `DATA_WAIT` for a product
+  of the call; none, the call is dropped as `NotSaved::NoData`; else it is saved with no audio
+  kept and isn't sent to plugins as `call.concluded`.
+
 ---
 
 ## 9. Data objects

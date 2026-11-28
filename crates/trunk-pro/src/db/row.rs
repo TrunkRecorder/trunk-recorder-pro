@@ -269,7 +269,7 @@ pub fn stored_call(r: &Row, at: usize, short_name: String, src_list: Vec<SrcEntr
         signals: detail.signals,
         extra: detail.extra,
     };
-    StoredCall { path: r.text(i(0)), record, audio: r.bool(i(43)), json: r.bool(i(44)) }
+    StoredCall { path: r.text(i(0)), record, audio: r.bool(i(43)), json: r.bool(i(44)), products: Vec::new() }
 }
 
 #[cfg(test)]

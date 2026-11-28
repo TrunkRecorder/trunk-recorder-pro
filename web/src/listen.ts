@@ -9,6 +9,7 @@
 import { useRef, useSyncExternalStore } from "react";
 import { callsQuery, onRecorderMessage, setListen, shallowEqual, snapshot, subscribe, transport } from "./controller.ts";
 import { migrateSelection } from "./migrate.ts";
+import { withProduct } from "./products.ts";
 import { systemOf, type CallEntry } from "./protocol.ts";
 
 /** What to hear, kept in this browser. Talkgroups are `<system>:<talkgroup>`. */
@@ -131,9 +132,11 @@ export function avoided(sel: Selection, key: string, now = Date.now()): boolean 
   return until !== undefined && (until === 0 || until > now);
 }
 
-/** Whether the scanner plays this call (held, or selected and not avoided). */
-export function wanted(sel: Selection, c: CallEntry, now = Date.now()): boolean {
-  if (!playable(c)) return false;
+/** Whether the scanner plays this call (it can be played, and is [`selected`]). */
+export const wanted = (sel: Selection, c: CallEntry, now = Date.now()): boolean => playable(c) && selected(sel, c, now);
+
+/** Whether a call is of a talkgroup picked to be heard (held, or selected and not avoided): the lists show a data call by it too. */
+export function selected(sel: Selection, c: CallEntry, now = Date.now()): boolean {
   const system = systemOf(c);
   if (sel.hold) return sel.hold.system === system && (sel.hold.talkgroup === null || talkgroupsOf(c).includes(sel.hold.talkgroup));
   if (sel.offSystems.includes(system)) return false;
@@ -376,6 +379,9 @@ onRecorderMessage((m) => {
       set({ calls: state.calls.map(fix), queue: state.queue.map(fix).filter(playable) });
       break;
     }
+    case "product":
+      set({ calls: withProduct(state.calls, m) });
+      break;
   }
 });
 

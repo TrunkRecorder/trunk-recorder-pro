@@ -450,6 +450,11 @@ export interface RecordingRules {
   callLog: boolean;
   /** Desktop: when an upload failed, keep the files anyway (archiveFilesOnFailure). */
   archiveFilesOnFailure: boolean;
+  /**
+   * Its calls are data (pagers, ACARS): what a plugin decodes from each is kept with the call (its
+   * `products`), the audio isn't, and a call nothing was decoded from isn't kept (`noData`).
+   */
+  dataOnly: boolean;
   /** Where calls go under the recordings folder ("" = <short name>/<year>/<month>/<day>/). */
   filenameFormat: string;
 }
@@ -1288,7 +1293,7 @@ export interface CallRecord {
 }
 
 /** Why a recorded call wasn't kept (`notSaved/why/<key>`). */
-export type NotSavedWhy = "silent" | "short" | "encrypted" | "writeFailed";
+export type NotSavedWhy = "silent" | "short" | "encrypted" | "writeFailed" | "noData";
 
 /**
  * A call lost (`callDropped`, `history.dropped`): recorded and then not kept
@@ -1320,7 +1325,7 @@ export interface DroppedCall {
   /** dBFS while recorded (`notSaved`). */
   signal?: number;
   noise?: number;
-  /** Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed`). */
+  /** Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed` or `noData`). */
   voiceFrames?: number;
   badFrames?: number;
 }
@@ -1336,7 +1341,67 @@ export interface CallEntry {
    */
   audio?: boolean;
   json?: boolean;
+  /** What plugins made of it (a transcript, decoded pages), as they came; absent: nothing. */
+  products?: Product[];
 }
+
+/** What was said in a call's audio (a {@link Product} of kind `transcript`). */
+export interface Transcript {
+  text: string;
+  /** BCP 47 ("en", "es-MX"). */
+  language?: string;
+  /** What made it ("whisper-large-v3"). */
+  model?: string;
+  /** The text in pieces: ms from the start of the call's audio, the radio talking where known, how sure (0–1). */
+  segments?: { start_ms: number; end_ms: number; text: string; unit?: number; confidence?: number }[];
+}
+
+/** A pager message (a {@link Product} of kind `page`). */
+export interface Page {
+  protocol: "pocsag" | "flex" | (string & {});
+  /** Symbols a second. */
+  baud: number;
+  /** The pager it's for: POCSAG's RIC, FLEX's capcode. */
+  address: number;
+  /** POCSAG's function bits, 0–3. */
+  function?: number;
+  format: "alpha" | "numeric" | "tone" | "binary";
+  text: string;
+  /** Bit errors corrected. */
+  errors?: number;
+}
+
+/** An ACARS block (a {@link Product} of kind `acars`). */
+export interface AcarsMessage {
+  mode: string;
+  /** The aircraft's registration ("N12345"). */
+  registration: string;
+  flight?: string;
+  /** What kind of message: two characters ("H1", "Q0"). */
+  label: string;
+  block_id?: string;
+  ack?: string;
+  message_no?: string;
+  text: string;
+  /** More blocks of the message follow. */
+  more?: boolean;
+  errors?: number;
+}
+
+/**
+ * Something a plugin made of a call (the plugin protocol's `call.product`, as trunk-recorder-plugin's
+ * `Product`): its `kind` says what `data` is. A kind without a type here is shown by its `data.text`.
+ */
+export type Product = {
+  /** The call it's of: its record's `transmission_id`. */
+  transmission_id: string;
+  /** The plugin that made it (its id). */
+  by: string;
+  /** Unix seconds: when it was heard (a page) or made (a transcript). */
+  time: number;
+  /** The call in brief, on a `product` message (an entry's own products leave it out). */
+  call?: { system_id: number; short_name: string; talkgroup: number; talkgroup_tag?: string; freq_hz: number; path?: string };
+} & ({ kind: "transcript"; data: Transcript } | { kind: "page"; data: Page } | { kind: "acars"; data: AcarsMessage });
 
 /** A recorded call's system: its record's short_name, else its folder. */
 export const systemOf = (c: CallEntry) => c.record.short_name || c.path.split("/")[0] || "";
@@ -1858,11 +1923,11 @@ export interface DirListing {
 //
 // Series are named by `/`-separated keys (crates/trunk-app/src/stats):
 //   src/<label>/{noise,peak,clipPct,quiet,samples,dropped,errors,ppm,tune}
-//   sys/<shortName>/{active,recording,calls,airMs,audioBytes,notSaved,dup}  notSaved/why/<silent|short|encrypted|writeFailed>
+//   sys/<shortName>/{active,recording,calls,airMs,audioBytes,notSaved,dup}  notSaved/why/<silent|short|encrypted|writeFailed|noData>
 //   <site>/cc/{good,bad,locked,syncs,nidFails,flywheels,eqResets,frames,sep,offset,signal,noise,snr,inSync,deviation,airSym,syncLossSym,phaseErr}
 //   <site>, <channel>: calls/{started,recorded,skipped}  calls/why/<ignored|unknownTg|encrypted|noSource|noRecorder|noFrequency>
 //                      voice/<imbe|ambe>/{frames,bad,errors}   (each copy of a call, where it was heard)
-//                      notSaved/why/<silent|short|encrypted>  (writeFailed: by system alone)
+//                      notSaved/why/<silent|short|encrypted>  (writeFailed, noData: by system alone)
 //   <channel>/{open,signal,closed,noise,snr}
 //     <site> = sys/<shortName>, or sys/<shortName>/site/<site> (several sites); <channel> = sys/<shortName>/ch/<Hz>
 //   all/{calls,airMs,audioBytes}  day/{calls,airS,audioBytes}  eng/{load,recording,channels,recorders}
@@ -2612,6 +2677,8 @@ export type FromRecorder =
   | ({ type: "callDropped" } & DroppedCall)
   /** A call's upload plugins are done and it kept other than its entry said (an upload failed, so its files stay). */
   | { type: "callFiles"; path: string; audio: boolean; json: boolean }
+  /** What a plugin made of a stored call, as it's filed: one more of its entry's `products`. */
+  | ({ type: "product" } & Product)
   /** A radio's talker alias, newly heard on system `system` (its short name). */
   | { type: "unitAlias"; system: string; unit: number; alias: string }
   | { type: "heard"; heard: Record<string, HeardCode[]> }

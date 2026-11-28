@@ -542,7 +542,7 @@ pub fn build(spec: &VoiceSpec) -> Box<dyn VoiceDecoder> {
             ending: Ending::new(spec.rate),
         }),
         VoiceKind::ProVoice => Box::new(ProVoice { pv: crate::edacs::ProVoice::new(spec.rate, spec.seed, spec.vocoder).tapped(spec.taps), t0: spec.t0, air: None }),
-        VoiceKind::Am => Box::new(Analog { kind: VoiceKind::Am, demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz)), squelch: spec.squelch, subaudible: false, carrier: false, ending: Ending::new(spec.rate) }),
+        VoiceKind::Am => Box::new(Analog { kind: VoiceKind::Am, demod: Demod::Am(Am::new(spec.rate, &spec.analog, &spec.ignore_hz).tapped(spec.taps.has(Tap::AmEnvelope).then_some(DISCRIMINATOR_RATE))), squelch: spec.squelch, subaudible: false, carrier: false, ending: Ending::new(spec.rate) }),
         VoiceKind::Auto => Auto::new(spec),
     }
 }
@@ -1033,11 +1033,13 @@ impl Analog {
     /// What a push came to: `n` samples in, `audio` (and `low`) out of them.
     fn heard(&mut self, n: usize, audio: Vec<f32>, low: Vec<f32>, out: &mut Vec<VoiceOut>) {
         let ended = self.ending.after(n, !audio.is_empty());
-        if let Demod::Fm(fm) = &mut self.demod {
-            let samples = fm.take_tapped();
-            if !samples.is_empty() {
-                out.push(VoiceOut { slot: 0, out: TrackerOut::Tap(TapPiece { tap: Tap::FmDiscriminator, data: TapData::Pcm { rate: DISCRIMINATOR_RATE, samples }, notes: Vec::new() }) });
-            }
+        let (tap, samples) = match &mut self.demod {
+            Demod::Fm(fm) => (Tap::FmDiscriminator, fm.take_tapped()),
+            Demod::Am(am) => (Tap::AmEnvelope, am.take_tapped()),
+            Demod::Audio(_) => (Tap::FmDiscriminator, Vec::new()),
+        };
+        if !samples.is_empty() {
+            out.push(VoiceOut { slot: 0, out: TrackerOut::Tap(TapPiece { tap, data: TapData::Pcm { rate: DISCRIMINATOR_RATE, samples }, notes: Vec::new() }) });
         }
         if !audio.is_empty() {
             out.push(VoiceOut { slot: 0, out: TrackerOut::AnalogAudio(audio) });

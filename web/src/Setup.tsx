@@ -3292,6 +3292,8 @@ const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
         service: true,
         inactive: (r) => (r.archiveWav && r.archiveM4a && r.callLog ? "Everything is kept anyway" : undefined),
       },
+      // (Pager and ACARS channels: a plugin decodes them, and the modem noise is nobody's to hear.)
+      { key: "dataOnly", kind: "bool", label: "Data only", hint: "Keep what plugins decode, not the audio; nothing decoded, no call", service: true },
     ],
   },
 ];
