@@ -352,7 +352,7 @@ A product is what a plugin made of a call: a transcript of its audio, the pages 
 decoded from its signal. A plugin sends one with [`call.product`](protocol.md#callproduct); the
 recorder files it with the call and passes it on here, to plugins subscribed to `product.<kind>`
 (`product.page`, `product.transcript`, `product.acars`) or to `product` for every kind. The
-plugin that made it isn't sent it back.
+plugin that made it isn't sent it back. Since SDK 0.18.0.
 
 ```json
 { "type": "product", "transmission_id": "county-101-9001644-1790771550123", "by": "pager", "time": 1790771552.4,

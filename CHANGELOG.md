@@ -5,6 +5,22 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **What plugins make of a call is kept with it** (#283): transcripts, decoded pages, ACARS messages. A plugin
+  sends a product of a call (`call.product`); the recorder keeps it in the call store, beside the call's JSON as
+  `<call>.products.jsonl`, and in the call wherever it's listed, and passes it to interfaces (`product`) and to other
+  plugins (`product.<kind>`). The Listen page and the Radio page's calls show them under the call, and the Listen
+  filter searches their text. Products go when their call does. See [Products](docs/developer/plugins/events.md#products).
+  - **Data only** (Setup → Archive, `recording.dataOnly`, per system): for channels that carry data, not voice. A
+    call is kept only if a plugin decoded something from it, and then without its audio; one nothing was decoded
+    from isn't saved (`noData`).
+  - **The `am.envelope` tap**: the AM detector's output before the voice filters, for data decoders (ACARS).
+  - New plugins for both: Pager (POCSAG and FLEX, on `fm.discriminator`) and ACARS (on `am.envelope`).
+  - **To plugins** (SDK 0.18.0, additive): `Host::product` with `Product::of` (a concluded call, by transmission
+    id), `Product::of_call` (one concluded long ago, with its path) and `Product::live` (a running call, by the tap
+    chunk's `call_id`); the kinds `Transcript`, `Page`, `AcarsMessage`, or any other kept as JSON; `Plugin::product`
+    for the `product.<kind>` and `product` topics; `Tap::AmEnvelope`; `StoredCall.products` in a calls page;
+    `testing::Output::products`.
+
 - **LTR, LTR-Net and Passport** (#267, thanks @ishelly404): a trunked system of `"type": "ltr"` (Setup: **LTR /
   LTR-Net / Passport**). List every repeater as the site's frequencies; each is watched for the 300 baud status
   words under its voice, and a call is recorded, as analog FM, on the repeater its words name. Which of the three a
