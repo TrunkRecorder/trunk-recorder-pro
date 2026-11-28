@@ -5,6 +5,12 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **A radio behind SoapyRemote streams.** SoapyRemote's server sends from the moment the stream is set up, before
+  the radio starts, so a remote Airspy's first reads return 0 samples. A read of 0 was taken as success: the
+  stream ended without a word and was opened again at once, which made a new backlog of empty reads, about 8
+  times a second, and no samples ever arrived. A read of 0 is now "nothing yet": the reads go on (the log says
+  so once), samples arrive on the first open. A SoapySDR radio is given up on (and reopened after the usual
+  back-off) after 10 s without a sample, whether its reads time out or come back empty; it was 3 s of timeouts.
 - **TETRA decoding tools** (the first part of TETRA trunked mode). `trunk-pro tool tetrascan` lists the TETRA carriers in
   a capture with their cells, `tool tetra` prints one carrier's cell, system information and calls, and `tool tetravoice`
   plays a call's speech frames. The speech codec (ACELP, a port of mbelib-neo's decoder) needs two tables from ETSI's
