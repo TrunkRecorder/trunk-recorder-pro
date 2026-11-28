@@ -5,6 +5,14 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **LTR, LTR-Net and Passport** (#267, thanks @ishelly404): a trunked system of `"type": "ltr"` (Setup: **LTR /
+  LTR-Net / Passport**). List every repeater as the site's frequencies; each is watched for the 300 baud status
+  words under its voice, and a call is recorded, as analog FM, on the repeater its words name. Which of the three a
+  site is comes from its words. Each repeater's LCN comes from `lcnTableHz`, or is learned from its own idle bursts.
+  LTR talkgroups A-HH-GGG are numbered AHHGGG (1-05-123 is `105123`); Passport talkgroups are their number. The
+  Decode page lists each repeater with its LCN and call. Written from the documented formats, and not heard on a
+  real system yet: captures are welcome. See [LTR](docs/configuration/systems.md#ltr).
+  - **To plugins**: a call's `system_type` (and a system's `kind`) may be `"ltr"`.
 - **Every lost call says why.** A call recorded and then not kept, or followed and never recorded for want of a radio,
   now comes to interfaces as a `callDropped` message, once, as the recorder decides: its talkgroup, frequency, times,
   `stage` (`notSaved` or `notRecorded`) and `why` (`silent`, `short`, `encrypted`, `writeFailed`; `noSource`,
@@ -51,6 +59,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   the system's control channel is their average with the weakest site counted twice, as the weakest system is
   across systems; the SNR tie-break is the weakest site's. `trunk-pro tune` and the Tune gain report show each
   site's figures under its system (`county · North`).
+
+- **A source is called as Setup calls it, with its kind; the waterfall's labels don't pile up** (#276, thanks
+  @kevinb361). The dashboard named a source by its label, a SoapySDR source's whole device arguments
+  (`SoapySDR driver=remote,remote=tcp://…`), which crowded the Decode page's Frequencies table and the RF cards. It
+  now calls it by its title and kind ("Source 2 (roof) · SoapySDR", "Source 3 · RTL-SDR"), the label on hover: on the
+  RF cards and their waterfalls, the band overview, the Frequencies and Out of band tables, the band-edge hint and the
+  RF page's light. Source events (`sourceDrops`, `sourceClipping`, `sourceQuiet`, `sourceRecovered`) now carry the
+  source's `title` when it happened, which the Lately feed shows, so an event about a source since changed or removed
+  still says which it was. On the waterfall, site names that would print over each other stack to a second row (a
+  third that fits in neither shares the row that frees first); an adjacent site's address is no longer printed on the
+  trace or the band overview (its line stays, and the readout names any line under the pointer); and calls are tagged
+  on a row of their own below the sites, fading after a few seconds.
 
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now

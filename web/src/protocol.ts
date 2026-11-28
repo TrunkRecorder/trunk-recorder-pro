@@ -291,8 +291,10 @@ export interface System {
    *  "nxdn": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed);
    *  every control channel and `nxdnChannelsHz` frequency is watched.
    *  "edacs": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz`
-   *  is its channel list. */
-  type: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs";
+   *  is its channel list.
+   *  "ltr": an LTR Standard, LTR-Net or Passport site (voice analog FM): every repeater listed as a
+   *  control channel is watched; `lcnTableHz` names their LCNs (else learned from the air). */
+  type: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr";
   /** NXDN: "typeC" (a control channel; the default) or "typeD" (IDAS distributed: list every repeater). */
   nxdnType?: "typeC" | "typeD";
   /** SmartNet: the voice of a talkgroup never heard granted. */
@@ -367,7 +369,8 @@ export interface Site {
   bandplanHighHz?: number;
   /** DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned.
    *  NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency).
-   *  EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air. */
+   *  EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air.
+   *  LTR: each repeater's LCN (1–20; Passport's up to 2047) → frequency; the rest is learned. */
   lcnTableHz?: Record<string, number>;
   /** DMR: voice frequencies to watch besides the control channels (Trunk Recorder's channels). */
   dmrChannelsHz?: number[];
@@ -975,6 +978,8 @@ export interface SiteDetail {
   dmr: DmrSiteStatus | null;
   /** An NXDN site. */
   nxdn: NxdnSiteStatus | null;
+  /** An LTR site. */
+  ltr: LtrSiteStatus | null;
 }
 
 export interface DmrSiteStatus {
@@ -1010,6 +1015,19 @@ export interface NxdnSiteStatus {
   unknownChannels: number[];
   /** Every watched frequency: control (Type-C), its RAN, repeater number (Type-D), and the call on it now. */
   carriers: { freqHz: number; control: boolean; ran: number | null; repeater: number | null; call: { talkgroup: TalkgroupName; source: number } | null }[];
+}
+
+export interface LtrSiteStatus {
+  /** As its words show (null: not known yet). */
+  flavor: "LTR Standard" | "LTR-Net" | "Passport" | null;
+  /** LTR-Net's site ID, Passport's site number. */
+  site: number | null;
+  /** LCN → frequency: from the config, or learned from the air. */
+  channels: { lcn: number; freqHz: number; configured: boolean }[];
+  /** LCNs a call was named on whose frequency isn't known yet. */
+  unknownChannels: number[];
+  /** Every repeater: heard lately, the LCN it is, and the call on it now. */
+  carriers: { freqHz: number; heard: boolean; lcn: number | null; call: { talkgroup: TalkgroupName; source: number } | null }[];
 }
 
 /** A talkgroup and its alpha tag from the system's talkgroup file ("" when not in it). */
@@ -1230,7 +1248,7 @@ export interface CallRecord {
   ran?: number;
   audio_type: "analog" | "digital" | "digital tdma";
   /** The kind of system it came on (absent in calls saved before). */
-  system_type?: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
+  system_type?: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr" | "conventional";
   /** What its voice was: a conventional row's mode, or a trunked grant's (absent in calls saved before). */
   voice_mode?: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96" | "provoice" | "fm" | "am";
   /** Conventional analog: the tone it was matched on ("ctcss" / "dcs"), "search" (identified, not required), else "off". */
@@ -1941,8 +1959,10 @@ export interface MonitorEventBody {
   text?: string;
   signals?: string[];
   freqHz?: number | null;
-  /** A source's series name (its label). */
+  /** A source's series name (its label: the radio). */
   source?: string;
+  /** Source events: what the source was called then ("Source 2 (roof)", Source::title). */
+  title?: string;
   perS?: number;
   pct?: number;
   /** sourceQuiet: its peaks over the last minute, averaged, dBFS (gain may be low: no call on it for a day). */

@@ -42,7 +42,8 @@ Before you start, look the system up on [RadioReference](https://www.radiorefere
 Search for your county, then pick the system you want to record. Take note of:
 
 - **System Type.** Trunk Recorder Pro records P25 (Phase 1 and Phase 2), Motorola SmartNet /
-  SmartZone, trunked DMR (Capacity Plus, Capacity Max, Connect Plus, Tier III), NXDN and EDACS. It also
+  SmartZone, trunked DMR (Capacity Plus, Capacity Max, Connect Plus, Tier III), NXDN, EDACS and LTR
+  (Standard, LTR-Net, Passport). It also
   records conventional (non-trunked) channels; see [Conventional channels](guides/conventional.md).
 - **The control channels.** On a site's frequency list, control channels are marked in red, or
   with a "c". A site usually has one active control channel and one or more alternates.
@@ -62,8 +63,8 @@ other program that might be using it, such as SDR#, SDR++, GQRX or rtl_tcp. Only
 use a radio at a time.
 
 RTL-SDR dongles work with nothing else installed (on Windows, after the one-time WinUSB driver
-install with Zadig; on Linux, after the udev rule), and so do HackRF Ones and Airspy R2 / Minis. USRP,
-HydraSDR, bladeRF and SoapySDR radios need their makers' drivers: see [Other radios](install/other-radios.md).
+install with Zadig; on Linux, after the udev rule), and so do HackRF Ones, Airspy R2 / Minis and HydraSDR RFOnes. USRP,
+bladeRF and SoapySDR radios need their makers' drivers: see [Other radios](install/other-radios.md).
 
 To see what Trunk Recorder Pro can find from a terminal:
 
@@ -72,7 +73,7 @@ trunk-pro devices
 ```
 
 It lists the RTL-SDRs (with their serial numbers), HackRFs, Airspys and HydraSDRs, bladeRFs and
-SoapySDR devices, and whether the optional USRP, Airspy, HydraSDR, bladeRF and SoapySDR drivers
+SoapySDR devices, and whether the optional USRP, bladeRF and SoapySDR drivers
 are installed. Add `--usrp` to search for USRPs too.
 
 ## First launch: the setup guide
@@ -148,8 +149,8 @@ If you know the control channels, press **Add a system** on the **Systems** tab 
 
 - **Short name**: the folder its calls go in (letters, digits, `.`, `_` and `-`).
 - **Name**: optional, for display.
-- **Type**: **P25**, **SmartNet / SmartZone**, **EDACS (analog / ProVoice)**, **DMR (trunked)** or
-  **NXDN (trunked)**.
+- **Type**: **P25**, **SmartNet / SmartZone**, **EDACS (analog / ProVoice)**, **DMR (trunked)**,
+  **NXDN (trunked)** or **LTR / LTR-Net / Passport**.
 
 Then, on its site under **Sites** (open it):
 

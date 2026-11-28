@@ -50,17 +50,20 @@ pub enum MonitorEvent {
         site: Option<String>,
         freq_hz: Option<u64>,
     },
-    /// A source dropped samples after a quiet spell.
+    /// A source dropped samples after a quiet spell. Each source event names it by `source`, its
+    /// series name (from [`crate::config::Source::label`]: the radio), and `title`, what it was called
+    /// then ([`crate::config::Source::title`], "Source 2 (roof)"), so the feed can say it after the
+    /// source has changed or gone.
     #[serde(rename_all = "camelCase")]
-    SourceDrops { source: String, per_s: f64 },
+    SourceDrops { source: String, title: String, per_s: f64 },
     /// A source's samples hit the rails (gain too high?).
     #[serde(rename_all = "camelCase")]
-    SourceClipping { source: String, pct: f64 },
+    SourceClipping { source: String, title: String, pct: f64 },
     /// A source's samples stayed tiny for a minute and it carried no call for a day (gain maybe low): `peak_db`, their peaks' average, dBFS.
     #[serde(rename_all = "camelCase")]
-    SourceQuiet { source: String, peak_db: f64 },
+    SourceQuiet { source: String, title: String, peak_db: f64 },
     #[serde(rename_all = "camelCase")]
-    SourceRecovered { source: String },
+    SourceRecovered { source: String, title: String },
     // ── the desktop host's own ──
     #[serde(rename_all = "camelCase")]
     PluginHealth { plugin: String, state: String, message: String },

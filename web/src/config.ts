@@ -398,9 +398,10 @@ export function systemType(t: unknown): System["type"] {
   return typeof t === "string" && Object.hasOwn(SYSTEM_KINDS, t) ? (t as System["type"]) : "p25";
 }
 
-/** Frequencies a watching protocol (DMR, NXDN, EDACS) needs besides the control channels (the recorder's Site::watched_channels). */
+/** Frequencies a watching protocol (DMR, NXDN, EDACS, LTR) needs besides the control channels (the recorder's Site::watched_channels). */
 export function watchedChannels(sys: Pick<System, "type">, x: Site): number[] {
   if (sys.type === "edacs") return Object.entries(x.lcnTableHz ?? {}).filter(([k, f]) => +k >= 1 && +k <= 25 && f > 0).map(([, f]) => f);
+  if (sys.type === "ltr") return Object.entries(x.lcnTableHz ?? {}).filter(([k, f]) => +k >= 1 && +k < 2048 && f > 0).map(([, f]) => f);
   return sys.type === "dmr" ? (x.dmrChannelsHz ?? []) : sys.type === "nxdn" ? (x.nxdnChannelsHz ?? []) : [];
 }
 
@@ -498,6 +499,7 @@ export function normalizeSite(x: Partial<Site>, sys: Pick<System, "type">): Site
           ...(x.esk ? { esk: true } : {}),
         }
       : {}),
+    ...(type === "ltr" && x.lcnTableHz && Object.keys(x.lcnTableHz).length ? { lcnTableHz: x.lcnTableHz } : {}),
     ...(type === "smartnet"
       ? {
           bandplan: x.bandplan ?? "800_standard",

@@ -887,7 +887,7 @@ export function ScanStep(props: { s: AppState; c: Config; found: Found | null; o
         </ul>
         {sv.stage === "monitoring" && s.surveySpectrum && (
           <div className="ob-waterfall">
-            <Waterfall radio={s.surveySpectrum} label="Live" ccs={[{ hz: m.heardHz, label: "Control", color: "var(--accent)" }]} calls={[]} />
+            <Waterfall radio={s.surveySpectrum} label="Live" ccs={[{ hz: m.heardHz, label: "Control", color: "var(--accent)", title: "The control channel heard" }]} calls={[]} />
           </div>
         )}
         {others.length > 0 && (

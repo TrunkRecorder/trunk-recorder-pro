@@ -858,20 +858,16 @@ pub fn trigger(on: &str, facts: &Value, at_ms: f64) -> Value {
 }
 
 /// What the recording was doing when the capture was asked for, that a replay
-/// can't tell: recorders in use, and each DMR / NXDN site's channel table and
+/// can't tell: recorders in use, and each DMR / NXDN / LTR site's channel table and
 /// carriers as learned so far.
 fn engine_state(s: &Status, at_s: f64) -> Value {
     let sites: Vec<Value> = s
         .sites
         .iter()
         .map(|y| {
-            let (dmr, nxdn) = trunk_app::session::protocol_detail(&y.protocol, &|tg| json!(tg));
             let mut v = json!({ "system": y.short_name, "site": y.site_name, "active_calls": y.active_calls, "recording": y.recording });
-            if let Some(d) = dmr {
-                v["dmr"] = d;
-            }
-            if let Some(n) = nxdn {
-                v["nxdn"] = n;
+            if let Some((key, detail)) = trunk_app::session::protocol_detail(&y.protocol, &|tg| json!(tg)) {
+                v[key] = detail;
             }
             v
         })
@@ -1481,7 +1477,7 @@ mod tests {
     #[test]
     fn the_state_says_what_a_dmr_site_had_learned() {
         use trunk_core::dmr::trunking::{ChannelEntry, SiteStatus as DmrSite};
-        let dmr = DmrSite { channels: vec![ChannelEntry { lcn: 1, hz: 463_375_000, configured: false }], ..Default::default() };
+        let dmr = DmrSite { channels: vec![ChannelEntry { number: 1, hz: 463_375_000, configured: false }], ..Default::default() };
         let mut s = Status { recording: 2, active_calls: 1, ..Default::default() };
         s.sites.push(trunk_core::trunk::SiteStatus { short_name: "capplus".into(), recording: 2, protocol: trunk_core::trunk::ProtocolStatus::Dmr(dmr), ..Default::default() });
         s.sites.push(trunk_core::trunk::SiteStatus { short_name: "dcfd".into(), ..Default::default() });

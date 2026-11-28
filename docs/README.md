@@ -18,7 +18,7 @@ message, and the developer pages cover the internals. Other pages link to them.
    [macOS](install/macos.md), [Windows](install/windows.md), [Linux](install/linux.md),
    [Raspberry Pi](install/raspberry-pi.md), [Docker](install/docker.md), or
    [in the browser](install/browser.md) with nothing to install.
-   [USRP, Airspy and SoapySDR radios](install/other-radios.md) need a driver.
+   [USRP, bladeRF and SoapySDR radios](install/other-radios.md) need a driver.
 2. [Getting started](getting-started.md): from a new install to your first recorded call, and how
    trunking works.
 3. [Coming from Trunk Recorder](migrating-from-trunk-recorder.md): importing your config, and what
@@ -44,6 +44,7 @@ message, and the developer pages cover the internals. Other pages link to them.
 - [Trunked DMR](guides/dmr.md), with Hytera XPT
 - [NXDN](guides/nxdn.md)
 - EDACS: [its keys](configuration/systems.md#edacs) (no guide yet)
+- LTR: [its keys](configuration/systems.md#ltr) (no guide yet)
 - [Conventional channels](guides/conventional.md)
 - [Tones, NACs and colour codes](guides/tones.md): splitting a shared frequency
 

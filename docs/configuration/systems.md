@@ -1,7 +1,7 @@
 # Trunked systems
 
 Each entry in `systems` is one trunked system: its talkgroups, radios and rules, and its `sites`,
-each a control channel to follow. This page lists the keys for P25, SmartNet, DMR, NXDN and EDACS systems
+each a control channel to follow. This page lists the keys for P25, SmartNet, DMR, NXDN, EDACS and LTR systems
 and their sites, unit names and the site lock. For how to set each kind
 up, see the guides: [P25](../guides/p25.md), [SmartNet](../guides/smartnet.md),
 [DMR](../guides/dmr.md), [NXDN](../guides/nxdn.md), [multi-site](../guides/multi-site.md) and
@@ -34,7 +34,7 @@ a system of its own.)
 | `fcc` | | `{}` | object | Optional: who is licensed on each of its frequencies. See [FCC licenses](#fcc-licenses) |
 | `share` | | `false` | bool | Share it with the community directory while it records. See [Sharing with the directory](#sharing-with-the-directory) |
 | `directory` | | none | object | Set by its first share (or an import from the directory): the directory's record of it, `{ id }`. Shares land on that record. What changes as it's shared (the record's version, when it was last shared) is kept in the store, so sharing doesn't change the config again |
-| `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"`, `"nxdn"` or `"edacs"` (any case). Anything else is refused when the config is read |
+| `type` | | `"p25"` | string | `"p25"`, `"smartnet"`, `"dmr"`, `"nxdn"`, `"edacs"` or `"ltr"` (any case). Anything else is refused when the config is read |
 | `enabled` | | `true` | bool | `false` keeps it in the config without recording it |
 | `sites` | | `[]` | array | Where it is recorded from: one entry per site. See [Keys for each site](#keys-for-each-site) |
 | `preferredSite` | | `""` | string | Multi-site: a site's `name` (a site with none: the system's `shortName`), the one to keep calls from for the talkgroups whose row names no `Preferred Site` or `Preferred NAC`. See [Multi-site](#multi-site) |
@@ -233,6 +233,36 @@ AFS 03-091 is 457); radios are logical IDs (LIDs). A talkgroup marked `DE` (digi
 skipped as encrypted. ProVoice is decoded with the same vocoder as P25 Phase 1 (IMBE); the call JSON
 says `"audio_type": "digital"`, analog calls `"analog"`.
 
+## LTR
+
+LTR Standard, LTR-Net and Passport sites (E.F. Johnson's Logic Trunked Radio), with analog FM
+voice. Which of the three a site is comes from its words; there's nothing to set.
+
+| Key | Required | Default | Type | Description |
+|---|:---:|---|---|---|
+| `controlChannelsHz` | ✓ | | array of numbers | Every repeater of the site, Hz. An LTR site has no control channel: each repeater is watched |
+| `lcnTableHz` | | `{}` | object | Each repeater's logical channel number → frequency, Hz, `{ "1": 851012500, "2": 851512500 }` (RadioReference lists them in LCN order). LCNs 1–20 (Passport's up to 2047). A repeater left out is learned from the air. Its frequencies are watched too |
+
+Each repeater sends 300 baud status words under its voice, and alone in a short idle burst every
+few seconds. A word names the call's talkgroup and the LCN it's on, which needn't be the repeater
+it's heard on: a home repeater tells its idle radios where their group went. A call is recorded on
+the LCN its words name, as analog FM; the data under the voice is kept out of the audio by its high-pass, as a CTCSS tone is.
+
+An LCN not in `lcnTableHz` is learned: a repeater's idle words name its own LCN, and its calls'
+words mostly do. Until a call's LCN is known it's logged ("Talkgroup 1-05-123 is on LCN 5, whose
+frequency isn't known yet"), and the dashboard lists the LCNs still unknown. What was learned is
+kept in the store for the next start.
+
+Talkgroups are numbered as scanners write them. An LTR talkgroup A-HH-GGG (area, home repeater,
+group, as RadioReference lists it) is AHHGGG in the talkgroup file: 1-05-123 is `105123`, 0-02-033
+is `2033`. A Passport talkgroup is its number. LTR-Net's unique radio IDs are logged as
+registrations, and Passport's radio IDs name the talker. LTR-Net and Passport announce a site
+number. The dashboard's Decode page shows each repeater, the LCN it is and its call.
+
+The decoder follows the layouts RadioReference and sdrtrunk document. It hasn't heard a real LTR
+system yet ([#267](https://github.com/TrunkRecorder/trunk-recorder-pro/issues/267)): a capture of
+one is very welcome.
+
 ## Site lock (`expect`)
 
 Only follow a control channel that announces this identity. Each site has its own. What happens
@@ -245,7 +275,7 @@ when one doesn't match, and why the file's numbers are decimal while Setup shows
 | `wacn` | | (any) | integer | P25 WACN |
 | `sysId` | | (any) | integer | P25 or SmartNet System ID; NXDN Type-C system code |
 | `rfss` | | (any) | integer | P25 RFSS |
-| `site` | | (any) | integer | P25 site; SmartNet site (when the system sends it); NXDN Type-C site code; DMR Tier III site; EDACS site |
+| `site` | | (any) | integer | P25 site; SmartNet site (when the system sends it); NXDN Type-C site code; DMR Tier III site; EDACS site; LTR-Net or Passport site |
 | `colorCode` | | (any) | integer | DMR colour code |
 | `network` | | (any) | integer | DMR Tier III network (its System Identity Code's) |
 | `ran` | | (any) | integer | NXDN RAN |
@@ -259,6 +289,7 @@ Only the fields a protocol announces are compared:
   otherwise grants wait for it forever.
 - **NXDN Type-C**: `sysId` and `site`, from the site's SITE_INFO, and `ran`. **NXDN Type-D**: `ran`.
 - **EDACS**: `site`.
+- **LTR**: `site` (LTR-Net and Passport only; LTR Standard names none, so Setup offers no lock).
 - **DMR**: `colorCode`; Tier III and Capacity Max also `network` and `site`. Setup's **Site lock**
   has no DMR fields: the site's own `colorCode` (or NXDN's `ran`) keeps sites apart.
 

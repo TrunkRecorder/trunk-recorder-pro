@@ -200,7 +200,7 @@ threads and how the pieces connect.
 | `crates/trunk-app` | The app layer shared by desktop and browser: config (`config.rs`, with `migrate.rs` upgrading older ones), the conventional channel CSV (`channels.rs`), file names, and a recording `Session` (status, spectrum, log, calls, files) |
 | `crates/trunk-pro` | The desktop app: `serve` (default; radio threads, a decoding thread per source, engine thread, web server + WebSocket), `replay`, `capture`, `devices`, `survey`, `rolloff`, `tune`, `tool`, `plugin`, `interface`, `access` |
 | `…/src/sdr.rs` | The radio runtime every driver shares: the `Radio` trait, `run_with`, the `Sink`, retune / gain `Control`, the stuck-stream check |
-| `…/src/radio/` | The drivers: RTL-SDR (`rtlsdr-nusb`) and HackRF (`nusb`), pure Rust with no libusb / librtlsdr; Airspy, HydraSDR, bladeRF, SDRplay, SoapySDR and USRP (UHD's C API), loaded at run time when installed |
+| `…/src/radio/` | The drivers: RTL-SDR (`rtlsdr-nusb`) and HackRF (`nusb`), pure Rust with no libusb / librtlsdr; Airspy and HydraSDR (`crates/libairspy-rs`), pure Rust too; bladeRF, SDRplay, SoapySDR and USRP (UHD's C API), loaded at run time when installed |
 | `…/src/plugins/` | The plugin host, store and command line |
 | `…/src/interfaces/` | The other interfaces: their servers, store and command line |
 | `crates/trunk-recorder-plugin` | The plugin protocol, and a Rust SDK for writing plugins (on crates.io) |

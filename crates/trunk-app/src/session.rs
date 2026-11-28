@@ -1763,8 +1763,11 @@ fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>,
     let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
     let id = engine.systems().iter().find(|s| s.short_name == system).map_or_else(Default::default, |s| s.id);
     for y in engine.status().sites.iter().filter(|y| y.short_name == system) {
-        let (dmr, nxdn) = protocol_detail(&y.protocol, &|tg| tg_names(names, id, [tg]).remove(0));
-        sites.push(json!({ "index": y.site, "name": y.site_name, "dmr": dmr, "nxdn": nxdn }));
+        let mut site = json!({ "index": y.site, "name": y.site_name, "dmr": null, "nxdn": null, "ltr": null });
+        if let Some((key, detail)) = protocol_detail(&y.protocol, &|tg| tg_names(names, id, [tg]).remove(0)) {
+            site[key] = detail;
+        }
+        sites.push(site);
         for (sg, members) in &y.patches {
             let p = json!({ "supergroup": tg_names(names, id, [*sg])[0], "members": tg_names(names, id, members.iter().copied()) });
             if !patches.iter().any(|h| h["supergroup"] == p["supergroup"]) {
@@ -1775,12 +1778,14 @@ fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>,
     (sites, patches)
 }
 
-/// A DMR or NXDN site's channel table and carriers (its kind, colour code or
-/// RAN, rest channel…), as (DMR, NXDN): the other is none. `tg`: a
-/// talkgroup on a carrier as it's shown.
-pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> (Option<Value>, Option<Value>) {
-    (
-        match p { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
+/// A DMR, NXDN or LTR site's channel table and carriers (its kind, colour
+/// code or RAN, rest channel…), under its key ("dmr", "nxdn", "ltr"); none
+/// for the others. `tg`: a talkgroup on a carrier as it's shown.
+pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> Option<(&'static str, Value)> {
+    let call = |c: Option<(u32, u32)>| c.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src }));
+    match p {
+        ProtocolStatus::Dmr(d) => Some((
+            "dmr",
             json!({
                 "variant": d.variant.map(|v| v.name()),
                 "colorCode": d.color_code,
@@ -1789,14 +1794,15 @@ pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> (Option
                 "sysCode": d.sys_code.map(|c| json!({ "code": c.0, "model": c.model(), "category": c.category() })),
                 "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
                 "keyed": d.keyed,
-                "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                "channels": d.channels.iter().map(|c| json!({ "lcn": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
                 "carriers": d.carriers.iter().map(|c| json!({
                     "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
-                    "slots": c.slots.iter().map(|s| s.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src }))).collect::<Vec<_>>(),
+                    "slots": c.slots.iter().map(|&s| call(s)).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
-            })
-        }),
-        match p { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
+            }),
+        )),
+        ProtocolStatus::Nxdn(n) => Some((
+            "nxdn",
             json!({
                 "kind": n.kind.name(),
                 "rate": n.rate.map(|r| r.name()),
@@ -1807,11 +1813,22 @@ pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> (Option
                 "unknownChannels": n.unknown,
                 "carriers": n.carriers.iter().map(|c| json!({
                     "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
-                    "call": c.call.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src })),
+                    "call": call(c.call),
                 })).collect::<Vec<_>>(),
-            })
-        }),
-    )
+            }),
+        )),
+        ProtocolStatus::Ltr(l) => Some((
+            "ltr",
+            json!({
+                "flavor": l.flavor.map(|f| f.name()),
+                "site": l.site,
+                "channels": l.channels.iter().map(|c| json!({ "lcn": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                "unknownChannels": l.unknown,
+                "carriers": l.carriers.iter().map(|c| json!({ "freqHz": c.hz, "heard": c.heard, "lcn": c.lcn, "call": call(c.call) })).collect::<Vec<_>>(),
+            }),
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

@@ -6,12 +6,12 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { formatMhz, placeText, siteNumber } from "../config.ts";
 import { radioQuery, setView, usePolled, useApp, useTopic, type AppState, type StatsRange } from "../controller.ts";
-import { BackBar, Card, Choice, Fig, Figs, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
+import { BackBar, Card, Choice, Clip, Fig, Figs, HeatStrip, LiveSpark, Stat, SystemTag, TimeSeries, Trend, type Line } from "../charts.tsx";
 import { compact, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, DmrSiteStatus, FreqRow, SeriesData, SiteStatus } from "../protocol.ts";
 import { modeInfo } from "../modes.ts";
-import { change, coverage, dashSystems, K, KIND_LABEL, recentAvg, recentSum, running, runningSites, siteHealth, sumSeries, systemHealth, useHistory, useRanges, useUsual, val, voiceKeys, type DashSite, type DashSystem, type Usual } from "./data.ts";
-import { DmrSites, hex, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
+import { change, coverage, dashSystems, K, KIND_LABEL, recentAvg, recentSum, running, runningSites, siteHealth, sourceName, sumSeries, systemHealth, useHistory, useRanges, useUsual, val, voiceKeys, type DashSite, type DashSystem, type Usual } from "./data.ts";
+import { DmrSites, hex, LtrSites, Neighbours, NxdnSites, Patches } from "./Systems.tsx";
 import { callsCounted, sinceLabel } from "./counts.ts";
 
 /** `a / b` step by step (errors per frame from the two rates). */
@@ -79,7 +79,7 @@ function freqHints(rows: FreqRow[], s: AppState): ReactNode[] {
       if (p && p.depth < 0.15)
         out.push(
           <>
-            <Fig v={mhz(r.freqHz)} u="MHz" /> loses <Fig v={num(r.badPct, 1)} u="%" level="warn" /> at {p.src.label}'s band edge — move its centre toward it
+            <Fig v={mhz(r.freqHz)} u="MHz" /> loses <Fig v={num(r.badPct, 1)} u="%" level="warn" /> at <span title={p.src.label}>{sourceName(s, p.src)}</span>'s band edge — move its centre toward it
           </>,
         );
       else
@@ -385,7 +385,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
                   return (
                     <tr key={r.freqHz}>
                       <td className="mono">{placeText(r.freqHz)}</td>
-                      <td className="small">{p?.src.label ?? "—"}</td>
+                      <td className="small">{p ? <Clip text={sourceName(s, p.src)} title={p.src.label} /> : "—"}</td>
                       <td className="mono">{p ? `${Math.round(p.depth * 100)}%` : "—"}</td>
                       <td className="mono">{r.calls}</td>
                       <td className="mono">{r.snr !== null ? `${num(r.snr, 0)} dB` : "—"}</td>
@@ -409,6 +409,7 @@ function SystemDetail({ s, name, siteName }: { s: AppState; name: string; siteNa
       {live && <Patches patches={live.patches} />}
       {here.some((y) => y.dmr) && <DmrSites sites={here} />}
       {here.some((y) => y.nxdn) && <NxdnSites sites={here} />}
+      {here.some((y) => y.ltr) && <LtrSites sites={here} />}
     </div>
   );
 }
@@ -466,7 +467,9 @@ export function SiteIdentityLine(props: { kind: DashSystem["kind"]; st: SiteStat
             ["System", id.sysId != null ? hex(id.sysId) : null],
             ["Site", id.site],
           ]
-        : [
+        : kind === "ltr"
+          ? [["Site", id.site, "LTR-Net's site ID, Passport's site number"]]
+          : [
             ["NAC", hex(id.nac)],
             ["WACN", hex(id.wacn)],
             ["SysID", hex(id.sysId)],
