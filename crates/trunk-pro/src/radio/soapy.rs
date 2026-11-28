@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_long, c_longlong, c_void, CStr, CString};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use libloading::Library;
 use num_complex::Complex32;
@@ -618,53 +618,94 @@ fn stream_once(cfg: &SoapyConfig, sink: &mut Sink, stop: &AtomicBool, ctl: Optio
         check(a, "start", (a.activate)(d.dev, d.stream, 0, 0, 0))?;
         d.active = true;
 
-        let mut stamps = Stamps::new(cfg.rate_hz);
-        let mut overflowed = false;
-        let mut timeouts = 0;
-        while !stop.load(Ordering::Relaxed) {
-            if let Some(c) = ctl
-                && c.apply(&mut d, cfg.center_hz, sink)? == Applied::Closed
-            {
-                return Ok(());
-            }
-            let mut buf = sink.iq_buffer(per);
-            buf.vec().resize(per, Complex32::default());
-            let (mut got, mut dropped) = (0usize, 0u64);
-            while got < per {
-                let ptrs = [buf.vec()[got..].as_mut_ptr() as *mut c_void];
-                let (mut flags, mut t) = (0 as c_int, 0 as c_longlong);
-                let n = (a.read_stream)(d.dev, d.stream, ptrs.as_ptr(), per - got, &mut flags, &mut t, 1_000_000);
-                if n > 0 {
-                    timeouts = 0;
-                    dropped += stamps.read(n as usize, (flags & HAS_TIME != 0).then_some(t));
-                    if overflowed && !stamps.timed() {
-                        // No timestamps (or none to go by): an overflow lost about one transfer.
-                        dropped += mtu as u64;
-                    }
-                    overflowed = false;
-                    got += n as usize;
-                    continue;
+        let (dev, stream) = (d.dev, d.stream);
+        let read = |buf: &mut [Complex32], flags: &mut c_int, t: &mut c_longlong| {
+            let ptrs = [buf.as_mut_ptr() as *mut c_void];
+            (a.read_stream)(dev, stream, ptrs.as_ptr(), buf.len(), flags, t, 1_000_000)
+        };
+        pump(&mut d, cfg, per, mtu, sink, stop, ctl, Instant::now, read, |e| check(a, "receive", e))
+    }
+}
+
+/// A stream that has given no samples for this long (reads timing out or empty) has stopped: an error, and so a reopen.
+const SILENT: Duration = Duration::from_secs(10);
+
+/// An open, started stream's reads into `sink`, in blocks of `per` samples, until `stop`, the receiver
+/// going, or an error. `read` is SoapySDR's readStream (samples read, or an error code), `now` the clock,
+/// `failed` an error code as an error.
+///
+/// A read of 0 is nothing yet, not success: SoapyRemote's server starts sending at `setupStream`, before
+/// the stream is activated, so a remote Airspy's first reads are a backlog of empty packets. Those are
+/// read on (each still waits on the network), as reads that time out are: only [`SILENT`] without a
+/// sample is an error. Taking 0 as success ended the stream at once, without a word, and
+/// [`crate::sdr::run_with`] opened it again, which made a new backlog: about 8 reopens a second and no
+/// samples.
+#[allow(clippy::too_many_arguments)]
+fn pump<T: Tunable>(
+    d: &mut T,
+    cfg: &SoapyConfig,
+    per: usize,
+    mtu: usize,
+    sink: &mut Sink,
+    stop: &AtomicBool,
+    ctl: Option<&Control>,
+    now: impl Fn() -> Instant,
+    mut read: impl FnMut(&mut [Complex32], &mut c_int, &mut c_longlong) -> c_int,
+    failed: impl Fn(c_int) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut stamps = Stamps::new(cfg.rate_hz);
+    let mut overflowed = false;
+    // The last sample (or the start), and whether an empty read was said.
+    let mut heard = now();
+    let mut said_empty = false;
+    while !stop.load(Ordering::Relaxed) {
+        if let Some(c) = ctl
+            && c.apply(d, cfg.center_hz, sink)? == Applied::Closed
+        {
+            return Ok(());
+        }
+        let mut buf = sink.iq_buffer(per);
+        buf.vec().resize(per, Complex32::default());
+        let (mut got, mut dropped) = (0usize, 0u64);
+        while got < per {
+            let (mut flags, mut t) = (0 as c_int, 0 as c_longlong);
+            let n = read(&mut buf.vec()[got..], &mut flags, &mut t);
+            if n > 0 {
+                heard = now();
+                dropped += stamps.read(n as usize, (flags & HAS_TIME != 0).then_some(t));
+                if overflowed && !stamps.timed() {
+                    // No timestamps (or none to go by): an overflow lost about one transfer.
+                    dropped += mtu as u64;
                 }
-                match n {
-                    TIMEOUT => {
-                        timeouts += 1;
-                        if timeouts >= 3 {
-                            return Err("SoapySDR: no samples for 3 s".into());
-                        }
-                        break;
-                    }
-                    OVERFLOW => overflowed = true,
-                    CORRUPTION | TIME_ERROR => {}
-                    e => return check(a, "receive", e),
-                }
-            }
-            if got == 0 {
+                overflowed = false;
+                got += n as usize;
                 continue;
             }
-            buf.vec().truncate(got);
-            if !sink.send(Block::Iq(buf), dropped, std::time::Instant::now()) {
-                return Ok(());
+            if now().duration_since(heard) >= SILENT {
+                return Err(format!("SoapySDR: no samples for {} s", SILENT.as_secs()));
             }
+            match n {
+                0 => {
+                    if !std::mem::replace(&mut said_empty, true) {
+                        log::warn!("SoapySDR: the stream's first reads are empty (SoapyRemote sends before the radio starts): reading on");
+                    }
+                    if stop.load(Ordering::Relaxed) {
+                        break;
+                    }
+                }
+                // Back to look at stop and the controls.
+                TIMEOUT => break,
+                OVERFLOW => overflowed = true,
+                CORRUPTION | TIME_ERROR => {}
+                e => return failed(e),
+            }
+        }
+        if got == 0 {
+            continue;
+        }
+        buf.vec().truncate(got);
+        if !sink.send(Block::Iq(buf), dropped, Instant::now()) {
+            return Ok(());
         }
     }
     Ok(())
@@ -896,6 +937,142 @@ mod tests {
         let mut s = Stamps::new(RATE);
         assert_eq!((0..100).map(|_| s.read(2012, None)).sum::<u64>(), 0);
         assert!(!s.timed());
+    }
+
+    /// An open radio nothing is asked of.
+    struct Still;
+    impl Tunable for Still {
+        fn tune(&mut self, hz: f64) -> Result<Retuned, String> {
+            Ok(Retuned { hz, gap: 0 })
+        }
+        fn set_gain(&mut self, _: Gain) -> Result<Regained, String> {
+            Ok(Regained::LEFT_ALONE)
+        }
+    }
+
+    fn soapy(rate_hz: f64) -> SoapyConfig {
+        SoapyConfig { args: "driver=remote,remote:driver=airspy".into(), center_hz: 851e6, rate_hz, agc: false, gain_db: None, gains: vec![], antenna: String::new(), settings: String::new(), ppm: 0.0 }
+    }
+
+    /// An error code as [`check`] reads one: 0 is success.
+    fn failed(e: c_int) -> Result<(), String> {
+        if e == 0 { Ok(()) } else { Err(format!("SoapySDR receive: error {e}")) }
+    }
+
+    /// readStream as a remote Airspy answers it after each open: `empty` reads of 0 (SoapyRemote's
+    /// packets from before the radio started), then every read full.
+    fn empties_then_samples(empty: usize) -> impl FnMut(&mut [Complex32], &mut c_int, &mut c_longlong) -> c_int {
+        let mut n = 0;
+        move |buf, _, _| {
+            n += 1;
+            if n <= empty {
+                return 0;
+            }
+            buf.fill(Complex32::new(0.5, -0.5));
+            buf.len() as c_int
+        }
+    }
+
+    /// A remote Airspy behind SoapyRemote as [`crate::sdr::run_with`] keeps it streaming: each open counted.
+    struct Remote {
+        opens: Arc<std::sync::atomic::AtomicUsize>,
+        empty: usize,
+    }
+    impl Radio for Remote {
+        const BACKOFF: Duration = Duration::from_millis(10);
+        fn rate_hz(&self) -> f64 {
+            1e6
+        }
+        fn retune_to(&mut self, _: f64) {}
+        fn gain_to(&mut self, _: Gain) {}
+        fn gain(&self) -> Option<Gain> {
+            None
+        }
+        fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+            self.opens.fetch_add(1, Ordering::Relaxed);
+            pump(&mut Still, &soapy(1e6), 10_000, 1000, sink, stop, ctl, Instant::now, empties_then_samples(self.empty), failed)
+        }
+    }
+
+    /// A backlog of empty reads after the stream starts is read through on the same open, and the
+    /// samples after it arrive: no reopen. (A read of 0 taken as success ended the stream, and every
+    /// reopen made a new backlog: about 8 reopens a second and never a sample.)
+    #[test]
+    fn a_backlog_of_empty_reads_is_read_through_not_reopened() {
+        use crate::sdr::SourceMsg;
+        let (tx, rx) = std::sync::mpsc::sync_channel(64);
+        let stop = Arc::new(AtomicBool::new(false));
+        let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let radio = Remote { opens: opens.clone(), empty: 500 };
+        let s = stop.clone();
+        let t = std::thread::spawn(move || crate::sdr::run_with(0, radio, tx, s, None));
+        let first = loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(SourceMsg::Samples { block, .. }) => break Ok(block.len()),
+                Ok(SourceMsg::Error { error, .. }) => break Err(error),
+                Ok(_) => continue,
+                Err(_) => break Err("no samples in 5 s".into()),
+            }
+        };
+        stop.store(true, Ordering::Relaxed);
+        t.join().unwrap();
+        let opened = opens.load(Ordering::Relaxed);
+        assert_eq!(first, Ok(10_000), "opened {opened} times");
+        assert_eq!(opened, 1, "the samples came on the first open");
+    }
+
+    /// No samples for [`SILENT`] is an error, not a quiet end (which reopened at once): empty reads
+    /// (100 ms each on the network), reads timing out (1 s each), or the two mixed, on the one clock.
+    #[test]
+    fn no_samples_for_10_s_is_an_error() {
+        let empty = (0, Duration::from_millis(100));
+        let timeout = (TIMEOUT, Duration::from_secs(1));
+        for (name, reads) in [("empty", [empty, empty]), ("timing out", [timeout, timeout]), ("mixed", [empty, timeout])] {
+            let (tx, rx) = std::sync::mpsc::sync_channel(64);
+            let mut sink = Sink::new(0, tx, 1e6, true);
+            let t0 = Instant::now();
+            let clock = std::cell::Cell::new(t0);
+            let mut n = 0;
+            let read = |_: &mut [Complex32], _: &mut c_int, _: &mut c_longlong| {
+                let (code, waits) = reads[n % 2];
+                n += 1;
+                clock.set(clock.get() + waits);
+                code
+            };
+            let r = pump(&mut Still, &soapy(1e6), 10_000, 1000, &mut sink, &AtomicBool::new(false), None, || clock.get(), read, failed);
+            let e = r.expect_err(name);
+            assert!(e.contains("no samples for 10 s"), "{name}: {e}");
+            let waited = clock.get() - t0;
+            assert!(waited >= SILENT && waited <= SILENT + Duration::from_secs(1), "{name}: {waited:?}");
+            drop(sink);
+            assert!(rx.try_recv().is_err(), "{name}: nothing sent");
+        }
+    }
+
+    /// Samples between spells of empty reads start the 10 s again: two spells of 9.5 s are no error.
+    #[test]
+    fn samples_between_empty_spells_start_the_10_s_again() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(64);
+        let mut sink = Sink::new(0, tx, 1e6, true);
+        let clock = std::cell::Cell::new(Instant::now());
+        let stop = AtomicBool::new(false);
+        let mut n = 0;
+        let read = |buf: &mut [Complex32], _: &mut c_int, _: &mut c_longlong| {
+            n += 1;
+            // Reads 1–95 and 97–191 empty, 100 ms each; 96 and 192 full; then stop.
+            if n % 96 != 0 {
+                clock.set(clock.get() + Duration::from_millis(100));
+                return 0;
+            }
+            if n == 192 {
+                stop.store(true, Ordering::Relaxed);
+            }
+            buf.len() as c_int
+        };
+        let r = pump(&mut Still, &soapy(1e6), 10_000, 1000, &mut sink, &stop, None, || clock.get(), read, failed);
+        assert_eq!(r, Ok(()));
+        drop(sink);
+        assert_eq!(rx.try_iter().count(), 2, "both blocks sent");
     }
 
     #[test]

@@ -200,6 +200,10 @@ restarting the recorder. Use a wired link for anything beyond 1 MSPS.
 - **Device settings**: `key=value` settings, such as `biastee=true`. `SoapySDRUtil --probe` lists
   what your device accepts.
 
+A radio on another machine works through **SoapyRemote** (`SoapySDRServer` there, SoapyRemote's module
+here), with device arguments such as `driver=remote,remote=tcp://<server>:55132,remote:driver=airspy,remote:prot=tcp`.
+At 10 MSPS that's about 40 MB/s on the network: use a wired link.
+
 ## Older RTL-SDR dongles
 
 Trunk Recorder Pro's own RTL-SDR driver handles the **R820T** and **R828D** tuners, which are in
