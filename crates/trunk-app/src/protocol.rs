@@ -88,8 +88,9 @@ pub enum DropStage {
 }
 
 impl DroppedCall {
-    /// A saved call's record whose files couldn't be written (`detail`: why).
-    pub fn write_failed(r: &trunk_recorder_plugin::CallRecord, detail: String) -> DroppedCall {
+    /// A concluded call's record that wasn't kept after all: its files couldn't be written
+    /// (`detail`: why), or nothing was decoded from a data-only one.
+    pub fn not_saved(r: &trunk_recorder_plugin::CallRecord, why: trunk_core::trunk::NotSaved, detail: Option<String>) -> DroppedCall {
         DroppedCall {
             call_num: r.call_num,
             system: r.short_name.clone(),
@@ -101,8 +102,8 @@ impl DroppedCall {
             start_time: r.start_time_ms as f64 / 1000.0,
             length_s: r.call_length,
             stage: DropStage::NotSaved,
-            why: trunk_core::trunk::NotSaved::WriteFailed.key(),
-            detail: Some(detail),
+            why: why.key(),
+            detail,
             signal: r.signal,
             noise: r.noise,
             voice_frames: None,
@@ -210,6 +211,9 @@ pub enum ToClient {
     Concluded { entry: Value },
     /// A call lost, as it was ([`DroppedCall`]).
     CallDropped(DroppedCall),
+    /// What a plugin made of a stored call (a transcript, a decoded page), as it's filed: its
+    /// `transmission_id` is the entry's, its `call` says which in brief.
+    Product(trunk_recorder_plugin::Product),
     /// A call's upload plugins are done and it kept other files than its entry said.
     CallFiles { path: String, audio: bool, json: bool },
     UnitAlias { system: String, unit: u32, alias: String },
@@ -916,7 +920,7 @@ mod tests {
             assert_eq!(m.audience(), Audience::Control, "{}", m.kind());
         }
         let everyone = [
-            "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "unitEvent", "spectrum", "log", "concluded", "callDropped", "callFiles",
+            "hello", "history", "units", "radios", "state", "config", "configSaved", "talkgroups", "talkgroupEdited", "unitNames", "unitNameEdited", "status", "voice", "unitEvent", "spectrum", "log", "concluded", "callDropped", "callFiles", "product",
             "unitAlias", "mdcUnits", "heard", "survey", "surveySpectrum", "licenseResult", "callSignResult", "sourceProfile", "devices", "dir", "trConfig", "error", "notice", "pluginActionResult", "stats", "host", "rfDetail",
             "decodeDetail", "monitorEvent", "subscribed", "statsResult", "radioResult", "callsResult", "dataSummary", "iqCaptures", "iqCaptureReview", "iqRuleChecked", "dataDeleted", "dataCompacted", "tokenCreated", "quit",
         ];

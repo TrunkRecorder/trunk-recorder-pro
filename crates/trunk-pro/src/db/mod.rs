@@ -280,7 +280,7 @@ impl Db {
     /// system isn't the config's.
     pub fn send(&self, mut c: Change) -> bool {
         // (Low-write mode keeps no call index.)
-        if matches!(c, Change::Call { .. } | Change::CallFiles { .. }) && !self.indexes_calls() {
+        if matches!(c, Change::Call { .. } | Change::CallFiles { .. } | Change::Product(_)) && !self.indexes_calls() {
             return false;
         }
         // (A call the run filed under its system's id keeps it; one read from its files is filed by its name.)

@@ -259,6 +259,7 @@ plugin is on for: the user sets nothing up. Since SDK 0.17.0.
 | Topic | From | `data` | Notes | |
 |---|---|---|---|---|
 | `tap.fm.discriminator` | Analog FM channels | `pcm`, 22,050 Hz | None | The FM demodulator's output before de-emphasis, the voice filters and the CTCSS notch, while the squelch is open; ±5 kHz deviation is half of full scale. For data decoders (POCSAG, FLEX, …) |
+| `tap.am.envelope` | AM channels | `pcm`, 22,050 Hz | None | The AM detector's output over the carrier's level, before the voice filters, the limiter and the squelch tail, while the carrier is up; full modulation is half of full scale. For data decoders (ACARS, …) |
 | `tap.voice.air` | Digital voice: P25 (Phase 1 and 2), DMR, NXDN, EDACS ProVoice | `frames` | `AirFrame`, one a frame | Each voice frame as it came off the air: error-corrected, not decrypted |
 | `tap.voice.frames` | Digital voice | `frames` | `FrameErrors`, one a frame | Each voice frame the vocoder was given: after error correction and decryption |
 | `tap.voice.errors` | Digital voice | `none` | `FrameErrors`, one a frame vocoded | How each frame decoded: no data, only the figures |
@@ -345,6 +346,43 @@ The user can save the same streams to files, a `.jsonl` sidecar holding what the
 [`taps`](../../configuration/recording.md#taps). These topics are busy: hand each chunk to a thread
 of your own straight away.
 
+## Products
+
+A product is what a plugin made of a call: a transcript of its audio, the pages or ACARS messages
+decoded from its signal. A plugin sends one with [`call.product`](protocol.md#callproduct); the
+recorder files it with the call and passes it on here, to plugins subscribed to `product.<kind>`
+(`product.page`, `product.transcript`, `product.acars`) or to `product` for every kind. The
+plugin that made it isn't sent it back.
+
+```json
+{ "type": "product", "transmission_id": "county-101-9001644-1790771550123", "by": "pager", "time": 1790771552.4,
+  "call": { "system_id": 3, "short_name": "county", "talkgroup": 101, "talkgroup_tag": "Fire paging", "freq_hz": 152240000.0, "path": "county/2026/9/30/101-1790771550_152240000" },
+  "kind": "page", "data": { "protocol": "pocsag", "baud": 1200, "address": 1234560, "function": 3, "format": "alpha", "text": "ENGINE 4 RESPOND" } }
+```
+
+| Field | |
+|---|---|
+| `transmission_id` | The call it is of: the `transmission_id` in the call's JSON, the same for every site's copy of the call |
+| `by` | The id of the plugin that made it |
+| `time` | Unix seconds: when what it holds was heard (a page) or made (a transcript) |
+| `call` | The call in brief: its system, talkgroup, frequency and `path` |
+| `kind`, `data` | What it is. Every kind's `data` has a `text`: what lists show and what a search looks in |
+
+| `kind` | `data` |
+|---|---|
+| `transcript` | `text`, `language?`, `model?`, `segments?`: `[{ start_ms, end_ms, text, unit?, confidence? }]` |
+| `page` | `protocol` (`pocsag`, `flex`), `baud`, `address` (RIC or capcode), `function?` (POCSAG, 0–3), `format` (`alpha`, `numeric`, `tone`, `binary`), `text`, `errors?` |
+| `acars` | `mode`, `registration`, `flight?`, `label`, `block_id?`, `ack?`, `message_no?`, `text`, `more?`, `errors?` |
+| anything else | Whatever its plugin sent: kept, listed by its `text` and passed on as it came |
+
+A call may have many (thirty pages in one transmission, two transcribers), and they come when
+they are made: a decoder's as the call concludes, a transcriber's seconds or minutes after
+`call.concluded`. Nothing replaces anything: a plugin that improves on its own sends another, and
+a reader takes the latest of a kind from a plugin. They are kept in the call store, are part of
+the call wherever it is listed (`CallEntry.products`, and a [`calls`](protocol.md#calls) answer),
+and are written beside the call's JSON as `<call>.products.jsonl`, a product a line, when the
+JSON is kept. They go when the call does.
+
 ## `status`
 
 Every site's state, every 5 seconds: an entry for each site, so a system of several sites has
@@ -429,7 +467,7 @@ its sites' and channels'.
 | `<channel>/{open,signal,closed,noise,snr}` | Gauges: open (1/0), its level while open and while closed, the floor beside it, open over the floor |
 | `src/<label>/{samples,dropped,clipPct,ppm,tune}` | Each radio: samples and samples lost (their `s`: seconds running, and seconds losing any), clipping, its frequency error and AutoTune's correction |
 | `sys/<short name>/{calls,airMs,audioBytes,notSaved,dup}` | Each system's calls (once each, however many sites heard them) |
-| `sys/<short name>/notSaved/why/<why>` | Its calls not saved, by why: `silent`, `short`, `encrypted`, `writeFailed` (adding up to `notSaved`) |
+| `sys/<short name>/notSaved/why/<why>` | Its calls not saved, by why: `silent`, `short`, `encrypted`, `writeFailed`, `noData` (adding up to `notSaved`) |
 
 `<site>` is the site's `key` (`sys/<short name>`, or `sys/<short name>/site/<site>` for a system
 of several), `<channel>` a channel's (`sys/<short name>/ch/<Hz>`), and `src/<label>` a radio's. A

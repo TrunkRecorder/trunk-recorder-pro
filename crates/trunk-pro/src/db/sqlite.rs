@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(store.scalar("pragma user_version"), i64::from(schema::SCHEMA_VERSION));
         assert_eq!(store.texts("pragma journal_mode"), ["wal"]);
         let tables = store.texts("select name from sqlite_master where type='table' order by name");
-        assert_eq!(tables, ["call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "series", "stats_hours", "stats_minutes", "systems", "talkgroups", "unit_names", "units"]);
+        assert_eq!(tables, ["call_products", "call_transmissions", "calls", "kept", "meta", "registry", "registry_changes", "series", "stats_hours", "stats_minutes", "systems", "talkgroups", "unit_names", "units"]);
     }
 
     /// A second opener of the same store (another recorder on the same data
@@ -356,13 +356,27 @@ mod tests {
         store.batch_for_test("insert into systems (id, short_name, kind) values (1, 'a', 'p25');
             insert into talkgroups (system_id, number, alpha_tag, mode, description, tag, category, priority, preferred_nac, preferred_site, ignore, sort_order, comment, origin, origin_name, origin_at)
               values (1, 101, 'Fire', 'D', '', '', '', 1, 0, '', 0, 0, '', 'file', 'x.csv', 5);
-            drop table unit_names; alter table talkgroups drop column origin; alter table talkgroups drop column origin_name; alter table talkgroups drop column origin_at;
+            drop table call_products; drop table unit_names; alter table talkgroups drop column origin; alter table talkgroups drop column origin_name; alter table talkgroups drop column origin_at;
             pragma user_version = 8;");
         drop(store);
         let store = open(&path).unwrap();
         assert_eq!((store.scalar("pragma user_version"), aside_count(&dir)), (i64::from(schema::SCHEMA_VERSION), 0), "not set aside");
         assert_eq!(store.talkgroups(1).unwrap().iter().map(|r| (r.tg.alpha_tag.as_str(), r.origin.is_none())).collect::<Vec<_>>(), [("Fire", true)]);
         assert!(store.unit_names(1).unwrap().is_empty());
+        assert_eq!(store.scalar("select count(*) from call_products"), 0);
+    }
+
+    /// A version 9 store (v0.3.1 to v0.5.2) gains the table for call products, and keeps its rows.
+    #[test]
+    fn a_version_9_store_is_upgraded_in_place() {
+        let dir = TestDir::new("db-v9");
+        let path = dir.join("trunk-pro.sqlite");
+        let store = open(&path).unwrap();
+        store.batch_for_test("insert into systems (id, short_name, kind) values (1, 'a', 'p25'); drop table call_products; pragma user_version = 9;");
+        drop(store);
+        let store = open(&path).unwrap();
+        assert_eq!((store.scalar("pragma user_version"), aside_count(&dir)), (i64::from(schema::SCHEMA_VERSION), 0), "not set aside");
+        assert_eq!((store.scalar("select count(*) from systems"), store.scalar("select count(*) from call_products")), (1, 0));
     }
 
     #[test]

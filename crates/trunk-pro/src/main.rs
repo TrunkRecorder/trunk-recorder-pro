@@ -126,6 +126,7 @@ mod perftool;
 mod platform;
 mod snrtool;
 mod plugins;
+mod products;
 mod profile;
 mod radio;
 mod reach;
@@ -1138,6 +1139,7 @@ fn serve(a: &Args) {
         interfaces_due: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         tune: Default::default(),
+        products: Default::default(),
         plugins: plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: addr.ip(),
         bind_flag: a.get("bind").is_some(),

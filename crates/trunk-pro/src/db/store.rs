@@ -31,6 +31,8 @@ pub enum Change {
     Call { row: CallRow, live: bool },
     /// Which of a call's files are kept.
     CallFiles { path: String, audio: bool, json: bool },
+    /// Something a plugin made of a call (its `transmission_id` set): one more of that call's.
+    Product(Box<trunk_recorder_plugin::Product>),
     /// A `meta` value (the backfill's markers).
     Meta { key: String, value: String },
     /// A document kept between runs, by kind and key (a band plan, a
@@ -67,6 +69,7 @@ impl Change {
             Change::Systems(_) => "systems write".into(),
             Change::Call { row, .. } => format!("call write {}", row.path),
             Change::CallFiles { path, .. } => format!("files write {path}"),
+            Change::Product(p) => format!("{} write {}", p.kind(), p.transmission_id),
             Change::Meta { key, .. } => format!("meta write {key}"),
             Change::Kept { kind, key, .. } => format!("{kind} {key} write"),
             Change::Registry { system_id, .. } => format!("registry write (system {system_id})"),
@@ -246,7 +249,11 @@ impl Store {
     /// Delete up to `max` calls that started before `before_ms`, oldest
     /// first, with their children; how many went.
     pub fn retire(&self, before_ms: i64, max: usize) -> Result<usize, String> {
-        self.write(|x| Ok(x.execute("delete from calls where id in (select id from calls where start_ms < $1 order by start_ms limit $2)", vals![before_ms, max])? as usize))
+        self.write(|x| {
+            let going = "select id from calls where start_ms < $1 order by start_ms limit $2";
+            forget_products(x, &format!("id in ({going})"), vals![before_ms, max])?;
+            Ok(x.execute(&format!("delete from calls where id in ({going})"), vals![before_ms, max])? as usize)
+        })
     }
 
     /// Every system the store has (the config's and those gone from it), by id.
@@ -303,6 +310,7 @@ impl Store {
             for k in kinds {
                 match k {
                     DataKind::Calls => {
+                        forget_products(x, if ps.is_empty() { "true" } else { "system_id = $1" }, &ps)?;
                         n.calls = delete(x, "calls")?;
                         x.execute("insert into meta (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", vals![deleted_before_key(system_id), now_ms.to_string()])?;
                     }
@@ -525,6 +533,12 @@ fn apply_one(x: &mut dyn Exec, change: &Change) -> Result<(), String> {
         }
         Change::Call { row, live } => write_call(x, row, *live),
         Change::CallFiles { path, audio, json } => x.execute("update calls set audio = $2, json = $3 where path = $1", vals![path, *audio, *json]).map(drop),
+        Change::Product(p) => x
+            .execute(
+                "insert into call_products (transmission_id, kind, plugin, time_ms, text, data) values ($1, $2, $3, $4, $5, $6)",
+                vals![&p.transmission_id, p.kind(), &p.by, (p.time * 1000.0).round() as i64, p.text(), p.data.value().to_string()],
+            )
+            .map(drop),
         Change::Meta { key, value } => x.execute("insert into meta (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value", vals![key, value]).map(drop),
         Change::Kept { kind, key, value: Some(v) } => x.execute("insert into kept (kind, key, value) values ($1, $2, $3) on conflict (kind, key) do update set value = excluded.value", vals![kind, key, v]).map(drop),
         Change::Kept { kind, key, value: None } => x.execute("delete from kept where kind = $1 and key = $2", vals![kind, key]).map(drop),
@@ -606,7 +620,30 @@ fn calls_of(x: &mut dyn Exec, sql: &str, ps: &[V]) -> Result<Vec<StoredCall>, St
     for t in x.query(&format!("select {} from call_transmissions where call_id in ({}) order by call_id, seq", TX_COLS.join(", "), marks.join(", ")), &ids.0)? {
         txs.entry(t.int(0)).or_default().push(src_entry(&t, 0));
     }
-    Ok(rows.iter().map(|r| stored_call(r, 2, r.text(1), txs.remove(&r.int(0)).unwrap_or_default())).collect())
+    let mut calls: Vec<StoredCall> = rows.iter().map(|r| stored_call(r, 2, r.text(1), txs.remove(&r.int(0)).unwrap_or_default())).collect();
+    // What plugins made of them (one more query; most pages have none).
+    let mut ids = Params::default();
+    let marks: Vec<String> = calls.iter().filter(|c| !c.record.transmission_id.is_empty()).map(|c| ids.add(c.record.transmission_id.as_str())).collect();
+    if !marks.is_empty() {
+        for r in x.query(&format!("select transmission_id, kind, plugin, time_ms, data from call_products where transmission_id in ({}) order by id", marks.join(", ")), &ids.0)? {
+            let product = trunk_recorder_plugin::Product {
+                transmission_id: r.text(0),
+                by: r.text(2),
+                time: r.int(3) as f64 / 1000.0,
+                data: trunk_recorder_plugin::ProductData::from_value(&r.text(1), serde_json::from_str(&r.text(4)).unwrap_or_default()),
+                ..Default::default()
+            };
+            for c in calls.iter_mut().filter(|c| c.record.transmission_id == product.transmission_id) {
+                c.products.push(product.clone());
+            }
+        }
+    }
+    Ok(calls)
+}
+
+/// The products of the calls `cond` finds (about to be deleted) go with them.
+fn forget_products(x: &mut dyn Exec, cond: &str, ps: &[V]) -> Result<(), String> {
+    x.execute(&format!("delete from call_products where transmission_id in (select transmission_id from calls where {cond})"), ps).map(drop)
 }
 
 /// Write a call's row and its transmissions. A live call replaces what is

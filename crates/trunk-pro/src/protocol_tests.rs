@@ -449,6 +449,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         interfaces_due: tokio::sync::Notify::new(),
         survey_last: Mutex::new(None),
         tune: Default::default(),
+        products: Default::default(),
         plugins: crate::plugins::manage::Plugins::new(hub.clone(), shared.clone()),
         bind: std::net::Ipv4Addr::LOCALHOST.into(),
         bind_flag: false,
@@ -663,7 +664,7 @@ fn the_servers_messages() {
         crate::server::tr_config(&dir.join("nothing.json").display().to_string()),
         ToClient::Quit,
         // A call lost: a write that failed (the platform's), and one no radio took (the session's own are made by a run above).
-        ToClient::CallDropped(trunk_app::protocol::DroppedCall::write_failed(&trunk_recorder_plugin::CallRecord { call_num: 178_192, short_name: "wmata".into(), talkgroup: 34992, freq: 496_612_500, start_time_ms: 1_795_809_540_000, call_length: 14.9, signal: Some(-61.2), noise: Some(-84.0), ..Default::default() }, "Disk full: no space left on device".into())),
+        ToClient::CallDropped(trunk_app::protocol::DroppedCall::not_saved(&trunk_recorder_plugin::CallRecord { call_num: 178_192, short_name: "wmata".into(), talkgroup: 34992, freq: 496_612_500, start_time_ms: 1_795_809_540_000, call_length: 14.9, signal: Some(-61.2), noise: Some(-84.0), ..Default::default() }, trunk_core::trunk::NotSaved::WriteFailed, Some("Disk full: no space left on device".into()))),
         ToClient::CallDropped(trunk_app::protocol::DroppedCall { call_num: 7, system: "dcfd".into(), site: Some("south".into()), talkgroup: 101, alpha_tag: "FD Disp".into(), freq_hz: 853_000_000, source: None, start_time: 1_795_809_540.0, length_s: 3.0, stage: trunk_app::protocol::DropStage::NotRecorded, why: "noRecorder", detail: None, signal: None, noise: None, voice_frames: None, bad_frames: None }),
         ToClient::TokenCreated { id: 4, name: "luke".into(), secret: Some(secret), error: None },
         ToClient::TokenCreated { id: 5, name: "luke".into(), secret: None, error: Some("There's a user named \"luke\" already.".into()) },

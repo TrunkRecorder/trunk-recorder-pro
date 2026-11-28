@@ -20,7 +20,7 @@ use super::sql::Dialect;
 
 /// This build's schema. Raise it with any change to [`TABLES`] or
 /// [`INDEXES`]: a store of another version is made afresh.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// What a column holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,6 +192,14 @@ pub const TABLES: &[Table] = &[
         ],
         key: &["call_id", "seq"],
     },
+    // What plugins made of calls (a transcript, a decoded page: `crate::products`), by the
+    // call's transmission id: a product may come long after its call, and is of every copy of it.
+    // They go with the call (`store::forget_products`).
+    Table {
+        name: "call_products",
+        cols: &[col("id", Id), col("transmission_id", Text), col("kind", Text), col("plugin", Text), col("time_ms", BigInt), col("text", Text), col("data", Json)],
+        key: &[],
+    },
     Table { name: "kept", cols: &[col("kind", Text), col("key", Text), col("value", Text)], key: &["kind", "key"] },
     Table { name: "registry", cols: &[system("system_id"), col("whole", Json)], key: &["system_id"] },
     Table { name: "registry_changes", cols: &[col("id", Id), system("system_id"), col("changes", Json)], key: &[] },
@@ -253,6 +261,8 @@ pub const INDEXES: &[Index] = &[
     Index { name: "calls_system_tg_start", table: "calls", cols: &["system_id", "talkgroup", "start_ms"], cond: None },
     // A radio's calls: each once (its first transmission in each), by system and the call's start.
     Index { name: "transmissions_radio", table: "call_transmissions", cols: &["system_id", "unit", "call_start_ms", "call_id"], cond: Some("first") },
+    // A call's products.
+    Index { name: "call_products_call", table: "call_products", cols: &["transmission_id"], cond: None },
     Index { name: "stats_minutes_t", table: "stats_minutes", cols: &["t"], cond: None },
 ];
 
@@ -299,18 +309,23 @@ pub fn ddl(d: Dialect) -> String {
 /// migrate.rs: the DDL that brings a store of version `from` to this one,
 /// when it only adds to it (none: it's set aside and made afresh, the
 /// rule). 8 → 9 (v0.3.1): each talkgroup's origin, and the systems' own
-/// names for their radios (`unit_names`). To drop it, delete this and its
-/// two uses (sqlite.rs, postgres.rs `prepare`) and its tests.
+/// names for their radios (`unit_names`). 9 → 10: `call_products`. To drop
+/// it, delete this and its two uses (sqlite.rs, postgres.rs `prepare`) and
+/// its tests.
 pub fn upgrade(d: Dialect, from: u32) -> Option<String> {
-    if from != 8 || SCHEMA_VERSION != 9 {
+    if !(8..=9).contains(&from) || SCHEMA_VERSION != 10 {
         return None;
     }
     let mut out = String::new();
-    for c in ["origin", "origin_name"] {
-        out.push_str(&format!("alter table talkgroups add column {c} text not null default '';\n"));
+    if from == 8 {
+        for c in ["origin", "origin_name"] {
+            out.push_str(&format!("alter table talkgroups add column {c} text not null default '';\n"));
+        }
+        out.push_str(&format!("alter table talkgroups add column origin_at {} not null default 0;\n", ty(d, BigInt)));
+        out.push_str(&table_ddl(d, TABLES.iter().find(|t| t.name == "unit_names")?));
     }
-    out.push_str(&format!("alter table talkgroups add column origin_at {} not null default 0;\n", ty(d, BigInt)));
-    out.push_str(&table_ddl(d, TABLES.iter().find(|t| t.name == "unit_names")?));
+    out.push_str(&table_ddl(d, TABLES.iter().find(|t| t.name == "call_products")?));
+    out.push_str(&format!("{};\n", INDEXES.iter().find(|i| i.table == "call_products")?.create()));
     Some(out)
 }
 

@@ -1896,6 +1896,10 @@ recording! {
             pub call_log: bool,
             /// When an upload failed, keep the files anyway (archiveFilesOnFailure).
             pub archive_files_on_failure: bool,
+            /// Its calls are data (pagers, ACARS): what a plugin decodes from each is kept
+            /// (a call product) with the call, and the audio isn't; a call nothing was
+            /// decoded from isn't kept at all.
+            pub data_only: bool,
             /// Where calls go under the recordings folder, and their names
             /// ([`crate::filename`]); empty = `<short name>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>`.
             pub filename_format: String,
@@ -2045,6 +2049,7 @@ impl Default for Recording {
             archive_m4a: false,
             call_log: true,
             archive_files_on_failure: true,
+            data_only: false,
             filename_format: String::new(),
             drop_duplicate_calls: true,
             vocoder: Vocoder::Fixed,
