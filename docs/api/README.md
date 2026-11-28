@@ -269,7 +269,7 @@ whenever `change` fires.
 | `start()`, `stop()` | start / stop recording |
 | `listen()`, `listen({ talkgroup })`, `listen({ system, talkgroup })`, `listen(false)` | live audio: every call, one talkgroup's, one system's (by short name) talkgroup's, none. Kept across reconnects. |
 | `listen({ voice: true, audio: false })` | digital calls' [vocoder frames](#vocoder-frames) as `voice` messages, with or without the PCM; mixes with the filters above |
-| `subscribe(topics)` | the costly messages to receive: `["log"]` fills `log`; `"spectrum:0"` a waterfall's `spectrum`. Kept across reconnects. |
+| `subscribe(topics)` | the costly messages to receive: `["log"]` fills `log` (`"log:<shortName>"`: one system's lines); `"spectrum:0"` a waterfall's `spectrum`. Kept across reconnects. |
 | `setConfig(edit)` | `edit(copy)` changes a copy of the latest config, and the whole config is sent with `configVersion`. If the config changed elsewhere meanwhile it's refused, and `error` says so |
 | `setTalkgroups(shortName, rows)` | replace a system's talkgroups (`Talkgroup` rows; `[]` for none) |
 | `setTalkgroup(shortName, talkgroup, edit)` | change one talkgroup's cells (`{ alphaTag, description, tag, category, ignore }`, any of them) |
@@ -771,7 +771,7 @@ with signing in off too. Removing a user is a `setConfig` without them in
    show it: `{"type": "subscribe", "topics": ["spectrum:0", "log"]}`. A
    connection gets none of these until it asks; each `subscribe` replaces the
    last. Topics: `spectrum:<source>` (the waterfall, ~7/s), `log` (every
-   control channel message as a line), `rf:<source>` (`rfDetail`, 1/s),
+   control channel message as a line; `log:<shortName>` one system's), `rf:<source>` (`rfDetail`, 1/s),
    `decode:<shortName>` (`decodeDetail`, 1/s), `platform` (per-core and
    per-interface figures in `host`), `unit` (`unitEvent`: what each radio
    does on the control channel, as it happens). With nobody subscribed the
@@ -956,7 +956,7 @@ too.
 | `install` | `kind`, then `id`, or `repository` and `tag?` | Install or update a plugin or an interface from its store or a GitHub release (→ `installProgress` as it goes). A new interface is served at once on the next free port. |
 | `addInterface` | `path` | Serve a folder on the recorder's computer as an interface. |
 | `removeInterface` | `id` | Stop serving it and forget it; an installed copy is deleted. |
-| `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`, `unit` (→ `subscribed`). |
+| `subscribe` | `topics` | What this connection watches (replaces the last): `spectrum:<source>`, `log`, `log:<shortName>`, `rf:<source>`, `decode:<shortName>`, `platform`, `unit` (→ `subscribed`). |
 | `statsQuery` | `id`, `series` (names, or prefixes ending in `*`), `range` (`10m` / `1h` / `6h` / `24h` / `7d` / `30d` / `90d` / `1y`) or `from` / `to` (Unix s), `points?` | The history of series, averaged down to about `points` steps (→ `statsResult`). Up to a day (a week without a store) is answered from memory by the minute; further back (`7d` with a store, `30d`, `90d`, `1y`, or an older `from`) is the store's hours, needs `history` in `hello.capabilities`, and its steps are whole hours or days, as far back as `storage.statsDays` keeps. |
 | `radioQuery` | `id`, `what`, `system?`, `key?`, `hours?`, `limit?` | The radio registry: `summary`, `talkgroups`, `units`, `tg` (`key`: the talkgroup), `unit` (`key`: the radio), `freqs`, `lengths`, `tones` (→ `radioResult`). `hours` (default 24) is how far back a row must have been heard; `limit` (default 500) is the most rows returned, up to the registry's cap (`summary` answers it as `caps`: `storage.registryRadios`, 20,000 by default; null for none, with `days`, `storage.registryDays`), so a `limit` of `caps.radios` is every radio heard. |
 | `pluginAction` | `id`, `plugin`, `action`, `value` | Press one of a plugin's buttons (its settings schema's `x-actions`) on `value`, the settings object it's on as edited (→ `pluginActionResult`, once the plugin answers). Control access; plugins run only while recording. |

@@ -1938,7 +1938,7 @@ export interface DirListing {
 //   plg/<id>/{state,ok,skipped,failed,dropped,restarts,held,queued,latency,bytes}
 // Running totals arrive as rates per second; everything else as it is.
 
-/** What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`, `unit`. */
+/** What a dashboard watches: `spectrum:<source>`, `log` (every system's log lines) or `log:<shortName>` (one system's), `rf:<source>`, `decode:<shortName>`, `platform`, `unit`. */
 export type Topic = string;
 
 /** One series from the history: points every `stepS` from `t0`; null where nothing was measured. */

@@ -125,7 +125,8 @@ export interface AppState {
   load: number;
   calls: CallView[];
   spectra: Spectrum[];
-  log: LogLine[];
+  /** Each system's control channel log, by short name: the lines that came while its page showed it. */
+  log: Record<string, LogLine[]>;
   history: CallEntry[];
   /** Each system's radios' talker aliases, by short name. */
   units: Record<string, UnitAliases>;
@@ -259,7 +260,7 @@ let state: AppState = {
   load: 0,
   calls: [],
   spectra: [],
-  log: [],
+  log: {},
   history: [],
   units: {},
   mdcUnits: {},
@@ -423,24 +424,17 @@ transport.onMessage = (m: FromRecorder) => {
   for (const f of messageHooks) f(m);
 };
 
-/** Lines kept for each system's control channel log (and for the recorder's own lines).
- *  Kept apart, so a quiet system's aren't pushed out by busy ones'. */
-export const LOG_PER_SYSTEM = 500;
+/** Lines kept of each system's control channel log. */
+export const LOG_KEPT = 2000;
 
-/** The log with `add` after it: the newest LOG_PER_SYSTEM of each system's lines, in order. */
-export function keepLog(log: LogLine[], add: LogLine[], per = LOG_PER_SYSTEM): LogLine[] {
-  const all = log.concat(add);
-  const seen = new Map<string, number>();
-  const kept: LogLine[] = [];
-  for (let i = all.length - 1; i >= 0; i--) {
-    const key = all[i].system ?? "";
-    const n = seen.get(key) ?? 0;
-    if (n < per) {
-      seen.set(key, n + 1);
-      kept.push(all[i]);
-    }
-  }
-  return kept.reverse();
+/** `log` with `lines` added: each system's own, the newest LOG_KEPT, so one system's never push out another's.
+ *  (The recorder's own lines, no system's, aren't shown on any page.) */
+export function withLog(log: Record<string, LogLine[]>, lines: LogLine[], kept = LOG_KEPT): Record<string, LogLine[]> {
+  const add: Record<string, LogLine[]> = {};
+  for (const l of lines) if (l.system) (add[l.system] ??= []).push(l);
+  const out = { ...log };
+  for (const [sys, more] of Object.entries(add)) out[sys] = [...(log[sys] ?? []), ...more].slice(-kept);
+  return out;
 }
 
 function take(m: FromRecorder): void {
@@ -456,7 +450,7 @@ function take(m: FromRecorder): void {
       for (const u of unanswered) sendNameEdit(u);
       break;
     case "state":
-      set({ phase: m.phase, runError: m.error, ended: m.ended, restartNeeded: m.restartNeeded, ...(m.phase === "starting" ? { calls: [], log: [], status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
+      set({ phase: m.phase, runError: m.error, ended: m.ended, restartNeeded: m.restartNeeded, ...(m.phase === "starting" ? { calls: [], log: {}, status: null, sources: [], spectra: [], rfDetail: {}, decodeDetail: {} } : {}) });
       // A new run counts from nothing: what it counts is all since the reset.
       if (m.phase === "starting") keepCountsReset((k) => !runCounted(k));
       if (m.phase === "idle") set({ nowPlaying: null, stats: null });
@@ -503,8 +497,8 @@ function take(m: FromRecorder): void {
       break;
     }
     case "log":
-      // (Each system's page shows its own: enough that a quiet one's aren't pushed out by a busy one.)
-      set({ log: keepLog(state.log, m.lines) });
+      // (Each system's page shows its own, from its own topic: log:<shortName>.)
+      set({ log: withLog(state.log, m.lines) });
       break;
     case "concluded":
       set({ history: [m.entry, ...state.history].slice(0, 500), mdcUnits: mdcHeard(state.mdcUnits, [m.entry]) });

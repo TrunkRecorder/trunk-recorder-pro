@@ -99,13 +99,13 @@ pub fn log_watched(watched: bool) {
 /// plugin's note, "error" for a warning or error, else "info"), with its
 /// clock time and level.
 fn to_browsers(level: Level, kind: &str, text: &str) {
-    use trunk_app::protocol::ToClient;
+    use trunk_app::protocol::{LogLine, ToClient};
     let Some(hub) = HUB.get() else { return };
     if level < Level::Warning && !LOG_WATCHED.load(std::sync::atomic::Ordering::Relaxed) {
         return;
     }
     let time = crate::clock::unix_s();
-    let line = serde_json::json!({ "timeS": 0, "time": (time * 10.0).round() / 10.0, "level": level.as_str(), "kind": kind, "text": text });
+    let line = LogLine { time: Some((time * 10.0).round() / 10.0), level: Some(level.as_str()), kind: kind.into(), text: text.into(), ..Default::default() };
     let m = ToClient::Log { lines: vec![line] };
     if level >= Level::Warning {
         crate::runtime::publish(hub, m);

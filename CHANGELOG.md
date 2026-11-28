@@ -135,10 +135,11 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   for, as the config becomes the one running: at the start (a system the file had no id for yet included; it says so
   in the log, and saves the config) and whenever the config is saved. The ids systems already had stay.
 
-- **Each system keeps its own control channel log.** The log the interface keeps was one list of the newest 2,000
-  lines of every system, so a busy system's lines pushed out a quiet one's within seconds: its log showed a few
-  lines, which then disappeared. Each system now keeps its newest 500 lines (and the recorder's own lines theirs),
-  in order, whatever the others do.
+- **Each system keeps its own control channel log** (#279, thanks @jlutz33). A system's log, open on its Radio
+  system page, got every system's control messages and kept the newest 2,000 lines of them all, so a busy system's
+  pushed out a quiet one's within seconds: its log showed a few lines, which then disappeared. The page now
+  subscribes to its system's lines alone (topic `log:<shortName>`; `log` still has every system's), so the recorder
+  makes lines only for systems someone shows, and the interface keeps each system's newest 2,000 apart.
 
 
 ## [0.5.2] — 2026-11-26

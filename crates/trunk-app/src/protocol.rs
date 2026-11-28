@@ -129,6 +129,31 @@ pub enum Phase {
     Stopping,
 }
 
+/// A line of the log ([`ToClient::Log`], protocol.ts's `LogLine`): a system's
+/// control channel log, or the recorder's own (`time`, `level`, no `system`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogLine {
+    /// Seconds into the recording (the decoder's lines; 0 for the recorder's own).
+    pub time_s: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<&'static str>,
+    pub kind: String,
+    pub text: String,
+    /// The system's short name, and the site's name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub site: String,
+}
+
+/// The topic of system `short_name`'s log lines alone ([`ToClient::Log`]); `log` has every system's.
+pub fn log_topic(short_name: &str) -> String {
+    format!("log:{short_name}")
+}
+
 /// A message to an interface (protocol.ts's `FromRecorder`).
 #[derive(Clone, Debug, Serialize, strum::IntoStaticStr, strum::VariantNames)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -206,7 +231,8 @@ pub enum ToClient {
     /// `event` is the `unit` plugin topic's, as it is.
     UnitEvent { event: trunk_recorder_plugin::UnitEvent },
     Spectrum { source: usize, center_hz: f64, rate_hz: f64, bins: Vec<f32> },
-    Log { lines: Vec<Value> },
+    /// Topic `log` (every line) or `log:<shortName>` (that system's).
+    Log { lines: Vec<LogLine> },
     /// A call stored: its history entry.
     Concluded { entry: Value },
     /// A call lost, as it was ([`DroppedCall`]).

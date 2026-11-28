@@ -11266,7 +11266,7 @@
     },
     "Topic": {
       "type": "string",
-      "description": "What a dashboard watches: `spectrum:<source>`, `log`, `rf:<source>`, `decode:<shortName>`, `platform`, `unit`."
+      "description": "What a dashboard watches: `spectrum:<source>`, `log` (every system's log lines) or `log:<shortName>` (one system's), `rf:<source>`, `decode:<shortName>`, `platform`, `unit`."
     },
     "ToRecorder": {
       "anyOf": [
