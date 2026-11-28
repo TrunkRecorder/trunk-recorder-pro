@@ -1028,6 +1028,14 @@ fn serve(a: &Args) {
     }
     // (Asked for and not possible: not served over plain HTTP instead.)
     let tls = cfg.server.tls.as_ref().map(|t| tls::Tls::new(t, &config_path).unwrap_or_else(|e| fatal(&format!("{}: HTTPS (server.tls): {e}", config_path.display()))));
+    // The call store, and new systems numbered above every one it keeps anything for: a config
+    // restored from before a system was removed would give that system's id, which the store
+    // still keeps its calls, names and history under, to the next new one.
+    let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
+    if cfg.keep_ids_from(db.first_free_system_id()) {
+        log::info!("{}: new systems are numbered from {}, above those the call store keeps", config_path.display(), db.first_free_system_id());
+        cfg.numbered = true;
+    }
     // An older config, upgraded: saved so (the old one kept beside it), and told.
     if !cfg.notes.is_empty() {
         match trunk_app::migrate::save(&cfg, &config_path) {
@@ -1089,17 +1097,8 @@ fn serve(a: &Args) {
     let ui_url = dev.as_ref().map(|d| format!("{}://{host}:{}/", cfg.server.scheme(), d.port));
     // The dashboard's measurements: the radio registry (from earlier runs) and a week of history.
     let shared = trunk_app::stats::Shared::new();
-    let db = db::Db::from_settings(&cfg.storage, &paths::data_dir());
     // (The systems first: everything kept is kept by their ids.)
     db.set_systems(&cfg);
-    // (A config restored from before a system was removed would give that system's id,
-    // which the store still keeps calls, names and history under, to the next new one.)
-    if cfg.keep_ids_from(db.first_free_system_id()) {
-        log::info!("{}: new systems are numbered from {}, above those the call store keeps", config_path.display(), cfg.next_system_id);
-        if let Err(e) = cfg.save(&config_path) {
-            log::warn!("{}: couldn't save it ({e})", config_path.display());
-        }
-    }
     kept::load_registry(&db, &shared);
     let series = Arc::new(Mutex::new(trunk_app::stats::History::new(statstore::memory_minutes(&db))));
     let store = statstore::Store::start(series.clone(), db.clone(), cfg.storage.stats_days, cfg.storage.low_write);

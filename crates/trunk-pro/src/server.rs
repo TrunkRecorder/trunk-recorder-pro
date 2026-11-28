@@ -1652,19 +1652,6 @@ impl Listen {
 }
 
 /// `msg` as an error message, if there is one.
-/// A config to be saved gives new systems ids above every one the call store
-/// keeps anything for, not only above its own: one restored from before a
-/// system was removed would give that system's id again, and its calls, names
-/// and history would show as the new system's.
-fn from_free_ids(db: &crate::db::Db, config: &mut serde_json::Value) {
-    let floor = db.first_free_system_id();
-    if let Some(c) = config.as_object_mut()
-        && c.get("nextSystemId").and_then(serde_json::Value::as_u64).unwrap_or(0) < u64::from(floor)
-    {
-        c.insert("nextSystemId".into(), floor.into());
-    }
-}
-
 fn failed(msg: Result<(), String>) -> Option<ToClient> {
     msg.err().map(ToClient::error)
 }
@@ -1699,10 +1686,7 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             let ctx2 = ctx.clone();
             tokio::task::spawn_blocking(move || runtime::calls_query(&ctx2, id, &query)).await.ok()
         }
-        Command::SetConfig { mut config, version } => match Config::from_value({
-            from_free_ids(&ctx.db, &mut config);
-            config
-        }) {
+        Command::SetConfig { config, version } => match Config::from_value(config) {
             Ok(c) if crate::iq_rules::check_all(&c.diagnostics).is_err() => {
                 let error = crate::iq_rules::check_all(&c.diagnostics).err();
                 Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error })
@@ -1710,6 +1694,9 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             Ok(c) if c.server.auth.problem().is_some() => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: c.server.auth.problem() }),
             Ok(c) if crate::tls::problem(&c, &ctx.config_path).is_some() => Some(ToClient::ConfigSaved { version: ctx.config_version.load(Ordering::SeqCst), error: crate::tls::problem(&c, &ctx.config_path) }),
             Ok(mut c) => {
+                // New systems above every one the call store keeps anything for (one restored from
+                // before a system was removed would give that system's id, and its calls, again).
+                c.keep_ids_from(ctx.db.first_free_system_id());
                 // While linked, a conventional system's channels are its file's
                 // (re-read: a spreadsheet may have changed it). Files are linked
                 // with "channelFile".

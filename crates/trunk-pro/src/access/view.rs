@@ -28,7 +28,7 @@ pub fn listen_config(c: &Config) -> Config {
     // Withheld: plugin settings (API keys) and what's sent when, key
     // sources, and what the config has that the recorder doesn't know.
     let mut c = shown!(c.clone(), Config { sources, systems, conventional, next_system_id, next_site_id, recording, server, log, storage, monitor, diagnostics }
-        withheld { plugins, plugin_delays, keys, other, notes, numbered });
+        withheld { plugins, plugin_delays, keys, other, notes, numbered, fresh });
     c.sources = c.sources.into_iter().map(|s| shown!(s, Source { kind, center_hz, rate_hz, ppm, auto_tune, guard_hz, name })).map(source).collect();
     c.systems = c.systems.into_iter().map(system).collect();
     c.conventional = c.conventional.into_iter().map(conventional).collect();

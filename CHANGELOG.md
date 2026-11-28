@@ -106,8 +106,9 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **A system added after restoring an older config gets an id of its own.** `nextSystemId` stayed above the ids in
   the config, not those in the call store: a config restored from before a system was removed gave the next new
   system the removed one's id, and that system's calls, talkgroup and radio names, registry and history showed as
-  the new one's. New systems are now numbered above every system the call store keeps data for, when the recorder
-  starts (it says so in the log, and saves the config) and whenever the config is saved.
+  the new one's (#280, thanks @jlutz33). New systems are now numbered above every system the call store keeps data
+  for, as the config becomes the one running: at the start (a system the file had no id for yet included; it says so
+  in the log, and saves the config) and whenever the config is saved. The ids systems already had stay.
 
 ## [0.5.2] — 2026-11-26
 
