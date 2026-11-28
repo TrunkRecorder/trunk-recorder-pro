@@ -12,7 +12,7 @@ import { compact, dur, mhz, num, signed } from "../fmt.ts";
 import type { ChannelSnapshot, GainSetting, Source, SourceStatus } from "../protocol.ts";
 import { Waterfall, type CcMark } from "../Waterfall.tsx";
 import { AdviceNote, useSourceAdvice } from "../sourceAdvice.tsx";
-import { gainOff, K, onRadio, recentAvg, running, runningSites, sourceHealth, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
+import { gainOff, K, onRadio, recentAvg, running, runningSites, sourceHealth, sourceName, UNUSED_SOURCE_WHY, useHistory, useRanges, val } from "./data.ts";
 import { adjacentCcMarks, ccMarks } from "./Systems.tsx";
 import { systemChoices } from "./Calls.tsx";
 import { channelWhat, quality } from "./Decode.tsx";
@@ -64,10 +64,12 @@ export function SourceCard({ s, src, i, compact: small }: { s: AppState; src: So
   const n = sourceCounts(s, src);
   // A stream: audio, demodulated already — no band, gain, crystal or ADC to show.
   const audio = !!SOURCE_KINDS[src.settings.type]?.audio;
+  // Called by its title and kind ("Source 2 (roof) · SoapySDR"); its label, the radio (a SoapySDR's whole device arguments), on hover.
+  const name = sourceName(s, src);
   // A radio (not a capture file or a stream) can be released while recording, to swap or look at it.
   const releasable = src.settings.type !== "file" && src.settings.type !== "stream" && mayEdit() && can("releaseRadio") && running(s) && !src.ended;
   return (
-    <Card title={k >= 0 ? `${sourceTitle(s.config!, k)} · ${src.label}` : src.label} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{audio ? `Audio · ${num(src.rateHz / 1e3, 0)} kHz` : `${mhz(src.centerHz, 3)} MHz · ${num(src.rateHz / 1e6, 2)} MS/s`}</span>}>
+    <Card title={<span title={src.label}>{name}</span>} level={h.level} why={h.why} onTitle={() => setView("rf", i)} actions={<span className="badge-kind">{audio ? `Audio · ${num(src.rateHz / 1e3, 0)} kHz` : `${mhz(src.centerHz, 3)} MHz · ${num(src.rateHz / 1e6, 2)} MS/s`}</span>}>
       <div className={small ? "src-grid small" : "src-grid"}>
         <Stat
           label={audio ? "Quiet floor" : "Noise floor"}
@@ -283,7 +285,7 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
           <g key={i}>
             <rect x={x(src.centerHz - src.rateHz / 2)} width={x(src.centerHz + src.rateHz / 2) - x(src.centerHz - src.rateHz / 2)} y={30} height={20} rx={4} className="band-src" />
             <rect x={x(src.centerHz - half)} width={x(src.centerHz + half) - x(src.centerHz - half)} y={30} height={20} rx={4} className="band-usable">
-              <title>{`${src.label}: ${mhz(src.centerHz - src.rateHz / 2, 3)}–${mhz(src.centerHz + src.rateHz / 2, 3)} MHz (usable ${mhz(src.centerHz - half, 3)}–${mhz(src.centerHz + half, 3)})`}</title>
+              <title>{`${sourceName(s, src)} (${src.label}): ${mhz(src.centerHz - src.rateHz / 2, 3)}–${mhz(src.centerHz + src.rateHz / 2, 3)} MHz (usable ${mhz(src.centerHz - half, 3)}–${mhz(src.centerHz + half, 3)})`}</title>
             </rect>
           </g>
         );
@@ -301,13 +303,8 @@ function BandRow({ s, label, sources, ccs, conv, calls }: {
       {ccs.map((c) => (
         <g key={`${c.faint ? "a" : "cc"}${c.hz}`}>
           <line x1={x(c.hz)} x2={x(c.hz)} y1={14} y2={56} stroke={c.color} strokeWidth={c.faint ? 2 : 3} className={c.faint ? "band-adj" : undefined} vectorEffect="non-scaling-stroke">
-            <title>{`${c.title ?? `Control channel ${c.label}`} · ${mhz(c.hz)} MHz`}</title>
+            <title>{`${c.title} · ${mhz(c.hz)} MHz`}</title>
           </line>
-          {c.faint && (
-            <text x={x(c.hz)} y={62} textAnchor={x(c.hz) > W - 80 ? "end" : "start"} className="axis band-adj-label">
-              {c.label}
-            </text>
-          )}
         </g>
       ))}
       <text x={2} y={70} className="axis">
@@ -451,9 +448,10 @@ function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: stri
   const [on, setOn] = useWaterfallOn(i);
   useTopic(on ? `spectrum:${i}` : null);
   const color = (sys: string) => systemColor(s.config, sys);
+  const name = sourceName(s, src);
   return (
     <Card
-      title={title ?? `Waterfall · ${src.label}`}
+      title={title ?? <span title={src.label}>Waterfall · {name}</span>}
       className="wf-card"
       actions={
         <label className="toggle small">
@@ -464,7 +462,7 @@ function SourceWaterfall({ s, i, title }: { s: AppState; i: number; title?: stri
     >
       {on &&
         (s.spectra[i] ? (
-          <Waterfall radio={s.spectra[i]} label={src.label} ccs={[...ccMarks(s.config, runningSites(s.status?.systems ?? [])), ...adjacentCcMarks(s)]} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
+          <Waterfall radio={s.spectra[i]} label={name} labelTitle={src.label} ccs={[...ccMarks(s.config, runningSites(s.status?.systems ?? [])), ...adjacentCcMarks(s)]} calls={s.calls} multi={systemChoices(s).length > 1} colorOf={color} />
         ) : (
           <div className="chart-empty">Waiting for the spectrum…</div>
         ))}

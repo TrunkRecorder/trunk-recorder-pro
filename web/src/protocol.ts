@@ -1961,8 +1961,10 @@ export interface MonitorEventBody {
   text?: string;
   signals?: string[];
   freqHz?: number | null;
-  /** A source's series name (its label). */
+  /** A source's series name (its label: the radio). */
   source?: string;
+  /** Source events: what the source was called then ("Source 2 (roof)", Source::title). */
+  title?: string;
   perS?: number;
   pct?: number;
   /** sourceQuiet: its peaks over the last minute, averaged, dBFS (gain may be low: no call on it for a day). */

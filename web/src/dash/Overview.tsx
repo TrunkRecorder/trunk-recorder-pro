@@ -219,6 +219,8 @@ function SystemCard({ s, x, usuals, summary, freqs }: { s: AppState; x: DashSyst
 // ── events ───────────────────────────────────────────────────────────────────
 
 export function eventText(e: MonitorEvent): string {
+  // A source by what it was called then ("Source 2 (roof)"), its radio on hover (eventTip).
+  const source = () => e.title ?? e.source;
   switch (e.kind) {
     case "tgFirstSeen":
       return `${e.system}: new talkgroup ${e.alphaTag || e.talkgroup}`;
@@ -231,13 +233,13 @@ export function eventText(e: MonitorEvent): string {
     case "controlRegained":
       return `${e.system}${e.site ? ` site ${e.site}` : ""}: control channel back`;
     case "sourceDrops":
-      return `${e.source}: dropping samples`;
+      return `${source()}: dropping samples`;
     case "sourceClipping":
-      return `${e.source}: gain too high · ${e.pct}% clipping`;
+      return `${source()}: gain too high · ${e.pct}% clipping`;
     case "sourceQuiet":
-      return `${e.source}: gain may be low · peaks ${e.peakDb} dBFS`;
+      return `${source()}: gain may be low · peaks ${e.peakDb} dBFS`;
     case "sourceRecovered":
-      return `${e.source}: clean again`;
+      return `${source()}: clean again`;
     case "pluginHealth":
       return `${e.plugin}: ${e.state}${e.message ? ` — ${e.message}` : ""}`;
     case "linkDown":
@@ -281,9 +283,12 @@ function eventTip(e: MonitorEvent): string | undefined {
     case "clockStep":
       return (e.byMs ?? 0) > 0 ? "Its time service set it, or the computer slept" : undefined;
     case "sourceClipping":
-      return `Samples at full scale${gainFix(snapshot(), "high", " on its RF card")}`;
+      return `${e.source}: samples at full scale${gainFix(snapshot(), "high", " on its RF card")}`;
     case "sourceQuiet":
-      return `Samples a few ADC steps tall for a minute${gainFix(snapshot(), "low", " on its RF card")}`;
+      return `${e.source}: samples a few ADC steps tall for a minute${gainFix(snapshot(), "low", " on its RF card")}`;
+    case "sourceDrops":
+    case "sourceRecovered":
+      return e.source;
     default:
       return undefined;
   }

@@ -211,12 +211,12 @@ mod tests {
         // (As the monitor has them: by the source's series name.)
         let source = trunk_core::metrics::key_part(&cfg.sources[0].label());
         let recent = [
-            E::SourceDrops { source: source.clone(), per_s: 12.5 }.to_json(1.0),
+            E::SourceDrops { source: source.clone(), title: cfg.sources[0].title(0), per_s: 12.5 }.to_json(1.0),
             E::DiskLow { path: "/SECRET-DISK".into(), free_pct: 3.0 }.to_json(2.0),
             E::LinkDown { target: "SECRET.example.com".into() }.to_json(3.0),
             E::ClockOff { why: "SECRET-WHY".into(), bad: true }.to_json(4.0),
             E::TgFirstSeen { system: "SECRET-SHORT".into(), talkgroup: 7, alpha_tag: "SECRET-FIRST".into() }.to_json(5.0),
-            E::SourceQuiet { source, peak_db: -32.0 }.to_json(6.0),
+            E::SourceQuiet { source, title: cfg.sources[0].title(0), peak_db: -32.0 }.to_json(6.0),
         ];
         let live = Live { status: Default::default(), bandplans: vec![], sources: vec![Default::default()] };
         let v = build(&cfg, &names, &live, &recent);

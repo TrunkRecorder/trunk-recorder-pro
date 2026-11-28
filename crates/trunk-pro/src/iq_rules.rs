@@ -673,9 +673,9 @@ mod tests {
         use trunk_app::stats::MonitorEvent;
         let labels = ["RTL-SDR SN 200".to_string(), "RTL-SDR SN 91".to_string()];
         // (As the monitor has them: `type` monitorEvent, the event's `kind`.)
-        let f = monitor_fact(&MonitorEvent::SourceClipping { source: "RTL-SDR SN 91".into(), pct: 2.5 }.to_json(1.0), &labels).unwrap();
+        let f = monitor_fact(&MonitorEvent::SourceClipping { source: "RTL-SDR SN 91".into(), title: "Source 1".into(), pct: 2.5 }.to_json(1.0), &labels).unwrap();
         assert_eq!((f.on, &f.facts["source"]["index"], &f.facts["source"]["pct"]), ("source.clipping", &json!(1), &json!(2.5)));
-        let f = monitor_fact(&MonitorEvent::SourceQuiet { source: "RTL-SDR SN 91".into(), peak_db: -32.0 }.to_json(1.0), &labels).unwrap();
+        let f = monitor_fact(&MonitorEvent::SourceQuiet { source: "RTL-SDR SN 91".into(), title: "Source 1".into(), peak_db: -32.0 }.to_json(1.0), &labels).unwrap();
         assert_eq!((f.on, &f.facts["source"]["index"], &f.facts["source"]["peak_db"]), ("source.quiet", &json!(1), &json!(-32.0)));
         assert!(sample(f.on).is_some(), "a rule can be on it");
         assert!(monitor_fact(&MonitorEvent::TgFirstSeen { system: "x".into(), talkgroup: 1, alpha_tag: String::new() }.to_json(1.0), &[]).is_none());

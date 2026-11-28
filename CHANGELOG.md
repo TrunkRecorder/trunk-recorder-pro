@@ -68,6 +68,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   across systems; the SNR tie-break is the weakest site's. `trunk-pro tune` and the Tune gain report show each
   site's figures under its system (`county · North`).
 
+- **A source is called as Setup calls it, with its kind; the waterfall's labels don't pile up** (#276, thanks
+  @kevinb361). The dashboard named a source by its label, a SoapySDR source's whole device arguments
+  (`SoapySDR driver=remote,remote=tcp://…`), which crowded the Decode page's Frequencies table and the RF cards. It
+  now calls it by its title and kind ("Source 2 (roof) · SoapySDR", "Source 3 · RTL-SDR"), the label on hover: on the
+  RF cards and their waterfalls, the band overview, the Frequencies and Out of band tables, the band-edge hint and the
+  RF page's light. Source events (`sourceDrops`, `sourceClipping`, `sourceQuiet`, `sourceRecovered`) now carry the
+  source's `title` when it happened, which the Lately feed shows, so an event about a source since changed or removed
+  still says which it was. On the waterfall, site names that would print over each other stack to a second row (a
+  third that fits in neither shares the row that frees first); an adjacent site's address is no longer printed on the
+  trace or the band overview (its line stays, and the readout names any line under the pointer); and calls are tagged
+  on a row of their own below the sites, fading after a few seconds.
+
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the

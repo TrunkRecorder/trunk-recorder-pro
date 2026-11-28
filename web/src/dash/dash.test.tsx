@@ -7,11 +7,11 @@ import { renderToString } from "react-dom/server";
 import { defaultConfig, newConventional, newSystem } from "../config.ts";
 import { setView, snapshot, transport } from "../controller.ts";
 import { clearSeries, feedSeries } from "../series.ts";
-import { coverage, dashSystems, pageHealth, rangesFor, siteHealth, sourceHealth, type DetailedSite } from "./data.ts";
-import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
+import { coverage, dashSystems, pageHealth, rangesFor, siteHealth, sourceHealth, sourceName, type DetailedSite } from "./data.ts";
+import type { AdjacentSite, CallView, Channel, ClockInfo, Config, EngineStatus, FromRecorder, MonitorEvent, PlatformInfo, PluginInfo, SiteIdentity, SiteStatus, Source, SourceStatus, SystemStatus, ToneRow } from "../protocol.ts";
 import { DecodePage, SiteIdentityLine } from "./Decode.tsx";
 import { DmrSites, LtrSites } from "./Systems.tsx";
-import { eventText, Overview } from "./Overview.tsx";
+import { EventFeed, eventText, Overview } from "./Overview.tsx";
 import { OriginNote, RadioPage, TalkgroupNamesEditor } from "./Radio.tsx";
 import { ToneTable } from "./Tones.tsx";
 import { RfPage } from "./Rf.tsx";
@@ -741,10 +741,10 @@ test("RF: a source nothing needs says it can probably go; one in use doesn't", (
   setView("rf");
   const page = text(renderToString(<RfPage />));
   assert.equal(page.split("You can probably remove it").length - 1, 1, "on the spare's card only");
-  assert.match(page, /RTL-SDR SN 2 .*Unused Probably removable The other sources reach every channel the config lists, and no call has used this one/);
+  assert.match(page, /Source 2 · RTL-SDR .*Unused Probably removable The other sources reach every channel the config lists, and no call has used this one/);
 });
 
-test("RF: a source's card is called as Setup calls it, a new name at once; its radio by its label", () => {
+test("RF: a source's card is called as Setup calls it, and its kind, a new name at once; its radio's label on hover", () => {
   const c = defaultConfig();
   const rtl = (serial: string, name?: string): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, biasTee: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0, ...(name ? { name } : {}) });
   c.sources = [rtl("1"), rtl("2", "Whip")];
@@ -752,12 +752,43 @@ test("RF: a source's card is called as Setup calls it, a new name at once; its r
   const st = (i: number): SourceStatus => ({ index: i, label: `RTL-SDR SN ${i + 1}`, centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: rtl(String(i + 1)) });
   transport.onMessage({ type: "status", status: { systems: [], recording: 0 } as unknown as EngineStatus, sources: [st(0), st(1)], load: 0, calls: [] });
   setView("rf");
-  assert.match(text(renderToString(<RfPage />)), /Source 2 \(Whip\) · RTL-SDR SN 2/);
+  let html = renderToString(<RfPage />);
+  assert.match(html, /<span title="RTL-SDR SN 1">Source 1 · RTL-SDR<\/span>/);
+  assert.match(html, /<span title="RTL-SDR SN 2">Source 2 \(Whip\) · RTL-SDR<\/span>/);
+  assert.ok(titles(html).length >= 4 && titles(html).every((t) => !/RTL-SDR SN/.test(t)), "the radio's label only on hover");
+  assert.match(html, /<span title="RTL-SDR SN 2">Waterfall · <!-- -->Source 2 \(Whip\) · RTL-SDR<\/span>/);
   // Renamed (and moved first) while recording: the card follows its radio and its new name.
   transport.onMessage({ type: "config", config: { ...c, sources: [rtl("2", "Roof"), rtl("1")] }, version: 2 });
-  const page = text(renderToString(<RfPage />));
-  assert.match(page, /Source 1 \(Roof\) · RTL-SDR SN 2/);
-  assert.match(page, /Source 2 · RTL-SDR SN 1/);
+  html = renderToString(<RfPage />);
+  assert.match(html, /<span title="RTL-SDR SN 2">Source 1 \(Roof\) · RTL-SDR<\/span>/);
+  assert.match(html, /<span title="RTL-SDR SN 1">Source 2 · RTL-SDR<\/span>/);
+});
+
+test("A running source is called by its title and kind, not its label; one the config no longer has, by its label", () => {
+  const c = defaultConfig();
+  const rtl = (serial: string, name?: string): Source => ({ type: "rtlsdr", serial, gainDb: 25, agc: false, biasTee: false, centerHz: 851_000_000, rateHz: 2_400_000, ppm: 0, ...(name ? { name } : {}) });
+  const args = "driver=remote,remote=tcp://radio.example:55132,remote:driver=airspy";
+  const soapy: Source = { type: "soapy", args, agc: false, gainDb: null, gains: {}, antenna: "", settings: "", centerHz: 771_000_000, rateHz: 2_500_000, ppm: 0, name: "700-band" };
+  c.sources = [soapy, rtl("1"), rtl("2", "roof")];
+  const st = (i: number, label: string, settings: Source): SourceStatus => ({ index: i, label, centerHz: 851_000_000, rateHz: 2_400_000, rateMeasured: 2_400_000, dropped: 0, errors: 0, lastError: null, ended: false, settings: { ...settings, name: undefined } });
+  const sources = [st(0, `SoapySDR ${args}`, soapy), st(1, "RTL-SDR SN 1", rtl("1")), st(2, "RTL-SDR SN 2", rtl("2"))];
+  assert.deepEqual(sources.map((x) => sourceName({ sources, config: c }, x)), ["Source 1 (700-band) · SoapySDR", "Source 2 · RTL-SDR", "Source 3 (roof) · RTL-SDR"]);
+  // Removed from the config since Start (or no config yet): what the recorder calls its radio.
+  assert.equal(sourceName({ sources, config: { ...c, sources: [soapy, rtl("1")] } }, sources[2]), "RTL-SDR SN 2");
+  assert.equal(sourceName({ sources, config: null }, sources[0]), `SoapySDR ${args}`);
+});
+
+test("Lately: a source event says what the source was called then, its radio only on hover", () => {
+  const radio = "SoapySDR driver=remote,remote=tcp://radio.example:55132,remote:driver=airspy,remote:prot=tcp";
+  const ev = (kind: "sourceDrops" | "sourceClipping" | "sourceQuiet" | "sourceRecovered"): MonitorEvent => ({ type: "monitorEvent", t: Date.now() / 1000, level: "warn", kind, source: radio, title: "Source 2 (700-band)", pct: 2, peakDb: -32 });
+  const html = renderToString(<EventFeed events={[ev("sourceDrops"), ev("sourceClipping"), ev("sourceQuiet"), ev("sourceRecovered")]} />);
+  const shown = text(html);
+  assert.doesNotMatch(shown, /driver=|radio\.example/, "no device arguments in the line");
+  assert.match(shown, /Source 2 \(700-band\): dropping samples/);
+  assert.match(shown, /Source 2 \(700-band\): gain too high · 2% clipping/);
+  assert.match(shown, /Source 2 \(700-band\): clean again/);
+  assert.equal(html.split(`title="${radio}"`).length - 1, 2, "the radio on hover (drops, recovered)");
+  assert.equal(html.split(`title="${radio}: samples`).length - 1, 2, "and before the hint (clipping, quiet)");
 });
 
 test("History spans: a week from memory or files; further as the store keeps the dashboard's history", () => {

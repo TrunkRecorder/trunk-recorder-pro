@@ -4337,7 +4337,11 @@
             },
             "source": {
               "type": "string",
-              "description": "A source's series name (its label)."
+              "description": "A source's series name (its label: the radio)."
+            },
+            "title": {
+              "type": "string",
+              "description": "Source events: what the source was called then (\"Source 2 (roof)\", Source::title)."
             },
             "perS": {
               "type": "number"

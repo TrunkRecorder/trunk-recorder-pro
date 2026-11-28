@@ -775,11 +775,12 @@ const OWN_CLICK = "a, button, input, select, textarea, label, summary, [role=but
 /**
  * Text that may be long with nowhere to break (a SoapySDR source's label is
  * its device arguments): cut off with an ellipsis where it doesn't fit, the
- * whole of it on hover (#210).
+ * whole of it on hover (#210). `title`: more than the text on hover (a source
+ * shown by kind and name: its whole label).
  */
-export function Clip({ text, className }: { text: string; className?: string }) {
+export function Clip({ text, className, title }: { text: string; className?: string; title?: string }) {
   return (
-    <span className={`clip${className ? ` ${className}` : ""}`} title={text}>
+    <span className={`clip${className ? ` ${className}` : ""}`} title={title ?? text}>
       {text}
     </span>
   );
