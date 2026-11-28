@@ -5,6 +5,39 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Release a radio while recording, to swap or look at it.** Before, working on one radio meant **Stop**, which
+  stops every system. Now, while recording, **Release** on a radio's card (RF page) closes it and the other radios
+  keep recording. The card lists what's on it (its sites' control channels, the voice channels it has opened),
+  shows **Released**, and its sites show idle **Radio released** rather than a red light (and raise no
+  **Control lost** event); a gain tune of it stops. **Resume** opens it again
+  at the centre and gain it had (a replacement needs the same serial, or a blank one in its source). It isn't
+  saved: Stop or the next Start opens it again. See [Releasing a radio](docs/guides/dashboard.md#releasing-a-radio).
+  - **API:** `releaseRadio` / `resumeRadio` (`source`: its `index` in `status.sources`); `status.sources[].released`;
+    the `releaseRadio` capability.
+- **What plugins make of a call is kept with it** (#283): transcripts, decoded pages, ACARS messages. A plugin
+  sends a product of a call (`call.product`); the recorder keeps it in the call store, beside the call's JSON as
+  `<call>.products.jsonl`, and in the call wherever it's listed, and passes it to interfaces (`product`) and to other
+  plugins (`product.<kind>`). The Listen page and the Radio page's calls show them under the call, and the Listen
+  filter searches their text. Products go when their call does. See [Products](docs/developer/plugins/events.md#products).
+  - **Data only** (Setup → Archive, `recording.dataOnly`, per system): for channels that carry data, not voice. A
+    call is kept only if a plugin decoded something from it, and then without its audio; one nothing was decoded
+    from isn't saved (`noData`).
+  - **The `am.envelope` tap**: the AM detector's output before the voice filters, for data decoders (ACARS).
+  - New plugins for both: Pager (POCSAG and FLEX, on `fm.discriminator`) and ACARS (on `am.envelope`).
+  - **To plugins** (SDK 0.18.0, additive): `Host::product` with `Product::of` (a concluded call, by transmission
+    id), `Product::of_call` (one concluded long ago, with its path) and `Product::live` (a running call, by the tap
+    chunk's `call_id`); the kinds `Transcript`, `Page`, `AcarsMessage`, or any other kept as JSON; `Plugin::product`
+    for the `product.<kind>` and `product` topics; `Tap::AmEnvelope`; `StoredCall.products` in a calls page;
+    `testing::Output::products`.
+
+- **LTR, LTR-Net and Passport** (#267, thanks @ishelly404): a trunked system of `"type": "ltr"` (Setup: **LTR /
+  LTR-Net / Passport**). List every repeater as the site's frequencies; each is watched for the 300 baud status
+  words under its voice, and a call is recorded, as analog FM, on the repeater its words name. Which of the three a
+  site is comes from its words. Each repeater's LCN comes from `lcnTableHz`, or is learned from its own idle bursts.
+  LTR talkgroups A-HH-GGG are numbered AHHGGG (1-05-123 is `105123`); Passport talkgroups are their number. The
+  Decode page lists each repeater with its LCN and call. Written from the documented formats, and not heard on a
+  real system yet: captures are welcome. See [LTR](docs/configuration/systems.md#ltr).
+  - **To plugins**: a call's `system_type` (and a system's `kind`) may be `"ltr"`.
 - **Every lost call says why.** A call recorded and then not kept, or followed and never recorded for want of a radio,
   now comes to interfaces as a `callDropped` message, once, as the recorder decides: its talkgroup, frequency, times,
   `stage` (`notSaved` or `notRecorded`) and `why` (`silent`, `short`, `encrypted`, `writeFailed`; `noSource`,
@@ -52,6 +85,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   across systems; the SNR tie-break is the weakest site's. `trunk-pro tune` and the Tune gain report show each
   site's figures under its system (`county · North`).
 
+- **A source is called as Setup calls it, with its kind; the waterfall's labels don't pile up** (#276, thanks
+  @kevinb361). The dashboard named a source by its label, a SoapySDR source's whole device arguments
+  (`SoapySDR driver=remote,remote=tcp://…`), which crowded the Decode page's Frequencies table and the RF cards. It
+  now calls it by its title and kind ("Source 2 (roof) · SoapySDR", "Source 3 · RTL-SDR"), the label on hover: on the
+  RF cards and their waterfalls, the band overview, the Frequencies and Out of band tables, the band-edge hint and the
+  RF page's light. Source events (`sourceDrops`, `sourceClipping`, `sourceQuiet`, `sourceRecovered`) now carry the
+  source's `title` when it happened, which the Lately feed shows, so an event about a source since changed or removed
+  still says which it was. On the waterfall, site names that would print over each other stack to a second row (a
+  third that fits in neither shares the row that frees first); an adjacent site's address is no longer printed on the
+  trace or the band overview (its line stays, and the readout names any line under the pointer); and calls are tagged
+  on a row of their own below the sites, fading after a few seconds.
+
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
   only that one restarts, the others carry on. It finishes what it was already sent and starts again at once with the
@@ -83,10 +128,18 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 - **Docs: the log on Raspberry Pi OS** (#256, thanks @jjc-wx). Its journal is in RAM only, so `journalctl --user -u
   trunk-pro` finds nothing; the Pi guide and Troubleshooting now give `journalctl --user-unit trunk-pro -f`, and how to
   see the log in colour.
+- **A system added after restoring an older config gets an id of its own.** `nextSystemId` stayed above the ids in
+  the config, not those in the call store: a config restored from before a system was removed gave the next new
+  system the removed one's id, and that system's calls, talkgroup and radio names, registry and history showed as
+  the new one's (#280, thanks @jlutz33). New systems are now numbered above every system the call store keeps data
+  for, as the config becomes the one running: at the start (a system the file had no id for yet included; it says so
+  in the log, and saves the config) and whenever the config is saved. The ids systems already had stay.
+
 - **Each system keeps its own control channel log.** The log the interface keeps was one list of the newest 2,000
   lines of every system, so a busy system's lines pushed out a quiet one's within seconds: its log showed a few
   lines, which then disappeared. Each system now keeps its newest 500 lines (and the recorder's own lines theirs),
   in order, whatever the others do.
+
 
 ## [0.5.2] — 2026-11-26
 

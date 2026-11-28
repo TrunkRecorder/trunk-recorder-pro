@@ -280,7 +280,7 @@ impl Db {
     /// system isn't the config's.
     pub fn send(&self, mut c: Change) -> bool {
         // (Low-write mode keeps no call index.)
-        if matches!(c, Change::Call { .. } | Change::CallFiles { .. }) && !self.indexes_calls() {
+        if matches!(c, Change::Call { .. } | Change::CallFiles { .. } | Change::Product(_)) && !self.indexes_calls() {
             return false;
         }
         // (A call the run filed under its system's id keeps it; one read from its files is filed by its name.)
@@ -437,6 +437,13 @@ impl Db {
     /// Every system the store has (the config's and those gone from it), by id.
     pub fn system_names(&self) -> Result<Vec<(i64, String)>, String> {
         self.store()?.system_names()
+    }
+
+    /// The lowest id a new system may have: above every system the store keeps
+    /// anything for, those gone from the config too. 0: none, or no store.
+    pub fn first_free_system_id(&self) -> u32 {
+        let top = self.system_names().ok().and_then(|s| s.iter().map(|(id, _)| *id).max());
+        top.and_then(|id| u32::try_from(id + 1).ok()).unwrap_or(0)
     }
 
     /// Every system the store has, and how much of each it keeps ([`Store::data_systems`]).

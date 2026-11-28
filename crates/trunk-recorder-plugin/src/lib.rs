@@ -35,6 +35,7 @@ pub mod filter;
 pub mod health;
 pub mod http;
 mod multipart;
+pub mod product;
 pub mod protocol;
 pub mod tap;
 #[cfg(feature = "sdk")]
@@ -50,6 +51,7 @@ pub use filter::{TalkgroupFilter, Talkgroups};
 pub use queue::{Attempt, CallQueue, QueueOptions};
 
 pub use multipart::Multipart;
+pub use product::{AcarsMessage, Page, PageFormat, Product, ProductCall, ProductData, Segment, Transcript, PRODUCT_KINDS, PRODUCT_TOPIC};
 pub use protocol::*;
 pub use tap::{AirFrame, Carries, FrameErrors, Tap, TapChunk, TapData, TapInfo, TapNote, TapSet, TAPS, TAP_TOPIC};
 #[cfg(feature = "sdk")]

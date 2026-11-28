@@ -18,7 +18,7 @@ use super::voice::TrackerOut;
 /// stuck microphone) is cut into streams of this, so none is held or saved without end.
 pub const MAX_STREAM_S: f64 = 600.0;
 
-/// The FM discriminator tap's sample rate, Hz: what multimon-ng and its kind take.
+/// The FM discriminator and AM envelope taps' sample rate, Hz: what multimon-ng and its kind take.
 pub const DISCRIMINATOR_RATE: u32 = 22_050;
 
 /// What a decoder made for a tap: some data and the notes about it (`at` counted in this piece).

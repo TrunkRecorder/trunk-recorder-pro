@@ -267,6 +267,8 @@ pub struct Stats {
     meters: Vec<Arc<Mutex<SampleMeter>>>,
     /// Each source's series name (its label).
     names: Vec<String>,
+    /// What each source is called (Source::title), for its events.
+    titles: Vec<String>,
     tally: Tally,
     day: Day,
     shared: Arc<Shared>,
@@ -279,6 +281,8 @@ pub struct Stats {
     locked: HashMap<String, bool>,
     /// Per source: dropping, clipping, quiet at the last tick.
     trouble: Vec<[bool; 3]>,
+    /// Per source: released while recording ([`Stats::released`]).
+    released: Vec<bool>,
     /// Per source: voice channels opened on it so far, and when the count last rose (unix s).
     voice: Vec<(u64, Option<f64>)>,
     /// Calls this minute, per system (CallVolume for watchers).
@@ -294,12 +298,15 @@ pub struct Stats {
 impl Stats {
     pub fn new(cfg: &Config, shared: Arc<Shared>, local_offset: crate::session::LocalOffset) -> Stats {
         let names: Vec<String> = cfg.sources.iter().map(|s| key_part(&s.label())).collect();
+        let titles = cfg.sources.iter().enumerate().map(|(i, s)| s.title(i)).collect();
         Stats {
             agg: Aggregator::default(),
             meters: names.iter().map(|_| Default::default()).collect(),
             trouble: vec![[false; 3]; names.len()],
+            released: vec![false; names.len()],
             voice: vec![(0, None); names.len()],
             names,
+            titles,
             tally: Tally::default(),
             day: Day::default(),
             shared,
@@ -508,6 +515,15 @@ impl Stats {
         }
     }
 
+    /// Source `source`'s radio released while recording (or, `on` false, resumed): a site whose
+    /// control channel is on it raises no controlLost while it is, and starts afresh after, as at
+    /// Start (regained once it locks).
+    pub fn released(&mut self, source: usize, on: bool) {
+        if let Some(r) = self.released.get_mut(source) {
+            *r = on;
+        }
+    }
+
     /// Events on a change of state: a control channel lost or regained, a
     /// source starting to drop samples, clip or go quiet (gain too low).
     fn edges(&mut self, engine: &Engine, out: &mut Vec<Output>) {
@@ -516,6 +532,12 @@ impl Stats {
         for y in engine.status().sites {
             let Some(&(system, cfg)) = sites.get(y.site as usize) else { continue };
             let key = systems[system as usize].site_key(cfg);
+            // (Its radio released: losing it is what was asked for. Its state is forgotten, so the wait
+            // to lock again after Resume isn't news either.)
+            if y.source.is_some_and(|i| self.released.get(i) == Some(&true)) {
+                self.locked.remove(&key.to_string());
+                continue;
+            }
             let Some(l) = self.agg.get(&format!("{}/cc/locked", key.stats_key())) else { continue };
             let now = l > 0.5;
             let (system, site, freq_hz) = (key.system.to_string(), key.own_name().map(str::to_string), y.control_channel_hz);
@@ -533,15 +555,15 @@ impl Stats {
             let [was_d, was_c, was_q] = self.trouble[i];
             let (d, c, q) = (drops > 0.0, clip > CLIP_PCT, quiet.is_some());
             self.trouble[i] = [d, c, q];
-            let source = n.clone();
+            let (source, title) = (n.clone(), self.titles[i].clone());
             if d && !was_d {
-                self.emit(MonitorEvent::SourceDrops { source, per_s: drops }, out);
+                self.emit(MonitorEvent::SourceDrops { source, title, per_s: drops }, out);
             } else if c && !was_c {
-                self.emit(MonitorEvent::SourceClipping { source, pct: (clip * 10.0).round() / 10.0 }, out);
+                self.emit(MonitorEvent::SourceClipping { source, title, pct: (clip * 10.0).round() / 10.0 }, out);
             } else if let Some(db) = quiet.filter(|_| !was_q) {
-                self.emit(MonitorEvent::SourceQuiet { source, peak_db: db.round() }, out);
+                self.emit(MonitorEvent::SourceQuiet { source, title, peak_db: db.round() }, out);
             } else if (was_d || was_c || was_q) && !d && !c && !q {
-                self.emit(MonitorEvent::SourceRecovered { source }, out);
+                self.emit(MonitorEvent::SourceRecovered { source, title }, out);
             }
         }
     }
@@ -610,6 +632,41 @@ mod tests {
         assert_eq!((book.unit(x, 1234), book.unit(x, 5678)), (Some("Engine 12".into()), Some("Heard 5678".into())), "the user's first");
         book.set_systems(&[SystemConfig { unit_tags: tags(UnitTagsMode::UserOnly), id: x, ..SystemConfig::conventional("x") }]);
         assert_eq!((book.unit(x, 1234), book.unit(x, 5678)), (Some("Engine 12".into()), None), "the user's only");
+    }
+
+    /// A site on a released radio raises no controlLost, nor while it waits to lock again after
+    /// Resume; it's regained as at Start, and a lock lost after that is news again.
+    #[test]
+    fn a_released_radios_site_raises_no_control_events() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 851000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "systems": [{ "shortName": "a", "sites": [{ "controlChannelsHz": [851012500] }] }]
+        }))
+        .unwrap();
+        let engine = Engine::new(cfg.engine_config(0.0, &Default::default())).unwrap();
+        assert_eq!(engine.status().sites[0].source, Some(0));
+        let key = {
+            let systems = engine.systems();
+            let (system, site) = trunk_core::trunk::sites(&systems).next().unwrap();
+            format!("{}/cc/locked", systems[system as usize].site_key(site).stats_key())
+        };
+        let mut st = Stats::new(&cfg, Shared::new(), |_| 0);
+        let mut t = 0.0;
+        let mut tick = |st: &mut Stats, locked: bool| {
+            t += 1.0;
+            st.agg.begin(t);
+            st.agg.gauge(&key, if locked { 1.0 } else { 0.0 });
+            let mut out = Vec::new();
+            st.edges(&engine, &mut out);
+            st.shared.recent_events().iter().map(|e| e["kind"].as_str().unwrap_or("").to_string()).collect::<Vec<_>>()
+        };
+        assert!(tick(&mut st, true).is_empty());
+        st.released(0, true);
+        assert!(tick(&mut st, false).is_empty(), "released: losing it is no news");
+        st.released(0, false);
+        assert!(tick(&mut st, false).is_empty(), "resumed, still locking");
+        assert_eq!(tick(&mut st, true), ["controlRegained"], "locked again, as at Start");
+        assert_eq!(tick(&mut st, false), ["controlRegained", "controlLost"], "lost after that: news");
     }
 
     #[test]

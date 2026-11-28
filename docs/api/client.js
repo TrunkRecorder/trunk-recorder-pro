@@ -148,6 +148,16 @@ export class TrunkClient {
     this.send({ type: "stop" });
   }
 
+  /** While recording: close radio `source` (status.sources[].index) to swap or look at it, the others recording on. Not saved. */
+  releaseRadio(source) {
+    this.send({ type: "releaseRadio", source });
+  }
+
+  /** Open a released radio again, at the centre and gain it had. */
+  resumeRadio(source) {
+    this.send({ type: "resumeRadio", source });
+  }
+
   /**
    * Costly messages come only when asked for, while you show them:
    * subscribe(["log", "spectrum:0"]) — the control channel log, a radio's

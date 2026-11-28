@@ -63,8 +63,14 @@ pub mod topic {
     /// Subscribing turns the tap on, for the systems the plugin is on for.
     pub const TAP: &str = crate::tap::TAP_TOPIC;
 
+    /// What plugins made of calls ([`crate::Product`]): every kind, as each is kept. One kind
+    /// alone comes on `product.<kind>` ([`crate::ProductData::topic`]): `product.page`,
+    /// `product.transcript`, …. A plugin isn't sent its own.
+    pub const PRODUCT: &str = "product";
+
     /// (The taps' topics are [`crate::TAPS`]', not listed here.)
-    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, TOTALS, TONE_PATTERN, LOG];
+    /// (Nor one kind of product's: `product.<kind>`, any kind.)
+    pub const ALL: &[&str] = &[CALL_START, CALL_UPDATE, CALL_END, CALL_CONCLUDED, UNIT, AUDIO, VOICE, STATUS, TOTALS, TONE_PATTERN, LOG, PRODUCT];
 
     /// A call's live media ([`AUDIO`], [`VOICE`]) and the taps' streams: late isn't live, so
     /// a plugin delayed for the call, or catching up, isn't given it.
@@ -72,9 +78,14 @@ pub mod topic {
         topic == AUDIO || topic == VOICE || topic.starts_with(TAP)
     }
 
-    /// A topic the recorder has: one of [`ALL`], or a tap's.
+    /// A topic the recorder has: one of [`ALL`], a tap's, or a kind of product's.
     pub fn known(topic: &str) -> bool {
-        ALL.contains(&topic) || crate::Tap::of_topic(topic).is_some()
+        ALL.contains(&topic) || crate::Tap::of_topic(topic).is_some() || crate::product::kind_of_topic(topic).is_some()
+    }
+
+    /// Whether a subscription to `topic` takes products of `kind`: [`PRODUCT`] takes all.
+    pub fn takes_product(topic: &str, kind: &str) -> bool {
+        topic == PRODUCT || crate::product::kind_of_topic(topic) == Some(kind)
     }
 }
 
@@ -218,6 +229,9 @@ pub enum HostMessage {
     /// A piece of a signal tap's stream (topic `tap.<id>`: its `tap` says which).
     #[serde(rename = "tap")]
     Tap(crate::TapChunk),
+    /// What a plugin made of a call, now kept (topic `product.<kind>`, or `product`).
+    #[serde(rename = "product")]
+    Product(crate::Product),
     #[serde(rename = "status")]
     Status(Status),
     #[serde(rename = "totals")]
@@ -303,7 +317,7 @@ pub struct SystemInfo {
     /// folder, and what users know it by (it changes when it's renamed).
     /// Every event carries it.
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr" | "conventional"
     pub kind: String,
     /// What people call it ("County Public Safety"); empty when the user gave no name.
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -607,7 +621,7 @@ pub struct CallRecord {
     /// "digital" | "digital tdma" | "analog"
     pub audio_type: String,
     /// The kind of system it came on, as [`SystemInfo::kind`] has it: "p25" |
-    /// "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional" (this recorder's addition).
+    /// "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr" | "conventional" (this recorder's addition).
     #[serde(skip_serializing_if = "String::is_empty")]
     pub system_type: String,
     /// What its voice was: "p25" | "p25_phase2" | "dmr" | "nxdn48" | "nxdn96"
@@ -1494,6 +1508,9 @@ pub struct StoredCall {
     pub audio: bool,
     /// Its `.json` file is kept.
     pub json: bool,
+    /// What plugins made of it (a transcript, decoded pages), as they came.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub products: Vec<crate::Product>,
 }
 
 // ─── Plugin → recorder ────────────────────────────────────────────────────
@@ -1545,6 +1562,11 @@ pub enum PluginMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         took_ms: Option<u64>,
     },
+    /// Something the plugin made of a call (a transcript, a decoded page): the recorder keeps
+    /// it with the call and sends it on ([`crate::Product`]). Of a concluded call, by its
+    /// `transmission_id`; of one still running, by its `call_id`.
+    #[serde(rename = "call.product")]
+    CallProduct(crate::Product),
     /// How the plugin's work is going, for the dashboard: queue, results,
     /// timing and the services it talks to. Send it when it changes, at most
     /// every few seconds ([`crate::CallQueue`] does it for you).

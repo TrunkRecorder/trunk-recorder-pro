@@ -277,6 +277,76 @@ pub struct Am {
     audio: AudioResampler,
     hpf: Option<[Biquad; 2]>,
     gate: Gate,
+    /// The channel's rate and its filter's half width, Hz.
+    rate: f64,
+    half_bw_hz: f64,
+    /// The envelope tapped ([`Am::tapped`]).
+    tap: Option<EnvTap>,
+}
+
+/// The detector's output while the carrier is up, resampled: what [`Am::take_tapped`] gives.
+struct EnvTap {
+    resampler: AudioResampler,
+    /// The carrier's level for the tap: its own, quick to follow a carrier that comes up (the
+    /// voice path's follows slowly, and a burst's start would clip), measured [`TAP_AHEAD_S`]
+    /// ahead of the sample it scales.
+    level: f32,
+    level_a: f32,
+    /// The detector's last [`TAP_AHEAD_S`] (and whether the squelch was open), waiting for
+    /// the level after them.
+    ahead: std::collections::VecDeque<(f32, bool)>,
+    ahead_n: usize,
+    /// The last [`TAP_LEAD_S`] of it with the squelch shut: what a transmission starts with.
+    lead: std::collections::VecDeque<i16>,
+    lead_n: usize,
+    samples: Vec<i16>,
+}
+
+/// The tap's samples are the modulation at this scale: 100 % (±1) is half of 16 bits' range,
+/// so an overmodulated carrier or a noise spike isn't clipped (as the discriminator tap's).
+pub const TAP_SCALE: f32 = 16_384.0;
+/// A tapped transmission starts this long before its squelch opened, s. The squelch takes
+/// its open delay and the line detector's window (some 60 ms) to open, and a data burst's
+/// preamble is no longer than that (ACARS's pre-key: 53 ms and up): its decoder needs it.
+pub const TAP_LEAD_S: f64 = 0.15;
+/// The tap's level follows the carrier this quickly, s: a data burst's carrier comes up from
+/// nothing, and its preamble is what its decoder locks on.
+const TAP_LEVEL_TAU_S: f64 = 0.02;
+/// And is taken this far ahead of the sample it scales (the tap is this much later), so a
+/// carrier's first samples are scaled by its own level, not the noise's before it.
+const TAP_AHEAD_S: f64 = 0.04;
+
+impl EnvTap {
+    /// The detector's `env`, the squelch `open` or not.
+    fn push(&mut self, env: f32, open: bool) {
+        if self.level == 0.0 {
+            self.level = env;
+        }
+        self.level += self.level_a * (env - self.level);
+        // The squelch shut: the transmission's end goes out now, whole, with the stream.
+        let shut = !open && self.ahead.back().is_some_and(|a| a.1);
+        self.ahead.push_back((env, open));
+        while self.ahead.len() > self.ahead_n || (shut && self.ahead.len() > 1) {
+            let Some((env, open)) = self.ahead.pop_front() else { return };
+            self.emit(env / self.level.max(1e-20) - 1.0, open);
+        }
+    }
+
+    fn emit(&mut self, m: f32, open: bool) {
+        let EnvTap { resampler, lead, lead_n, samples, .. } = self;
+        resampler.push(m, |s| {
+            let s = (s * TAP_SCALE).clamp(-32_768.0, 32_767.0) as i16;
+            if open {
+                samples.extend(lead.drain(..));
+                samples.push(s);
+            } else {
+                if lead.len() == *lead_n {
+                    lead.pop_front();
+                }
+                lead.push_back(s);
+            }
+        });
+    }
 }
 
 impl Am {
@@ -298,7 +368,35 @@ impl Am {
             audio: AudioResampler::new(rate, (t.half_bw_hz - 500.0).clamp(2500.0, 3400.0)),
             hpf: (t.low_cut_hz > 0.0).then(|| butter_highpass4(t.low_cut_hz, super::fm::AUDIO_RATE)),
             gate,
+            rate,
+            half_bw_hz: t.half_bw_hz,
+            tap: None,
         }
+    }
+
+    /// Tap the detector (`out_rate`: at that rate, Hz; none: don't): the modulation as it is
+    /// before the limiter, the voice low-pass and the low cut, as wide as the channel filter,
+    /// while the squelch is open and for [`TAP_LEAD_S`] before it opened, kept for
+    /// [`Self::take_tapped`]. What a data decoder takes (ACARS), which the voice path's
+    /// filters would spoil.
+    pub fn tapped(mut self, out_rate: Option<u32>) -> Self {
+        let (rate, half) = (self.rate, self.half_bw_hz);
+        self.tap = out_rate.map(|out| EnvTap {
+            resampler: AudioResampler::to(rate, half.min(0.45 * rate).min(0.45 * out as f64), out as f64),
+            level: 0.0,
+            level_a: (1.0 - (-1.0 / (rate * TAP_LEVEL_TAU_S)).exp()) as f32,
+            ahead: std::collections::VecDeque::new(),
+            ahead_n: (TAP_AHEAD_S * rate) as usize,
+            lead: std::collections::VecDeque::new(),
+            lead_n: (TAP_LEAD_S * out as f64) as usize,
+            samples: Vec::new(),
+        });
+        self
+    }
+
+    /// The tapped detector's samples since last asked (none when it isn't tapped).
+    pub fn take_tapped(&mut self) -> Vec<i16> {
+        self.tap.as_mut().map(|t| std::mem::take(&mut t.samples)).unwrap_or_default()
     }
 
     /// The steady lines changed ([`LineWatch::ignored`]).
@@ -316,7 +414,7 @@ impl Am {
     /// will do too. Returns true if the carrier was up at any point.
     pub fn push(&mut self, iq: &[Complex32], open_power: f32, out: &mut Vec<f32>) -> bool {
         let mut carrier = false;
-        let Am { filter, line, fast, fast_pos, fast_sum, was_up, level, level_a, audio, hpf, gate } = self;
+        let Am { filter, line, fast, fast_pos, fast_sum, was_up, level, level_a, audio, hpf, gate, tap, .. } = self;
         let n = fast.len();
         for &x in iq {
             let y = filter.step(x);
@@ -331,7 +429,7 @@ impl Am {
             }
             let up = line_up || filter.power() > open_power;
             carrier |= up;
-            gate.decide(up, line_up || *fast_sum > open_power as f64 * n as f64);
+            let open = gate.decide(up, line_up || *fast_sum > open_power as f64 * n as f64);
             let env = y.norm();
             let rising = up && !*was_up;
             *was_up = up;
@@ -340,6 +438,9 @@ impl Am {
                 *level = level.max(filter.power().sqrt());
             } else {
                 *level += *level_a * (env - *level);
+            }
+            if let Some(t) = tap {
+                t.push(env, open);
             }
             let m = ((env - *level) / level.max(1e-20)).clamp(-LIMIT, LIMIT);
             audio.push(m, |raw| {
@@ -411,6 +512,62 @@ mod tests {
             let p = tone_power(tail, 1000.0);
             assert!(db(p, 0.125).abs() < 1.0, "amp {amp}: 1 kHz at {:.1} dB", db(p, 0.125));
         }
+    }
+
+    /// The envelope tap: the modulation before the voice filters — a tone above the voice
+    /// low-pass and hum under the low cut both in it — from before the squelch opened.
+    #[test]
+    fn the_envelope_tap_is_the_modulation_before_the_audio_filters() {
+        let n = (RATE * 2.0) as usize;
+        let quiet = (RATE * 0.5) as usize;
+        let mut seed = 3u32;
+        // Half a second of noise, then a carrier 30 % modulated at 4 kHz and 20 % at 60 Hz.
+        let mut iq = noise(quiet, 1e-4, &mut seed);
+        iq.extend((0..n).map(|i| {
+            let t = i as f64 / RATE;
+            Complex32::new((0.5 * (1.0 + 0.3 * (2.0 * PI * 4000.0 * t).sin() + 0.2 * (2.0 * PI * 60.0 * t).sin())) as f32, 0.0)
+        }));
+        let mut d = Am::new(RATE, &AnalogTuning::am(120e6), &[]);
+        let mut out = Vec::new();
+        d.push(&iq, 1e-4, &mut out);
+        assert!(d.take_tapped().is_empty(), "off");
+        let mut d = Am::new(RATE, &AnalogTuning::am(120e6), &[]).tapped(Some(22_050));
+        let mut tap = Vec::new();
+        for c in iq.chunks(4000) {
+            d.push(c, 1e-4, &mut out);
+            tap.extend(d.take_tapped().iter().map(|&s| s as f32 / TAP_SCALE));
+        }
+        assert!(d.take_tapped().is_empty(), "taken");
+        // All of the carrier, and the lead before it: none of its start lost to the squelch.
+        let secs = tap.len() as f64 / 22_050.0;
+        assert!(secs > 2.0 && secs < 2.0 + TAP_LEAD_S + 0.01, "{secs:.3} s of a 2 s carrier");
+        // A carrier from nothing isn't clipped as it comes up: a burst's preamble is there.
+        let top = tap.iter().fold(0f32, |a, v| a.max(v.abs()));
+        assert!(top < 1.9, "peak {top:.2} at full modulation 1.0");
+        let tail = &tap[tap.len() / 2..];
+        let power = |hz: f64| {
+            let w = 2.0 * PI * hz / 22_050.0;
+            let (mut s1, mut s2) = (0.0f64, 0.0f64);
+            for &v in tail {
+                let s = v as f64 + 2.0 * w.cos() * s1 - s2;
+                s2 = s1;
+                s1 = s;
+            }
+            (s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2) * 2.0 / (tail.len() as f64).powi(2)
+        };
+        assert!(db(power(4000.0), 0.045).abs() < 1.0, "4 kHz at {:.1} dB", db(power(4000.0), 0.045));
+        assert!(db(power(60.0), 0.02).abs() < 1.5, "60 Hz at {:.1} dB", db(power(60.0), 0.02));
+        // A carrier that goes: all of it is taken once the squelch shuts, none held back.
+        let mut d = Am::new(RATE, &AnalogTuning::am(120e6), &[]).tapped(Some(22_050));
+        let mut burst = iq[..quiet + n / 4].to_vec();
+        burst.extend(noise(quiet, 1e-4, &mut seed));
+        d.push(&burst, 1e-4, &mut out);
+        let secs = d.take_tapped().len() as f64 / 22_050.0;
+        assert!((secs - 0.5 - TAP_LEAD_S).abs() < 0.03, "{secs:.3} s of a 0.5 s carrier");
+        // With no carrier, nothing.
+        let mut d = Am::new(RATE, &AnalogTuning::am(120e6), &[]).tapped(Some(22_050));
+        d.push(&noise(n, 1e-3, &mut seed), 1e-2, &mut out);
+        assert!(d.take_tapped().is_empty(), "squelched");
     }
 
     #[test]

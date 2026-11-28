@@ -12,8 +12,8 @@ one.
   20.04, RHEL/Rocky/Alma 8, Raspberry Pi OS (64-bit) and anything newer are fine. Distributions
   built on musl (Alpine) can't run it; use [Docker](docker.md) there.
 
-Nothing else is needed for RTL-SDRs. The binary is not static only so that it can load the
-optional USRP, Airspy, bladeRF and SoapySDR drivers if you install them ([Other radios](other-radios.md)).
+Nothing else is needed for RTL-SDRs, HackRF Ones, Airspy R2 / Minis and HydraSDR RFOnes. The binary is not static only so that it can load the
+optional USRP, bladeRF and SoapySDR drivers if you install them ([Other radios](other-radios.md)).
 
 ## Install
 

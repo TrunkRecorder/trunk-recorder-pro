@@ -46,6 +46,9 @@ pub trait Plugin: Sized {
     /// A piece of a signal tap's stream (subscribe to the tap's topic, `tap.<id>`:
     /// [`Tap::topic`](crate::Tap::topic)); `chunk.tap` says which tap's.
     fn tap(&mut self, _chunk: crate::TapChunk) {}
+    /// What another plugin made of a call (subscribe to `product.<kind>`, or `product` for
+    /// every kind): a transcript, a decoded page.
+    fn product(&mut self, _product: crate::Product) {}
     fn status(&mut self, _status: Status) {}
     /// Every series the recorder measures, as running totals since recording started, every
     /// 10 s ([`topic::TOTALS`]). [`crate::health`] makes node health reports of them.
@@ -124,7 +127,7 @@ pub struct System<C, S> {
     pub id: u32,
     /// Unique among the recorder's systems, and what users know it by (it changes when it's renamed).
     pub short_name: String,
-    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional"
+    /// "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr" | "conventional"
     pub kind: String,
     /// What people call it; empty when the user gave no name.
     pub name: String,
@@ -283,6 +286,12 @@ impl Host {
         self.send(&PluginMessage::Metrics(m.clone()));
     }
 
+    /// Something made of a call, for the recorder to keep with it ([`crate::Product::of`] a
+    /// concluded call, [`crate::Product::live`] one still running).
+    pub fn product(&self, product: crate::Product) {
+        self.send(&PluginMessage::CallProduct(product));
+    }
+
     /// What became of a concluded call.
     pub fn call_result(&self, path: &str, outcome: Outcome, message: impl Into<String>, url: impl Into<String>) {
         self.send(&PluginMessage::CallResult { path: path.to_string(), outcome, message: message.into(), url: url.into(), took_ms: None });
@@ -414,6 +423,7 @@ pub fn serve<P: Plugin>(input: impl BufRead, host: Host) -> i32 {
             HostMessage::Audio(a) => p.audio(a),
             HostMessage::Voice(v) => p.voice(v),
             HostMessage::Tap(t) => p.tap(t),
+            HostMessage::Product(pr) => p.product(pr),
             HostMessage::Status(s) => p.status(s),
             HostMessage::Totals(t) => p.totals(t),
             HostMessage::TonePattern(t) => p.tone_pattern(t),
@@ -600,7 +610,7 @@ mod tests {
     #[test]
     fn a_plugin_asks_for_calls_and_gets_the_page() {
         let dir = testing::temp_dir("sdk-calls");
-        let call = StoredCall { path: "sys1/2026/10/27/101-1".into(), record: CallRecord { talkgroup: 101, ..Default::default() }, audio: true, json: true };
+        let call = StoredCall { path: "sys1/2026/10/27/101-1".into(), record: CallRecord { talkgroup: 101, ..Default::default() }, audio: true, json: true, products: Vec::new() };
         let page = CallsPage { entries: vec![call], next: Some("1000:sys1/x".into()), error: None };
         let out = testing::run::<Asker>([HostMessage::Hello(testing::hello(&dir, json!({}))), HostMessage::Calls { request: 1, page }]);
         let asked = out.messages.iter().find(|m| matches!(m, PluginMessage::CallsQuery { .. })).cloned().expect("calls.query sent");

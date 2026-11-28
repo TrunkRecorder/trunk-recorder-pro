@@ -96,3 +96,18 @@ test("Listen: a system whose audio isn't kept has no talkgroups to pick, and say
   assert.match(tgList(), /Red Line/);
   assert.doesNotMatch(showing(), /isn&#x27;t here/);
 });
+
+test("Listen: a data call is listed for what was decoded from it, as it comes", () => {
+  twoSites();
+  setAll(true, ["dcfd", "pagers"], ["dcfd:100", "dcfd:200", "dcfd:300", "pagers:1"]);
+  const page = { ...call("pagers", 1, "Fire paging", 9), path: "pagers/1-9", audio: false } as CallEntry;
+  page.record = { ...page.record, short_name: "pagers", transmission_id: "pagers-1-0-1700000009000" };
+  concluded(page);
+  assert.doesNotMatch(showing(), /Fire paging/, "no audio and nothing decoded yet: not listed");
+  transport.onMessage({ type: "product", transmission_id: "pagers-1-0-1700000009000", by: "pager", time: 1_700_000_009.5, kind: "page", data: { protocol: "pocsag", baud: 1200, address: 1234567, function: 3, format: "alpha", text: "ENGINE 4 RESPOND 12 MAIN ST" } });
+  assert.match(showing(), /Fire paging .*POCSAG 1234567 F3 ENGINE 4 RESPOND 12 MAIN ST/);
+  // A transcript of a voice call, under it.
+  const fire = { ...call("dcfd", 100, "Fire Dispatch", 10), products: [{ transmission_id: "t", by: "whisper", time: 1, kind: "transcript", data: { text: "Engine 4 on scene" } }] } as CallEntry;
+  concluded(fire);
+  assert.match(showing(), /Fire Dispatch .*Text Engine 4 on scene/);
+});

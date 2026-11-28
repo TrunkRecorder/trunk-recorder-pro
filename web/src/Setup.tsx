@@ -2516,7 +2516,7 @@ function NxdnFields(props: { sys: System; site: Site; edit: (fn: (x: Site) => vo
   );
 }
 
-/** A site's `lcnTableHz`: channel number = MHz (DMR, NXDN, EDACS). */
+/** A site's `lcnTableHz`: channel number = MHz (DMR, NXDN, EDACS, LTR). */
 function LcnTableField(props: { site: Site; edit: (fn: (x: Site) => void) => void; label: string; hint: React.ReactNode; placeholder: string }) {
   const { site, edit } = props;
   return (
@@ -2612,7 +2612,7 @@ function SmartnetFields(props: { site: Site; edit: (fn: (x: Site) => void) => vo
   );
 }
 
-const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)", edacs: "EDACS (analog / ProVoice)" };
+const SYSTEM_TYPES: Record<System["type"], string> = { p25: "P25", smartnet: "SmartNet / SmartZone", dmr: "DMR (trunked)", nxdn: "NXDN (trunked)", edacs: "EDACS (analog / ProVoice)", ltr: "LTR / LTR-Net / Passport" };
 
 /** A system's own settings, as a confirm names them: making two systems one keeps the first's (plugin settings: see
  * [`joinPluginSettings`]). */
@@ -2754,7 +2754,7 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
             }
           />
         </Field>
-        {sys.type !== "dmr" && sys.type !== "nxdn" && sys.type !== "edacs" && (
+        {(sys.type === "p25" || sys.type === "smartnet") && (
           <Field label={sys.type === "smartnet" ? "P25 voice modulation" : "Modulation"}>
             <select value={site.modulation} onChange={(e) => edit((x) => void (x.modulation = e.target.value as Site["modulation"]))}>
               <option value="auto">Detect</option>
@@ -2766,11 +2766,11 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
         <Field
           needs={need(`cc-${at}`)}
           anchor={`cc-${at}`}
-          label={sys.type === "dmr" ? "Site frequencies, MHz" : typeD ? "Repeaters, MHz" : "Control channels, MHz"}
+          label={sys.type === "dmr" ? "Site frequencies, MHz" : typeD || sys.type === "ltr" ? "Repeaters, MHz" : "Control channels, MHz"}
           hint={
             sys.type === "dmr"
               ? "Capacity Plus: every repeater; else control channels"
-              : typeD
+              : typeD || sys.type === "ltr"
                 ? "Every repeater of the site"
                 : sys.type === "edacs"
                   ? "List more (or all) if it moves"
@@ -2787,10 +2787,27 @@ function SiteCard(props: { c: Config; i: number; k: number; onRemoveSystem: () =
           />
         </Field>
         {sys.type === "smartnet" && <SmartnetFields site={site} edit={edit} />}
-        {sys.type !== "edacs" && !typeD && <VoiceChannelsField site={site} edit={edit} />}
+        {sys.type !== "edacs" && sys.type !== "ltr" && !typeD && <VoiceChannelsField site={site} edit={edit} />}
         {sys.type === "dmr" && <DmrFields site={site} edit={edit} />}
         {sys.type === "nxdn" && <NxdnFields sys={sys} site={site} edit={edit} />}
         {sys.type === "edacs" && <EdacsFields site={site} edit={edit} />}
+        {sys.type === "ltr" && (
+          <LcnTableField
+            site={site}
+            edit={edit}
+            label="Channels (LCNs)"
+            hint={
+              <>
+                LCN=MHz: 1=851.0125, 2=851.5125{" "}
+                <Info>
+                  Each repeater's logical channel number, as RadioReference lists them. A call names the LCN it is on; a repeater left out is learned from its own
+                  words (its idle bursts name it). A talkgroup A-HH-GGG is numbered AHHGGG (1-05-123 is 105123); a Passport talkgroup is its number.
+                </Info>
+              </>
+            }
+            placeholder="learned from the air"
+          />
+        )}
         {lockFields.length > 0 && (
           <details className={`help wide${need(`site-${at}`) ? " needs" : ""}`} id={`need-site-${at}`} open={need(`site-${at}`) ? true : undefined}>
             <summary>
@@ -3275,6 +3292,8 @@ const RULE_GROUPS: { title: string; hint?: string; rules: Rule[] }[] = [
         service: true,
         inactive: (r) => (r.archiveWav && r.archiveM4a && r.callLog ? "Everything is kept anyway" : undefined),
       },
+      // (Pager and ACARS channels: a plugin decodes them, and the modem noise is nobody's to hear.)
+      { key: "dataOnly", kind: "bool", label: "Data only", hint: "Keep what plugins decode, not the audio; nothing decoded, no call", service: true },
     ],
   },
 ];
@@ -3654,7 +3673,7 @@ export function Setup() {
         <>
           <Section
             title="Trunked systems"
-            hint="P25, SmartNet, DMR, NXDN and EDACS"
+            hint="P25, SmartNet, DMR, NXDN, EDACS and LTR"
             actions={
               <>
                 <ExpandAll keys={c.systems.map(sysKey)} />

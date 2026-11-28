@@ -12,6 +12,7 @@ pub mod fm;
 pub mod inband;
 pub mod levels;
 pub mod msd;
+pub mod nrz;
 pub mod real_iq;
 pub mod rolloff;
 pub mod squelch;

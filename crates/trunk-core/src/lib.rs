@@ -33,6 +33,7 @@ pub mod dmr;
 pub mod dsp;
 pub mod edacs;
 pub mod loudness;
+pub mod ltr;
 pub mod mbe;
 pub mod nxdn;
 pub mod position;

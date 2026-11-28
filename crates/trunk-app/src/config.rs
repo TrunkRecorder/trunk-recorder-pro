@@ -917,8 +917,8 @@ pub struct Site {
     pub bandplan_offset: u16,
     #[serde(skip_serializing_if = "is_zero")]
     pub bandplan_high_hz: f64,
-    /// DMR / NXDN / EDACS: logical channel number → frequency, Hz (Trunk
-    /// Recorder's `lcnTable`). DMR and NXDN learn channels left out from the
+    /// DMR / NXDN / EDACS / LTR: logical channel number → frequency, Hz (Trunk
+    /// Recorder's `lcnTable`). DMR, NXDN and LTR learn channels left out from the
     /// air; EDACS checks the list against the air but needs it.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub lcn_table_hz: BTreeMap<String, f64>,
@@ -1045,6 +1045,8 @@ choice! {
         Nxdn = "nxdn",
         /// EDACS Standard or Networked (analog and ProVoice voice).
         Edacs = "edacs",
+        /// LTR Standard, LTR-Net or Passport (analog voice; every repeater listed).
+        Ltr = "ltr",
     }
 }
 
@@ -1056,7 +1058,7 @@ pub struct KindInfo {
     /// As people write it ("SmartNet").
     pub label: &'static str,
     /// Its sites are watched whole, every frequency at once (DMR, NXDN,
-    /// EDACS), not followed by one control channel.
+    /// EDACS, LTR), not followed by one control channel.
     pub watched: bool,
     /// The site-lock fields its control channel states ([`SiteIdentity`]'s,
     /// as the config writes them), which Setup offers as its site lock. (NXDN
@@ -1074,6 +1076,8 @@ impl SystemKind {
             SystemKind::Dmr => KindInfo { label: "DMR", watched: true, site_lock: &[] },
             SystemKind::Nxdn => KindInfo { label: "NXDN", watched: true, site_lock: &["sysId", "site"] },
             SystemKind::Edacs => KindInfo { label: "EDACS", watched: true, site_lock: &["site"] },
+            // (LTR Standard names no site; LTR-Net and Passport do.)
+            SystemKind::Ltr => KindInfo { label: "LTR", watched: true, site_lock: &[] },
         }
     }
 }
@@ -1211,6 +1215,9 @@ impl System {
     pub fn is_edacs(&self) -> bool {
         self.kind == SystemKind::Edacs
     }
+    pub fn is_ltr(&self) -> bool {
+        self.kind == SystemKind::Ltr
+    }
 
     /// The site-lock fields its control channels state ([`KindInfo::site_lock`]):
     /// its kind's, but none for NXDN Type-D (its repeaters are told apart by RAN).
@@ -1258,7 +1265,7 @@ impl Site {
         }
     }
 
-    /// Frequencies a watching protocol (DMR, NXDN, EDACS) needs besides the control channels.
+    /// Frequencies a watching protocol (DMR, NXDN, EDACS, LTR) needs besides the control channels.
     pub fn watched_channels(&self, sys: &System) -> Vec<f64> {
         if sys.is_dmr() {
             self.dmr().channels
@@ -1266,6 +1273,8 @@ impl Site {
             self.nxdn_channels_hz.clone()
         } else if sys.is_edacs() {
             self.edacs().lcns.values().map(|&f| f as f64).collect()
+        } else if sys.is_ltr() {
+            self.ltr().lcn_table.values().map(|&f| f as f64).collect()
         } else {
             vec![]
         }
@@ -1304,6 +1313,14 @@ impl Site {
         trunk_core::edacs::EdacsConfig { lcns, esk: self.esk }
     }
 
+    /// The LTR settings: `lcnTableHz` is the site's channel list (LCNs 1–20; Passport's up to 2047),
+    /// its repeaters the control channels.
+    pub fn ltr(&self) -> trunk_core::ltr::LtrConfig {
+        let mut lcn_table = self.lcn_table::<u32>();
+        lcn_table.retain(|&l, &mut f| (1..2048).contains(&l) && f > 0);
+        trunk_core::ltr::LtrConfig { lcn_table }
+    }
+
     /// The SmartNet settings, or why they don't work.
     pub fn smartnet(&self, sys: &System) -> Result<trunk_core::trunk::SmartnetConfig, String> {
         let bandplan = trunk_core::smartnet::Bandplan::from_config(&self.bandplan, self.bandplan_base_hz, self.bandplan_spacing_hz, self.bandplan_offset, self.bandplan_high_hz)?;
@@ -1323,6 +1340,8 @@ impl Site {
             Protocol::Nxdn(self.nxdn(sys))
         } else if sys.is_edacs() {
             Protocol::Edacs(self.edacs())
+        } else if sys.is_ltr() {
+            Protocol::Ltr(self.ltr())
         } else if let Some(sn) = sys.is_smartnet().then(|| self.smartnet(sys).ok()).flatten() {
             Protocol::SmartNet(sn)
         } else {
@@ -1877,6 +1896,10 @@ recording! {
             pub call_log: bool,
             /// When an upload failed, keep the files anyway (archiveFilesOnFailure).
             pub archive_files_on_failure: bool,
+            /// Its calls are data (pagers, ACARS): what a plugin decodes from each is kept
+            /// (a call product) with the call, and the audio isn't; a call nothing was
+            /// decoded from isn't kept at all.
+            pub data_only: bool,
             /// Where calls go under the recordings folder, and their names
             /// ([`crate::filename`]); empty = `<short name>/<year>/<month>/<day>/<talkgroup>-<epoch>_<freq>`.
             pub filename_format: String,
@@ -2026,6 +2049,7 @@ impl Default for Recording {
             archive_m4a: false,
             call_log: true,
             archive_files_on_failure: true,
+            data_only: false,
             filename_format: String::new(),
             drop_duplicate_calls: true,
             vocoder: Vocoder::Fixed,
@@ -2527,7 +2551,7 @@ pub struct CallSystem<'a> {
     /// Its number in the config: what's kept of it goes by.
     pub id: SystemId,
     pub short_name: &'a str,
-    /// "p25", "smartnet", "dmr", "nxdn", "edacs" or "conventional".
+    /// "p25", "smartnet", "dmr", "nxdn", "edacs", "ltr" or "conventional".
     pub kind: &'static str,
     /// Its own recording rules (over the config's).
     pub recording: &'a RecordingOverride,
@@ -2611,6 +2635,9 @@ pub struct Config {
     /// be saved, so the ids stay the same from here on.
     #[serde(skip)]
     pub numbered: bool,
+    /// The systems' ids given since it was read ([`Config::keep_ids_from`] may number them again).
+    #[serde(skip)]
+    pub fresh: Vec<u32>,
 }
 
 /// The log (desktop app), with Trunk Recorder's options: `logLevel`,
@@ -2691,6 +2718,7 @@ impl Default for Config {
             monitor: MonitorSettings::default(),
             notes: vec![],
             numbered: false,
+            fresh: Vec::new(),
         }
     }
 }
@@ -2964,6 +2992,27 @@ impl Config {
         self.assign_ids_of_systems() || sites
     }
 
+    /// Number new systems at `floor` or above, as the config becomes the one
+    /// running: ids under it are held elsewhere (the call store keeps what it
+    /// has of systems gone from the config by their ids), and a config restored
+    /// from before one was removed would give that id again. Those it gave ids
+    /// since it was read are numbered again from there, and new ones from here
+    /// on; the ids it already had stay. Whether any changed.
+    pub fn keep_ids_from(&mut self, floor: u32) -> bool {
+        let fresh = std::mem::take(&mut self.fresh);
+        let mut next = self.next_system_id.max(floor);
+        let mut changed = next != self.next_system_id;
+        for id in self.systems.iter_mut().map(|s| &mut s.id.0).chain(self.conventional.iter_mut().map(|c| &mut c.id.0)) {
+            if *id < floor && fresh.contains(id) {
+                *id = next;
+                next += 1;
+                changed = true;
+            }
+        }
+        self.next_system_id = next;
+        changed
+    }
+
     fn assign_site_ids(&mut self) -> bool {
         let given = self.systems.iter().flat_map(|s| &s.sites).map(|s| s.id.0).max().unwrap_or(0);
         let mut next = self.next_site_id.max(given + 1);
@@ -2990,6 +3039,7 @@ impl Config {
             if *id == 0 || !seen.insert(*id) {
                 *id = next;
                 seen.insert(next);
+                self.fresh.push(next);
                 next += 1;
                 given = true;
             }
@@ -3304,7 +3354,7 @@ impl Config {
 
     /// What the radios are placed to reach, and what Start needs reached:
     /// each active site's control (and watched) channels and its voice
-    /// channels ([`Site::voice_hz`]) — one control channel needed (a DMR, NXDN or EDACS site:
+    /// channels ([`Site::voice_hz`]) — one control channel needed (a DMR, NXDN, EDACS or LTR site:
     /// every frequency it watches) — then each conventional system's
     /// channels, every one needed (a group for each set of sources its rows
     /// may be received on). Each on its sources. The sites' groups come
@@ -3640,7 +3690,7 @@ impl Config {
             if sys.kind.info().watched {
                 let out: Vec<String> = g.need_missed.iter().map(|f| format!("{:.5}", f / 1e6)).collect();
                 if !out.is_empty() {
-                    let what = if sys.is_dmr() { "DMR" } else if sys.is_nxdn() { "NXDN" } else { "EDACS" };
+                    let what = sys.kind.info().label;
                     return Some(format!("{name}: {what} frequencies outside {sources}: {} MHz — move a center frequency or add a source.{}", out.join(", "), self.advice_fix()));
                 }
             }
@@ -4022,6 +4072,27 @@ mod tests {
         assert_eq!((saved["systems"][0]["id"].as_u64(), saved["nextSystemId"].as_u64()), (Some(8), Some(12)));
     }
 
+    /// A config restored from before a system was removed: the systems it numbered as it was read are numbered again
+    /// above every id the call store keeps, and new ones from then on; the ids it already had stay (a system renamed
+    /// keeps its calls).
+    #[test]
+    fn a_restored_config_numbers_new_systems_above_the_stores() {
+        // Saved with systems 1 and 2 (its next id 3); since, 3 was added and removed, so the store keeps 1 to 3.
+        let mut c = Config::from_json(r#"{"nextSystemId":3,"systems":[{"shortName":"a","id":1},{"shortName":"renamed","id":2},{"shortName":"new"}],"conventional":[{"shortName":"conv"}]}"#).unwrap();
+        assert_eq!((c.id_of("new"), c.id_of("conv")), (Some(SystemId(3)), Some(SystemId(4))), "as read, from its own count: the removed one's 3 among them");
+        assert!(c.keep_ids_from(4));
+        assert_eq!(c.system_ids().collect::<Vec<_>>(), [(SystemId(1), "a"), (SystemId(2), "renamed"), (SystemId(5), "new"), (SystemId(4), "conv")], "only the one under the store's");
+        assert_eq!(c.next_system_id, 6);
+        assert!(!c.keep_ids_from(4), "once: its ids are its own from then on");
+        c.systems.push(System { short_name: "later".into(), ..Default::default() });
+        c.assign_system_ids();
+        assert_eq!(c.id_of("later"), Some(SystemId(6)));
+        // Read above the store's already: as it was.
+        let mut c = Config::from_json(r#"{"nextSystemId":9,"systems":[{"shortName":"x"}]}"#).unwrap();
+        assert!(!c.keep_ids_from(4));
+        assert_eq!((c.id_of("x"), c.next_system_id), (Some(SystemId(9)), 10));
+    }
+
     #[test]
     fn storage_defaults_to_300_second_commits_and_120_days() {
         let c = Config::from_value(serde_json::json!({})).unwrap();
@@ -4377,6 +4448,28 @@ mod tests {
         // No channel list: nothing to follow calls with.
         c.systems[0].sites[0].lcn_table_hz.clear();
         assert!(c.problem().unwrap().contains("channel list"), "{:?}", c.problem());
+    }
+
+    /// An LTR site: its repeaters to watch (and the LCN table's), recorded as a watched site;
+    /// one outside the radio's band is named.
+    #[test]
+    fn an_ltr_site() {
+        let mut c = Config::from_json(
+            r#"{ "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 851500000, "rateHz": 2400000 }],
+                 "systems": [{ "shortName": "ltr1", "type": "ltr", "sites": [{ "controlChannelsHz": [851012500, 851512500],
+                     "lcnTableHz": { "1": 851012500, "2": 851512500, "3": 851937500, "x": 1 } }] }] }"#,
+        )
+        .unwrap();
+        let s = &c.systems[0];
+        assert!(s.is_ltr() && s.kind.info().watched);
+        let l = s.sites[0].ltr();
+        assert_eq!(l.lcn_table.into_iter().collect::<Vec<_>>(), [(1, 851_012_500), (2, 851_512_500), (3, 851_937_500)]);
+        assert!(s.sites[0].watched_channels(s).contains(&851_937_500.0));
+        assert_eq!(c.problem(), None);
+        let ec = c.engine_config(0.0, &Default::default());
+        assert!(matches!(ec.systems[0].sites[0].protocol, trunk_core::trunk::Protocol::Ltr(_)));
+        c.systems[0].sites[0].lcn_table_hz.insert("4".into(), 856_000_000.0);
+        assert!(c.problem().unwrap().contains("LTR frequencies outside"), "{:?}", c.problem());
     }
 
     /// Advice for a config: a centre typed in that misses the site's voice

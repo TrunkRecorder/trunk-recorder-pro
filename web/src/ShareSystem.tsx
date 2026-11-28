@@ -12,6 +12,7 @@ import { Fig, Info } from "./charts.tsx";
 import { ago } from "./fmt.ts";
 import { IdentifyDialog } from "./Identify.tsx";
 import { Toggle } from "./inputs.tsx";
+import { SYSTEM_KINDS } from "./systemKinds.gen.ts";
 
 /** Protocols the directory takes shares of. */
 export const SHAREABLE: System["type"][] = ["p25", "smartnet", "dmr", "nxdn"];
@@ -50,7 +51,7 @@ export function ShareSystem(props: { c: Config; i: number }) {
           if (hasCallSign(sys.fcc)) turnOn();
           else setIdentifying(true);
         }}
-        hint={can ? "Sites, channels, talkgroup numbers" : "Not for EDACS yet"}
+        hint={can ? "Sites, channels, talkgroup numbers" : `Not for ${SYSTEM_KINDS[sys.type].label} yet`}
       />
       {can && (
         // (Beside the switch, not in its label: a click on it would flip the switch.)

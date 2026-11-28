@@ -6,7 +6,7 @@
 use crate::kept;
 use trunk_app::config::{edit_names, NameLists, SystemNames};
 use trunk_app::protocol::TalkgroupEdit;
-use trunk_core::trunk::{edit_rows, edit_unit_names, replace_rows, NameRow, Origin, SystemId, TalkgroupRow, UnitNameRow};
+use trunk_core::trunk::{edit_rows, edit_unit_names, replace_rows, NameRow, NotSaved, Origin, SystemId, TalkgroupRow, UnitNameRow};
 use trunk_app::saving::Kind;
 use std::collections::VecDeque;
 use std::fs;
@@ -167,6 +167,8 @@ pub struct Ctx {
     pub tls: std::sync::OnceLock<crate::tls::Tls>,
     /// A radio's gain being tuned ([`crate::tune`]), and its last report (for browsers that connect).
     pub tune: crate::tune::Slot,
+    /// What plugins make of calls, on its way to the call each is of ([`crate::products`]).
+    pub products: crate::products::Products,
 }
 
 /// Something for the running session to do: the one way into the engine
@@ -188,8 +190,9 @@ pub enum EngineCmd {
     ShareSystem(trunk_app::config::System),
     /// How a system's share went.
     Shared { short_name: String, result: Result<Option<trunk_app::share::Linked>, String> },
-    /// A call of system `system` concluded, whose files then couldn't be written: not saved after all.
-    WriteFailed { system: u16 },
+    /// A call of system `system` concluded and wasn't kept after all (its files couldn't be
+    /// written; a data-only one nothing was decoded from): counted so.
+    NotSaved { system: u16, why: trunk_core::trunk::NotSaved },
     /// Forget system `system`'s (none: every system's) talker aliases and
     /// radio registry, as `units` and `registry` say (deleted in Setup →
     /// Data): here, so nothing the session holds of them is saved after.
@@ -530,6 +533,29 @@ impl Ctx {
         *r.controls.get(k).ok_or("the radio isn't recording")?.gain.lock().unwrap() = Some(gain);
         Ok(gain)
     }
+
+    /// Release the run's source `k` (`on`) or resume it, while recording: a radio closed so it can
+    /// be swapped or looked at while the others record on, then opened again as it was
+    /// ([`Control::hold`]). Not saved: Stop, or the next Start, takes it back.
+    pub fn release_radio(&self, k: usize, on: bool) -> Result<(), String> {
+        let l = self.lifecycle.lock().unwrap();
+        let Some(r) = l.recording.as_ref().filter(|r| !r.finished()) else { return Err("not recording".into()) };
+        let run = self.run.lock().unwrap();
+        let src = run.as_ref().and_then(|c| c.sources.get(k)).ok_or("the radio isn't recording")?;
+        if matches!(src.kind, SourceKind::File { .. } | SourceKind::Stream { .. }) {
+            return Err(format!("{}: only a radio can be released", src.title(k)));
+        }
+        r.controls.get(k).ok_or("the radio isn't recording")?.hold(on);
+        if on {
+            self.tune.released(&src.label());
+        }
+        Ok(())
+    }
+
+    /// Whether the run's source `k` is released ([`Ctx::release_radio`]).
+    pub fn radio_released(&self, k: usize) -> bool {
+        self.lifecycle.lock().unwrap().recording.as_ref().and_then(|r| r.controls.get(k)).is_some_and(|c| c.held())
+    }
 }
 
 impl Runner {
@@ -608,7 +634,7 @@ pub fn start(ctx: Arc<Ctx>, mut cfg: Config) -> Result<Runner, String> {
     session.load_heard(&kept::read(&ctx.db, Kind::Heard, "").unwrap_or_default());
     session.load_sharing(&kept::read(&ctx.db, Kind::Sharing, "").unwrap_or_default());
     session.load_tune(&kept::read(&ctx.db, Kind::Tune, "").unwrap_or_default());
-    ctx.plugins.start(&cfg, plugin_calls(&ctx), plugin_saves(&ctx));
+    ctx.plugins.start(&cfg, plugin_calls(&ctx), plugin_saves(&ctx), plugin_products(&ctx));
     let stop = Arc::new(AtomicBool::new(false));
     // Each source's samples queue for its own decoding thread ([`feed_source`]).
     let mut queues = Vec::new();
@@ -1119,7 +1145,8 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
     // Each system's file rules, by a call's `system` (trunked or conventional), and its id as this
     // run's config has it: what the store files its calls under, a rename meanwhile or not.
     let rules = {
-        let (each, all) = (cfg.recordings().iter().map(FileRules::of).collect::<Vec<_>>(), FileRules::of(&cfg.recording));
+        let of = |r: &crate::config::Recording| (FileRules::of(r), r.data_only);
+        let (each, all) = (cfg.recordings().iter().map(of).collect::<Vec<_>>(), of(&cfg.recording));
         let ids: Vec<SystemId> = cfg.call_systems().iter().map(|s| s.id).collect();
         move |system: u16| (each.get(system as usize).copied().unwrap_or(all), ids.get(system as usize).copied())
     };
@@ -1171,6 +1198,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 EngineCmd::Source(SourceMsg::Error { source, error }) => session.source_error(source, &error),
                 // (The one place a radio's gain set is weighed against the gain asked for.)
                 EngineCmd::Source(SourceMsg::Gain { source, asked, set }) => session.source_gain(source, &asked.to_string(), (!asked.same(&set)).then(|| set.to_string())),
+                EngineCmd::Source(SourceMsg::Released { source, released }) => session.source_released(source, released),
                 EngineCmd::Source(SourceMsg::End { source }) => {
                     if session.source_ended(source) {
                         // (Not "ended" when the user stopped it: the file thread ends on stop too.)
@@ -1202,7 +1230,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                     session.set_share(&sys);
                 }
                 EngineCmd::Shared { short_name, result } => session.share_done(&short_name, now_ms(), result),
-                EngineCmd::WriteFailed { system } => session.write_failed(system),
+                EngineCmd::NotSaved { system, why } => session.not_saved(system, why),
                 EngineCmd::Forget { system, units, registry, done } => {
                     if units {
                         session.forget_units(system);
@@ -1284,12 +1312,17 @@ struct Finish {
     rules: FileRules,
     /// Some of it was decrypted with our keys: only plugins with `shareDecrypted` take it.
     decrypted: bool,
+    /// Its system's calls are data (`dataOnly`): kept for what was decoded from it, without its audio.
+    data_only: bool,
 }
 
 /// How many calls are finished at once (each may be encoding an .m4a).
 fn finishers() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get() / 2).clamp(1, 3)
 }
+
+/// How long a data-only call waits past its end for something decoded from it.
+const DATA_WAIT: Duration = Duration::from_millis(if cfg!(test) { 50 } else { 2000 });
 
 /// How long decoding waits for a place in the finish queue before finishing a call itself.
 const FINISH_WAIT: Duration = Duration::from_secs(5);
@@ -1309,8 +1342,19 @@ fn finish_calls(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, rx: 
 /// and the plugins, handed the files as they are; their results settle
 /// what's kept ([`crate::plugins::Archive`]).
 fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f: Finish, encoder: Option<&(plugins::Encoder, u32)>) {
-    let host = ctx.plugins.host();
-    let r = f.rules;
+    let mut host = ctx.plugins.host();
+    let mut r = f.rules;
+    if f.data_only {
+        // Kept for what a plugin decoded from it (it may be a moment behind the call's end),
+        // or not at all; its audio is for nobody, the plugins that upload calls included.
+        if !ctx.products.wait(f.record.call_num, DATA_WAIT) {
+            log::debug!("Call {} not saved: no data", f.rel);
+            ctx.tell_engine(EngineCmd::NotSaved { system: f.system, why: NotSaved::NoData });
+            call_dropped(ctx, DroppedCall::not_saved(&f.record, NotSaved::NoData, None));
+            return;
+        }
+        (r.archive_wav, r.archive_m4a, host) = (false, false, None);
+    }
     let to_plugins = host.as_ref().map_or(Default::default(), |h| h.plugin_audio(f.system, &f.record, f.decrypted));
     let p = plugins::plan(r, to_plugins, encoder.is_some());
     let (keep_wav, keep_m4a, keep_json, keep_audio) = (p.keep_wav, p.keep_m4a, p.keep_json, p.keep_audio);
@@ -1358,8 +1402,8 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
         // Not saved after all: counted so, and said as any call lost is.
         Err(e) => {
             log::debug!("Call {} not saved", f.rel);
-            ctx.tell_engine(EngineCmd::WriteFailed { system: f.system });
-            call_dropped(ctx, DroppedCall::write_failed(&f.record, e.to_string()));
+            ctx.tell_engine(EngineCmd::NotSaved { system: f.system, why: NotSaved::WriteFailed });
+            call_dropped(ctx, DroppedCall::not_saved(&f.record, NotSaved::WriteFailed, Some(e.to_string())));
             return;
         }
     };
@@ -1373,6 +1417,8 @@ fn finish_one(ctx: &Ctx, dir: &Path, spool: Option<&crate::spool::Spool>, mut f:
     // Whether its audio and JSON stay once the plugins are done (a plugin's failure may keep them after all: archive::settle).
     let call = index_call(ctx, f.system_id, &f.rel, &f.record, keep_audio, keep_json);
     publish(&ctx.hub, ToClient::Concluded { entry: serde_json::to_value(&call).unwrap_or_default() });
+    // (After the call is listed: what was made of it while it ran goes on its entry.)
+    ctx.products.concluded(ctx, f.system_id.unwrap_or(SystemId(f.record.system_id)), &f.rel, &f.record, f.decrypted, keep_json);
     let mut wav_written = p.write_wav;
     let mut m4a = None;
     if let Some((e, kbps)) = encoder.filter(|_| p.make_m4a) {
@@ -1431,7 +1477,7 @@ fn share(ctx: &Arc<Ctx>, short_name: String, observation: serde_json::Value, sit
 }
 
 /// Forward everything to the browsers and plugins; calls go to be stored.
-fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> (FileRules, Option<SystemId>), finish: &dyn Fn(Finish)) {
+fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, rules: &dyn Fn(u16) -> ((FileRules, bool), Option<SystemId>), finish: &dyn Fn(Finish)) {
     for o in out.drain(..) {
         match o {
             Output::Fact { on, facts } => ctx.iq.fact(crate::iq_rules::Fact { on, facts }),
@@ -1488,8 +1534,8 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
             }
             Output::File { rel, system, wav, record, decrypted } => {
                 ctx.iq.fact(crate::iq_rules::Fact { on: "call.end", facts: crate::iq_rules::call_facts(&record) });
-                let (rules, system_id) = rules(system);
-                finish(Finish { rel, system, system_id, wav, record, rules, decrypted })
+                let ((rules, data_only), system_id) = rules(system);
+                finish(Finish { rel, system, system_id, wav, record, rules, decrypted, data_only })
             }
         }
     }
@@ -1499,7 +1545,7 @@ fn deliver(ctx: &Arc<Ctx>, out: &mut Vec<Output>, plugins: Option<&PluginHost>, 
 /// put at the front of the live list and handed to the store (`audio` and
 /// `json` say what of it is kept so far). Gives the call.
 pub fn index_call(ctx: &Ctx, system: Option<SystemId>, rel: &str, record: &trunk_recorder_plugin::CallRecord, audio: bool, json: bool) -> StoredCall {
-    let call = StoredCall { path: rel.replace('\\', "/"), record: record.clone(), audio, json };
+    let call = StoredCall { path: rel.replace('\\', "/"), record: record.clone(), audio, json, products: Vec::new() };
     {
         let mut r = ctx.recent.lock().unwrap();
         r.push_front(call.clone());
@@ -1541,6 +1587,7 @@ fn call_dropped(ctx: &Ctx, d: DroppedCall) {
         l.push_front(d.clone());
         l.truncate(DROPPED_KEPT);
     }
+    ctx.products.dropped(d.call_num);
     publish(&ctx.hub, ToClient::CallDropped(d));
 }
 /// Calls kept in the live list.
@@ -1583,7 +1630,7 @@ fn scan_recent(dir: &Path, limit: usize) -> VecDeque<StoredCall> {
             let record = serde_json::from_str(&fs::read_to_string(&p).ok()?).ok()?;
             let rel = p.strip_prefix(dir).ok()?.with_extension("");
             let audio = ["wav", "m4a"].iter().any(|x| p.with_extension(x).exists());
-            Some(StoredCall { path: rel.to_string_lossy().replace('\\', "/"), record, audio, json: true })
+            Some(StoredCall { path: rel.to_string_lossy().replace('\\', "/"), record, audio, json: true, products: Vec::new() })
         })
         .collect()
 }
@@ -1650,6 +1697,16 @@ fn plugin_calls(ctx: &Arc<Ctx>) -> crate::plugins::Calls {
     Arc::new(move |q| match ctx.upgrade() {
         Some(ctx) => calls(&ctx, q),
         None => CallsPage { error: Some("the recorder is stopping".into()), ..Default::default() },
+    })
+}
+
+/// The plugins' `call.product`: [`crate::products::Products::take`].
+fn plugin_products(ctx: &Arc<Ctx>) -> crate::plugins::Products {
+    let ctx = Arc::downgrade(ctx);
+    Arc::new(move |label, product| {
+        if let Some(ctx) = ctx.upgrade() {
+            ctx.products.take(&ctx, label, product);
+        }
     })
 }
 
@@ -1738,6 +1795,33 @@ mod live_tests {
         // Idle: nothing is held against the config.
         ctx.set_phase(Phase::Idle, None, false);
         assert!(!needs(&lower) && ctx.run.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Release / Resume reach the radio's controls while recording; a capture file or a stream
+    /// can't be released, and nothing can be when not recording.
+    #[test]
+    fn a_radio_is_released_and_resumed_while_recording() {
+        let run = Config {
+            sources: vec![
+                src("rtlsdr", json!({ "serial": "1", "centerHz": 851000000, "rateHz": 2400000 })),
+                src("file", json!({ "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true })),
+            ],
+            ..Default::default()
+        };
+        let (ctx, controls, dir) = recording(&run, "release");
+        ctx.release_radio(0, true).unwrap();
+        assert!(controls[0].held());
+        // (A gain tuned on a released radio would be scored on nothing.)
+        let tune = crate::tune::start(&ctx, trunk_app::tune::TuneRequest { source: 0, ..Default::default() });
+        assert!(tune.unwrap_err().contains("released"));
+        ctx.release_radio(0, false).unwrap();
+        assert!(!controls[0].held());
+        assert!(ctx.release_radio(1, true).unwrap_err().contains("only a radio"));
+        assert!(!controls[1].held());
+        assert!(ctx.release_radio(2, true).is_err(), "no such source");
+        ctx.lifecycle.lock().unwrap().recording = None;
+        assert_eq!(ctx.release_radio(0, true), Err("not recording".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2114,7 +2198,7 @@ mod folder_tests {
         fs::write(&dir, b"in the way").unwrap();
         ctx.folders.recordings.set_path(&dir);
         let rules = FileRules { archive_wav: true, archive_m4a: false, call_log: true, archive_files_on_failure: true };
-        let call = |n: u32| Finish { rel: format!("ohmarcs/2026/11/22/{n}-1"), system: 0, system_id: None, wav: b"RIFF".to_vec(), record: Default::default(), rules, decrypted: false };
+        let call = |n: u32| Finish { rel: format!("ohmarcs/2026/11/22/{n}-1"), system: 0, system_id: None, wav: b"RIFF".to_vec(), record: Default::default(), rules, decrypted: false, data_only: false };
         finish_one(&ctx, &dir, None, call(1), None);
         let r = ctx.folders.report();
         assert_eq!((r[0]["ok"].as_bool(), r[0]["why"].as_str(), r[0]["lost"].as_u64()), (Some(false), Some("Not a folder"), Some(1)));
@@ -2125,5 +2209,129 @@ mod folder_tests {
         assert!(dir.join("ohmarcs/2026/11/22/2-1.wav").exists() && dir.join("ohmarcs/2026/11/22/2-1.json").exists());
         assert_eq!(ctx.recent.lock().unwrap().len(), 1);
         let _ = fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod product_tests {
+    use super::*;
+    use trunk_recorder_plugin::{CallRecord, Page, Product, Transcript};
+
+    const RULES: FileRules = FileRules { archive_wav: true, archive_m4a: false, call_log: true, archive_files_on_failure: true };
+
+    fn call(n: u64, rules: FileRules, data_only: bool) -> Finish {
+        let record = CallRecord { call_num: n, transmission_id: format!("ohmarcs-1-0-{n}"), short_name: "ohmarcs".into(), talkgroup: 1, start_time: 1000 + n as i64, ..Default::default() };
+        Finish { rel: format!("ohmarcs/2026/11/28/{n}-1"), system: 0, system_id: None, wav: b"RIFF".to_vec(), record, rules, decrypted: false, data_only }
+    }
+
+    fn page(text: &str) -> Page {
+        Page { protocol: "POCSAG".into(), baud: 1200, address: 1234, text: text.into(), ..Default::default() }
+    }
+
+    /// (kind, plugin, text) of what the store has for the call at `rel`.
+    fn stored(ctx: &Ctx, rel: &str) -> Vec<(String, String, String)> {
+        ctx.db.flush().unwrap();
+        ctx.db.one(rel).unwrap().map_or(Vec::new(), |c| c.products.iter().map(|p| (p.kind().to_string(), p.by.clone(), p.text().to_string())).collect())
+    }
+
+    fn was(kind: &str, by: &str, text: &str) -> (String, String, String) {
+        (kind.into(), by.into(), text.into())
+    }
+
+    /// What a decoder made of a call while it ran waits for it to conclude and is filed under
+    /// its transmission id: in the store, beside its JSON and in the live list. What comes after
+    /// (a decoder's last piece by call id, a transcript by transmission id) joins it.
+    #[test]
+    fn products_are_filed_with_their_call_whenever_they_come() {
+        let dir = crate::db::TestDir::new("products-filed");
+        let ctx = test_ctx(&dir);
+        ctx.folders.recordings.set_path(&dir);
+        ctx.products.take(&ctx, "pager", Product::live(7, 1007.5, page("ENGINE 4 RESPOND")));
+        ctx.products.take(&ctx, "pager", Product::live(8, 1008.5, page("another call's")));
+        assert!(ctx.recent.lock().unwrap().is_empty());
+        let f = call(7, RULES, false);
+        let (rel, tx) = (f.rel.clone(), f.record.transmission_id.clone());
+        finish_one(&ctx, &dir, None, f, None);
+        assert_eq!(stored(&ctx, &rel), [was("page", "pager", "ENGINE 4 RESPOND")]);
+
+        ctx.products.take(&ctx, "pager#2", Product::live(7, 1009.0, page("LAST ONE")));
+        ctx.products.take(&ctx, "whisper", Product::of(tx.clone(), Transcript { text: "engine four".into(), ..Default::default() }));
+        ctx.products.take(&ctx, "whisper", Product::of("ohmarcs-1-0-999", Transcript { text: "no such call".into(), ..Default::default() }));
+        let all = [was("page", "pager", "ENGINE 4 RESPOND"), was("page", "pager", "LAST ONE"), was("transcript", "whisper", "engine four")];
+        assert_eq!(stored(&ctx, &rel), all);
+
+        let listed: Vec<_> = ctx.recent.lock().unwrap()[0].products.iter().map(|p| (p.kind().to_string(), p.by.clone(), p.text().to_string())).collect();
+        assert_eq!(listed, all, "the live list's entry");
+        let beside = fs::read_to_string(dir.join(format!("{rel}.{}", crate::products::SIDECAR))).unwrap();
+        let lines: Vec<Product> = beside.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        assert_eq!(lines.iter().map(|p| (p.kind(), p.transmission_id.as_str(), p.call_id)).collect::<Vec<_>>(), [("page", tx.as_str(), None), ("page", tx.as_str(), None), ("transcript", tx.as_str(), None)]);
+    }
+
+    /// With the call's JSON not kept, nothing is written beside it; the store still has it.
+    #[test]
+    fn no_file_beside_a_call_whose_json_is_not_kept() {
+        let dir = crate::db::TestDir::new("products-no-json");
+        let ctx = test_ctx(&dir);
+        ctx.folders.recordings.set_path(&dir);
+        let f = call(3, FileRules { call_log: false, ..RULES }, false);
+        let (rel, tx) = (f.rel.clone(), f.record.transmission_id.clone());
+        finish_one(&ctx, &dir, None, f, None);
+        ctx.products.take(&ctx, "whisper", Product::of(tx, Transcript { text: "hello".into(), ..Default::default() }));
+        assert_eq!(stored(&ctx, &rel), [was("transcript", "whisper", "hello")]);
+        assert!(!dir.join(format!("{rel}.{}", crate::products::SIDECAR)).exists());
+    }
+
+    /// A call from before this run (not one of the last concluded) is found in the store where
+    /// the plugin says it is, if it is the call the product names.
+    #[test]
+    fn an_older_call_is_found_by_its_path() {
+        let dir = crate::db::TestDir::new("products-older");
+        let ctx = test_ctx(&dir);
+        ctx.folders.recordings.set_path(&dir);
+        let record = call(5, RULES, false).record;
+        ctx.db.send(crate::db::Change::Call { row: crate::db::row::call_row("s/old", &record, true, true, None, 0), live: true });
+        ctx.db.flush().unwrap();
+        ctx.products.take(&ctx, "whisper", Product::of(record.transmission_id.clone(), Transcript { text: "no path".into(), ..Default::default() }));
+        let other = CallRecord { transmission_id: "ohmarcs-1-0-6".into(), ..record.clone() };
+        ctx.products.take(&ctx, "whisper", Product::of_call("s/old", &other, Transcript { text: "another call's path".into(), ..Default::default() }));
+        ctx.products.take(&ctx, "whisper", Product::of_call("s/old", &record, Transcript { text: "found".into(), ..Default::default() }));
+        assert_eq!(stored(&ctx, "s/old"), [was("transcript", "whisper", "found")]);
+    }
+
+    /// A call that isn't saved takes what was made of it along.
+    #[test]
+    fn a_dropped_calls_products_go_with_it() {
+        let dir = crate::db::TestDir::new("products-dropped");
+        let ctx = test_ctx(&dir);
+        ctx.folders.recordings.set_path(&dir);
+        ctx.products.take(&ctx, "pager", Product::live(4, 0.0, page("x")));
+        assert!(ctx.products.wait(4, Duration::ZERO));
+        call_dropped(&ctx, DroppedCall::not_saved(&call(4, RULES, false).record, NotSaved::WriteFailed, None));
+        assert!(!ctx.products.wait(4, Duration::ZERO));
+    }
+
+    /// A data-only call is kept for what was decoded from it, without its audio; with nothing
+    /// decoded it isn't kept, and says why.
+    #[test]
+    fn a_data_only_call_is_kept_only_with_data() {
+        let dir = crate::db::TestDir::new("products-data-only");
+        let ctx = test_ctx(&dir);
+        ctx.folders.recordings.set_path(&dir);
+        let silent = call(1, RULES, true);
+        let rel = silent.rel.clone();
+        finish_one(&ctx, &dir, None, silent, None);
+        assert!(ctx.recent.lock().unwrap().is_empty());
+        assert!(!dir.join(format!("{rel}.json")).exists() && !dir.join(format!("{rel}.wav")).exists());
+        let dropped = ctx.dropped.lock().unwrap().front().map(|d| (d.call_num, d.why));
+        assert_eq!(dropped, Some((1, NotSaved::NoData.key())));
+
+        ctx.products.take(&ctx, "pager", Product::live(2, 1002.5, page("MEDIC 9")));
+        let heard = call(2, RULES, true);
+        let rel = heard.rel.clone();
+        finish_one(&ctx, &dir, None, heard, None);
+        assert!(dir.join(format!("{rel}.json")).exists() && !dir.join(format!("{rel}.wav")).exists(), "its JSON, not its audio");
+        assert_eq!(stored(&ctx, &rel), [was("page", "pager", "MEDIC 9")]);
+        let listed = ctx.recent.lock().unwrap()[0].clone();
+        assert_eq!((listed.audio, listed.products.len()), (false, 1));
     }
 }

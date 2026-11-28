@@ -228,6 +228,29 @@ away; all go when the plugin stops or restarts. (Since SDK 0.16.0.)
 
 Send one for every call: see [What becomes of a call](../../plugins/writing-plugins.md#what-becomes-of-a-call).
 
+### `call.product`
+
+Something the plugin made of a call, for the recorder to keep with it and pass on: see
+[Products](events.md#products).
+
+```json
+{ "type": "call.product", "transmission_id": "county-101-9001644-1790771550123", "time": 1790771560.0,
+  "kind": "transcript", "data": { "text": "Engine four responding", "language": "en" } }
+{ "type": "call.product", "call_id": 4182, "time": 1790771552.4,
+  "kind": "page", "data": { "protocol": "pocsag", "baud": 1200, "address": 1234560, "format": "alpha", "text": "ENGINE 4 RESPOND" } }
+```
+
+| Field | |
+|---|---|
+| `transmission_id` | The call, from the `call.concluded` it came in (`call.transmission_id`). For a call concluded before this run, or more than a couple of thousand calls ago, say where it is filed too: `"call": { "path": … }`, the path its `call.concluded` had (`Product::of_call`) |
+| `call_id` | Instead, for a call still running: the `call_id` of the [tap](events.md#tapid) chunk it was decoded from (or a `call.start`'s `id`). The recorder holds the product until the call concludes; if the call isn't saved, its products go with it |
+| `time` | Unix seconds; left out, now |
+| `kind`, `data` | What it is. One of the kinds in [Products](events.md#products), or one of your own: give its `data` a `text` |
+
+A product that names no call, or a call the recorder doesn't have, is left out (a debug log line
+says so). On a system marked [**Data only**](../../configuration/recording.md) a call is kept
+only if a product comes for it by 2 s after it ends, so a decoder sends each as it decodes it.
+
 ### `metrics`
 
 ```json

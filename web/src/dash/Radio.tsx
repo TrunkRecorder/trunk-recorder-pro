@@ -9,13 +9,14 @@ import { callsQuery, editTalkgroup, mayEdit, nameUnit, radioQuery, setTalkgroupI
 import { NameFields, ranked, Suggestions, TALKGROUP_NAME_FIELDS, type NameFieldDef } from "../NameFields.tsx";
 import { originText } from "../origins.ts";
 import { isPattern, ownUnitName, unitIdMatches } from "../units.ts";
-import { BackBar, Bipartite, Card, Choice, Fig, Figs, Heatmap, HeatStrip, Histogram, Info, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
+import { BackBar, Bipartite, Card, Choice, Clip, Fig, Figs, Heatmap, HeatStrip, Histogram, Info, Light, RadialEgo, Stat, SystemTag, type Node } from "../charts.tsx";
 import { ago, clockAt, compact, dur, hmm, num } from "../fmt.ts";
 import type { CallEntry, CipherSeen, LengthHistogram, Origin, OutOfBandRow, RadioResult, TgRow, UnitRow } from "../protocol.ts";
 import { playable, playNow } from "../listen.ts";
 import { ActiveCalls, aliasOf, Log, unitIdOf } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
-import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, scoped, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
+import { Products } from "./Products.tsx";
+import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, scoped, sourceName, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
 type Hours = "24" | "168";
 const HOURS: { v: Hours; label: string }[] = [
@@ -382,7 +383,7 @@ function OutOfBand({ s, sys, rows, hours, focus }: { s: AppState; sys: DashSyste
                           <HeatStrip v={r.hourly} titles={r.hourly.map((v, i) => `${hourLabel(hours)(i)}: ${v} calls`)} />
                         </td>
                         <td className="small">{ago(r.last)}</td>
-                        <td>{c ? c.src.label : "—"}</td>
+                        <td>{c ? <Clip text={sourceName(s, c.src)} title={c.src.label} /> : "—"}</td>
                         <td title="Past the source's usable edge">{!c ? "—" : c.beyondHz > 0 ? <Fig v={c.beyondHz >= 1e6 ? num(c.beyondHz / 1e6, 2) : num(c.beyondHz / 1000, 1)} u={c.beyondHz >= 1e6 ? "MHz" : "kHz"} level="warn" /> : <span className="muted">covers it now</span>}</td>
                       </tr>
                     );
@@ -600,6 +601,7 @@ function CallsCard({ sys, talkgroup, unit }: { sys: DashSystem; talkgroup?: numb
                   Play
                 </button>
               )}
+              <Products call={c} />
             </li>
           ))}
         </ul>

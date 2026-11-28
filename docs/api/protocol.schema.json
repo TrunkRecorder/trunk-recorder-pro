@@ -3,6 +3,52 @@
   "title": "Trunk Recorder Pro interface protocol",
   "description": "The JSON messages on the WebSocket /api/ws. FromRecorder: server → client; ToRecorder: client → server. Generated from web/src/protocol.ts — see docs/api/README.md.",
   "definitions": {
+    "AcarsMessage": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "registration": {
+          "type": "string",
+          "description": "The aircraft's registration (\"N12345\")."
+        },
+        "flight": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string",
+          "description": "What kind of message: two characters (\"H1\", \"Q0\")."
+        },
+        "block_id": {
+          "type": "string"
+        },
+        "ack": {
+          "type": "string"
+        },
+        "message_no": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "more": {
+          "type": "boolean",
+          "description": "More blocks of the message follow."
+        },
+        "errors": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "mode",
+        "registration",
+        "label",
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "An ACARS block (a  {@link  Product }  of kind `acars`)."
+    },
     "AdjacentSite": {
       "type": "object",
       "properties": {
@@ -222,6 +268,13 @@
         },
         "json": {
           "type": "boolean"
+        },
+        "products": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Product"
+          },
+          "description": "What plugins made of it (a transcript, decoded pages), as they came; absent: nothing."
         }
       },
       "required": [
@@ -404,6 +457,7 @@
             "dmr",
             "nxdn",
             "edacs",
+            "ltr",
             "conventional"
           ],
           "description": "The kind of system it came on (absent in calls saved before)."
@@ -983,9 +1037,10 @@
         "keys",
         "calls",
         "history",
-        "tuneGain"
+        "tuneGain",
+        "releaseRadio"
       ],
-      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open\n- `tuneGain`: tuning a radio's gain while recording (`tuneGain`, `tune`)"
+      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open\n- `tuneGain`: tuning a radio's gain while recording (`tuneGain`, `tune`)\n- `releaseRadio`: releasing a radio while recording, and resuming it (`releaseRadio`, `resumeRadio`)"
     },
     "CaptureRule": {
       "type": "object",
@@ -2323,7 +2378,7 @@
         },
         "voiceFrames": {
           "type": "number",
-          "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed`)."
+          "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed` or `noData`)."
         },
         "badFrames": {
           "type": "number"
@@ -3162,7 +3217,7 @@
             },
             "voiceFrames": {
               "type": "number",
-              "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed`)."
+              "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed` or `noData`)."
             },
             "badFrames": {
               "type": "number"
@@ -3209,6 +3264,210 @@
             "json"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "transcript"
+            },
+            "data": {
+              "$ref": "#/definitions/Transcript"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            },
+            "type": {
+              "type": "string",
+              "const": "product"
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "page"
+            },
+            "data": {
+              "$ref": "#/definitions/Page"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            },
+            "type": {
+              "type": "string",
+              "const": "product"
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "acars"
+            },
+            "data": {
+              "$ref": "#/definitions/AcarsMessage"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            },
+            "type": {
+              "type": "string",
+              "const": "product"
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id",
+            "type"
+          ]
         },
         {
           "type": "object",
@@ -3324,9 +3583,10 @@
                             "smartnet",
                             "dmr",
                             "nxdn",
-                            "edacs"
+                            "edacs",
+                            "ltr"
                           ],
-                          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
+                          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list. \"ltr\": an LTR Standard, LTR-Net or Passport site (voice analog FM): every repeater listed as a control channel is watched; `lcnTableHz` names their LCNs (else learned from the air)."
                         },
                         {
                           "type": "null"
@@ -4334,7 +4594,11 @@
             },
             "source": {
               "type": "string",
-              "description": "A source's series name (its label)."
+              "description": "A source's series name (its label: the radio)."
+            },
+            "title": {
+              "type": "string",
+              "description": "Source events: what the source was called then (\"Source 2 (roof)\", Source::title)."
             },
             "perS": {
               "type": "number"
@@ -5786,6 +6050,121 @@
       "additionalProperties": false,
       "description": "The log (desktop app), with Trunk Recorder's options (crates/trunk-app/src/config.rs LogSettings)."
     },
+    "LtrSiteStatus": {
+      "type": "object",
+      "properties": {
+        "flavor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "LTR Standard",
+            "LTR-Net",
+            "Passport",
+            null
+          ],
+          "description": "As its words show (null: not known yet)."
+        },
+        "site": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "LTR-Net's site ID, Passport's site number."
+        },
+        "channels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "lcn": {
+                "type": "number"
+              },
+              "freqHz": {
+                "type": "number"
+              },
+              "configured": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "lcn",
+              "freqHz",
+              "configured"
+            ],
+            "additionalProperties": false
+          },
+          "description": "LCN → frequency: from the config, or learned from the air."
+        },
+        "unknownChannels": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "description": "LCNs a call was named on whose frequency isn't known yet."
+        },
+        "carriers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "freqHz": {
+                "type": "number"
+              },
+              "heard": {
+                "type": "boolean"
+              },
+              "lcn": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "call": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "talkgroup": {
+                        "$ref": "#/definitions/TalkgroupName"
+                      },
+                      "source": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [
+                      "talkgroup",
+                      "source"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "freqHz",
+              "heard",
+              "lcn",
+              "call"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Every repeater: heard lately, the LCN it is, and the call on it now."
+        }
+      },
+      "required": [
+        "flavor",
+        "site",
+        "channels",
+        "unknownChannels",
+        "carriers"
+      ],
+      "additionalProperties": false
+    },
     "MonitorSettings": {
       "type": "object",
       "properties": {
@@ -5892,7 +6271,8 @@
         "silent",
         "short",
         "encrypted",
-        "writeFailed"
+        "writeFailed",
+        "noData"
       ],
       "description": "Why a recorded call wasn't kept (`notSaved/why/<key>`)."
     },
@@ -6159,6 +6539,62 @@
       ],
       "additionalProperties": false,
       "description": "A frequency granted that no source covered (radioQuery freqs: out of band in the query's hours)."
+    },
+    "Page": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "pocsag",
+                "flex"
+              ]
+            }
+          ]
+        },
+        "baud": {
+          "type": "number",
+          "description": "Symbols a second."
+        },
+        "address": {
+          "type": "number",
+          "description": "The pager it's for: POCSAG's RIC, FLEX's capcode."
+        },
+        "function": {
+          "type": "number",
+          "description": "POCSAG's function bits, 0–3."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "alpha",
+            "numeric",
+            "tone",
+            "binary"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "number",
+          "description": "Bit errors corrected."
+        }
+      },
+      "required": [
+        "protocol",
+        "baud",
+        "address",
+        "format",
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "A pager message (a  {@link  Product }  of kind `page`)."
     },
     "Patch": {
       "type": "object",
@@ -7370,6 +7806,200 @@
       "additionalProperties": false,
       "description": "Something checked again and again and how it's been answering: an internet target, or the time server."
     },
+    "Product": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "transcript"
+            },
+            "data": {
+              "$ref": "#/definitions/Transcript"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "page"
+            },
+            "data": {
+              "$ref": "#/definitions/Page"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "acars"
+            },
+            "data": {
+              "$ref": "#/definitions/AcarsMessage"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id"
+          ]
+        }
+      ],
+      "description": "Something a plugin made of a call (the plugin protocol's `call.product`, as trunk-recorder-plugin's `Product`): its `kind` says what `data` is. A kind without a type here is shown by its `data.text`."
+    },
     "Radios": {
       "type": "object",
       "properties": {
@@ -7590,6 +8220,10 @@
           "type": "boolean",
           "description": "Desktop: when an upload failed, keep the files anyway (archiveFilesOnFailure)."
         },
+        "dataOnly": {
+          "type": "boolean",
+          "description": "Its calls are data (pagers, ACARS): what a plugin decodes from each is kept with the call (its `products`), the audio isn't, and a call nothing was decoded from isn't kept (`noData`)."
+        },
         "filenameFormat": {
           "type": "string",
           "description": "Where calls go under the recordings folder (\"\" = <short name>/<year>/<month>/<day>/)."
@@ -7670,6 +8304,7 @@
         "callTimeoutS",
         "captureDir",
         "conversationMode",
+        "dataOnly",
         "digitalLevelDb",
         "dropDuplicateCalls",
         "filenameFormat",
@@ -7750,6 +8385,10 @@
         "archiveFilesOnFailure": {
           "type": "boolean",
           "description": "Desktop: when an upload failed, keep the files anyway (archiveFilesOnFailure)."
+        },
+        "dataOnly": {
+          "type": "boolean",
+          "description": "Its calls are data (pagers, ACARS): what a plugin decodes from each is kept with the call (its `products`), the audio isn't, and a call nothing was decoded from isn't kept (`noData`)."
         },
         "filenameFormat": {
           "type": "string",
@@ -8038,7 +8677,7 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air."
+          "description": "DMR: logical channel number → frequency, Hz (Trunk Recorder's lcnTable); the rest is learned. NXDN: the channel table, channel number → frequency (Type-D: repeater number → frequency). EDACS: the site's channel list, LCN (1–25) → frequency; checked against the air. LTR: each repeater's LCN (1–20; Passport's up to 2047) → frequency; the rest is learned."
         },
         "dmrChannelsHz": {
           "type": "array",
@@ -8115,13 +8754,25 @@
             }
           ],
           "description": "An NXDN site."
+        },
+        "ltr": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LtrSiteStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "An LTR site."
         }
       },
       "required": [
         "index",
         "name",
         "dmr",
-        "nxdn"
+        "nxdn",
+        "ltr"
       ],
       "additionalProperties": false,
       "description": "One running site's detail (decodeDetail): what its control channel announces."
@@ -9125,6 +9776,10 @@
         "ended": {
           "type": "boolean"
         },
+        "released": {
+          "type": "boolean",
+          "description": "Its radio released while recording (`releaseRadio`): closed, so it can be swapped or looked at, until `resumeRadio`. The engine treats it as a radio gone quiet."
+        },
         "settings": {
           "$ref": "#/definitions/Source",
           "description": "The settings it runs with (Setup's may have changed since Start: they apply at the next)."
@@ -9646,9 +10301,10 @@
             "smartnet",
             "dmr",
             "nxdn",
-            "edacs"
+            "edacs",
+            "ltr"
           ],
-          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list. \"ltr\": an LTR Standard, LTR-Net or Passport site (voice analog FM): every repeater listed as a control channel is watched; `lcnTableHz` names their LCNs (else learned from the air)."
         },
         "listenS": {
           "type": "number"
@@ -10097,9 +10753,10 @@
             "smartnet",
             "dmr",
             "nxdn",
-            "edacs"
+            "edacs",
+            "ltr"
           ],
-          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list."
+          "description": "\"smartnet\": a Motorola SmartNet / SmartZone control channel (voice P25 or analog FM). \"dmr\": a trunked DMR site (Capacity Plus, Capacity Max, Connect Plus, Tier III); every control channel and `dmrChannelsHz` frequency is watched. \"nxdn\": an NXDN site (Type-C: a control channel; Type-D / IDAS: every repeater listed); every control channel and `nxdnChannelsHz` frequency is watched. \"edacs\": an EDACS Standard or Networked site (voice analog FM or ProVoice); `lcnTableHz` is its channel list. \"ltr\": an LTR Standard, LTR-Net or Passport site (voice analog FM): every repeater listed as a control channel is watched; `lcnTableHz` names their LCNs (else learned from the air)."
         },
         "nxdnType": {
           "type": "string",
@@ -11097,6 +11754,40 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "releaseRadio"
+            },
+            "source": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "resumeRadio"
+            },
+            "source": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "callSignQuery"
             },
             "id": {
@@ -11791,6 +12482,57 @@
           "additionalProperties": false
         }
       ]
+    },
+    "Transcript": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string",
+          "description": "BCP 47 (\"en\", \"es-MX\")."
+        },
+        "model": {
+          "type": "string",
+          "description": "What made it (\"whisper-large-v3\")."
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start_ms": {
+                "type": "number"
+              },
+              "end_ms": {
+                "type": "number"
+              },
+              "text": {
+                "type": "string"
+              },
+              "unit": {
+                "type": "number"
+              },
+              "confidence": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "start_ms",
+              "end_ms",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "description": "The text in pieces: ms from the start of the call's audio, the radio talking where known, how sure (0–1)."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "What was said in a call's audio (a  {@link  Product }  of kind `transcript`)."
     },
     "TuneSystemFigures": {
       "type": "object",

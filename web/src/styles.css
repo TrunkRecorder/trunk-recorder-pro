@@ -151,12 +151,16 @@ main { display: flex; flex-direction: column; gap: 16px; }
 .mk-cc { border-left-color: var(--accent); }
 .mk-cc i { color: var(--accent); }
 .mk-cc.faint { opacity: 0.55; border-left-style: dotted; }
-.mk-cc.faint i { top: 64px; font-size: 10px; }
 .mk-recording { border-left: 2px solid var(--rec); }
-.mk-recording i { color: var(--rec); top: 24px; }
-.mk-monitoring i { top: 44px; color: var(--muted); }
+.mk-recording i { color: var(--rec); }
+.mk-monitoring i { color: var(--muted); }
 .mk-enc { border-left-style: dotted; }
-.wf-axis { display: flex; justify-content: space-between; padding: 4px 10px; font-size: 11px; color: var(--muted); }
+/* (A call's tag says what it is, then fades: its line stays, and hovering it says again.) */
+.mk-call i { animation: mk-fade 1.5s ease-in 4s forwards; }
+@keyframes mk-fade { to { opacity: 0.2; } }
+.wf-tip { display: block; color: var(--text); }
+.wf-axis { display: flex; justify-content: space-between; gap: 8px; padding: 4px 10px; font-size: 11px; color: var(--muted); }
+.wf-axis-mid { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .table-wrap { overflow-x: auto; }
 .table-wrap.channels-wrap { max-height: 420px; overflow-y: auto; }
@@ -1133,7 +1137,6 @@ table.calls tr.ignored td { opacity: 0.55; }
 .sw-cc { background: var(--accent); width: 3px; }
 .sw-adj { display: inline-block; height: 10px; margin-right: 5px; vertical-align: -1px; width: 0; border-left: 2px dotted var(--accent); opacity: 0.55; }
 .band-adj { stroke-dasharray: 2 3; opacity: 0.55; }
-.band-adj-label { font-size: 10px; opacity: 0.7; }
 .sw-rec { background: var(--rec); width: 2px; }
 .sw-mon { background: var(--muted); width: 2px; }
 .sw-conv { background: var(--series-3); width: 2px; }
@@ -1595,3 +1598,8 @@ table.taps tr.auto td { color: var(--muted); }
 .src-facts { gap: 6px 18px; margin-top: 10px; font-size: 14px; }
 .line-list li .figs.inline { gap: 4px 12px; font-size: 13.5px; }
 .counts-reset { display: inline-flex; gap: 2px; }
+
+/* What plugins made of a call (dash/Products.tsx): a line each under its row. */
+.products { list-style: none; margin: 2px 0 4px; padding: 0 8px; display: flex; flex-direction: column; gap: 2px; grid-column: 1 / -1; }
+.products li { display: flex; align-items: baseline; gap: 8px; font-size: 13px; border: 0; padding: 0; }
+.products .product-text { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }

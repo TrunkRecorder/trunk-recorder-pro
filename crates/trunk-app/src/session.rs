@@ -161,6 +161,8 @@ struct SourceStats {
     last_error_s: f64,
     rate_measured: f64,
     gain_set: Option<String>,
+    /// Its radio released while recording ([`Session::source_released`]).
+    released: bool,
     /// The newest buffer's arrival (ms) and the samples to its end; and the
     /// same where the rate's window began ([`RATE_WINDOW_MS`]).
     arrived: Option<(f64, u64)>,
@@ -711,6 +713,18 @@ impl Session {
         let text = format!("{}: {error}", self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source)));
         self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text }));
         self.records.push(Record::text(Level::Error, None, text));
+    }
+
+    /// Source `source`'s radio released (closed while recording goes on, so it can be swapped or
+    /// looked at) or, `released` false, resumed: the status shows it and the log says so. To the
+    /// engine it's a radio gone quiet, as an unplugged one is.
+    pub fn source_released(&mut self, source: usize, released: bool) {
+        let Some(st) = self.stats.get(source) else { return };
+        st.lock().unwrap().released = released;
+        self.meas.released(source, released);
+        let title = self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source));
+        let text = if released { format!("{title}: radio released (Resume opens it again)") } else { format!("{title}: radio resumed") };
+        self.records.push(Record::text(Level::Info, None, text));
     }
 
     /// The gain source `source`'s radio is set to, as it opened or changed:
@@ -1541,9 +1555,9 @@ impl Session {
 
     /// A call of system `system` saved by the engine whose files then couldn't be
     /// written (the platform writes them): counted as not saved.
-    pub fn write_failed(&mut self, system: u16) {
+    pub fn not_saved(&mut self, system: u16, why: trunk_core::trunk::NotSaved) {
         let name = self.system_name(system).to_string();
-        self.meas.call_not_saved(&name, trunk_core::trunk::NotSaved::WriteFailed);
+        self.meas.call_not_saved(&name, why);
     }
 
     /// A call not saved, as capture rules see it.
@@ -1612,6 +1626,7 @@ impl Session {
                 let recent = ss.last_error.as_ref().filter(|_| ss.last_error_s == 0.0 || self.meas.now() - ss.last_error_s < ERROR_SHOWN_S);
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured, "gainSet": ss.gain_set,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
+                        "released": ss.released,
                         "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneSeeded": tune.seeded,
                         // The ppm that removes the error: it was measured against the ppm this run opened the radio with.
                         "ppmApply": tune.error_ppm.map(|e| s.settable_ppm(s.ppm - e)),
@@ -1763,8 +1778,11 @@ fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>,
     let (mut sites, mut patches) = (Vec::new(), Vec::<Value>::new());
     let id = engine.systems().iter().find(|s| s.short_name == system).map_or_else(Default::default, |s| s.id);
     for y in engine.status().sites.iter().filter(|y| y.short_name == system) {
-        let (dmr, nxdn) = protocol_detail(&y.protocol, &|tg| tg_names(names, id, [tg]).remove(0));
-        sites.push(json!({ "index": y.site, "name": y.site_name, "dmr": dmr, "nxdn": nxdn }));
+        let mut site = json!({ "index": y.site, "name": y.site_name, "dmr": null, "nxdn": null, "ltr": null });
+        if let Some((key, detail)) = protocol_detail(&y.protocol, &|tg| tg_names(names, id, [tg]).remove(0)) {
+            site[key] = detail;
+        }
+        sites.push(site);
         for (sg, members) in &y.patches {
             let p = json!({ "supergroup": tg_names(names, id, [*sg])[0], "members": tg_names(names, id, members.iter().copied()) });
             if !patches.iter().any(|h| h["supergroup"] == p["supergroup"]) {
@@ -1775,12 +1793,14 @@ fn decode_sites(engine: &Engine, names: &NameBook, system: &str) -> (Vec<Value>,
     (sites, patches)
 }
 
-/// A DMR or NXDN site's channel table and carriers (its kind, colour code or
-/// RAN, rest channel…), as (DMR, NXDN): the other is none. `tg`: a
-/// talkgroup on a carrier as it's shown.
-pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> (Option<Value>, Option<Value>) {
-    (
-        match p { ProtocolStatus::Dmr(d) => Some(d), _ => None }.map(|d| {
+/// A DMR, NXDN or LTR site's channel table and carriers (its kind, colour
+/// code or RAN, rest channel…), under its key ("dmr", "nxdn", "ltr"); none
+/// for the others. `tg`: a talkgroup on a carrier as it's shown.
+pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> Option<(&'static str, Value)> {
+    let call = |c: Option<(u32, u32)>| c.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src }));
+    match p {
+        ProtocolStatus::Dmr(d) => Some((
+            "dmr",
             json!({
                 "variant": d.variant.map(|v| v.name()),
                 "colorCode": d.color_code,
@@ -1789,14 +1809,15 @@ pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> (Option
                 "sysCode": d.sys_code.map(|c| json!({ "code": c.0, "model": c.model(), "category": c.category() })),
                 "rest": d.rest.map(|(lsn, hz)| json!({ "lsn": lsn, "freqHz": if hz > 0 { Some(hz) } else { None } })),
                 "keyed": d.keyed,
-                "channels": d.channels.iter().map(|c| json!({ "lcn": c.lcn, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                "channels": d.channels.iter().map(|c| json!({ "lcn": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
                 "carriers": d.carriers.iter().map(|c| json!({
                     "freqHz": c.hz, "control": c.control, "colorCode": c.color_code,
-                    "slots": c.slots.iter().map(|s| s.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src }))).collect::<Vec<_>>(),
+                    "slots": c.slots.iter().map(|&s| call(s)).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
-            })
-        }),
-        match p { ProtocolStatus::Nxdn(n) => Some(n), _ => None }.map(|n| {
+            }),
+        )),
+        ProtocolStatus::Nxdn(n) => Some((
+            "nxdn",
             json!({
                 "kind": n.kind.name(),
                 "rate": n.rate.map(|r| r.name()),
@@ -1807,11 +1828,22 @@ pub fn protocol_detail(p: &ProtocolStatus, tg: &dyn Fn(u32) -> Value) -> (Option
                 "unknownChannels": n.unknown,
                 "carriers": n.carriers.iter().map(|c| json!({
                     "freqHz": c.hz, "control": c.control, "ran": c.ran, "repeater": c.repeater,
-                    "call": c.call.map(|(t, src)| json!({ "talkgroup": tg(t), "source": src })),
+                    "call": call(c.call),
                 })).collect::<Vec<_>>(),
-            })
-        }),
-    )
+            }),
+        )),
+        ProtocolStatus::Ltr(l) => Some((
+            "ltr",
+            json!({
+                "flavor": l.flavor.map(|f| f.name()),
+                "site": l.site,
+                "channels": l.channels.iter().map(|c| json!({ "lcn": c.number, "freqHz": c.hz, "configured": c.configured })).collect::<Vec<_>>(),
+                "unknownChannels": l.unknown,
+                "carriers": l.carriers.iter().map(|c| json!({ "freqHz": c.hz, "heard": c.heard, "lcn": c.lcn, "call": call(c.call) })).collect::<Vec<_>>(),
+            }),
+        )),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1944,6 +1976,27 @@ mod wall_tests {
         // Unit events, status and the like: by the epoch at their own time.
         assert_eq!(s.wall(3.0), 1_750_000_013.0);
         assert_eq!(s.wall(0.5), 1_750_000_000.5);
+    }
+
+    /// A radio released while recording: the status says so until it's resumed.
+    #[test]
+    fn a_released_radio_says_so_in_the_status() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let released = |s: &Session| match s.status_message(0.0) {
+            ToClient::Status { sources, .. } => sources[0]["released"].clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(released(&s), json!(false));
+        s.source_released(0, true);
+        assert_eq!(released(&s), json!(true));
+        s.source_released(0, false);
+        assert_eq!(released(&s), json!(false));
+        s.source_released(5, true);
     }
 }
 

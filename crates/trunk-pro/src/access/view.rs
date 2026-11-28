@@ -28,7 +28,7 @@ pub fn listen_config(c: &Config) -> Config {
     // Withheld: plugin settings (API keys) and what's sent when, key
     // sources, and what the config has that the recorder doesn't know.
     let mut c = shown!(c.clone(), Config { sources, systems, conventional, next_system_id, next_site_id, recording, server, log, storage, monitor, diagnostics }
-        withheld { plugins, plugin_delays, keys, other, notes, numbered });
+        withheld { plugins, plugin_delays, keys, other, notes, numbered, fresh });
     c.sources = c.sources.into_iter().map(|s| shown!(s, Source { kind, center_hz, rate_hz, ppm, auto_tune, guard_hz, name })).map(source).collect();
     c.systems = c.systems.into_iter().map(system).collect();
     c.conventional = c.conventional.into_iter().map(conventional).collect();
@@ -76,7 +76,7 @@ fn signal(d: SignalDef) -> SignalDef {
 }
 
 fn recording(r: Recording) -> Recording {
-    let mut r = shown!(r, Recording { call_timeout_s, conversation_mode, record_unknown, record_encrypted, record_unit_to_unit, keep_silent_calls, min_call_s, max_call_s, min_transmission_s, normalize_audio, digital_level_db, analog_level_db, archive_wav, archive_m4a, call_log, archive_files_on_failure, filename_format, preroll_s, max_recorders, taps, drop_duplicate_calls, vocoder, m4a, ram_spool }
+    let mut r = shown!(r, Recording { call_timeout_s, conversation_mode, record_unknown, record_encrypted, record_unit_to_unit, keep_silent_calls, min_call_s, max_call_s, min_transmission_s, normalize_audio, digital_level_db, analog_level_db, archive_wav, archive_m4a, call_log, archive_files_on_failure, data_only, filename_format, preroll_s, max_recorders, taps, drop_duplicate_calls, vocoder, m4a, ram_spool }
         withheld { capture_dir, other });
     r.ram_spool = shown!(r.ram_spool, RamSpool { enabled, size_mb } withheld { dir });
     r

@@ -24,6 +24,11 @@ pub enum Tap {
     /// decoder (POCSAG, FLEX, a trunking control channel) takes. Notes: none.
     #[serde(rename = "fm.discriminator")]
     FmDiscriminator,
+    /// The AM detector's output, before the voice filters and the limiter: the carrier's
+    /// envelope over its own level, so a carrier's strength and fading aren't in it. What a
+    /// data decoder on an AM channel (ACARS, VDL) takes. Notes: none.
+    #[serde(rename = "am.envelope")]
+    AmEnvelope,
     /// Digital voice frames as they came off the air (P25 Phase 1 and 2, DMR, NXDN, EDACS
     /// ProVoice): error-corrected, not decrypted, whether the recorder can play them or not.
     /// Notes: an [`AirFrame`] for each.
@@ -75,6 +80,14 @@ pub const TAPS: &[TapInfo] = &[
         title: "FM discriminator",
         about: "The FM demodulator's output before de-emphasis and the voice filters, 16-bit at 22,050 Hz while the carrier is up: for data decoders such as multimon-ng (POCSAG, FLEX).",
         from: "Analog FM",
+        carries: Carries::Samples,
+    },
+    TapInfo {
+        tap: Tap::AmEnvelope,
+        id: "am.envelope",
+        title: "AM envelope",
+        about: "The AM detector's output before the voice filters and the limiter, 16-bit at 22,050 Hz while the carrier is up, half scale at full modulation: for data decoders such as acarsdec (ACARS).",
+        from: "Analog AM",
         carries: Carries::Samples,
     },
     TapInfo {

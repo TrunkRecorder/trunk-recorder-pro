@@ -93,6 +93,7 @@ import { talkgroupsReplace, unitNamesReplace } from "./rules.ts";
 import type { WorkerTransport } from "./web/workerTransport.ts";
 import { lookedFreqs, lookForMessage, type LookingFor } from "./lookFor.ts";
 import { confirmed } from "./asking.ts";
+import { withProduct } from "./products.ts";
 
 export interface AppState {
   connected: boolean;
@@ -510,6 +511,9 @@ function take(m: FromRecorder): void {
       break;
     case "callFiles":
       set({ history: state.history.map((e) => (e.path === m.path ? { ...e, audio: m.audio, json: m.json } : e)) });
+      break;
+    case "product":
+      set({ history: withProduct(state.history, m) });
       break;
     case "heard":
       set({ heard: m.heard });
@@ -2264,6 +2268,11 @@ export async function quitApp(): Promise<void> {
 
 export function stop(): void {
   transport.send({ type: "stop" });
+}
+
+/** Release the run's radio `source` while recording (closed, to swap or look at it; the others record on), or resume it. Not saved. */
+export function releaseRadio(source: number, release: boolean): void {
+  transport.send({ type: release ? "releaseRadio" : "resumeRadio", source });
 }
 
 // ── live audio ───────────────────────────────────────────────────────────────

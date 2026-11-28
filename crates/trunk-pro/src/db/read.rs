@@ -283,4 +283,52 @@ mod tests {
         assert!(sql.contains("c.system_id = $1") && sql.contains("c.talkgroup = $2") && sql.contains("c.system_id = $4") && sql.ends_with("limit $7"), "{sql}");
         assert_eq!(ps.len(), 7);
     }
+
+    /// What plugins made of calls is filed by transmission id: a page of calls
+    /// carries each call's products in the order they came (every site's copy
+    /// of a call the same ones), a kind this build has no type for comes back
+    /// as it was sent, and they go when their call does.
+    #[test]
+    fn products_come_with_their_calls_and_go_with_them() {
+        use trunk_recorder_plugin::{Page, Product, ProductData, Transcript};
+        for db in Db::for_each_backend("products", Duration::from_secs(1)) {
+            for (path, tx, start) in [("s/a", "t-a", 1000), ("s/b", "t-b", 2000), ("s/b2", "t-b", 2000), ("s/c", "", 3000)] {
+                let mut r = crate::db::row::tests::record(1, start);
+                r.transmission_id = tx.into();
+                db.send(Change::Call { row: call_row(path, &r, true, true, None, 0), live: true });
+            }
+            let made = |tx: &str, by: &str, time: f64, data: ProductData| Change::Product(Box::new(Product { by: by.into(), time, ..Product::of(tx, data) }));
+            db.send(made("t-b", "pager", 2.5, Page { protocol: "POCSAG".into(), baud: 1200, address: 123456, text: "ENGINE 4 RESPOND".into(), ..Default::default() }.into()));
+            db.send(made("t-b", "whisper", 9.0, Transcript { text: "engine four responding".into(), ..Default::default() }.into()));
+            db.send(made("t-a", "ais", 1.5, ProductData::from_value("ais", serde_json::json!({ "text": "MMSI 1", "mmsi": 1 }))));
+            db.flush().unwrap();
+            let all = db.calls(&CallsQuery::default(), &[]).unwrap().entries;
+            let of = |path: &str| all.iter().find(|c| c.path == path).unwrap().products.iter().map(|p| (p.kind().to_string(), p.by.clone(), p.text().to_string(), p.time)).collect::<Vec<_>>();
+            let both = vec![("page".to_string(), "pager".to_string(), "ENGINE 4 RESPOND".to_string(), 2.5), ("transcript".to_string(), "whisper".to_string(), "engine four responding".to_string(), 9.0)];
+            assert_eq!(of("s/b"), both, "{}", db.kind());
+            assert_eq!(of("s/b2"), both, "the other site's copy");
+            assert_eq!(of("s/a"), [("ais".to_string(), "ais".to_string(), "MMSI 1".to_string(), 1.5)]);
+            assert_eq!(all.iter().find(|c| c.path == "s/a").unwrap().products[0].data.value()["mmsi"], 1);
+            assert!(of("s/c").is_empty(), "a call with no transmission id has none");
+            assert_eq!(db.one("s/b").unwrap().unwrap().products.len(), 2);
+
+            // Retention cuts s/a: its product goes with it, t-b's stay.
+            db.retire_for_test(1500);
+            db.flush().unwrap();
+            let mut r = crate::db::row::tests::record(1, 1000);
+            r.transmission_id = "t-a".into();
+            db.send(Change::Call { row: call_row("s/a-again", &r, true, true, None, 0), live: true });
+            db.flush().unwrap();
+            assert!(db.one("s/a-again").unwrap().unwrap().products.is_empty(), "{}", db.kind());
+            assert_eq!(db.one("s/b").unwrap().unwrap().products.len(), 2);
+
+            // Setup → Data, delete calls: the same.
+            db.delete(&[trunk_app::protocol::DataKind::Calls], None, false, 10_000).unwrap();
+            let mut r = crate::db::row::tests::record(1, 20_000);
+            r.transmission_id = "t-b".into();
+            db.send(Change::Call { row: call_row("s/b-again", &r, true, true, None, 0), live: true });
+            db.flush().unwrap();
+            assert!(db.one("s/b-again").unwrap().unwrap().products.is_empty(), "{}", db.kind());
+        }
+    }
 }

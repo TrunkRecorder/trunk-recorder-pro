@@ -13,7 +13,7 @@
 //!          (±10 Hz range, a fraction of a Hz after a few blocks), snapped
 //!          to the nearest standard tone — so 150.0 and 151.4 Hz, or DCS's
 //!          134.4 Hz turn-off and 136.5, aren't confused.
-//!   DCS:   134.4 baud NRZ, DC removed, summed over each bit by NPHASE
+//!   DCS:   134.4 baud NRZ ([`crate::dsp::nrz`]), DC removed, summed over each bit by NPHASE
 //!          slicers on staggered bit clocks; a slicer's last 23 bits within
 //!          one bit of a code's 23-bit Golay word, and the same code again
 //!          23 bits later, is a frame of that code.
@@ -34,7 +34,7 @@ use std::sync::OnceLock;
 use num_complex::Complex32;
 
 use super::{Chunk, Detector, Found, Tap};
-use crate::dsp::filters::lowpass;
+use crate::dsp::nrz::{Decimator, Slicers, NPHASE};
 use crate::dsp::fm::AUDIO_RATE;
 
 /// The CTCSS tones, tenths of a hertz: the 38 every radio has (EIA), and
@@ -224,7 +224,6 @@ const CTCSS_OVER_OTHERS: f32 = 10.0;
 /// Snapped only this close to a standard tone, Hz.
 const CTCSS_SNAP_HZ: f32 = 1.0;
 const DCS_BAUD: f32 = 134.4;
-const NPHASE: usize = 8;
 /// A DCS frame is 23 bits (171 ms); one counts per code at most this often, samples.
 const DCS_FRAME_GAP: u32 = 150;
 /// A verdict needs at least this share of the call, and this many frames (DCS) or windows (CTCSS).
@@ -283,10 +282,9 @@ pub fn dcs_aliases(code: u16, inverted: bool) -> Vec<Tone> {
     (0..2 * DCS.len()).filter(|&j| t.class[j] == k).map(|j| Tone::Dcs(DCS[j / 2], j % 2 == 1)).collect()
 }
 
+/// What one slicer ([`Slicers`]) has read of DCS.
 #[derive(Clone, Copy, Default)]
-struct Slicer {
-    clock: f32,
-    acc: f32,
+struct DcsReader {
     reg: u32,
     bits: u32,
     /// Index + 1 of the code read when `bits % 23` was last this.
@@ -294,10 +292,7 @@ struct Slicer {
 }
 
 pub struct ToneDetector {
-    taps: Vec<f32>,
-    ring: Vec<f32>,
-    pos: usize,
-    phase: usize,
+    decim: Decimator,
     /// 1 kHz samples taken.
     n: u32,
     lo: Vec<Complex32>,
@@ -311,8 +306,8 @@ pub struct ToneDetector {
     /// Per tone, Σ block × conj(block before) while it was the winner.
     turn: Vec<Complex32>,
     power: Vec<f32>,
-    dc: f32,
-    slicers: [Slicer; NPHASE],
+    slicers: Slicers,
+    readers: [DcsReader; NPHASE],
     /// Per code index: frames counted, and the sample of the last.
     frames: Vec<(u32, u32)>,
     /// The reading last told ([`Detector`]).
@@ -330,10 +325,7 @@ impl Default for ToneDetector {
             .collect();
         let n = CTCSS.len();
         ToneDetector {
-            taps: lowpass(DECIM_TAPS, 320.0 / AUDIO_RATE),
-            ring: vec![0.0; 2 * DECIM_TAPS],
-            pos: 0,
-            phase: 0,
+            decim: Decimator::new(DECIM_TAPS, 320.0 / AUDIO_RATE, DECIM),
             n: 0,
             lo: vec![Complex32::new(1.0, 0.0); n],
             lo_step,
@@ -344,8 +336,9 @@ impl Default for ToneDetector {
             wins: vec![0; n],
             turn: vec![Complex32::default(); n],
             power: vec![0.0; n],
-            dc: 0.0,
-            slicers: std::array::from_fn(|k| Slicer { clock: k as f32 / NPHASE as f32, ..Default::default() }),
+            // DC (the carrier's offset) out with a ~1.5 Hz high-pass.
+            slicers: Slicers::new(DCS_BAUD, RATE, 0.0094),
+            readers: [DcsReader::default(); NPHASE],
             frames: vec![(0, 0); 2 * DCS.len()],
             told: None,
         }
@@ -370,16 +363,10 @@ impl Detector for ToneDetector {
 impl ToneDetector {
     /// Take 8 kHz audio (before the voice high-pass).
     pub fn push(&mut self, audio: &[f32]) {
-        for &x in audio {
-            self.ring[self.pos] = x;
-            self.ring[self.pos + DECIM_TAPS] = x;
-            self.pos = (self.pos + 1) % DECIM_TAPS;
-            self.phase += 1;
-            if self.phase == DECIM {
-                self.phase = 0;
-                let y: f32 = self.taps.iter().zip(&self.ring[self.pos..self.pos + DECIM_TAPS]).map(|(t, v)| t * v).sum();
-                self.sample(y);
-            }
+        let mut low = Vec::with_capacity(audio.len() / DECIM + 1);
+        self.decim.push(audio, |y| low.push(y));
+        for y in low {
+            self.sample(y);
         }
     }
 
@@ -392,21 +379,10 @@ impl ToneDetector {
         if (self.n as usize).is_multiple_of(BLOCK) {
             self.block();
         }
-        // DCS: DC (the carrier's offset) out with a ~1.5 Hz high-pass.
-        self.dc += (y - self.dc) * 0.0094;
-        let v = y - self.dc;
-        let step = DCS_BAUD / RATE;
         let table = dcs_table();
-        for s in &mut self.slicers {
-            s.clock += step;
-            if s.clock < 1.0 {
-                s.acc += v;
-                continue;
-            }
-            s.clock -= 1.0;
-            let over = s.clock / step;
-            let b = s.acc + v * (1.0 - over) > 0.0;
-            s.acc = v * over;
+        let ToneDetector { slicers, readers, frames, n, .. } = self;
+        slicers.push(y, |k, b| {
+            let s = &mut readers[k];
             s.reg = (s.reg << 1 | b as u32) & 0x7f_ffff;
             s.bits += 1;
             let at = (s.bits % 23) as usize;
@@ -414,12 +390,12 @@ impl ToneDetector {
             let again = hit.is_some_and(|i| s.seen[at] == i + 1);
             s.seen[at] = hit.map_or(0, |i| i + 1);
             if let Some(i) = hit.filter(|_| again) {
-                let f = &mut self.frames[i as usize];
-                if f.0 == 0 || self.n - f.1 >= DCS_FRAME_GAP {
-                    *f = (f.0 + 1, self.n);
+                let f = &mut frames[i as usize];
+                if f.0 == 0 || *n - f.1 >= DCS_FRAME_GAP {
+                    *f = (f.0 + 1, *n);
                 }
             }
-        }
+        });
     }
 
     fn block(&mut self) {

@@ -3,7 +3,7 @@
 // health rules — plain functions returning a level and why, the why worded as
 // a hint (what it means, what to try).
 
-import { activeSystems, autoTuneOn, configIndex, siteActive, siteNameOf, usableHalfWidth } from "../config.ts";
+import { activeSystems, autoTuneOn, configIndex, siteActive, siteNameOf, SOURCE_KINDS, sourceTitle, usableHalfWidth } from "../config.ts";
 import { isRecording, can, setView, snapshot, statsQuery, useApp, usePolled, type AppState, type StatsRange, type View } from "../controller.ts";
 import { dur, keyPart, num, pct, signed } from "../fmt.ts";
 import { seriesPoints } from "../series.ts";
@@ -79,7 +79,7 @@ export function recentAvg(key: string, sinceS: number): number | null {
 
 export interface DashSystem {
   name: string;
-  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "conventional";
+  kind: "p25" | "smartnet" | "dmr" | "nxdn" | "edacs" | "ltr" | "conventional";
   /** The running system's status (trunked, once a control channel is open). */
   status: SystemStatus | null;
   /** Its sites being recorded (a conventional system: none). */
@@ -132,7 +132,7 @@ export function runningSites(systems: SystemStatus[]): RunningSite[] {
   return systems.flatMap((y) => y.sites.map((x) => ({ ...x, shortName: y.shortName, label: x.name === y.shortName ? y.shortName : `${y.shortName}/${x.name}` })));
 }
 
-export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", conventional: "Conventional" };
+export const KIND_LABEL: Record<DashSystem["kind"], string> = { p25: "P25", smartnet: "SmartNet", dmr: "DMR", nxdn: "NXDN", edacs: "EDACS", ltr: "LTR", conventional: "Conventional" };
 
 export const running = (s: AppState) => isRecording(s.phase);
 
@@ -271,6 +271,7 @@ export function systemHealth(s: AppState, x: DashSystem, usual: Record<string, U
 export function siteHealth(s: AppState, site: DashSite, usualRate?: Usual | null): Health {
   const st = site.status;
   if (!st) return { level: "bad", why: "No control channel — is one in a source's band?" };
+  if (st.source != null && s.sources.find((x) => x.index === st.source)?.released) return { level: "idle", why: RELEASED };
   if (st.mismatch) return { level: "bad", why: `Another system's control channel: ${st.mismatch}` };
   const locked = val(s, K.cc(site, "locked"));
   const rate = recentAvg(K.cc(site, "good"), 30);
@@ -344,9 +345,20 @@ export function gainFix(s: AppState, dir: "low" | "high", where: string): string
 }
 
 /** A source: drops, gain too high (gainOff; low is only the card's suggestion), frequency error, sample rate; nothing wrong but nothing for it to do. */
+/** A radio released while recording (`releaseRadio`), and the sites whose control channel it had. */
+export const RELEASED = "Radio released";
+
+/** What's on radio `src` this run, for its card (what releasing it cuts): each site whose control channel it has, and its voice channels. */
+export function onRadio(s: AppState, src: SourceStatus): string[] {
+  const sites = (s.status?.systems ?? []).flatMap((x) => x.sites.filter((y) => y.source === src.index).map((y) => (y.name && y.name !== x.shortName ? `${x.shortName} ${y.name}` : x.shortName)));
+  const voice = src.voiceChannels ?? 0;
+  return [...sites.map((n) => `${n} control channel`), ...(voice > 0 ? [`${voice} voice channel${voice === 1 ? "" : "s"} opened this run`] : [])];
+}
+
 export function sourceHealth(s: AppState, src: SourceStatus): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (src.ended) return { level: "idle", why: "Ended" };
+  if (src.released) return { level: "idle", why: `${RELEASED} — Resume opens it again` };
   const drops = recentAvg(K.src(src.label, "dropped"), 10) ?? 0;
   if (drops > 0) return { level: "bad", why: "Dropping samples — CPU or USB can't keep up; calls lose audio" };
   if (src.lastError && src.lastErrorS && Date.now() / 1000 - src.lastErrorS < 60) return { level: "bad", why: src.lastError };
@@ -434,7 +446,19 @@ export function platformHealth(s: AppState): Health {
 
 export function rfHealth(s: AppState): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
-  return worstOf(s.sources, (x) => x.label, (x) => sourceHealth(s, x));
+  return worstOf(s.sources, (x) => sourceName(s, x), (x) => sourceHealth(s, x));
+}
+
+/**
+ * Running source `src` as the dashboard calls it: its title, as Setup and every message call it ("Source 2 (roof)",
+ * Source::title, by the name Setup has now), and its kind ("Source 2 (roof) · RTL-SDR"). Not its label: a
+ * SoapySDR's is its whole device arguments, which goes on hover. A source the config no longer has: its label.
+ */
+export function sourceName(s: Pick<AppState, "sources" | "config">, src: SourceStatus): string {
+  const k = s.config ? configIndex(s.sources, s.config, src) : -1;
+  if (k < 0) return src.label;
+  const kind = src.settings && SOURCE_KINDS[src.settings.type]?.label;
+  return kind ? `${sourceTitle(s.config!, k)} · ${kind}` : sourceTitle(s.config!, k);
 }
 
 export function decodeHealth(s: AppState): Health {

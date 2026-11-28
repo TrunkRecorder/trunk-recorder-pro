@@ -73,7 +73,7 @@ fn feed(session: &mut SurveySession, msg: SourceMsg) -> bool {
         // (The callers' inbox makes these I/Q.)
         SourceMsg::Samples { block: Block::Real16(_) | Block::Audio { .. }, .. } => {}
         SourceMsg::Tuned { center_hz, .. } => session.survey().tuned(center_hz),
-        SourceMsg::Gain { .. } => {}
+        SourceMsg::Gain { .. } | SourceMsg::Released { .. } => {}
         SourceMsg::Error { error, .. } => session.source_error(&error),
         SourceMsg::End { .. } => {
             session.survey().finish();
