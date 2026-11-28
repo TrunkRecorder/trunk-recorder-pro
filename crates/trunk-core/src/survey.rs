@@ -560,38 +560,6 @@ impl Decode {
     }
 }
 
-fn modulation(labels: &[&'static str], frames: &[u64]) -> &'static str {
-    let (mut q, mut c) = (0, 0);
-    for (l, n) in labels.iter().zip(frames) {
-        if *l == "C4FM" {
-            c += n;
-        } else {
-            q += n;
-        }
-    }
-    if q + c < 4 {
-        ""
-    } else if q > c {
-        "CQPSK"
-    } else {
-        "C4FM"
-    }
-}
-
-fn bank_labels(cfg: &BankConfig) -> Vec<&'static str> {
-    let mut v = Vec::new();
-    if cfg.cqpsk {
-        v.push("CQPSK");
-    }
-    if cfg.cqpsk_eq {
-        v.push("CQPSK");
-    }
-    if cfg.c4fm {
-        v.push("C4FM");
-    }
-    v
-}
-
 /// Which of a probe's receivers run: each costs CPU on every signal probed,
 /// so a system of a known kind runs just its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -786,7 +754,7 @@ impl Probe {
                     frames: p.dec.frames,
                     good: p.dec.good as u32,
                     bad: p.dec.bad as u32,
-                    modulation: modulation(&bank_labels(&PROBE_BANK), &p.bank.frames_per_rx()),
+                    modulation: p.bank.modulation(),
                     identity: p.dec.id.clone(),
                     ..base
                 }
@@ -1250,7 +1218,6 @@ struct Monitor {
     head: HeadId,
     head_hz: f64,
     bank: Bank,
-    labels: Vec<&'static str>,
     dec: Decode,
     est: FreqEst,
     est_from: u64,
@@ -1288,7 +1255,6 @@ impl Monitor {
             head_hz: freq,
             bank: Bank::new(rate, cfg.bank),
             bank_cfg: cfg.bank,
-            labels: bank_labels(&cfg.bank),
             dec: Decode::default(),
             est: FreqEst::default(),
             est_from: 2,
@@ -1401,7 +1367,7 @@ impl Monitor {
         i.good = self.dec.good;
         i.bad = self.dec.bad;
         i.air_s = self.dec.air as f64 / SYMBOL_RATE;
-        i.modulation = modulation(&self.labels, &self.bank.frames_per_rx());
+        i.modulation = self.bank.modulation();
         i.snr_db = self.snr.map(|r| 10.0 * r.log10());
         i.elapsed_s = t;
         i.idens = self.dec.parser.tables.len();

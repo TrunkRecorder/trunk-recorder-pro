@@ -2253,6 +2253,97 @@
       "additionalProperties": false,
       "description": "An optional driver (desktop app) and what it found; `devices` null = not searched."
     },
+    "DroppedCall": {
+      "type": "object",
+      "properties": {
+        "callNum": {
+          "type": "number",
+          "description": "Its call's number: a saved call's `call_num`, `status.calls[].id`."
+        },
+        "system": {
+          "type": "string",
+          "description": "Its system's short name."
+        },
+        "site": {
+          "type": "string"
+        },
+        "talkgroup": {
+          "type": "number"
+        },
+        "alphaTag": {
+          "type": "string",
+          "description": "Its talkgroup's name (\"\": none)."
+        },
+        "freqHz": {
+          "type": "number"
+        },
+        "source": {
+          "type": "number",
+          "description": "The source it was recorded on; absent when none was."
+        },
+        "startTime": {
+          "type": "number",
+          "description": "Unix seconds."
+        },
+        "lengthS": {
+          "type": "number",
+          "description": "Seconds from its grant until it was lost."
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "notSaved",
+            "notRecorded"
+          ]
+        },
+        "why": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NotSavedWhy"
+            },
+            {
+              "type": "string",
+              "const": "noSource"
+            },
+            {
+              "type": "string",
+              "const": "noRecorder"
+            }
+          ]
+        },
+        "detail": {
+          "type": "string",
+          "description": "The recorder's own words (a write's error)."
+        },
+        "signal": {
+          "type": "number",
+          "description": "dBFS while recorded (`notSaved`)."
+        },
+        "noise": {
+          "type": "number"
+        },
+        "voiceFrames": {
+          "type": "number",
+          "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed`)."
+        },
+        "badFrames": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "callNum",
+        "system",
+        "talkgroup",
+        "alphaTag",
+        "freqHz",
+        "startTime",
+        "lengthS",
+        "stage",
+        "why"
+      ],
+      "additionalProperties": false,
+      "description": "A call lost (`callDropped`, `history.dropped`): recorded and then not kept (`stage` `notSaved`, `why` a  {@link  NotSavedWhy } ), or followed and never recorded for want of a radio (`notRecorded`: `noSource`, no radio's band takes it in; `noRecorder`, every recorder was busy). Calls passed over on purpose (an encrypted grant, a talkgroup not on the list) aren't lost."
+    },
     "EngineStatus": {
       "type": "object",
       "properties": {
@@ -2585,11 +2676,18 @@
             },
             "next": {
               "type": "string"
+            },
+            "dropped": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/DroppedCall"
+              }
             }
           },
           "required": [
             "type",
-            "entries"
+            "entries",
+            "dropped"
           ],
           "additionalProperties": false
         },
@@ -2992,6 +3090,101 @@
             "entry"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "callNum": {
+              "type": "number",
+              "description": "Its call's number: a saved call's `call_num`, `status.calls[].id`."
+            },
+            "system": {
+              "type": "string",
+              "description": "Its system's short name."
+            },
+            "site": {
+              "type": "string"
+            },
+            "talkgroup": {
+              "type": "number"
+            },
+            "alphaTag": {
+              "type": "string",
+              "description": "Its talkgroup's name (\"\": none)."
+            },
+            "freqHz": {
+              "type": "number"
+            },
+            "source": {
+              "type": "number",
+              "description": "The source it was recorded on; absent when none was."
+            },
+            "startTime": {
+              "type": "number",
+              "description": "Unix seconds."
+            },
+            "lengthS": {
+              "type": "number",
+              "description": "Seconds from its grant until it was lost."
+            },
+            "stage": {
+              "type": "string",
+              "enum": [
+                "notSaved",
+                "notRecorded"
+              ]
+            },
+            "why": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/NotSavedWhy"
+                },
+                {
+                  "type": "string",
+                  "const": "noSource"
+                },
+                {
+                  "type": "string",
+                  "const": "noRecorder"
+                }
+              ]
+            },
+            "detail": {
+              "type": "string",
+              "description": "The recorder's own words (a write's error)."
+            },
+            "signal": {
+              "type": "number",
+              "description": "dBFS while recorded (`notSaved`)."
+            },
+            "noise": {
+              "type": "number"
+            },
+            "voiceFrames": {
+              "type": "number",
+              "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed`)."
+            },
+            "badFrames": {
+              "type": "number"
+            },
+            "type": {
+              "type": "string",
+              "const": "callDropped"
+            }
+          },
+          "required": [
+            "alphaTag",
+            "callNum",
+            "freqHz",
+            "lengthS",
+            "stage",
+            "startTime",
+            "system",
+            "talkgroup",
+            "type",
+            "why"
+          ]
         },
         {
           "type": "object",
@@ -5809,6 +6002,16 @@
       ],
       "additionalProperties": false,
       "description": "A radio on the network a source names (an RTL-SDR's `rtl_tcp` server, a SpyServer): what it said when it was last opened, or when asked (a search, or its address entered); `error` when it couldn't be; neither: not asked yet."
+    },
+    "NotSavedWhy": {
+      "type": "string",
+      "enum": [
+        "silent",
+        "short",
+        "encrypted",
+        "writeFailed"
+      ],
+      "description": "Why a recorded call wasn't kept (`notSaved/why/<key>`)."
     },
     "NxdnSiteStatus": {
       "type": "object",

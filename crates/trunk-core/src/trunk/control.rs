@@ -414,18 +414,7 @@ impl ControlChannel for P25 {
         VoiceParams { tdma_key, nac: id.nac().map(|n| n as u16), ..Default::default() }
     }
     fn modulation(&self) -> &'static str {
-        if let Some(m) = self.bank.detected() {
-            return m;
-        }
-        // Frames per receiver: the two CQPSK ones, then C4FM.
-        let (q, c) = self.bank.frames_per_rx().iter().enumerate().fold((0, 0), |(q, c), (i, &n)| if i < 2 { (q + n, c) } else { (q, c + n) });
-        if q + c < 8 {
-            ""
-        } else if q >= c {
-            "CQPSK"
-        } else {
-            "C4FM"
-        }
+        self.bank.modulation()
     }
     fn bandplan(&self) -> String {
         self.parser.bandplan_to_string()
@@ -941,6 +930,31 @@ mod tests {
         let total = reported.last().unwrap().1;
         assert!((4300..=5600).contains(&total), "a second of nothing is about 4800 symbols: {total}");
         assert!(reported.windows(2).all(|w| w[1].1 >= w[0].1), "only grows");
+    }
+
+    /// The modulation shown goes by the kind of receiver that found the frames, not by its
+    /// place in the bank: a `fsk4` site's one receiver is C4FM (it read "CQPSK", being first),
+    /// a `qpsk` site's are CQPSK, and an `auto` site's is what decodes it, here C4FM, as the
+    /// survey's probe says too (one rule, [`Bank::modulation`]).
+    #[test]
+    fn modulation_goes_by_the_kind_of_receiver() {
+        let rate = 37_500.0;
+        let frames: Vec<u8> = (0..40).flat_map(|_| tsdu(0x293)).collect(); // 3 s of C4FM
+        let mut iq = crate::p25::synth::modulate(&frames, rate, 0.0, 0.3, &mut 0.0);
+        crate::nxdn::synth::add_noise(&mut iq, 0.01, &mut 1);
+        let fsk4 = BankConfig { cqpsk: false, cqpsk_eq: false, ..Default::default() };
+        let qpsk = BankConfig { c4fm: false, ..Default::default() };
+        let shown = |bank: BankConfig| {
+            let mut cc = build(&SiteConfig { protocol: Protocol::P25, bank, ..Default::default() }, rate);
+            for c in iq.chunks(1875) {
+                cc.push(0, c, 0.0, rate, &mut Vec::new());
+            }
+            cc.modulation()
+        };
+        assert_eq!(shown(fsk4), "C4FM", "fixed fsk4: its only receiver is C4FM");
+        assert_eq!(shown(qpsk), "CQPSK", "fixed qpsk: its receivers are CQPSK");
+        assert_eq!(shown(BankConfig::default()), "C4FM", "auto: what decodes it");
+        assert_eq!(shown(BankConfig { detect: false, ..Default::default() }), "C4FM", "auto, not detecting: each kind's best receiver, not two CQPSK to one");
     }
 
     /// A voice channel naming another talkgroup ends a call only where grants

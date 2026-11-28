@@ -7,12 +7,14 @@
 //! sink never holds a live radio up: a full queue costs that block, counted,
 //! not the driver's own buffer (which an RTL-SDR would overflow unseen).
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use num_complex::Complex32;
+use trunk_app::gain::{ElementName, SOAPY_MAX_ELEMENTS};
 
 use crate::radio::priority;
 
@@ -325,6 +327,44 @@ pub enum Gain {
     Preset(Preset, u8),
     /// A step of a server's own gain index (a SpyServer's), 0 up.
     Step(u32),
+    /// A SoapySDR device's gain, whole: its overall gain and every gain element it sets.
+    Soapy(SoapyGain),
+}
+
+/// A SoapySDR device's gain as a source has it: the overall gain, dB (None: left as the device
+/// has it), then each element it sets by the name its driver gave it (MIXER, TIA …), which the
+/// overall gain alone would undo. Whole, so setting it puts the device back exactly as the source
+/// has it: elements a trial set and the source doesn't are filled by the overall gain again.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SoapyGain {
+    pub overall: Option<f64>,
+    elements: [(ElementName, f64); SOAPY_MAX_ELEMENTS],
+    n: u8,
+}
+
+impl SoapyGain {
+    /// None: more than [`SOAPY_MAX_ELEMENTS`] elements, or a name that doesn't fit ([`ElementName`]).
+    pub fn new(overall: Option<f64>, elements: &BTreeMap<String, f64>) -> Option<SoapyGain> {
+        let mut g = SoapyGain { overall, ..Default::default() };
+        for (k, v) in elements {
+            *g.elements.get_mut(usize::from(g.n))? = (ElementName::new(k)?, *v);
+            g.n += 1;
+        }
+        Some(g)
+    }
+    /// Each element it sets, by name, in name order.
+    pub fn elements(&self) -> impl Iterator<Item = (&str, f64)> {
+        self.elements[..usize::from(self.n)].iter().map(|(k, v)| (k.as_str(), *v))
+    }
+}
+
+impl std::fmt::Display for SoapyGain {
+    /// "31 dB · LNA 9 · MIX 6 · VGA 10".
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let overall = self.overall.map(|db| format!("{} dB", (db * 10.0).round() / 10.0));
+        let parts: Vec<String> = overall.into_iter().chain(self.elements().map(|(k, v)| format!("{k} {v}"))).collect();
+        f.write_str(&parts.join(" · "))
+    }
 }
 
 /// A radio's own table of gains, one step setting every stage.
@@ -385,6 +425,7 @@ impl std::fmt::Display for Gain {
             Gain::Preset(Preset::Linearity, step) => write!(f, "linearity {step}"),
             Gain::Preset(Preset::Sensitivity, step) => write!(f, "sensitivity {step}"),
             Gain::Step(step) => write!(f, "step {step}"),
+            Gain::Soapy(g) => write!(f, "{g}"),
         }
     }
 }
@@ -519,6 +560,47 @@ pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>
             let _ = tx.send(SourceMsg::Error { source, error: crate::radio::usb_memory_hint(&e) });
             std::thread::sleep(R::BACKOFF);
         }
+    }
+}
+
+/// How long a radio's stream has gone without samples. Each driver's read loop notes every read that
+/// brought some ([`Silence::heard`]) and, after one that didn't (timed out, empty, …), asks
+/// [`Silence::check`]: an error once there have been none for its limit, and so a reopen. Counting
+/// timeouts instead missed reads that come back at once with nothing (SoapyRemote's first packets, a
+/// USRP's), and taking an empty read as success reopened the radio without a word.
+#[derive(Clone, Copy, Debug)]
+pub struct Silence {
+    limit: Duration,
+    last: Instant,
+}
+
+impl Silence {
+    /// For a stream started at `at` that may go `limit` without a sample.
+    pub fn since(limit: Duration, at: Instant) -> Silence {
+        Silence { limit, last: at }
+    }
+    /// For a stream started now.
+    pub fn new(limit: Duration) -> Silence {
+        Silence::since(limit, Instant::now())
+    }
+    /// A read at `at` brought samples.
+    pub fn heard(&mut self, at: Instant) {
+        self.last = at;
+    }
+    /// When samples last came (or the stream started).
+    pub fn last(&self) -> Instant {
+        self.last
+    }
+    /// Whether, at `at`, there have been none for the limit.
+    pub fn over(&self, at: Instant) -> bool {
+        at.saturating_duration_since(self.last) >= self.limit
+    }
+    /// After a read without samples, at `at`: "{name}: no samples for N s" once there have been none for the limit.
+    pub fn check(&self, name: &str, at: Instant) -> Result<(), String> {
+        if self.over(at) {
+            return Err(format!("{name}: no samples for {} s", self.limit.as_secs()));
+        }
+        Ok(())
     }
 }
 
@@ -711,6 +793,18 @@ mod tests {
         assert!(Gain::Stages(s).same(&Gain::Stages(s)) && !Gain::Stages(s).same(&Gain::Stages(s.with(Stage::Vga, 28.0))));
         assert!(!Gain::Stages(s).same(&Gain::Stages(s.with(Stage::Amp, 0.0))), "a stage one has, the other hasn't");
         assert!(!Gain::Agc.same(&Gain::Db(30.0)));
+    }
+
+    /// Only the time since the last samples counts, however the reads without any came back.
+    #[test]
+    fn silence_is_the_time_since_the_last_samples() {
+        let t0 = Instant::now();
+        let mut s = Silence::since(Duration::from_secs(3), t0);
+        assert_eq!(s.check("USRP", t0 + Duration::from_millis(2900)), Ok(()));
+        s.heard(t0 + Duration::from_secs(2));
+        assert_eq!(s.check("USRP", t0 + Duration::from_millis(4900)), Ok(()), "samples start it again");
+        assert_eq!(s.check("USRP", t0 + Duration::from_secs(5)), Err("USRP: no samples for 3 s".into()));
+        assert_eq!(s.last(), t0 + Duration::from_secs(2));
     }
 
     /// A gain changed while running: the radio says what it set, and the sink tells it with what was asked.

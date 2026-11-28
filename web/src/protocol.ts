@@ -1287,6 +1287,44 @@ export interface CallRecord {
   signals?: string[];
 }
 
+/** Why a recorded call wasn't kept (`notSaved/why/<key>`). */
+export type NotSavedWhy = "silent" | "short" | "encrypted" | "writeFailed";
+
+/**
+ * A call lost (`callDropped`, `history.dropped`): recorded and then not kept
+ * (`stage` `notSaved`, `why` a {@link NotSavedWhy}), or followed and never
+ * recorded for want of a radio (`notRecorded`: `noSource`, no radio's band
+ * takes it in; `noRecorder`, every recorder was busy). Calls passed over on
+ * purpose (an encrypted grant, a talkgroup not on the list) aren't lost.
+ */
+export interface DroppedCall {
+  /** Its call's number: a saved call's `call_num`, `status.calls[].id`. */
+  callNum: number;
+  /** Its system's short name. */
+  system: string;
+  site?: string;
+  talkgroup: number;
+  /** Its talkgroup's name ("": none). */
+  alphaTag: string;
+  freqHz: number;
+  /** The source it was recorded on; absent when none was. */
+  source?: number;
+  /** Unix seconds. */
+  startTime: number;
+  /** Seconds from its grant until it was lost. */
+  lengthS: number;
+  stage: "notSaved" | "notRecorded";
+  why: NotSavedWhy | "noSource" | "noRecorder";
+  /** The recorder's own words (a write's error). */
+  detail?: string;
+  /** dBFS while recorded (`notSaved`). */
+  signal?: number;
+  noise?: number;
+  /** Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed`). */
+  voiceFrames?: number;
+  badFrames?: number;
+}
+
 /** A recorded call: `path` (no extension) under the capture folder. */
 export interface CallEntry {
   path: string;
@@ -1820,10 +1858,11 @@ export interface DirListing {
 //
 // Series are named by `/`-separated keys (crates/trunk-app/src/stats):
 //   src/<label>/{noise,peak,clipPct,quiet,samples,dropped,errors,ppm,tune}
-//   sys/<shortName>/{active,recording,calls,airMs,audioBytes,notSaved,dup}
+//   sys/<shortName>/{active,recording,calls,airMs,audioBytes,notSaved,dup}  notSaved/why/<silent|short|encrypted|writeFailed>
 //   <site>/cc/{good,bad,locked,syncs,nidFails,flywheels,eqResets,frames,sep,offset,signal,noise,snr,inSync,deviation,airSym,syncLossSym,phaseErr}
 //   <site>, <channel>: calls/{started,recorded,skipped}  calls/why/<ignored|unknownTg|encrypted|noSource|noRecorder|noFrequency>
 //                      voice/<imbe|ambe>/{frames,bad,errors}   (each copy of a call, where it was heard)
+//                      notSaved/why/<silent|short|encrypted>  (writeFailed: by system alone)
 //   <channel>/{open,signal,closed,noise,snr}
 //     <site> = sys/<shortName>, or sys/<shortName>/site/<site> (several sites); <channel> = sys/<shortName>/ch/<Hz>
 //   all/{calls,airMs,audioBytes}  day/{calls,airS,audioBytes}  eng/{load,recording,channels,recorders}
@@ -2537,8 +2576,8 @@ export type FromRecorder =
       /** The user it signed in as, by name. */
       user?: string;
     }
-  /** The latest calls, newest first: on connecting (then `concluded` for each new one). */
-  | { type: "history"; entries: CallEntry[]; next?: string }
+  /** The latest calls, newest first: on connecting (then `concluded` for each new one). `dropped`: this run's calls lost in the last 30 minutes (≤ 200), newest first (then `callDropped` for each new one). */
+  | { type: "history"; entries: CallEntry[]; next?: string; dropped: DroppedCall[] }
   /** A system's talker aliases as saved (Trunk Recorder's unitTagsOTA CSV): one for each system with some, on connecting (then `unitAlias` for each new one). */
   | { type: "units"; system: string; csv: string }
   /** A system's radios whose IDs came in MDC1200 (the radio registry's): one for each system with some, on connecting (then each call's `srcList` says it). */
@@ -2567,6 +2606,8 @@ export type FromRecorder =
   | ({ type: "spectrum" } & Spectrum)
   | { type: "log"; lines: LogLine[] }
   | { type: "concluded"; entry: CallEntry }
+  /** A call lost: recorded and not kept, or followed and never recorded for want of a radio. */
+  | ({ type: "callDropped" } & DroppedCall)
   /** A call's upload plugins are done and it kept other than its entry said (an upload failed, so its files stay). */
   | { type: "callFiles"; path: string; audio: boolean; json: boolean }
   /** A radio's talker alias, newly heard on system `system` (its short name). */

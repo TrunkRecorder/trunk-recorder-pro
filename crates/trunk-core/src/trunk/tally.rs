@@ -4,7 +4,7 @@
 //! (every copy's, saved or not). They go out as series under the site's or channel's key
 //! ([`CopyTally::report`]): a system's figures are the sum of its sites' and channels'.
 
-use super::calls::{Call, Reason};
+use super::calls::{Call, NotSaved, Reason};
 use super::frames::{Codec, FrameErrors};
 use crate::metrics::{Scoped, Sink};
 
@@ -33,6 +33,9 @@ pub struct CopyTally {
     pub recorded: u64,
     /// Of those, not recorded, by why ([`Reason::ALL`]'s order).
     not_recorded: [u64; Reason::ALL.len()],
+    /// Recorded copies not kept, by why ([`NotSaved::ALL`]'s order; a call not kept for
+    /// its files is counted by its system alone, which writes them).
+    not_saved: [u64; NotSaved::ALL.len()],
     /// Conventional: transmissions no row took (another code, or none where every row has one).
     pub skipped: u64,
     /// By codec ([`Codec::ALL`]'s order).
@@ -73,12 +76,17 @@ impl CopyTally {
         self.not_recorded[slot(r)]
     }
 
+    /// A recorded copy of a call wasn't kept, for `why`.
+    pub fn not_saved(&mut self, why: NotSaved) {
+        self.not_saved[NotSaved::ALL.iter().position(|&x| x == why).unwrap_or(0)] += 1;
+    }
+
     pub fn voice(&self, c: Codec) -> FrameCount {
         self.voice[codec_slot(c)]
     }
 
     /// As series: `calls/{started,recorded,skipped}`, `calls/why/<reason>` ([`Reason::key`]),
-    /// `voice/<imbe|ambe>/{frames,bad,errors}`. A count is reported once it has counted
+    /// `notSaved/why/<why>` ([`NotSaved::key`]), `voice/<imbe|ambe>/{frames,bad,errors}`. A count is reported once it has counted
     /// something (a series that appears counts from 0).
     pub fn report(&self, sink: &mut dyn Sink) {
         let mut calls = Scoped::new(sink, "calls");
@@ -91,6 +99,12 @@ impl CopyTally {
         for r in Reason::ALL {
             if self.not_recorded(r) > 0 {
                 why.counter(r.key(), self.not_recorded(r));
+            }
+        }
+        let mut unsaved = Scoped::new(sink, "notSaved/why");
+        for (w, &n) in NotSaved::ALL.iter().zip(&self.not_saved) {
+            if n > 0 {
+                unsaved.counter(w.key(), n);
             }
         }
         for codec in Codec::ALL {
@@ -129,6 +143,9 @@ mod tests {
         t.copy_end(&Call { reason: Some(Reason::NoRecorder), voice: Voice::P25Tdma { slot: 0 }, ..Default::default() }, FrameCount::default());
         t.copy_end(&Call { recording: true, voice: Voice::P25Tdma { slot: 1 }, ..Default::default() }, frames);
         t.missed(Reason::NoFrequency);
+        t.not_saved(NotSaved::Silent);
+        t.not_saved(NotSaved::Silent);
+        t.not_saved(NotSaved::Short);
         let mut c = Counters::default();
         t.report(&mut c);
         let get = |k: &str| c.0.get(k).copied();
@@ -136,5 +153,6 @@ mod tests {
         assert_eq!((get("calls/why/noRecorder"), get("calls/why/noFrequency"), get("calls/why/unknownTg")), (Some(1), Some(1), None));
         assert_eq!((get("voice/imbe/frames"), get("voice/ambe/frames"), get("voice/ambe/errors")), (Some(50), Some(50), Some(30)));
         assert_eq!(get("calls/skipped"), None, "trunked: none");
+        assert_eq!((get("notSaved/why/silent"), get("notSaved/why/short"), get("notSaved/why/encrypted")), (Some(2), Some(1), None), "a reason once it counts");
     }
 }
