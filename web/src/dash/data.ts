@@ -271,6 +271,7 @@ export function systemHealth(s: AppState, x: DashSystem, usual: Record<string, U
 export function siteHealth(s: AppState, site: DashSite, usualRate?: Usual | null): Health {
   const st = site.status;
   if (!st) return { level: "bad", why: "No control channel — is one in a source's band?" };
+  if (st.source != null && s.sources.find((x) => x.index === st.source)?.released) return { level: "idle", why: RELEASED };
   if (st.mismatch) return { level: "bad", why: `Another system's control channel: ${st.mismatch}` };
   const locked = val(s, K.cc(site, "locked"));
   const rate = recentAvg(K.cc(site, "good"), 30);
@@ -344,9 +345,20 @@ export function gainFix(s: AppState, dir: "low" | "high", where: string): string
 }
 
 /** A source: drops, gain too high (gainOff; low is only the card's suggestion), frequency error, sample rate; nothing wrong but nothing for it to do. */
+/** A radio released while recording (`releaseRadio`), and the sites whose control channel it had. */
+export const RELEASED = "Radio released";
+
+/** What's on radio `src` this run, for its card (what releasing it cuts): each site whose control channel it has, and its voice channels. */
+export function onRadio(s: AppState, src: SourceStatus): string[] {
+  const sites = (s.status?.systems ?? []).flatMap((x) => x.sites.filter((y) => y.source === src.index).map((y) => (y.name && y.name !== x.shortName ? `${x.shortName} ${y.name}` : x.shortName)));
+  const voice = src.voiceChannels ?? 0;
+  return [...sites.map((n) => `${n} control channel`), ...(voice > 0 ? [`${voice} voice channel${voice === 1 ? "" : "s"} opened this run`] : [])];
+}
+
 export function sourceHealth(s: AppState, src: SourceStatus): Health {
   if (!running(s)) return { level: "idle", why: "Not recording" };
   if (src.ended) return { level: "idle", why: "Ended" };
+  if (src.released) return { level: "idle", why: `${RELEASED} — Resume opens it again` };
   const drops = recentAvg(K.src(src.label, "dropped"), 10) ?? 0;
   if (drops > 0) return { level: "bad", why: "Dropping samples — CPU or USB can't keep up; calls lose audio" };
   if (src.lastError && src.lastErrorS && Date.now() / 1000 - src.lastErrorS < 60) return { level: "bad", why: src.lastError };

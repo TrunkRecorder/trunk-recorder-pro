@@ -1037,9 +1037,10 @@
         "keys",
         "calls",
         "history",
-        "tuneGain"
+        "tuneGain",
+        "releaseRadio"
       ],
-      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open\n- `tuneGain`: tuning a radio's gain while recording (`tuneGain`, `tune`)"
+      "description": "Something a recorder can do beyond recording (`hello.capabilities`).\n- `service`: a program of its own on a computer: quit, start recording when it starts, log files, M4A encoding, files by path (capture files, channel files, browsing folders, a Trunk Recorder config, the recordings folder, the RAM spool, keeping audio and JSON once plugins are done)\n- `drivers`: radio drivers beyond RTL-SDR (USRP, Airspy, SoapySDR), finding radios, an RTL-SDR's USB transfer sizes\n- `plugins`: plugins (listing, adding, the store, their settings)\n- `interfaces`: other interfaces, served on ports of their own\n- `host`: the computer's and plugins' figures (`host`)\n- `keys`: key containers opened with a password\n- `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open\n- `tuneGain`: tuning a radio's gain while recording (`tuneGain`, `tune`)\n- `releaseRadio`: releasing a radio while recording, and resuming it (`releaseRadio`, `resumeRadio`)"
     },
     "CaptureRule": {
       "type": "object",
@@ -9775,6 +9776,10 @@
         "ended": {
           "type": "boolean"
         },
+        "released": {
+          "type": "boolean",
+          "description": "Its radio released while recording (`releaseRadio`): closed, so it can be swapped or looked at, until `resumeRadio`. The engine treats it as a radio gone quiet."
+        },
         "settings": {
           "$ref": "#/definitions/Source",
           "description": "The settings it runs with (Setup's may have changed since Start: they apply at the next)."
@@ -11741,6 +11746,40 @@
           },
           "required": [
             "type"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "releaseRadio"
+            },
+            "source": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "resumeRadio"
+            },
+            "source": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "source"
           ],
           "additionalProperties": false
         },

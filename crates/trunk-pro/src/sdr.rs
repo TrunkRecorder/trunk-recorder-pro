@@ -35,6 +35,9 @@ pub enum SourceMsg {
     Gain { source: usize, asked: Gain, set: Gain },
     /// A finite source (a capture file) has no more data.
     End { source: usize },
+    /// Source `source`'s radio was let go of ([`Control::hold`]: closed, nothing opens it) or,
+    /// `released` false, taken back (opened again as after an error).
+    Released { source: usize, released: bool },
 }
 
 /// One block of samples, in a buffer its driver's thread reuses.
@@ -310,6 +313,9 @@ pub struct Control {
     /// The centre and gain last applied, so a reopened device comes back so.
     pub current_hz: Mutex<Option<f64>>,
     pub current_gain: Mutex<Option<Gain>>,
+    /// Released while recording ([`Control::hold`]): the radio is closed and [`run_with`] doesn't
+    /// open it until this clears. Not saved: the next Start's controls are new.
+    held: AtomicBool,
 }
 
 pub use sdr_core::gain::Stage;
@@ -449,6 +455,18 @@ impl Gain {
 }
 
 impl Control {
+    /// Let go of the radio (`on`: closed at its next block, then left closed) or take it back
+    /// (opened again, as after an error, at the centre and gain last set). Nothing else changes:
+    /// to the engine a released radio is one that went quiet, as an unplugged one does.
+    pub fn hold(&self, on: bool) {
+        self.held.store(on, Ordering::Relaxed);
+    }
+
+    /// Released ([`Control::hold`]).
+    pub fn held(&self) -> bool {
+        self.held.load(Ordering::Relaxed)
+    }
+
     /// Pending requests (taken).
     pub fn take(&self) -> (Option<f64>, Option<Gain>) {
         (self.freq_hz.lock().unwrap().take(), self.gain.lock().unwrap().take())
@@ -456,7 +474,12 @@ impl Control {
 
     /// Between blocks: the pending requests applied to `radio` (opened at
     /// `center_hz`) and answered with [`SourceMsg::Tuned`].
+    /// Released ([`Control::hold`]): [`Applied::Closed`], so the driver closes the radio (the
+    /// requests wait for it to open again).
     pub fn apply(&self, radio: &mut impl Tunable, center_hz: f64, sink: &mut Sink) -> Result<Applied, String> {
+        if self.held() {
+            return Ok(Applied::Closed);
+        }
         let (freq, gain) = self.take();
         if freq.is_none() && gain.is_none() {
             return Ok(Applied::Nothing);
@@ -484,7 +507,7 @@ pub enum Applied {
     Nothing,
     /// Retuned or regained: samples queued before it are from before.
     Tuned,
-    /// The receiver is gone: stop streaming.
+    /// The receiver is gone, or the radio was released ([`Control::hold`]): stop streaming.
     Closed,
 }
 
@@ -543,9 +566,26 @@ pub trait Radio: Send + 'static {
 /// stuck stream) after its back-off, at the centre and gain `ctl` last set.
 /// This thread, and the threads the radio's driver starts, run real time
 /// ([`priority`]).
+///
+/// Released ([`Control::hold`]), it's closed and isn't opened again until taken back: each is said
+/// once ([`SourceMsg::Released`]).
 pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>, stop: Arc<AtomicBool>, ctl: Option<Arc<Control>>) {
     priority::raise_self();
+    let held = || ctl.as_ref().is_some_and(|c| c.held());
+    let mut released = false;
     while !stop.load(Ordering::Relaxed) {
+        if held() {
+            if !released {
+                released = true;
+                let _ = tx.send(SourceMsg::Released { source, released });
+            }
+            std::thread::sleep(HELD_POLL);
+            continue;
+        }
+        if released {
+            released = false;
+            let _ = tx.send(SourceMsg::Released { source, released });
+        }
         if let Some(c) = ctl.as_ref().and_then(|c| *c.current_hz.lock().unwrap()) {
             radio.retune_to(c);
         }
@@ -556,12 +596,18 @@ pub fn run_with<R: Radio>(source: usize, mut radio: R, tx: SyncSender<SourceMsg>
         sink.raise = Some(priority::before());
         let r = radio.stream_once(&mut sink, &stop, ctl.as_deref());
         drop(sink);
-        if let Err(e) = r {
+        // (Closing a radio being released can fail on the way out: not news.)
+        if let Err(e) = r
+            && !held()
+        {
             let _ = tx.send(SourceMsg::Error { source, error: crate::radio::usb_memory_hint(&e) });
             std::thread::sleep(R::BACKOFF);
         }
     }
 }
+
+/// How often a released radio's thread looks for Resume (or Stop).
+const HELD_POLL: Duration = Duration::from_millis(100);
 
 /// How long a radio's stream has gone without samples. Each driver's read loop notes every read that
 /// brought some ([`Silence::heard`]) and, after one that didn't (timed out, empty, …), asks
@@ -832,5 +878,81 @@ mod tests {
         *ctl.gain.lock().unwrap() = Some(Gain::Agc);
         ctl.apply(&mut Stepped, 851e6, &mut sink).unwrap();
         assert!(matches!(rx.try_recv(), Ok(SourceMsg::Tuned { .. })), "a gain it doesn't take: nothing said of it");
+    }
+
+    /// Released while recording: the radio closes at its next block and isn't opened again (said
+    /// once) until resumed, when it opens as after an error, at the centre last set.
+    #[test]
+    fn a_released_radio_stays_closed_until_resumed() {
+        struct Fake;
+        impl Tunable for Fake {
+            fn tune(&mut self, hz: f64) -> Result<Retuned, String> {
+                Ok(Retuned { hz, gap: 0 })
+            }
+            fn set_gain(&mut self, _: Gain) -> Result<Regained, String> {
+                Ok(Regained::LEFT_ALONE)
+            }
+        }
+        /// Each open: the centre it opened at.
+        struct Counted(Arc<Mutex<Vec<f64>>>, f64);
+        impl Radio for Counted {
+            const BACKOFF: Duration = Duration::from_millis(1);
+            fn rate_hz(&self) -> f64 {
+                1e6
+            }
+            fn retune_to(&mut self, hz: f64) {
+                self.1 = hz;
+            }
+            fn gain_to(&mut self, _: Gain) {}
+            fn gain(&self) -> Option<Gain> {
+                None
+            }
+            fn stream_once(&self, sink: &mut Sink, stop: &Arc<AtomicBool>, ctl: Option<&Control>) -> Result<(), String> {
+                self.0.lock().unwrap().push(self.1);
+                while !stop.load(Ordering::Relaxed) {
+                    if ctl.unwrap().apply(&mut Fake, self.1, sink)? == Applied::Closed {
+                        return Ok(());
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                Ok(())
+            }
+        }
+        let wait_for = |what: &str, f: &dyn Fn() -> bool| {
+            let until = Instant::now() + Duration::from_secs(5);
+            while !f() {
+                assert!(Instant::now() < until, "{what}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let (opens, ctl, stop) = (Arc::new(Mutex::new(Vec::new())), Arc::new(Control::default()), Arc::new(AtomicBool::new(false)));
+        let (tx, rx) = std::sync::mpsc::sync_channel(64);
+        let t = {
+            let (opens, ctl, stop) = (opens.clone(), ctl.clone(), stop.clone());
+            std::thread::spawn(move || run_with(2, Counted(opens, 851e6), tx, stop, Some(ctl)))
+        };
+        let released = |rx: &Receiver<SourceMsg>| loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(SourceMsg::Released { source: 2, released }) => return released,
+                Ok(SourceMsg::Error { error, .. }) => panic!("{error}"),
+                Ok(_) => {}
+                Err(e) => panic!("nothing said: {e}"),
+            }
+        };
+        wait_for("opened", &|| opens.lock().unwrap().len() == 1);
+        *ctl.current_hz.lock().unwrap() = Some(852e6);
+        ctl.hold(true);
+        assert!(released(&rx), "released, once closed");
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(opens.lock().unwrap().len(), 1, "not opened again while released");
+        ctl.hold(false);
+        assert!(!released(&rx), "resumed");
+        wait_for("opened again", &|| opens.lock().unwrap().len() == 2);
+        assert_eq!(opens.lock().unwrap()[1], 852e6, "at the centre last set");
+        ctl.hold(true);
+        assert!(released(&rx));
+        stop.store(true, Ordering::Relaxed);
+        t.join().unwrap();
+        assert_eq!(opens.lock().unwrap().len(), 2, "Stop while released: the thread ends, nothing opened");
     }
 }

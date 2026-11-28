@@ -81,6 +81,14 @@ impl Slot {
         }
     }
 
+    /// Radio `label` was released while recording ([`Ctx::release_radio`]): a tuning of it stops, as
+    /// it would score its trials on a radio that hears nothing.
+    pub fn released(&self, label: &str) {
+        if self.active.lock().unwrap().as_ref().is_some_and(|a| a.label == label) {
+            self.stop("its radio was released");
+        }
+    }
+
     /// The last report, for a browser that connects.
     pub fn last(&self) -> Option<ToClient> {
         self.last.lock().unwrap().clone().map(|(_, r)| ToClient::Tune(r))
@@ -122,6 +130,9 @@ pub fn start(ctx: &Arc<Ctx>, req: TuneRequest) -> Result<Option<ToClient>, Strin
         let k = cfg.same_radio(i, &run.sources).ok_or_else(|| format!("{title} isn't recording (it was added since Start)."))?;
         (k, run.sources[k].clone())
     };
+    if ctx.radio_released(k) {
+        return Err(format!("{title} is released: Resume it first."));
+    }
     // (The gains its radio said it has, where they aren't its kind's own: a SoapySDR radio's gain elements too.)
     let plan = GainPlan::of_with(&base, req.mode, &crate::radio::reported_gains(&base)).map_err(|e| format!("{title}: {e}"))?;
     let start = plan.point(&base);

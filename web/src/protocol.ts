@@ -1069,6 +1069,8 @@ export interface SourceStatus {
   /** When it was, Unix seconds. */
   lastErrorS?: number | null;
   ended: boolean;
+  /** Its radio released while recording (`releaseRadio`): closed, so it can be swapped or looked at, until `resumeRadio`. The engine treats it as a radio gone quiet. */
+  released?: boolean;
   /** The settings it runs with (Setup's may have changed since Start: they apply at the next). */
   settings: Source;
   /** Its frequency error, ppm (+: signals come in high), against `settings.ppm`: the median of its last control channel and call measurements; null until measured. */
@@ -2379,8 +2381,9 @@ export interface RadioResultBody {
  * - `keys`: key containers opened with a password
  * - `calls`: the call store (`callsQuery`); the desktop app has it while its call store is open
  * - `tuneGain`: tuning a radio's gain while recording (`tuneGain`, `tune`)
+ * - `releaseRadio`: releasing a radio while recording, and resuming it (`releaseRadio`, `resumeRadio`)
  */
-export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls" | "history" | "tuneGain";
+export type Capability = "service" | "drivers" | "plugins" | "interfaces" | "host" | "keys" | "calls" | "history" | "tuneGain" | "releaseRadio";
 
 /** A gain as set: each knob (`lna`, `mixer`, `vga`, `amp`, `pga`; `step`: an Airspy table's; `gain`: the overall dB) and its value. */
 export type GainSetting = [string, number][];
@@ -2780,6 +2783,10 @@ export type ToRecorder =
   | ({ type: "tuneGain" } & TuneRequest)
   /** Stop tuning: the radio goes back as it was. */
   | { type: "tuneStop" }
+  /** While recording: close radio `source` (its place in the run, as `status.sources[].index`) so it can be swapped or looked at, the others recording on. Not saved: Stop or the next Start takes it back. Radios only: not a capture file or a stream. */
+  | { type: "releaseRadio"; source: number }
+  /** Open released radio `source` again, at the centre and gain it had. */
+  | { type: "resumeRadio"; source: number }
   /** Who is licensed on these frequencies within `radiusM` of (lat, lon): sent to trunkrecorder.pro; answered with licenseResult. */
   /** Who holds these call signs (heard on the air): sent to trunkrecorder.pro, no location; answered with callSignResult. */
   | { type: "callSignQuery"; id: number; callSigns: string[] }

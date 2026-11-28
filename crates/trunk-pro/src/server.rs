@@ -1910,6 +1910,8 @@ async fn command(ctx: &Arc<Ctx>, cmd: Command, listen: &mut Option<Listen>, subs
             ctx.tune.stop("asked to stop");
             None
         }
+        Command::ReleaseRadio { source } => failed(ctx.release_radio(source, true)),
+        Command::ResumeRadio { source } => failed(ctx.release_radio(source, false)),
         Command::SurveyStop => {
             let ctx2 = ctx.clone();
             let _ = tokio::task::spawn_blocking(move || ctx2.stop_survey()).await;
@@ -3297,6 +3299,8 @@ mod tests {
             (r#"{"type":"surveyStop"}"#, C),
             (r#"{"type":"tuneGain","source":0}"#, C),
             (r#"{"type":"tuneStop"}"#, C),
+            (r#"{"type":"releaseRadio","source":0}"#, C),
+            (r#"{"type":"resumeRadio","source":0}"#, C),
             (r#"{"type":"licenseQuery","id":1,"lat":0,"lon":0,"radiusM":1,"signals":[]}"#, C),
             (r#"{"type":"callSignQuery","id":1,"callSigns":[]}"#, C),
             (r#"{"type":"profileSource"}"#, C),

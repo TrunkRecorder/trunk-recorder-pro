@@ -102,6 +102,25 @@ Afterwards it shows what it **Kept** (or the **Best** one, if it wasn't applied)
 **Tried** and how long it **Took**. The same thing runs from the command line: see
 [`trunk-pro tune`](../command-line.md#tune).
 
+### Releasing a radio
+
+To swap a radio or look at it while the others keep recording, editors get **Release** on its card
+while recording (on the desktop app; radios only, not capture files or streams). Beside it the card
+lists what's on the radio: each site whose control channel it has, and the voice channels opened
+on it this run. That's what goes quiet while it's released.
+
+**Release** closes the radio, so it can be unplugged, swapped or opened by another program. Its
+card shows **Released** with **Resume**, and a site whose control channel was on it shows idle
+**Radio released** instead of a red light. The other radios keep recording. To the recorder a
+released radio is one that went quiet, as an unplugged one does. Its sites hunt for their control
+channel and come back once it's on the air again. Losing it raises no **Control lost** event, and
+a gain tune of that radio stops (one can't start until it's resumed).
+
+**Resume** opens the radio again at the centre and gain it had, with the source's settings from
+Start. A replacement therefore needs the same serial, or the source's serial has to be blank. Releasing isn't saved: **Stop**, or the next Start, opens it again. A radio you don't want
+any more is removed in Setup. Interfaces can do the same with `releaseRadio` / `resumeRadio` (see
+the [API](../api/README.md)).
+
 Under the card: the gain as set, the sample rate actually delivered against the one asked for,
 and the source's errors, if any (a USB error, a dongle that went away).
 

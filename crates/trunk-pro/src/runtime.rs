@@ -533,6 +533,29 @@ impl Ctx {
         *r.controls.get(k).ok_or("the radio isn't recording")?.gain.lock().unwrap() = Some(gain);
         Ok(gain)
     }
+
+    /// Release the run's source `k` (`on`) or resume it, while recording: a radio closed so it can
+    /// be swapped or looked at while the others record on, then opened again as it was
+    /// ([`Control::hold`]). Not saved: Stop, or the next Start, takes it back.
+    pub fn release_radio(&self, k: usize, on: bool) -> Result<(), String> {
+        let l = self.lifecycle.lock().unwrap();
+        let Some(r) = l.recording.as_ref().filter(|r| !r.finished()) else { return Err("not recording".into()) };
+        let run = self.run.lock().unwrap();
+        let src = run.as_ref().and_then(|c| c.sources.get(k)).ok_or("the radio isn't recording")?;
+        if matches!(src.kind, SourceKind::File { .. } | SourceKind::Stream { .. }) {
+            return Err(format!("{}: only a radio can be released", src.title(k)));
+        }
+        r.controls.get(k).ok_or("the radio isn't recording")?.hold(on);
+        if on {
+            self.tune.released(&src.label());
+        }
+        Ok(())
+    }
+
+    /// Whether the run's source `k` is released ([`Ctx::release_radio`]).
+    pub fn radio_released(&self, k: usize) -> bool {
+        self.lifecycle.lock().unwrap().recording.as_ref().and_then(|r| r.controls.get(k)).is_some_and(|c| c.held())
+    }
 }
 
 impl Runner {
@@ -1175,6 +1198,7 @@ fn engine_thread(ctx: Arc<Ctx>, cfg: Config, mut session: Session, queues: Vec<m
                 EngineCmd::Source(SourceMsg::Error { source, error }) => session.source_error(source, &error),
                 // (The one place a radio's gain set is weighed against the gain asked for.)
                 EngineCmd::Source(SourceMsg::Gain { source, asked, set }) => session.source_gain(source, &asked.to_string(), (!asked.same(&set)).then(|| set.to_string())),
+                EngineCmd::Source(SourceMsg::Released { source, released }) => session.source_released(source, released),
                 EngineCmd::Source(SourceMsg::End { source }) => {
                     if session.source_ended(source) {
                         // (Not "ended" when the user stopped it: the file thread ends on stop too.)
@@ -1771,6 +1795,33 @@ mod live_tests {
         // Idle: nothing is held against the config.
         ctx.set_phase(Phase::Idle, None, false);
         assert!(!needs(&lower) && ctx.run.lock().unwrap().is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Release / Resume reach the radio's controls while recording; a capture file or a stream
+    /// can't be released, and nothing can be when not recording.
+    #[test]
+    fn a_radio_is_released_and_resumed_while_recording() {
+        let run = Config {
+            sources: vec![
+                src("rtlsdr", json!({ "serial": "1", "centerHz": 851000000, "rateHz": 2400000 })),
+                src("file", json!({ "path": "x.cu8", "centerHz": 851000000, "rateHz": 2400000, "realtime": true })),
+            ],
+            ..Default::default()
+        };
+        let (ctx, controls, dir) = recording(&run, "release");
+        ctx.release_radio(0, true).unwrap();
+        assert!(controls[0].held());
+        // (A gain tuned on a released radio would be scored on nothing.)
+        let tune = crate::tune::start(&ctx, trunk_app::tune::TuneRequest { source: 0, ..Default::default() });
+        assert!(tune.unwrap_err().contains("released"));
+        ctx.release_radio(0, false).unwrap();
+        assert!(!controls[0].held());
+        assert!(ctx.release_radio(1, true).unwrap_err().contains("only a radio"));
+        assert!(!controls[1].held());
+        assert!(ctx.release_radio(2, true).is_err(), "no such source");
+        ctx.lifecycle.lock().unwrap().recording = None;
+        assert_eq!(ctx.release_radio(0, true), Err("not recording".into()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Release a radio while recording, to swap or look at it.** Before, working on one radio meant **Stop**, which
+  stops every system. Now, while recording, **Release** on a radio's card (RF page) closes it and the other radios
+  keep recording. The card lists what's on it (its sites' control channels, the voice channels it has opened),
+  shows **Released**, and its sites show idle **Radio released** rather than a red light (and raise no
+  **Control lost** event); a gain tune of it stops. **Resume** opens it again
+  at the centre and gain it had (a replacement needs the same serial, or a blank one in its source). It isn't
+  saved: Stop or the next Start opens it again. See [Releasing a radio](docs/guides/dashboard.md#releasing-a-radio).
+  - **API:** `releaseRadio` / `resumeRadio` (`source`: its `index` in `status.sources`); `status.sources[].released`;
+    the `releaseRadio` capability.
 - **What plugins make of a call is kept with it** (#283): transcripts, decoded pages, ACARS messages. A plugin
   sends a product of a call (`call.product`); the recorder keeps it in the call store, beside the call's JSON as
   `<call>.products.jsonl`, and in the call wherever it's listed, and passes it to interfaces (`product`) and to other

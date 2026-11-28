@@ -161,6 +161,8 @@ struct SourceStats {
     last_error_s: f64,
     rate_measured: f64,
     gain_set: Option<String>,
+    /// Its radio released while recording ([`Session::source_released`]).
+    released: bool,
     /// The newest buffer's arrival (ms) and the samples to its end; and the
     /// same where the rate's window began ([`RATE_WINDOW_MS`]).
     arrived: Option<(f64, u64)>,
@@ -711,6 +713,18 @@ impl Session {
         let text = format!("{}: {error}", self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source)));
         self.log.push(json!({ "timeS": self.engine.status().now_s, "kind": "error", "text": text }));
         self.records.push(Record::text(Level::Error, None, text));
+    }
+
+    /// Source `source`'s radio released (closed while recording goes on, so it can be swapped or
+    /// looked at) or, `released` false, resumed: the status shows it and the log says so. To the
+    /// engine it's a radio gone quiet, as an unplugged one is.
+    pub fn source_released(&mut self, source: usize, released: bool) {
+        let Some(st) = self.stats.get(source) else { return };
+        st.lock().unwrap().released = released;
+        self.meas.released(source, released);
+        let title = self.cfg.sources.get(source).map_or_else(|| format!("Source {}", source + 1), |s| s.title(source));
+        let text = if released { format!("{title}: radio released (Resume opens it again)") } else { format!("{title}: radio resumed") };
+        self.records.push(Record::text(Level::Info, None, text));
     }
 
     /// The gain source `source`'s radio is set to, as it opened or changed:
@@ -1612,6 +1626,7 @@ impl Session {
                 let recent = ss.last_error.as_ref().filter(|_| ss.last_error_s == 0.0 || self.meas.now() - ss.last_error_s < ERROR_SHOWN_S);
                 json!({ "index": i, "label": label, "centerHz": sc.center_hz, "rateHz": sc.rate_hz, "rateMeasured": ss.rate_measured, "gainSet": ss.gain_set,
                         "dropped": ss.dropped, "errors": ss.errors, "lastError": recent, "lastErrorS": recent.filter(|_| ss.last_error_s > 0.0).map(|_| ss.last_error_s.round()), "ended": ss.ended,
+                        "released": ss.released,
                         "errorPpm": tune.error_ppm, "tunePpm": tune.applied_ppm, "tuneSeeded": tune.seeded,
                         // The ppm that removes the error: it was measured against the ppm this run opened the radio with.
                         "ppmApply": tune.error_ppm.map(|e| s.settable_ppm(s.ppm - e)),
@@ -1961,6 +1976,27 @@ mod wall_tests {
         // Unit events, status and the like: by the epoch at their own time.
         assert_eq!(s.wall(3.0), 1_750_000_013.0);
         assert_eq!(s.wall(0.5), 1_750_000_000.5);
+    }
+
+    /// A radio released while recording: the status says so until it's resumed.
+    #[test]
+    fn a_released_radio_says_so_in_the_status() {
+        let cfg: Config = serde_json::from_value(json!({
+            "sources": [{ "type": "rtlsdr", "serial": "", "centerHz": 155000000, "rateHz": 2400000, "gainDb": 25, "agc": false, "ppm": 0 }],
+            "conventional": [{ "shortName": "conv", "channels": [{ "freqHz": 155200000, "mode": "fm", "name": "Fire" }] }]
+        }))
+        .unwrap();
+        let mut s = Session::new(cfg, &Default::default(), 1.75e12, &|_| None, |_| 0).unwrap();
+        let released = |s: &Session| match s.status_message(0.0) {
+            ToClient::Status { sources, .. } => sources[0]["released"].clone(),
+            _ => unreachable!(),
+        };
+        assert_eq!(released(&s), json!(false));
+        s.source_released(0, true);
+        assert_eq!(released(&s), json!(true));
+        s.source_released(0, false);
+        assert_eq!(released(&s), json!(false));
+        s.source_released(5, true);
     }
 }
 

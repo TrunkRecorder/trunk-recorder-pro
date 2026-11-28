@@ -533,6 +533,8 @@ pub enum Capability {
     History,
     /// Tuning a radio's gain while recording: `tuneGain`.
     TuneGain,
+    /// Releasing a radio while recording, and resuming it: `releaseRadio`, `resumeRadio`.
+    ReleaseRadio,
 }
 
 impl Capability {
@@ -695,6 +697,11 @@ pub enum Command {
     TuneGain(crate::tune::TuneRequest),
     /// Stop tuning: the radio goes back as it was.
     TuneStop,
+    /// Release the run's source `source` while recording: its radio is closed (to swap or look at
+    /// it) and the other sources record on. Not saved: Stop or the next Start takes it back.
+    ReleaseRadio { source: usize },
+    /// Open a released radio again, at the centre and gain it had.
+    ResumeRadio { source: usize },
     /// Who is licensed on `signals` within `radius_m` of the location the
     /// user gave (sent to trunkrecorder.pro): answered with `licenseResult`.
     LicenseQuery { id: u64, lat: f64, lon: f64, radius_m: f64, signals: Vec<crate::licenses::Signal> },
