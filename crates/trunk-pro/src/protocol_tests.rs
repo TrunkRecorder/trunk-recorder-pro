@@ -443,6 +443,7 @@ pub(crate) fn ctx_with(mut cfg: Config, dir: &Path, db: impl FnOnce(crate::runti
         phase: Mutex::new(crate::runtime::PhaseInfo::default()),
         run: Mutex::new(None),
         recent: Mutex::new(Default::default()),
+        dropped: Mutex::new(Default::default()),
         db,
         quit: tokio::sync::Notify::new(),
         interfaces_due: tokio::sync::Notify::new(),
@@ -661,6 +662,9 @@ fn the_servers_messages() {
         crate::server::tr_config(&dir.display().to_string()),
         crate::server::tr_config(&dir.join("nothing.json").display().to_string()),
         ToClient::Quit,
+        // A call lost: a write that failed (the platform's), and one no radio took (the session's own are made by a run above).
+        ToClient::CallDropped(trunk_app::protocol::DroppedCall::write_failed(&trunk_recorder_plugin::CallRecord { call_num: 178_192, short_name: "wmata".into(), talkgroup: 34992, freq: 496_612_500, start_time_ms: 1_795_809_540_000, call_length: 14.9, signal: Some(-61.2), noise: Some(-84.0), ..Default::default() }, "Disk full: no space left on device".into())),
+        ToClient::CallDropped(trunk_app::protocol::DroppedCall { call_num: 7, system: "dcfd".into(), site: Some("south".into()), talkgroup: 101, alpha_tag: "FD Disp".into(), freq_hz: 853_000_000, source: None, start_time: 1_795_809_540.0, length_s: 3.0, stage: trunk_app::protocol::DropStage::NotRecorded, why: "noRecorder", detail: None, signal: None, noise: None, voice_frames: None, bad_frames: None }),
         ToClient::TokenCreated { id: 4, name: "luke".into(), secret: Some(secret), error: None },
         ToClient::TokenCreated { id: 5, name: "luke".into(), secret: None, error: Some("There's a user named \"luke\" already.".into()) },
         ToClient::LicenseResult { id: 1, results: vec![json!({ "freqHz": 857_987_500, "historical": false, "licenses": [{ "callSign": "WPXT459", "licensee": "DISTRICT OF COLUMBIA", "serviceCode": "YE", "serviceDesc": null, "freqHz": 857_987_500, "emission": "8K10F1E", "distanceM": 1374, "bearingDeg": 115, "bearingCardinal": "ESE", "city": "WASHINGTON", "state": "DC", "status": "A", "locationKind": "fixed" }] })], error: None },
@@ -795,7 +799,7 @@ fn live_voice_is_the_plugin_topics_chunk() {
 
 /// Sources on the network for a list of radios: a SpyServer remembered as opened, an `rtl_tcp` nothing answers at.
 fn network_sources() -> Vec<trunk_app::config::Source> {
-    crate::radio::remember(&crate::radio::spyserver::key("spy.test"), crate::radio::Caps { model: "Airspy R2 / Mini".into(), rates: crate::radio::Rates::List(vec![2_500_000, 1_250_000]), gains: (0..=21).map(f64::from).collect() });
+    crate::radio::remember(&crate::radio::spyserver::key("spy.test"), crate::radio::Caps { model: "Airspy R2 / Mini".into(), rates: crate::radio::Rates::List(vec![2_500_000, 1_250_000]), gains: trunk_app::gain::Reported { steps: (0..=21).map(f64::from).collect(), ..Default::default() } });
     let src = |kind: serde_json::Value| -> trunk_app::config::Source { serde_json::from_value(kind).unwrap() };
     vec![
         src(json!({ "type": "spyserver", "address": "spy.test", "centerHz": 0, "rateHz": 2500000 })),

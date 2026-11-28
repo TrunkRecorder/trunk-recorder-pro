@@ -455,7 +455,7 @@ pub fn key(server: &str) -> String {
 impl Info {
     /// What it said of the receiver behind it, as a radio's [`Caps`]: its model, the rates it offers, its gain steps (0 up).
     fn caps(&self) -> Caps {
-        Caps { model: self.model(), rates: Rates::List(self.offered()), gains: (0..=self.max_gain).map(f64::from).collect() }
+        Caps { model: self.model(), rates: Rates::List(self.offered()), gains: trunk_app::gain::Reported { steps: (0..=self.max_gain).map(f64::from).collect(), ..Default::default() } }
     }
 }
 
@@ -849,7 +849,7 @@ mod tests {
         let caps = ask(&address).unwrap();
         assert_eq!(caps.model, "Airspy R2 / Mini");
         assert_eq!(caps.rates, Rates::List(vec![2_500_000, 1_250_000, 625_000, 312_500, 156_250]), "whole Hz, the ones under 100 kHz left out");
-        assert_eq!((caps.gains.len(), caps.gains[0], caps.gains[21]), (22, 0.0, 21.0), "its gain steps, 0 to its highest");
+        assert_eq!((caps.gains.steps.len(), caps.gains.steps[0], caps.gains.steps[21]), (22, 0.0, 21.0), "its gain steps, 0 to its highest");
         let (_, settings) = server.join().unwrap();
         assert!(settings.is_empty(), "{settings:?}");
         assert!(ask("127.0.0.1:1").is_err(), "nothing there");

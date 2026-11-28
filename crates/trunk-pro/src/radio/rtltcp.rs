@@ -77,7 +77,7 @@ impl Greeting {
     /// What the server said of itself, as a radio's [`Caps`]: its tuner, an RTL-SDR's rates, the tuner's gains (dB).
     fn caps(&self) -> Caps {
         let gains = self.steps().map_or(Vec::new(), |s| s.iter().map(|&g| f64::from(g) / 10.0).collect());
-        Caps { model: tuner_name(self.tuner_code).into(), rates: Rates::List(trunk_app::rates::of_kind("rtlsdr").to_vec()), gains }
+        Caps { model: tuner_name(self.tuner_code).into(), rates: Rates::List(trunk_app::rates::of_kind("rtlsdr").to_vec()), gains: trunk_app::gain::Reported { steps: gains, ..Default::default() } }
     }
 }
 
@@ -225,7 +225,7 @@ impl Tunable for Conn {
         let db = match g {
             Gain::Agc => None,
             Gain::Db(db) => Some(db),
-            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) => return Ok(Regained::LEFT_ALONE),
+            Gain::Stages(_) | Gain::Preset(..) | Gain::Step(_) | Gain::Soapy(_) => return Ok(Regained::LEFT_ALONE),
         };
         let set = self.gain(db)?;
         Ok(Regained { gap: 0, gain: Some(set) })
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(tuner_name(conn.greeting.tuner_code), "R820T");
         // What it said is remembered, as any radio's is when opened: for a list of radios, and the gain-tuning tool.
         let caps = super::super::known(&key(c.server.as_deref().unwrap())).unwrap();
-        assert_eq!((caps.model.as_str(), caps.gains.len(), caps.gains[11]), ("R820T", 29, 19.7));
+        assert_eq!((caps.model.as_str(), caps.gains.steps.len(), caps.gains.steps[11]), ("R820T", 29, 19.7));
         assert_eq!(conn.first, samples[..4], "the first bytes are samples, and are kept");
         configure(&mut conn, &c).unwrap();
         drop(conn);

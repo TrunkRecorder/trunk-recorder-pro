@@ -90,7 +90,7 @@ fn identify(lib: Lib, d: &Device) -> (Caps, String) {
         Lib::Airspy => model_of(&version, &rates),
         Lib::Hydrasdr => "RFOne",
     };
-    let caps = Caps { model: model.to_string(), rates: Rates::List(rates), gains: Vec::new() };
+    let caps = Caps { model: model.to_string(), rates: Rates::List(rates), gains: Default::default() };
     if let Ok(id) = d.partid_serialno() {
         super::remember(&key(lib, serial_of(&id.serial_no)), caps.clone());
     }
@@ -285,7 +285,7 @@ fn within(g: Gain) -> Option<Gain> {
         Gain::Preset(p, n) => Gain::Preset(p, n.min(21)),
         Gain::Stages(s) if s.agc => Gain::Stages(Stages::default().agc().with(Stage::Vga, step(&s, Stage::Vga, 15))),
         Gain::Stages(s) => Gain::Stages(Stages::default().with(Stage::Lna, step(&s, Stage::Lna, 14)).with(Stage::Mixer, step(&s, Stage::Mixer, 15)).with(Stage::Vga, step(&s, Stage::Vga, 15))),
-        Gain::Agc | Gain::Db(_) | Gain::Step(_) => return None,
+        Gain::Agc | Gain::Db(_) | Gain::Step(_) | Gain::Soapy(_) => return None,
     })
 }
 
@@ -383,13 +383,13 @@ mod tests {
 
     #[test]
     fn device_json_carries_model_and_rates() {
-        let r2 = Caps { model: "R2".into(), rates: Rates::List(vec![10_000_000, 2_500_000]), gains: Vec::new() };
+        let r2 = Caps { model: "R2".into(), rates: Rates::List(vec![10_000_000, 2_500_000]), gains: Default::default() };
         let d = describe(Lib::Airspy, 0x735863DC2F650AE3, Some(&r2));
         assert_eq!(d["serial"], "735863DC2F650AE3");
         assert_eq!(d["label"], "Airspy R2 · SN 735863DC2F650AE3");
         assert_eq!(d["model"], "R2");
         assert_eq!(d["rates"], serde_json::json!([10_000_000, 2_500_000]));
-        let rfone = Caps { model: "RFOne".into(), rates: Rates::List(vec![10_000_000, 5_000_000, 2_500_000]), gains: Vec::new() };
+        let rfone = Caps { model: "RFOne".into(), rates: Rates::List(vec![10_000_000, 5_000_000, 2_500_000]), gains: Default::default() };
         assert_eq!(describe(Lib::Hydrasdr, 0x1A2B3C4D5E6F7081, Some(&rfone))["label"], "HydraSDR RFOne · SN 1A2B3C4D5E6F7081");
         // One not asked yet that couldn't be opened (another program has it): by serial only.
         let d = describe(Lib::Airspy, 1, None);

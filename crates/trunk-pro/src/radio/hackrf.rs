@@ -159,7 +159,7 @@ mod native {
                 }
                 // (The survey's one number, split across the stages by the driver.)
                 Gain::Db(db) => self.stream.set_gain(db as f64).map(|b| ((), b)),
-                Gain::Agc | Gain::Preset(..) | Gain::Step(_) => return Ok(Regained::LEFT_ALONE),
+                Gain::Agc | Gain::Preset(..) | Gain::Step(_) | Gain::Soapy(_) => return Ok(Regained::LEFT_ALONE),
             };
             r.map_err(|e| format!("gain {g}: {e}"))?;
             Ok(Regained { gap: 0, gain: Some(gain_set(self.stream.stage_readings())) })

@@ -5,6 +5,15 @@ under `## [<version>]` when the tag `v<version>` is pushed).
 
 ## [Unreleased]
 
+- **Every lost call says why.** A call recorded and then not kept, or followed and never recorded for want of a radio,
+  now comes to interfaces as a `callDropped` message, once, as the recorder decides: its talkgroup, frequency, times,
+  `stage` (`notSaved` or `notRecorded`) and `why` (`silent`, `short`, `encrypted`, `writeFailed`; `noSource`,
+  `noRecorder`), with the signal, noise and voice frames it had, and a failed write's error. A connection's greeting
+  brings the last 30 minutes of them (`history.dropped`). `notSaved` now has a series per reason beside it
+  (`sys/<short>/notSaved/why/<why>`, and per site and channel), and a call whose files couldn't be written now counts
+  as not saved (it was counted as saved). A recorded call whose voice turned out encrypted is now `encrypted` rather
+  than `silent`, in capture rules' `call.not_saved` too.
+
 - **A USRP that sends nothing is noticed.** A read that came back at once with no samples and no error counted as
   samples, so a USRP doing that forever was never given up on and reopened: it went quiet without a word. Now every
   radio's read loop asks one question, how long since its last samples (`Silence`), whatever its reads without any
@@ -17,6 +26,31 @@ under `## [<version>]` when the tag `v<version>` is pushed).
   times a second, and no samples ever arrived. A read of 0 is now "nothing yet": the reads go on (the log says
   so once), samples arrive on the first open. A SoapySDR radio is given up on (and reopened after the usual
   back-off) after 10 s without a sample, whether its reads time out or come back empty; it was 3 s of timeouts.
+
+- **A P25 site set to `fsk4` reads "C4FM"** (#274, thanks @kevinb361). The modulation shown on the Overview and Decode
+  pages counted frames by each receiver's place in the bank, the first two as CQPSK, so a `fsk4` site, whose only
+  receiver is C4FM, read "CQPSK" (and the Decode page went to show a CQPSK phase error rather than its eye opening).
+  Which kind of receiver carries a signal is now one rule, the receiver bank's, for the Overview, the Decode page, a
+  call's frequency error and the survey: the kind detected, or, with both running, the one decoding with fewer
+  corrections (frame counts can't tell: the CQPSK receiver decodes clean C4FM about as well), or a site's only kind.
+
+- **`trunk-pro tune` tunes a SoapySDR radio stage by stage, an Airspy through SoapySDR along libairspy's table.**
+  It could only move a SoapySDR radio's overall gain, refused one without it, and, with gain stages set, each
+  trial was undone at once (the stages are set again after the overall gain). An Airspy through SoapySDR (here or
+  behind SoapyRemote: `driver=airspy` or `remote:driver=airspy`) is now searched as an Airspy is, along the
+  linearity table (or `--mode sensitivity` / `manual`), each step set as SoapyAirspy's LNA, MIX and VGA elements
+  with the values libairspy uses, and never along the overall gain, which SoapySDR fills front first (31 is LNA 15,
+  MIX 15, VGA 1; over 45 all the same). Another SoapySDR radio is searched by the gain elements it reports when
+  opened, one axis per element by the name its driver gave it (MIXER, TIA, IFGR …), the front first, an AMP never
+  set higher than it is. Each trial carries the radio's whole gain, so the setting it had puts every element back
+  exactly; a radio with no overall gain and an element the search moves left unset isn't tuned (it couldn't be put
+  back), and says which to set. Gain stages also change live from Setup now, as the overall gain did.
+- **The gain tuner scores a multi-site system site by site.** A system the radio receives at several sites had its
+  sites' control channels added together: P25 coverage summed past 100 % and counted as 100, so one site decoding in
+  full hid another decoding half, often the very site the gain is tuned for. Each site is now scored on its own and
+  the system's control channel is their average with the weakest site counted twice, as the weakest system is
+  across systems; the SNR tie-break is the weakest site's. `trunk-pro tune` and the Tune gain report show each
+  site's figures under its system (`county · North`).
 
 - **A plugin's settings restart that plugin alone.** While recording, changing a plugin's settings (its own, a
   system's or site's, the systems and sites it's on for, Share decrypted calls) used to restart every plugin; now
@@ -462,7 +496,6 @@ Recording first. The default, and the Docker image's, are already full paths.
   longer read: give those sites their accounts in their rows on the system's card.
 - **Held plugin items** (delayed calls) from before this release are dropped, and a multi-site call's copies share one
   `call_num`.
-
 
 ## [0.3.9] — 2026-11-20
 
