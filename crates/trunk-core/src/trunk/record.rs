@@ -589,7 +589,7 @@ pub struct Unsaved {
     pub call: Call,
     /// Its call's id, as the world knows it (as a saved one's `call_num`).
     pub call_num: super::CallId,
-    /// Silent, short, or encrypted (never [`NotSaved::WriteFailed`]: nothing was written).
+    /// Silent, short, or encrypted (never [`NotSaved::WriteFailed`] or [`NotSaved::NoData`]: the platform's).
     pub why: NotSaved,
     /// Seconds of audio, its voice frames and how many were bad: what was left once short and encrypted transmissions were.
     pub audio_s: f64,

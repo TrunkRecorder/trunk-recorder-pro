@@ -15,6 +15,7 @@ import type { CallEntry, CipherSeen, LengthHistogram, Origin, OutOfBandRow, Radi
 import { playable, playNow } from "../listen.ts";
 import { ActiveCalls, aliasOf, Log, unitIdOf } from "./Calls.tsx";
 import { Tones } from "./Tones.tsx";
+import { Products } from "./Products.tsx";
 import { coverage, dashSystems, goTo, K, KIND_LABEL, OUT_OF_BAND, running, scoped, sourceName, systemRadioHealth, total, useHistory, type DashSystem, type Health } from "./data.ts";
 
 type Hours = "24" | "168";
@@ -600,6 +601,7 @@ function CallsCard({ sys, talkgroup, unit }: { sys: DashSystem; talkgroup?: numb
                   Play
                 </button>
               )}
+              <Products call={c} />
             </li>
           ))}
         </ul>

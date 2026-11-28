@@ -44,7 +44,7 @@ mod timing;
 
 pub use archive::{plan, Archive, FileRules};
 pub use encode::Encoder;
-pub use host::{Calls, Note, PluginHost, Saves, Spec};
+pub use host::{about_record, Calls, Note, PluginHost, Products, Saves, Spec};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;

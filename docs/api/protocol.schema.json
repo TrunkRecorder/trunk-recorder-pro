@@ -3,6 +3,52 @@
   "title": "Trunk Recorder Pro interface protocol",
   "description": "The JSON messages on the WebSocket /api/ws. FromRecorder: server → client; ToRecorder: client → server. Generated from web/src/protocol.ts — see docs/api/README.md.",
   "definitions": {
+    "AcarsMessage": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "registration": {
+          "type": "string",
+          "description": "The aircraft's registration (\"N12345\")."
+        },
+        "flight": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string",
+          "description": "What kind of message: two characters (\"H1\", \"Q0\")."
+        },
+        "block_id": {
+          "type": "string"
+        },
+        "ack": {
+          "type": "string"
+        },
+        "message_no": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "more": {
+          "type": "boolean",
+          "description": "More blocks of the message follow."
+        },
+        "errors": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "mode",
+        "registration",
+        "label",
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "An ACARS block (a  {@link  Product }  of kind `acars`)."
+    },
     "AdjacentSite": {
       "type": "object",
       "properties": {
@@ -222,6 +268,13 @@
         },
         "json": {
           "type": "boolean"
+        },
+        "products": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Product"
+          },
+          "description": "What plugins made of it (a transcript, decoded pages), as they came; absent: nothing."
         }
       },
       "required": [
@@ -2325,7 +2378,7 @@
         },
         "voiceFrames": {
           "type": "number",
-          "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed`)."
+          "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed` or `noData`)."
         },
         "badFrames": {
           "type": "number"
@@ -3164,7 +3217,7 @@
             },
             "voiceFrames": {
               "type": "number",
-              "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed`)."
+              "description": "Voice frames decoded, and how many were bad (`notSaved`, but not `writeFailed` or `noData`)."
             },
             "badFrames": {
               "type": "number"
@@ -3211,6 +3264,210 @@
             "json"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "transcript"
+            },
+            "data": {
+              "$ref": "#/definitions/Transcript"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            },
+            "type": {
+              "type": "string",
+              "const": "product"
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "page"
+            },
+            "data": {
+              "$ref": "#/definitions/Page"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            },
+            "type": {
+              "type": "string",
+              "const": "product"
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "acars"
+            },
+            "data": {
+              "$ref": "#/definitions/AcarsMessage"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            },
+            "type": {
+              "type": "string",
+              "const": "product"
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id",
+            "type"
+          ]
         },
         {
           "type": "object",
@@ -6014,7 +6271,8 @@
         "silent",
         "short",
         "encrypted",
-        "writeFailed"
+        "writeFailed",
+        "noData"
       ],
       "description": "Why a recorded call wasn't kept (`notSaved/why/<key>`)."
     },
@@ -6281,6 +6539,62 @@
       ],
       "additionalProperties": false,
       "description": "A frequency granted that no source covered (radioQuery freqs: out of band in the query's hours)."
+    },
+    "Page": {
+      "type": "object",
+      "properties": {
+        "protocol": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "string",
+              "enum": [
+                "pocsag",
+                "flex"
+              ]
+            }
+          ]
+        },
+        "baud": {
+          "type": "number",
+          "description": "Symbols a second."
+        },
+        "address": {
+          "type": "number",
+          "description": "The pager it's for: POCSAG's RIC, FLEX's capcode."
+        },
+        "function": {
+          "type": "number",
+          "description": "POCSAG's function bits, 0–3."
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "alpha",
+            "numeric",
+            "tone",
+            "binary"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "number",
+          "description": "Bit errors corrected."
+        }
+      },
+      "required": [
+        "protocol",
+        "baud",
+        "address",
+        "format",
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "A pager message (a  {@link  Product }  of kind `page`)."
     },
     "Patch": {
       "type": "object",
@@ -7492,6 +7806,200 @@
       "additionalProperties": false,
       "description": "Something checked again and again and how it's been answering: an internet target, or the time server."
     },
+    "Product": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "transcript"
+            },
+            "data": {
+              "$ref": "#/definitions/Transcript"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "page"
+            },
+            "data": {
+              "$ref": "#/definitions/Page"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "acars"
+            },
+            "data": {
+              "$ref": "#/definitions/AcarsMessage"
+            },
+            "transmission_id": {
+              "type": "string",
+              "description": "The call it's of: its record's `transmission_id`."
+            },
+            "by": {
+              "type": "string",
+              "description": "The plugin that made it (its id)."
+            },
+            "time": {
+              "type": "number",
+              "description": "Unix seconds: when it was heard (a page) or made (a transcript)."
+            },
+            "call": {
+              "type": "object",
+              "properties": {
+                "system_id": {
+                  "type": "number"
+                },
+                "short_name": {
+                  "type": "string"
+                },
+                "talkgroup": {
+                  "type": "number"
+                },
+                "talkgroup_tag": {
+                  "type": "string"
+                },
+                "freq_hz": {
+                  "type": "number"
+                },
+                "path": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "system_id",
+                "short_name",
+                "talkgroup",
+                "freq_hz"
+              ],
+              "additionalProperties": false,
+              "description": "The call in brief, on a `product` message (an entry's own products leave it out)."
+            }
+          },
+          "required": [
+            "by",
+            "data",
+            "kind",
+            "time",
+            "transmission_id"
+          ]
+        }
+      ],
+      "description": "Something a plugin made of a call (the plugin protocol's `call.product`, as trunk-recorder-plugin's `Product`): its `kind` says what `data` is. A kind without a type here is shown by its `data.text`."
+    },
     "Radios": {
       "type": "object",
       "properties": {
@@ -7712,6 +8220,10 @@
           "type": "boolean",
           "description": "Desktop: when an upload failed, keep the files anyway (archiveFilesOnFailure)."
         },
+        "dataOnly": {
+          "type": "boolean",
+          "description": "Its calls are data (pagers, ACARS): what a plugin decodes from each is kept with the call (its `products`), the audio isn't, and a call nothing was decoded from isn't kept (`noData`)."
+        },
         "filenameFormat": {
           "type": "string",
           "description": "Where calls go under the recordings folder (\"\" = <short name>/<year>/<month>/<day>/)."
@@ -7792,6 +8304,7 @@
         "callTimeoutS",
         "captureDir",
         "conversationMode",
+        "dataOnly",
         "digitalLevelDb",
         "dropDuplicateCalls",
         "filenameFormat",
@@ -7872,6 +8385,10 @@
         "archiveFilesOnFailure": {
           "type": "boolean",
           "description": "Desktop: when an upload failed, keep the files anyway (archiveFilesOnFailure)."
+        },
+        "dataOnly": {
+          "type": "boolean",
+          "description": "Its calls are data (pagers, ACARS): what a plugin decodes from each is kept with the call (its `products`), the audio isn't, and a call nothing was decoded from isn't kept (`noData`)."
         },
         "filenameFormat": {
           "type": "string",
@@ -11965,6 +12482,57 @@
           "additionalProperties": false
         }
       ]
+    },
+    "Transcript": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string",
+          "description": "BCP 47 (\"en\", \"es-MX\")."
+        },
+        "model": {
+          "type": "string",
+          "description": "What made it (\"whisper-large-v3\")."
+        },
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "start_ms": {
+                "type": "number"
+              },
+              "end_ms": {
+                "type": "number"
+              },
+              "text": {
+                "type": "string"
+              },
+              "unit": {
+                "type": "number"
+              },
+              "confidence": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "start_ms",
+              "end_ms",
+              "text"
+            ],
+            "additionalProperties": false
+          },
+          "description": "The text in pieces: ms from the start of the call's audio, the radio talking where known, how sure (0–1)."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false,
+      "description": "What was said in a call's audio (a  {@link  Product }  of kind `transcript`)."
     },
     "TuneSystemFigures": {
       "type": "object",

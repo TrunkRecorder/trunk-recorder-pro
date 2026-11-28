@@ -337,13 +337,13 @@ Add the crate, and `schemars` for the settings form:
 
 ```toml
 [dependencies]
-trunk-recorder-plugin = "0.17.0"
+trunk-recorder-plugin = "0.18.0"
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-Use the latest version on [crates.io](https://crates.io/crates/trunk-recorder-plugin) (0.17.0 when
+Use the latest version on [crates.io](https://crates.io/crates/trunk-recorder-plugin) (0.18.0 when
 this was written). The recorder's
 [CHANGELOG](https://github.com/TrunkRecorder/trunk-recorder-pro/blob/main/CHANGELOG.md) notes each SDK release beside
 the recorder's, and says what a plugin must change. Both sides ignore what they don't know, so a

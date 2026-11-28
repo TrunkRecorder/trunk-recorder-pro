@@ -1555,9 +1555,9 @@ impl Session {
 
     /// A call of system `system` saved by the engine whose files then couldn't be
     /// written (the platform writes them): counted as not saved.
-    pub fn write_failed(&mut self, system: u16) {
+    pub fn not_saved(&mut self, system: u16, why: trunk_core::trunk::NotSaved) {
         let name = self.system_name(system).to_string();
-        self.meas.call_not_saved(&name, trunk_core::trunk::NotSaved::WriteFailed);
+        self.meas.call_not_saved(&name, why);
     }
 
     /// A call not saved, as capture rules see it.

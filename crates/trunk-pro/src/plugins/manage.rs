@@ -285,7 +285,7 @@ fn alone(mut h: Arc<PluginHost>) -> PluginHost {
 
 /// What a recording's plugins start with: the systems, the capture folder,
 /// what answers their `calls.query` and what saves their `settings.save`.
-type StartEnv = (Vec<super::RunSystem>, PathBuf, super::Calls, super::Saves);
+type StartEnv = (Vec<super::RunSystem>, PathBuf, super::Calls, super::Saves, super::Products);
 
 /// The plugins' part of the app's shared state.
 pub struct Plugins {
@@ -402,9 +402,10 @@ impl Plugins {
     }
 
     /// Start the config's enabled plugins for a recording.
-    /// `calls`: answers the plugins' `calls.query`; `saves`: saves their `settings.save`.
-    pub fn start(&self, cfg: &Config, calls: super::Calls, saves: super::Saves) {
-        *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir), calls, saves));
+    /// `calls`: answers the plugins' `calls.query`; `saves`: saves their `settings.save`;
+    /// `products`: takes their `call.product`.
+    pub fn start(&self, cfg: &Config, calls: super::Calls, saves: super::Saves, products: super::Products) {
+        *self.env.lock().unwrap() = Some((super::systems_of(cfg), PathBuf::from(&cfg.recording.capture_dir), calls, saves, products));
         self.set_delays(cfg);
         let host = self.new_host(cfg, true, Arc::new(AtomicBool::new(true)));
         self.hold.attach(host.as_ref().map(PluginHost::outlet));
@@ -486,7 +487,7 @@ impl Plugins {
     /// `fresh`: a new recording (counts start over); else a restart within one.
     /// `go`: when the processes may start (`PluginHost::start_when`).
     fn new_host(&self, cfg: &Config, fresh: bool, go: Arc<AtomicBool>) -> Option<PluginHost> {
-        let (systems, capture_dir, calls, saves) = self.env.lock().unwrap().clone()?;
+        let (systems, capture_dir, calls, saves, products) = self.env.lock().unwrap().clone()?;
         let notes = self.notes();
         let specs = Spec::enabled(cfg);
         {
@@ -508,7 +509,7 @@ impl Plugins {
         if specs.is_empty() {
             return None;
         }
-        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go, Some(self.hold.clone()), Some(calls), Some(saves));
+        let host = PluginHost::start_when(specs, &cfg.recording.m4a, &systems, &capture_dir, notes, go, Some(self.hold.clone()), Some(calls), Some(saves), Some(products));
         (!host.is_empty()).then_some(host)
     }
 

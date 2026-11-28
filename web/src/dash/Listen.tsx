@@ -27,12 +27,14 @@ import {
   tgKey,
   togglePause,
   useListen,
-  wanted,
+  selected,
   type Selection,
 } from "../listen.ts";
 import type { CallEntry, Config, RecordingOverride } from "../protocol.ts";
 import { BrowserStorage } from "../web/BrowserStorage.tsx";
 import { aliasOf, AirTg, unitIdOf } from "./Calls.tsx";
+import { Products } from "./Products.tsx";
+import { productsText } from "../products.ts";
 
 /** What the Listen page reads of the store (the page selects only this). */
 type ListenState = Pick<AppState, "connected" | "config" | "units" | "mdcUnits" | "unitNames" | "talkgroups">;
@@ -297,16 +299,17 @@ function CallList({ s }: { s: ListenState }) {
     const f = filter.trim().toLowerCase();
     return l.calls.filter(
       (c) =>
-        playable(c) &&
-        (!onlySelected || wanted(l.sel, c)) &&
-        (!f || String(c.record.talkgroup).includes(f) || labelOf(c).toLowerCase().includes(f) || (c.record.talkgroup_description ?? "").toLowerCase().includes(f)),
+        // (A data call has no audio: listed for what was decoded from it.)
+        (playable(c) || !!c.products?.length) &&
+        (!onlySelected || selected(l.sel, c)) &&
+        (!f || String(c.record.talkgroup).includes(f) || labelOf(c).toLowerCase().includes(f) || (c.record.talkgroup_description ?? "").toLowerCase().includes(f) || productsText(c).toLowerCase().includes(f)),
     );
   }, [l.calls, l.sel, onlySelected, filter]);
   const oldest = l.calls.at(-1)?.record.start_time_ms;
   return (
     <>
       <div className="row listen-tools">
-        <input className="search" placeholder="Filter talkgroup…" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        <input className="search" placeholder="Filter talkgroup or text…" value={filter} onChange={(e) => setFilter(e.target.value)} />
         <label className="toggle">
           <input type="checkbox" checked={onlySelected} onChange={(e) => setOnlySelected(e.target.checked)} />
           <span>Selected talkgroups only</span>
@@ -320,7 +323,7 @@ function CallList({ s }: { s: ListenState }) {
             const playing = l.playing?.path === c.path;
             return (
               <li key={c.path}>
-                <button className={playing ? "playing" : ""} onClick={() => playNow(c)} aria-current={playing || undefined}>
+                <button className={playing ? "playing" : ""} onClick={() => playable(c) && playNow(c)} aria-current={playing || undefined}>
                   <span className="mono muted">{timeOf(c.record.start_time_ms)}</span>
                   <Led color={systemColor(s.config, systemOf(c))} />
                   <span className="lc-tg">
@@ -334,6 +337,7 @@ function CallList({ s }: { s: ListenState }) {
                   <span className="mono small muted">{(c.record.call_length_ms / 1000).toFixed(0)} s</span>
                   <span className="lc-state small">{playing ? "▶ playing" : queued.has(c.path) ? "queued" : ""}</span>
                 </button>
+                <Products call={c} />
               </li>
             );
           })}
